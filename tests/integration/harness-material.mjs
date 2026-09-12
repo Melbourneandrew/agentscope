@@ -31,6 +31,8 @@ import {
 const maximumAuditBytes = 8 * 1024 * 1024;
 const maximumAggregateArchiveBytes = 320 * 1024 * 1024;
 const maximumHeaderBytes = 16 * 1024;
+const materialRetirementReserveMilliseconds = 5_000;
+const materialSettlementReserveMilliseconds = 1_000;
 const commandSource = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "harness-material-command.mjs",
@@ -255,6 +257,9 @@ const runMaterialVerification = async ({
     .update(`${runId}:${operation}:${commandSourceAuthority.sha256}`)
     .digest("hex")
     .slice(0, 24)}`;
+  const retirementDeadline = deadline - materialSettlementReserveMilliseconds;
+  const buildDeadline =
+    retirementDeadline - materialRetirementReserveMilliseconds;
   const imageId = await buildPreparedDockerImage(client, {
     buildArguments: { BASE_IMAGE: material.verifierImage },
     context,
@@ -264,12 +269,18 @@ const runMaterialVerification = async ({
       "com.agentscope.integration.run": runId,
     },
     maximumBuildContextBytes: maximumAuditBytes,
-    maximumMilliseconds: remaining(deadline),
+    maximumMilliseconds: remaining(buildDeadline),
+    retirementRequired: true,
     signal,
     tag,
   });
-  await retirePreparedDockerImage(client, { imageId, signal, tag });
-  if (signal.aborted) fail();
+  await retirePreparedDockerImage(client, {
+    deadline: retirementDeadline,
+    imageId,
+    signal,
+    tag,
+  });
+  if (signal.aborted || performance.now() >= deadline) fail();
   return {
     controllerSha256: commandSourceAuthority.sha256,
     image: image.image,
@@ -379,6 +390,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
       tarballs,
       verifier: { ...verifier, name: "npm" },
     });
+    if (performance.now() >= deadline) fail();
     const token = Object.freeze({
       authorityVersion: 1,
       authorityKind: "authenticated-harness-material",
@@ -386,7 +398,12 @@ export const prepareNpmHarnessMaterial = async (input) => {
     sameDirectory(owned);
     rmSync(resolve(root, "verifier"), { force: true, recursive: true });
     for (const bytes of attestations.values()) bytes.fill(0);
+    if (performance.now() >= deadline) fail();
     preparedMaterials.set(token, { authority, owned, tarballs });
+    if (performance.now() >= deadline) {
+      preparedMaterials.delete(token);
+      fail();
+    }
     return token;
   } catch (error) {
     if (owned !== undefined) {
@@ -512,9 +529,11 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       signingKeyBytes: objects.key,
       verification,
     });
+    if (performance.now() >= deadline) fail();
     sameDirectory(owned);
     for (const name of ["verifier"])
       rmSync(resolve(root, name), { force: true, recursive: true });
+    if (performance.now() >= deadline) fail();
     const token = Object.freeze({
       authorityVersion: 1,
       authorityKind: "authenticated-harness-material",
@@ -524,6 +543,10 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       binary: objects.binary,
       owned,
     });
+    if (performance.now() >= deadline) {
+      preparedMaterials.delete(token);
+      fail();
+    }
     return token;
   } catch (error) {
     if (owned !== undefined) {

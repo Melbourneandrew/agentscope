@@ -1905,6 +1905,7 @@ describe("authenticated buildx consumption", () => {
           dockerfile: "Dockerfile",
           labels: { "com.agentscope.integration": "true" },
           maximumMilliseconds: 4_000,
+          retirementRequired: true,
           tag: buildTag,
         }),
       ).resolves.toBe(configDigest.replace(":", "-"));
@@ -1943,6 +1944,7 @@ describe("authenticated buildx consumption", () => {
       expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
       await expect(
         retirePreparedDockerImage(client, {
+          deadline: performance.now() + 4_000,
           imageId: configDigest.replace(":", "-"),
           tag: buildTag,
         }),
@@ -1970,12 +1972,44 @@ describe("authenticated buildx consumption", () => {
       dockerfile: "Dockerfile",
       labels: { "com.agentscope.integration": "true" },
       maximumMilliseconds: 4_000,
+      retirementRequired: true,
       tag: buildTag,
     });
     await expect(
-      retirePreparedDockerImage(client, { imageId, tag: buildTag }),
+      retirePreparedDockerImage(client, {
+        deadline: performance.now() + 4_000,
+        imageId,
+        tag: buildTag,
+      }),
     ).rejects.toThrow("integration.images.containment");
     expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects verifier-image retirement after the caller deadline", async () => {
+    const engine = engineFixture({ buildTag });
+    const client = buildClient(engine);
+    const imageId = await buildPreparedDockerImage(client, {
+      buildArguments: { BASE_IMAGE: image },
+      context: buildContext(),
+      dockerfile: "Dockerfile",
+      labels: { "com.agentscope.integration": "true" },
+      maximumMilliseconds: 4_000,
+      retirementRequired: true,
+      tag: buildTag,
+    });
+    const requestsBeforeRetirement = engine.requests.length;
+    await expect(
+      retirePreparedDockerImage(client, {
+        deadline: performance.now() - 1,
+        imageId,
+        tag: buildTag,
+      }),
+    ).rejects.toThrow("integration.images.deadline");
+    expect(engine.requests).toHaveLength(requestsBeforeRetirement);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
   });
 
   it.each(["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"])(

@@ -84,7 +84,13 @@ const preparedDockerClients = new WeakSet();
 const closingPreparedDockerClients = new WeakSet();
 const uncertainPreparedDockerClients = new WeakSet();
 const preparedDockerClientDiagnostics = new WeakMap();
+const pendingPreparedDockerImageRetirements = new WeakMap();
 const processDiagnostics = new WeakMap();
+
+const preparedDockerClientIsUsable = (client) =>
+  preparedDockerClients.has(client) &&
+  !closingPreparedDockerClients.has(client) &&
+  !uncertainPreparedDockerClients.has(client);
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
@@ -2328,9 +2334,7 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
 
 export const prepareDockerInvocation = async (client, arguments_, signal) => {
   if (
-    !preparedDockerClients.has(client) ||
-    closingPreparedDockerClients.has(client) ||
-    uncertainPreparedDockerClients.has(client) ||
+    !preparedDockerClientIsUsable(client) ||
     !Array.isArray(arguments_) ||
     arguments_.length === 0 ||
     arguments_.length > 256 ||
@@ -3147,14 +3151,13 @@ export const buildPreparedDockerImage = async (
     labels,
     maximumMilliseconds,
     maximumBuildContextBytes,
+    retirementRequired = false,
     signal,
     tag,
   },
 ) => {
   if (
-    !preparedDockerClients.has(client) ||
-    closingPreparedDockerClients.has(client) ||
-    uncertainPreparedDockerClients.has(client) ||
+    !preparedDockerClientIsUsable(client) ||
     typeof context !== "string" ||
     typeof dockerfile !== "string" ||
     !/^(?:[A-Za-z\d][A-Za-z\d._-]{0,127}\.Dockerfile|Dockerfile)$/u.test(
@@ -3163,7 +3166,9 @@ export const buildPreparedDockerImage = async (
     typeof tag !== "string" ||
     !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag) ||
     !validBuildMap(buildArguments) ||
-    !validBuildMap(labels)
+    !validBuildMap(labels) ||
+    typeof retirementRequired !== "boolean" ||
+    (pendingPreparedDockerImageRetirements.get(client)?.size ?? 0) !== 0
   )
     throw fixedError("integration.images.build");
   const policy = preparationPolicy([client.evidence.images[0].image], {
@@ -3234,13 +3239,20 @@ export const buildPreparedDockerImage = async (
     ].includes(failure?.message)
       ? failure
       : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
-  return built.Id.replace(":", "-");
+  const imageId = built.Id.replace(":", "-");
+  if (retirementRequired)
+    pendingPreparedDockerImageRetirements.set(
+      client,
+      new Map([[tag, imageId]]),
+    );
+  return imageId;
 };
 
 export const retirePreparedDockerImage = async (
   client,
-  { imageId, signal, tag },
+  { deadline, imageId, signal, tag },
 ) => {
+  const retirementMilliseconds = Math.floor(deadline - performance.now());
   if (
     !preparedDockerClients.has(client) ||
     closingPreparedDockerClients.has(client) ||
@@ -3249,9 +3261,23 @@ export const retirePreparedDockerImage = async (
     !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag ?? "")
   )
     throw fixedError("integration.images.docker-client");
+  const pending = pendingPreparedDockerImageRetirements.get(client);
+  if (pending?.get(tag) !== imageId)
+    throw fixedError("integration.images.docker-client");
+  if (
+    !Number.isFinite(deadline) ||
+    retirementMilliseconds < 4 ||
+    retirementMilliseconds > 30_000
+  ) {
+    markPreparedDockerClientForOuterHostRetirement(client);
+    throw fixedError("integration.images.deadline");
+  }
   const policy = preparationPolicy([client.evidence.images[0].image], {
-    maximumPreparationMilliseconds: 30_000,
-    teardownMilliseconds: preparationTeardownMilliseconds,
+    maximumPreparationMilliseconds: retirementMilliseconds,
+    teardownMilliseconds: Math.min(
+      preparationTeardownMilliseconds,
+      Math.max(1, Math.floor(retirementMilliseconds / 4)),
+    ),
   });
   const engine =
     client.engineRequestForTesting ?? engineTransport(client.socket);
@@ -3304,6 +3330,7 @@ export const retirePreparedDockerImage = async (
       )
     )
       throw fixedError("integration.images.containment");
+    pending.delete(tag);
   } catch (error) {
     markPreparedDockerClientForOuterHostRetirement(client);
     throw error;
@@ -3311,6 +3338,11 @@ export const retirePreparedDockerImage = async (
 };
 
 export const closePreparedDockerClient = (client) => {
+  if ((pendingPreparedDockerImageRetirements.get(client)?.size ?? 0) !== 0) {
+    if (preparedDockerClients.has(client))
+      markPreparedDockerClientForOuterHostRetirement(client);
+    throw fixedError("integration.images.docker-client");
+  }
   if (
     !preparedDockerClients.has(client) ||
     uncertainPreparedDockerClients.has(client)
@@ -3322,6 +3354,7 @@ export const closePreparedDockerClient = (client) => {
       client.privateClient,
       performance.now() + preparationTeardownMilliseconds,
     );
+    pendingPreparedDockerImageRetirements.delete(client);
     preparedDockerClients.delete(client);
   } catch (error) {
     uncertainPreparedDockerClients.add(client);

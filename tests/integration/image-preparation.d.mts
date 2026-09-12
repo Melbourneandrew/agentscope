@@ -186,6 +186,7 @@ export declare const buildPreparedDockerImage: (
     labels: Readonly<Record<string, string>>;
     maximumBuildContextBytes?: number;
     maximumMilliseconds: number;
+    retirementRequired?: boolean;
     signal?: AbortSignal;
     tag: string;
   }>,
@@ -194,6 +195,7 @@ export declare const buildPreparedDockerImage: (
 export declare const retirePreparedDockerImage: (
   client: PreparedDockerClient,
   options: Readonly<{
+    deadline: number;
     imageId: string;
     signal?: AbortSignal;
     tag: string;
