@@ -210,6 +210,44 @@ describe("harness installation transaction", () => {
   });
 });
 
+describe("harness installation target modes", () => {
+  it("atomically applies explicit configuration and launcher modes", async () => {
+    const root = await temporaryRoot();
+    const configuration = join(root, "hooks.json");
+    const launcher = join(root, "agentscope-hook");
+    await writeFileWithExactMode(configuration, "same", 0o640);
+    const planner: HarnessInstallationPlanInput["planner"] = ({
+      targetPath,
+    }) => ({
+      kind: "replace",
+      bytes: bytes(targetPath === launcher ? "#!/bin/true\n" : "same"),
+      mode: targetPath === launcher ? 0o700 : 0o600,
+    });
+    const plan = await inspectHarnessInstallation(
+      planInput(root, [configuration, launcher], planner),
+    );
+    expect(plan).toMatchObject({
+      disposition: "ready",
+      targetCount: 2,
+      changedTargetCount: 2,
+    });
+    await expect(applyHarnessInstallation(plan)).resolves.toEqual({
+      ok: true,
+      state: "committed",
+      changedTargetCount: 2,
+    });
+    expect((await lstat(configuration)).mode & 0o777).toBe(0o600);
+    expect((await lstat(launcher)).mode & 0o777).toBe(0o700);
+    expect(
+      (
+        await inspectHarnessInstallation(
+          planInput(root, [configuration, launcher], planner),
+        )
+      ).disposition,
+    ).toBe("unchanged");
+  });
+});
+
 describe("harness installation target ownership", () => {
   it("allows only one manifest to own an overlapping target", async () => {
     const root = await temporaryRoot();
@@ -1253,6 +1291,8 @@ describe("harness installation hostile boundaries", () => {
     const hostileDecisions: Array<() => HarnessTargetDecision> = [
       () => ({ kind: "replace", bytes: new Uint8Array(1_048_577) }),
       () => ({ kind: "replace", bytes: bytes("x"), extra: true }) as never,
+      () => ({ kind: "replace", bytes: bytes("x"), mode: 0o640 }) as never,
+      () => ({ kind: "replace", bytes: bytes("x"), mode: undefined }),
       () => ({ kind: "unchanged", extra: true }) as never,
       () => ({ kind: "unknown" }) as never,
       () => null as never,
@@ -1418,6 +1458,23 @@ describe("harness installation manifest validation", () => {
       {
         ...valid,
         targets: [{ ...valid.targets[0], stagePath: "/tmp/unowned" }],
+      },
+      {
+        ...valid,
+        targets: [{ ...valid.targets[0], afterMode: 0o777 }],
+      },
+      {
+        ...valid,
+        targets: [
+          {
+            ...valid.targets[0],
+            beforeDigest: digest("before"),
+            beforeExists: true,
+            beforeMode: 0o640,
+            afterMode: 0o777,
+            backupPath: `${prefix}.backup`,
+          },
+        ],
       },
       { ...valid, extra: true },
     ]) {
