@@ -134,6 +134,14 @@ describe("integration retained artifacts", () => {
     }
   });
 
+  it("accepts complete evidence with observed retrieval and no invented ingestion", () => {
+    const result = fixtureResult();
+    result.destinationLedger.ingestion = [];
+    expect(sanitizeFixtureResult(result, "fixture-process-smoke")).toEqual(
+      result,
+    );
+  });
+
   it("plans deterministic bounded retention while protecting current", () => {
     const bundle = (digit: string) => `sha256-${digit.repeat(64)}`;
     const entries: ArtifactDirectoryEntry[] = [
