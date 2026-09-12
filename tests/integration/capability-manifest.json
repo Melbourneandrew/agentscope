@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-959923918c815eeef9f3a4451208e58b1edd53f3a20b54c7c18007f549794731",
+  "manifestIdentity": "sha256-3483845822481a98ac437e1771c9bafb15e775bb03baba861a11a9a8fa9ffa77",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -52,29 +52,6 @@
           "sourceCommit": "ff29a44391deccde0aba0f8390337d7f3c319ea4",
           "tag": "rust-v0.149.1",
           "workflowPath": ".github/workflows/rust-release.yml"
-        }
-      },
-      "admission": {
-        "evidenceSlot": "codex-0-149-1",
-        "eligibleRange": {
-          "minimumInclusive": "0.149.1",
-          "maximumExclusive": "0.150.0"
-        },
-        "distributionReference": "npm:@openai/codex@0.149.1",
-        "component": {
-          "fixture": {
-            "path": "packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
-            "sha256": "fe2b9351d3c48507c38a30d6b1409795d4e998df373fb9f29d27ca9afb88afab"
-          },
-          "adapterArtifact": {
-            "path": "packages/harnesses/codex/src/testing.ts",
-            "sha256": "b935d25f7f85f5c5722affd3b215e8d59fa42711936cb10b62cd3f64f1fd520e"
-          },
-          "mappingArtifact": {
-            "path": "packages/harnesses/codex/src/mapping.ts",
-            "sha256": "64d8e0d29038fbb8850af1ef7ea9caaeee1f774f93c0bdabeb7246929305e0e3"
-          },
-          "componentEvidenceDigest": "component-sha256-6e759e10cefadaa82b4029efabd81cf15e0efa3e4f631c96d9d3f6a1ea366c57"
         }
       }
     },
