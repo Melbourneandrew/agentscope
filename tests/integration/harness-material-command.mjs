@@ -38,6 +38,7 @@ const npmEnvironment = (home, registry) => ({
   NPM_CONFIG_GLOBALCONFIG: resolve(home, "global.npmrc"),
   NPM_CONFIG_IGNORE_SCRIPTS: "true",
   NPM_CONFIG_REGISTRY: registry,
+  NPM_CONFIG_UPDATE_NOTIFIER: "false",
   NPM_CONFIG_USERCONFIG: resolve(home, "user.npmrc"),
   PATH: "/usr/local/bin:/usr/bin:/bin",
 });

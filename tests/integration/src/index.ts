@@ -1,4 +1,5 @@
 export {
+  capabilityScenarioImages,
   capabilityManifestIdentity,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
