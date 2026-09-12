@@ -113,6 +113,27 @@ const planInput = (
 });
 
 describe("harness installation transaction", () => {
+  it("rolls a completed ownership marker into a changed successor using the same manifest path", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    await writeFile(target, "before");
+    for (const expected of ["first", "second"]) {
+      const plan = await inspectHarnessInstallation(
+        planInput(root, [target], () => ({
+          bytes: bytes(expected),
+          kind: "replace",
+        })),
+      );
+      expect(plan.disposition).toBe("ready");
+      await expect(applyHarnessInstallation(plan)).resolves.toEqual({
+        changedTargetCount: 1,
+        ok: true,
+        state: "committed",
+      });
+      expect(await readFile(target, "utf8")).toBe(expected);
+    }
+  });
+
   it("creates and updates multiple targets atomically while preserving modes", async () => {
     const root = await temporaryRoot();
     const first = join(root, "first.json");
@@ -245,6 +266,43 @@ describe("harness installation target modes", () => {
         )
       ).disposition,
     ).toBe("unchanged");
+  });
+});
+
+describe("harness installation ownership rollover", () => {
+  it("does not reclaim a marker referenced by another live manifest namespace", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const liveManifest = join(root, "transactions", "live.json");
+    const successorManifest = join(root, "transactions", "successor.json");
+    await mkdir(join(root, "transactions"), { recursive: true });
+    await writeFile(target, "before", { mode: 0o600 });
+    await chmod(target, 0o600);
+    await writeFile(liveManifest, "live transaction authority", {
+      mode: 0o600,
+    });
+    await chmod(liveManifest, 0o600);
+    await writeOwnershipMarker(
+      liveManifest,
+      "0123456789abcdef0123456789abcdef",
+      target,
+    );
+    await rm(ownershipClaimPath(target));
+    const plan = await inspectHarnessInstallation({
+      manifestPath: successorManifest,
+      operation: "install",
+      targetPaths: [target],
+      planner: () => ({ kind: "replace", bytes: bytes("successor") }),
+    });
+    expect(plan.disposition).toBe("ready");
+    await expect(applyHarnessInstallation(plan)).resolves.toMatchObject({
+      ok: false,
+      state: "conflict",
+    });
+    expect(await readFile(target, "utf8")).toBe("before");
+    expect(await readFile(liveManifest, "utf8")).toBe(
+      "live transaction authority",
+    );
   });
 });
 

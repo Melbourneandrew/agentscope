@@ -510,6 +510,21 @@ const publicPlan = (
 const manifestExists = async (path: string): Promise<boolean> =>
   (await inspectFile(path)).exists;
 
+async function ownershipManifestIsExactSuccessor(
+  ownership: TargetOwnershipRecord,
+  manifestPath: string,
+  manifest: TransactionManifest,
+): Promise<boolean> {
+  const snapshot = await inspectFile(ownership.manifestPath);
+  if (!snapshot.exists) return true;
+  if (ownership.manifestPath !== manifestPath) return false;
+  return (
+    snapshot.mode === FILE_MODE &&
+    snapshot.digest ===
+      hash(new TextEncoder().encode(canonicalManifest(manifest)))
+  );
+}
+
 export const inspectHarnessInstallation = async (
   input: HarnessInstallationPlanInput,
 ): Promise<HarnessInstallationPlan> => {
@@ -774,9 +789,10 @@ const ownershipSnapshotMatches = (
 
 const ensureTargetOwnership = async (
   manifestPath: string,
-  transactionId: string,
+  manifest: TransactionManifest,
   targetPath: string,
 ): Promise<void> => {
+  const transactionId = manifest.transactionId;
   const expected = ownershipRecord(manifestPath, transactionId, targetPath);
   const candidatePath = ownershipCandidatePath(transactionId, targetPath);
   const markerPath = ownershipMarkerPath(targetPath);
@@ -814,7 +830,10 @@ const ensureTargetOwnership = async (
   const marker = await inspectFile(markerPath);
   if (ownershipSnapshotMatches(marker, expected)) return;
   const prior = parseOwnershipRecord(marker, targetPath);
-  if (!prior || (await manifestExists(prior.manifestPath)))
+  if (
+    !prior ||
+    !(await ownershipManifestIsExactSuccessor(prior, manifestPath, manifest))
+  )
     throw new HarnessInstallationConflictError();
   await unlink(markerPath);
   await syncDirectory(markerPath);
@@ -839,11 +858,7 @@ const ensureManifestOwnership = async (
     left.targetPath.localeCompare(right.targetPath),
   );
   for (const target of targets)
-    await ensureTargetOwnership(
-      manifestPath,
-      manifest.transactionId,
-      target.targetPath,
-    );
+    await ensureTargetOwnership(manifestPath, manifest, target.targetPath);
 };
 
 const ensureRecordedManifestOwnership = async (
