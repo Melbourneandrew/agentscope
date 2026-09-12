@@ -55,7 +55,9 @@ const planFor = (
   executionMode: "headless" | "interactive" = "headless",
 ) => {
   const scenario = manifest.scenarios.find(
-    (candidate) => candidate.executionMode === executionMode,
+    (candidate) =>
+      candidate.executionMode === executionMode &&
+      candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
   return createIsolationPlan({
     scenario,

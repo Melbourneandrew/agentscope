@@ -1,0 +1,421 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
+
+import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
+import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
+import { translateCodexPlatformObservations } from "./scenario-adapter.mjs";
+
+const required = (name) => {
+  const value = process.env[name];
+  if (!value) throw new Error(`integration.codex.environment-${name}`);
+  return value;
+};
+if (process.argv.length !== 4 || process.argv[2] !== "--artifact")
+  throw new Error("integration.codex.arguments");
+const artifactPath = process.argv[3];
+const artifactStatus = lstatSync(artifactPath);
+if (!artifactStatus.isFile() || artifactStatus.isSymbolicLink())
+  throw new Error("integration.codex.artifact");
+if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+  throw new Error("integration.codex.pty");
+
+const bootNow = () => {
+  const source = readFileSync("/proc/uptime", "utf8");
+  if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
+    throw new Error("integration.codex.clock");
+  return Number(source.split(/\s/u, 1)[0]) * 1_000;
+};
+const deadline = Number(required("AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS"));
+if (!Number.isFinite(deadline) || deadline <= bootNow())
+  throw new Error("integration.codex.deadline");
+const remaining = () => {
+  const value = deadline - bootNow();
+  if (!Number.isFinite(value) || value <= 0)
+    throw new Error("integration.codex.deadline");
+  return value;
+};
+
+const maximumOutput = 1024 * 1024;
+const run = (executable, arguments_, options = {}) =>
+  new Promise((resolve, reject) => {
+    remaining();
+    const child = spawn(executable, arguments_, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
+    });
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    if (!options.inherit) {
+      child.stdout.on("data", (chunk) => {
+        stdout = Buffer.concat([stdout, chunk]);
+        if (stdout.length > maximumOutput) child.stdout.destroy();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr = Buffer.concat([stderr, chunk]);
+        if (stderr.length > maximumOutput) child.stderr.destroy();
+      });
+    }
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      try {
+        remaining();
+        if (
+          code !== 0 ||
+          signal !== null ||
+          stdout.length > maximumOutput ||
+          stderr.length > maximumOutput
+        )
+          return reject(new Error("integration.codex.child"));
+        resolve({ stdout, stderr });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+
+const parseMachine = (bytes, command) => {
+  const value = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+  );
+  if (
+    value?.command !== command ||
+    value?.completion !== "complete" ||
+    !Array.isArray(value.records)
+  )
+    throw new Error("integration.codex.cli-output");
+  return value.records;
+};
+
+const agentscope = "/opt/agentscope/installed/node_modules/.bin/agentscope";
+const codex = "/opt/agentscope/harness/node_modules/.bin/codex";
+const home = required("HOME");
+const agentscopeHome = required("AGENTSCOPE_HOME");
+const worktree = required("AGENTSCOPE_WORKTREE");
+const ledger = required("AGENTSCOPE_LEDGER");
+const scenarioId = required("AGENTSCOPE_SCENARIO_ID");
+const modelEndpoint = required("AGENTSCOPE_MODEL_SERVER_URL");
+for (const directory of [home, agentscopeHome, worktree, ledger])
+  mkdirSync(directory, { recursive: true });
+
+const cli = async (arguments_, command) =>
+  parseMachine(
+    (await run(agentscope, [...arguments_, "--output", "json"])).stdout,
+    command,
+  );
+
+const prompt = "Reply with one short confirmation and do not use tools.";
+const promptSha256 = createHash("sha256").update(`${prompt}\r`).digest("hex");
+const requestJson = async (url, options) => {
+  const response = await fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(Math.min(5_000, remaining())),
+  });
+  if (!response.ok) throw new Error("integration.codex.sidecar");
+  return response.json();
+};
+const waitForFile = async (path) => {
+  while (remaining() > 0) {
+    if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("integration.codex.hook-timeout");
+};
+const shellWord = (value) => "'" + value.replaceAll("'", `'"'"'`) + "'";
+const exactKeys = (value, keys) =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  JSON.stringify(Object.keys(value).sort()) ===
+    JSON.stringify([...keys].sort());
+const installedLauncher = (hookConfiguration) => {
+  if (
+    !exactKeys(hookConfiguration, ["hooks"]) ||
+    !exactKeys(hookConfiguration.hooks, ["SessionStart", "Stop", "SessionEnd"])
+  )
+    throw new Error("integration.codex.hook-configuration");
+  const commands = ["SessionStart", "Stop", "SessionEnd"].map((event) => {
+    const groups = hookConfiguration.hooks[event];
+    const group = groups?.[0];
+    const handler = group?.hooks?.[0];
+    const expectedGroupKeys =
+      event === "SessionStart" ? ["hooks", "matcher"] : ["hooks"];
+    if (
+      !Array.isArray(groups) ||
+      groups.length !== 1 ||
+      !exactKeys(group, expectedGroupKeys) ||
+      !Array.isArray(group.hooks) ||
+      group.hooks.length !== 1 ||
+      (event === "SessionStart" && group.matcher !== "startup|resume|clear") ||
+      !exactKeys(handler, ["command", "statusMessage", "timeout", "type"]) ||
+      handler.type !== "command" ||
+      handler.timeout !== 3 ||
+      handler.statusMessage !== "Agentscope trace capture"
+    )
+      throw new Error("integration.codex.hook-configuration");
+    return handler.command;
+  });
+  if (
+    commands.some((command) => typeof command !== "string") ||
+    new Set(commands).size !== 1 ||
+    !/^'[^']+'$/u.test(commands[0])
+  )
+    throw new Error("integration.codex.hook-configuration");
+  return commands[0].slice(1, -1);
+};
+const instrumentHooks = (hookPath, observationHome) => {
+  const configuration = JSON.parse(readFileSync(hookPath, "utf8"));
+  const launcher = installedLauncher(configuration);
+  for (const event of ["SessionStart", "Stop", "SessionEnd"]) {
+    const handler = configuration.hooks[event][0].hooks[0];
+    handler.command = [
+      "/usr/local/bin/node",
+      "/opt/agentscope/runtime/codex-hook-observer.mjs",
+      "--event",
+      event,
+      "--launcher",
+      launcher,
+      "--ledger",
+      observationHome,
+    ]
+      .map(shellWord)
+      .join(" ");
+  }
+  writeFileSync(hookPath, `${JSON.stringify(configuration, null, 2)}\n`, {
+    flag: "w",
+    mode: 0o600,
+  });
+  return launcher;
+};
+const countPrompt = (value) => {
+  if (value === prompt) return 1;
+  if (Array.isArray(value))
+    return value.reduce((count, child) => count + countPrompt(child), 0);
+  if (typeof value === "object" && value !== null)
+    return Object.values(value).reduce(
+      (count, child) => count + countPrompt(child),
+      0,
+    );
+  return 0;
+};
+const projectModelRequest = async () => {
+  const requests = await requestJson(
+    `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    },
+  );
+  if (!Array.isArray(requests))
+    throw new Error("integration.codex.model-request");
+  const matches = requests.filter(
+    (request) =>
+      request?.method === "POST" && request?.path === "/v1/responses",
+  );
+  if (matches.length !== 1) throw new Error("integration.codex.model-request");
+  const request = matches[0];
+  const bodyText =
+    typeof request.body === "string"
+      ? request.body
+      : typeof request.body?.string === "string"
+        ? request.body.string
+        : typeof request.body?.json === "string"
+          ? request.body.json
+          : undefined;
+  if (bodyText === undefined || Buffer.byteLength(bodyText) > maximumOutput)
+    throw new Error("integration.codex.model-request");
+  const parsed = JSON.parse(bodyText);
+  const headerNames = Array.isArray(request.headers)
+    ? request.headers.map(({ name }) => name)
+    : typeof request.headers === "object" && request.headers !== null
+      ? Object.keys(request.headers)
+      : [];
+  if (
+    headerNames.length > 64 ||
+    headerNames.some(
+      (name) =>
+        typeof name !== "string" || name.length < 1 || name.length > 128,
+    )
+  )
+    throw new Error("integration.codex.model-request");
+  const forbiddenHeaders = headerNames.filter((name) =>
+    /^(?:authorization|api-key|x-api-key)$/iu.test(name),
+  );
+  if (
+    parsed?.model !== "fixture-model" ||
+    countPrompt(parsed) !== 1 ||
+    forbiddenHeaders.length !== 0
+  )
+    throw new Error("integration.codex.model-request");
+  return Object.freeze({
+    method: request.method,
+    path: request.path,
+    bodyBytes: Buffer.byteLength(bodyText),
+    bodySha256: createHash("sha256").update(bodyText).digest("hex"),
+    promptSha256,
+    promptOccurrenceCount: 1,
+    credentialHeaderCount: 0,
+  });
+};
+
+let completed = false;
+try {
+  await cli(["init", "--yes"], "agentscope init");
+  await cli(
+    ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
+    "agentscope destination configure",
+  );
+  await cli(["routing", "set", "local"], "agentscope routing set");
+  await cli(["install", "codex", "--yes"], "agentscope install");
+  await cli(["harness", "status", "codex"], "agentscope harness status");
+  const codexHome = join(home, ".codex");
+  const hookPath = join(codexHome, "hooks.json");
+  const originalHooks = readFileSync(hookPath, "utf8");
+  const hookObservationHome = join(ledger, "codex-hook-observations");
+  instrumentHooks(hookPath, hookObservationHome);
+  const configuration = createCodexInternalProviderConfiguration({
+    baseUrl: `${modelEndpoint}/v1`,
+    model: "fixture-model",
+  });
+  writeFileSync(join(codexHome, "config.toml"), configuration, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  chmodSync(join(codexHome, "config.toml"), 0o600);
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  const codexRun = run(
+    codex,
+    [
+      "--no-alt-screen",
+      "--sandbox",
+      "read-only",
+      "--ask-for-approval",
+      "never",
+    ],
+    {
+      cwd: worktree,
+      env: { ...process.env, CODEX_HOME: codexHome },
+      inherit: true,
+    },
+  );
+  const stopHook = await waitForFile(join(hookObservationHome, "Stop.json"));
+  const modelRequest = await projectModelRequest();
+  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
+  await codexRun;
+  const startHook = await waitForFile(
+    join(hookObservationHome, "SessionStart.json"),
+  );
+  const endHook = await waitForFile(
+    join(hookObservationHome, "SessionEnd.json"),
+  );
+  if (
+    startHook.sessionId !== stopHook.sessionId ||
+    endHook.sessionId !== stopHook.sessionId ||
+    startHook.event !== "SessionStart" ||
+    stopHook.event !== "Stop" ||
+    endHook.event !== "SessionEnd"
+  )
+    throw new Error("integration.codex.hook-lifecycle");
+  const searchRecords = await cli(
+    [
+      "traces",
+      "search",
+      "--destination",
+      "local",
+      "--harness",
+      "codex",
+      "--limit",
+      "50",
+    ],
+    "agentscope traces search",
+  );
+  if (
+    searchRecords.length !== 1 ||
+    !Array.isArray(searchRecords[0]?.summaries) ||
+    searchRecords[0].summaries.length !== 1
+  )
+    throw new Error("integration.codex.trace-search");
+  const summary = searchRecords[0].summaries[0];
+  const traceId = summary?.locator?.traceId;
+  if (summary?.harness !== "codex" || typeof traceId !== "string")
+    throw new Error("integration.codex.trace-search");
+  const getRecords = await cli(
+    [
+      "traces",
+      "get",
+      "--destination",
+      "local",
+      "--trace-ref",
+      JSON.stringify(summary.locator),
+    ],
+    "agentscope traces get",
+  );
+  if (
+    getRecords.length !== 1 ||
+    getRecords[0]?.locator?.traceId !== traceId ||
+    !Array.isArray(getRecords[0]?.graph?.resourceSpans) ||
+    getRecords[0].graph.resourceSpans.length < 1
+  )
+    throw new Error("integration.codex.trace-get");
+  const doctorRecords = await cli(["doctor"], "agentscope doctor");
+  writeFileSync(hookPath, originalHooks, { flag: "w", mode: 0o600 });
+  const uninstallRecords = await cli(
+    ["uninstall", "codex", "--yes"],
+    "agentscope uninstall",
+  );
+  if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
+  const translated = translateCodexPlatformObservations({
+    scenarioId,
+    modelRequest,
+    hooks: [startHook, stopHook, endHook],
+    search: {
+      completion: "complete",
+      harness: summary.harness,
+      spanCount: summary.spanCount,
+      traceId,
+    },
+    retrieval: {
+      completion: "complete",
+      resourceSpanCount: getRecords[0].graph.resourceSpans.length,
+      traceId,
+    },
+    doctor: { completion: doctorRecords.length > 0 ? "complete" : "invalid" },
+    uninstall: {
+      completion: uninstallRecords.length > 0 ? "complete" : "invalid",
+    },
+  });
+  const evidence = correlateCodexPlatformObservations(translated, {
+    artifactFileName: basename(artifactPath),
+    expectedPromptSha256: promptSha256,
+    scenarioId,
+  });
+  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
+    "base64url",
+  );
+  writeFileSync(
+    join(ledger, "fixture-result.json"),
+    `${JSON.stringify({ evidenceVersion: 1, scenarioId, encodedEvidence })}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+  completed = true;
+} finally {
+  if (!completed) {
+    try {
+      rmSync(join(ledger, "fixture-result.json"));
+    } catch {
+      // The selected execution kernel owns terminal descendant settlement.
+    }
+  }
+}
