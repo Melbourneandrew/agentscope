@@ -72,7 +72,7 @@ const translateModelRequest = (request, prompt) => {
 
 // The adapter translates bounded native shapes only. Expected outcomes belong
 // exclusively to the independently checksum-bound oracle.
-// eslint-disable-next-line complexity, max-lines-per-function -- one closed all-record native-shape translation grammar
+// eslint-disable-next-line complexity -- one closed all-record native-shape translation grammar
 export const translateCodexPlatformObservations = (input) => {
   if (
     !exactKeys(input, [
@@ -80,7 +80,6 @@ export const translateCodexPlatformObservations = (input) => {
       "prompt",
       "promptSha256",
       "modelRequests",
-      "hookLifecycle",
       "search",
       "retrieval",
       "doctor",
@@ -90,25 +89,12 @@ export const translateCodexPlatformObservations = (input) => {
     !boundedString(input.prompt, 1_024) ||
     !digest.test(input.promptSha256) ||
     !Array.isArray(input.modelRequests) ||
-    input.modelRequests.length > 8 ||
-    !Array.isArray(input.hookLifecycle) ||
-    input.hookLifecycle.length > 8
+    input.modelRequests.length > 8
   )
     throw new Error("integration.codex.adapter-observation");
   const modelRequests = input.modelRequests.map((request) =>
     translateModelRequest(request, input.prompt),
   );
-  const hookLifecycle = input.hookLifecycle.map((record) => {
-    if (
-      !exactKeys(record, ["eventName", "model", "sessionId", "turnId"]) ||
-      !boundedString(record.eventName, 32) ||
-      !boundedString(record.sessionId, 256) ||
-      !(record.model === null || boundedString(record.model, 256)) ||
-      !(record.turnId === null || boundedString(record.turnId, 256))
-    )
-      throw new Error("integration.codex.adapter-observation");
-    return Object.freeze({ ...record });
-  });
   const { search, retrieval, doctor, uninstall } = input;
   if (
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
@@ -179,7 +165,6 @@ export const translateCodexPlatformObservations = (input) => {
     scenarioId: input.scenarioId,
     promptSha256: input.promptSha256,
     modelRequests: Object.freeze(modelRequests),
-    hookLifecycle: Object.freeze(hookLifecycle),
     search: Object.freeze({ ...search }),
     retrieval: Object.freeze({
       ...retrieval,
