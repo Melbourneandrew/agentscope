@@ -1001,7 +1001,9 @@ type NativeFixtureAuditTestPlanDescriptor =
         | "swap-root-before-capability"
         | "swap-root-during-scan";
     }>
-  | Readonly<{ kind: "signal-before-release" }>;
+  | Readonly<{
+      kind: "input-error-before-release" | "signal-before-release";
+    }>;
 
 type NativeFixtureAuditTestPlanRuntime = Readonly<{
   descriptor: NativeFixtureAuditTestPlanDescriptor;
@@ -1142,9 +1144,12 @@ const parseAuditTestPlan = (
     exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
     return Object.freeze({ kind: snapshot.kind });
   }
-  if (snapshot.kind === "signal-before-release") {
+  if (
+    snapshot.kind === "input-error-before-release" ||
+    snapshot.kind === "signal-before-release"
+  ) {
     exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
-    return Object.freeze({ kind: "signal-before-release" as const });
+    return Object.freeze({ kind: snapshot.kind });
   }
   return fail("harness.fixture.inventory.test-plan");
 };
@@ -1828,6 +1833,8 @@ const acquireSpawnedCapabilitySnapshot = async (
     assertCapabilityAuthority(authorityDeadline, testPlan);
     applyPlan("root-capability-before-release");
     assertCapabilityAuthority(authorityDeadline, testPlan);
+    if (testPlan?.descriptor.kind === "input-error-before-release")
+      child.stdin.emit("error", new Error("synthetic input failure"));
     child.stdin.end("release\n");
     assertCapabilityAuthority(authorityDeadline, testPlan);
     await readCapabilityTerminal(lines, authorityDeadline, testPlan);
