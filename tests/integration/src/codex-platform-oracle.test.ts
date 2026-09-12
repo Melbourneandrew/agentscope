@@ -10,23 +10,6 @@ import { translateCodexPlatformObservations } from "../fixtures/codex-platform-a
 const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
   "8fa471336a2b22881c19fc825a447c7f6c16c6f38ed937f7c0ecdf15d858276c";
-const hooks = ["SessionStart", "Stop", "SessionEnd"].map((event) => ({
-  recordVersion: 1,
-  event,
-  sessionId: "session-1",
-  turnId: event === "Stop" ? "turn-1" : null,
-  model: event === "SessionEnd" ? null : "fixture-model",
-  inputBytes: 128,
-  inputSha256: "b".repeat(64),
-  launcherPathSha256: "c".repeat(64),
-  launcherSha256: "d".repeat(64),
-  launcherMode: 0o755,
-  launcherUid: 0,
-  launcherGid: 0,
-  launcherExitCode: 0,
-  launcherStdoutBytes: 0,
-  launcherStderrBytes: 0,
-}));
 const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   modelRequest: {
@@ -38,11 +21,24 @@ const raw = () => ({
     promptOccurrenceCount: 1,
     promptSha256,
   },
-  hooks: structuredClone(hooks),
   search: { completion: "complete", harness: "codex", spanCount: 3, traceId },
-  retrieval: { completion: "complete", resourceSpanCount: 1, traceId },
-  doctor: { completion: "complete" },
-  uninstall: { completion: "complete" },
+  retrieval: {
+    completion: "complete",
+    parentLinked: true,
+    resourceSpanCount: 1,
+    spanNames: ["codex.turn", "codex.response"],
+    traceId,
+  },
+  doctor: { completion: "complete", errors: 0, findingCount: 12, warnings: 1 },
+  uninstall: {
+    completion: "complete",
+    installedStatus: {
+      installation: "unchanged",
+      configurationPresentCount: 1,
+    },
+    uninstall: { disposition: "committed", changedTargetCount: 1 },
+    uninstalledStatus: { installation: "ready", configurationPresentCount: 0 },
+  },
 });
 type RawObservation = ReturnType<typeof raw>;
 const correlate = (value = raw()) =>
@@ -55,7 +51,6 @@ const correlate = (value = raw()) =>
     },
   );
 
-// eslint-disable-next-line max-lines-per-function -- closed adversarial observation matrix
 describe("Codex PTY scenario observation boundary", () => {
   it("reduces exact loopback, trace, Doctor, and uninstall observations", () => {
     expect(correlate()).toMatchObject({
@@ -72,9 +67,12 @@ describe("Codex PTY scenario observation boundary", () => {
       modelLedger: { entries: [{ path: "/v1/responses" }] },
       harnessObservation: {
         kind: "codex-tui-trace",
-        hookEvents: ["SessionStart", "Stop", "SessionEnd"],
         modelRequestBodySha256: "a".repeat(64),
         traceId,
+        spanNames: ["codex.turn", "codex.response"],
+        parentLinked: true,
+        doctorErrors: 0,
+        uninstallDisposition: "committed",
       },
       destinationLedger: {
         retrieval: [{ operation: "search" }, { operation: "get" }],
@@ -93,18 +91,6 @@ describe("Codex PTY scenario observation boundary", () => {
       "duplicate prompt",
       (value: RawObservation) => {
         value.modelRequest.promptOccurrenceCount = 2;
-      },
-    ],
-    [
-      "hook reordering",
-      (value: RawObservation) => {
-        value.hooks.reverse();
-      },
-    ],
-    [
-      "hook session substitution",
-      (value: RawObservation) => {
-        value.hooks[2]!.sessionId = "session-2";
       },
     ],
     [
@@ -144,15 +130,21 @@ describe("Codex PTY scenario observation boundary", () => {
       },
     ],
     [
+      "unlinked graph",
+      (value: RawObservation) => {
+        value.retrieval.parentLinked = false;
+      },
+    ],
+    [
       "Doctor failure",
       (value: RawObservation) => {
-        value.doctor.completion = "failed";
+        value.doctor.errors = 1;
       },
     ],
     [
       "uninstall failure",
       (value: RawObservation) => {
-        value.uninstall.completion = "failed";
+        value.uninstall.uninstall.disposition = "rolled-back";
       },
     ],
   ])("rejects %s", (_name, mutate) => {

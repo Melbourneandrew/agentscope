@@ -16,7 +16,6 @@ export const translateCodexPlatformObservations = (input) => {
     !exactKeys(input, [
       "scenarioId",
       "modelRequest",
-      "hooks",
       "search",
       "retrieval",
       "doctor",
@@ -26,7 +25,7 @@ export const translateCodexPlatformObservations = (input) => {
     !token.test(input.scenarioId)
   )
     throw new Error("integration.codex.adapter-observation");
-  const { modelRequest, hooks, search, retrieval, doctor, uninstall } = input;
+  const { modelRequest, search, retrieval, doctor, uninstall } = input;
   if (
     !exactKeys(modelRequest, [
       "bodyBytes",
@@ -48,59 +47,6 @@ export const translateCodexPlatformObservations = (input) => {
     !digest.test(modelRequest.promptSha256) ||
     modelRequest.promptOccurrenceCount !== 1 ||
     modelRequest.credentialHeaderCount !== 0 ||
-    !Array.isArray(hooks) ||
-    hooks.length !== 3 ||
-    hooks.some(
-      (hook, index) =>
-        !exactKeys(hook, [
-          "recordVersion",
-          "event",
-          "sessionId",
-          "turnId",
-          "model",
-          "inputBytes",
-          "inputSha256",
-          "launcherGid",
-          "launcherExitCode",
-          "launcherMode",
-          "launcherPathSha256",
-          "launcherSha256",
-          "launcherStdoutBytes",
-          "launcherStderrBytes",
-          "launcherUid",
-        ]) ||
-        hook.recordVersion !== 1 ||
-        hook.event !== ["SessionStart", "Stop", "SessionEnd"][index] ||
-        typeof hook.sessionId !== "string" ||
-        hook.sessionId.length < 1 ||
-        hook.sessionId.length > 256 ||
-        (index === 1
-          ? typeof hook.turnId !== "string" || hook.turnId.length < 1
-          : hook.turnId !== null) ||
-        (hook.model !== null &&
-          (typeof hook.model !== "string" || hook.model.length > 256)) ||
-        !Number.isSafeInteger(hook.inputBytes) ||
-        hook.inputBytes < 1 ||
-        hook.inputBytes > 65_536 ||
-        typeof hook.inputSha256 !== "string" ||
-        !digest.test(hook.inputSha256) ||
-        typeof hook.launcherPathSha256 !== "string" ||
-        !digest.test(hook.launcherPathSha256) ||
-        typeof hook.launcherSha256 !== "string" ||
-        !digest.test(hook.launcherSha256) ||
-        !Number.isSafeInteger(hook.launcherMode) ||
-        (hook.launcherMode & 0o111) === 0 ||
-        hook.launcherMode > 0o7777 ||
-        hook.launcherUid !== 0 ||
-        hook.launcherGid !== 0 ||
-        hook.launcherExitCode !== 0 ||
-        hook.launcherStdoutBytes !== 0 ||
-        hook.launcherStderrBytes !== 0,
-    ) ||
-    new Set(hooks.map(({ sessionId }) => sessionId)).size !== 1 ||
-    new Set(hooks.map(({ launcherPathSha256 }) => launcherPathSha256)).size !==
-      1 ||
-    new Set(hooks.map(({ launcherSha256 }) => launcherSha256)).size !== 1 ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
     search.completion !== "complete" ||
     search.harness !== "codex" ||
@@ -109,22 +55,59 @@ export const translateCodexPlatformObservations = (input) => {
     search.spanCount > 256 ||
     typeof search.traceId !== "string" ||
     !/^[a-f0-9]{32}$/u.test(search.traceId) ||
-    !exactKeys(retrieval, ["completion", "resourceSpanCount", "traceId"]) ||
+    !exactKeys(retrieval, [
+      "completion",
+      "parentLinked",
+      "resourceSpanCount",
+      "spanNames",
+      "traceId",
+    ]) ||
     retrieval.completion !== "complete" ||
     retrieval.traceId !== search.traceId ||
     !Number.isSafeInteger(retrieval.resourceSpanCount) ||
     retrieval.resourceSpanCount < 1 ||
     retrieval.resourceSpanCount > 256 ||
-    !exactKeys(doctor, ["completion"]) ||
+    retrieval.parentLinked !== true ||
+    JSON.stringify(retrieval.spanNames) !==
+      JSON.stringify(["codex.turn", "codex.response"]) ||
+    !exactKeys(doctor, ["completion", "errors", "findingCount", "warnings"]) ||
     doctor.completion !== "complete" ||
-    !exactKeys(uninstall, ["completion"]) ||
+    doctor.errors !== 0 ||
+    !Number.isSafeInteger(doctor.warnings) ||
+    doctor.warnings < 0 ||
+    !Number.isSafeInteger(doctor.findingCount) ||
+    doctor.findingCount < 1 ||
+    doctor.findingCount > 1_159 ||
+    !exactKeys(uninstall, [
+      "completion",
+      "installedStatus",
+      "uninstall",
+      "uninstalledStatus",
+    ]) ||
     uninstall.completion !== "complete"
+  )
+    throw new Error("integration.codex.adapter-observation");
+  if (
+    !exactKeys(uninstall.installedStatus, [
+      "configurationPresentCount",
+      "installation",
+    ]) ||
+    uninstall.installedStatus.installation !== "unchanged" ||
+    uninstall.installedStatus.configurationPresentCount !== 1 ||
+    !exactKeys(uninstall.uninstall, ["changedTargetCount", "disposition"]) ||
+    uninstall.uninstall.changedTargetCount !== 1 ||
+    uninstall.uninstall.disposition !== "committed" ||
+    !exactKeys(uninstall.uninstalledStatus, [
+      "configurationPresentCount",
+      "installation",
+    ]) ||
+    uninstall.uninstalledStatus.installation !== "ready" ||
+    uninstall.uninstalledStatus.configurationPresentCount !== 0
   )
     throw new Error("integration.codex.adapter-observation");
   return Object.freeze({
     scenarioId: input.scenarioId,
     modelRequest: Object.freeze({ ...modelRequest }),
-    hooks: Object.freeze(hooks.map((hook) => Object.freeze({ ...hook }))),
     search: Object.freeze({ ...search }),
     retrieval: Object.freeze({ ...retrieval }),
     doctor: Object.freeze({ ...doctor }),
