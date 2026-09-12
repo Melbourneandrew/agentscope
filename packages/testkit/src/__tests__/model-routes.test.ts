@@ -49,6 +49,17 @@ describe("model protocol routes", () => {
     });
     expect("requestBody" in route).toBe(false);
     expect(route.responseBodyText).not.toContain("AGENTSCOPE_PTY_COMPLETE");
+    expect(
+      route.responseBodyText
+        .split("\n\n")
+        .filter((line) => line.startsWith("data: {"))
+        .map((line) => JSON.parse(line.slice(6)) as { type: string })
+        .map(({ type }) => type),
+    ).toEqual([
+      "response.created",
+      "response.output_item.done",
+      "response.completed",
+    ]);
     const expectation = createMockServerInitialization()[0] as {
       httpRequest: Record<string, unknown>;
       httpResponse: { headers: Record<string, readonly string[]> };
