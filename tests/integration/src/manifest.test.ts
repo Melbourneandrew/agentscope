@@ -27,6 +27,7 @@ const withIdentity = (
   manifestIdentity: capabilityManifestIdentity(value),
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed manifest boundary matrix
 describe("integration capability manifest", () => {
   it("compiles the committed manifest and verifies descriptor evidence", () => {
     const compiled = compileCapabilityManifest(manifestFixture());
@@ -113,6 +114,39 @@ describe("integration capability manifest", () => {
     } finally {
       writeFileSync(adapterPath, bytes);
     }
+  });
+
+  it("detects scenario oracle mutation", () => {
+    const original = manifestFixture();
+    const oraclePath = resolve(
+      integrationRoot,
+      original.scenarios[0]!.scenarioOracle.path,
+    );
+    const bytes = readFileSync(oraclePath);
+    try {
+      writeFileSync(oraclePath, `${bytes.toString("utf8")}\n`);
+      expect(() => {
+        verifyManifestEvidence(original, integrationRoot);
+      }).toThrow("integration.manifest.evidence-digest");
+    } finally {
+      writeFileSync(oraclePath, bytes);
+    }
+  });
+
+  it("rejects substituted runtime artifact authority", () => {
+    const original = manifestFixture();
+    const scenario = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    expect(scenario?.runtimeArtifacts).toHaveLength(2);
+    const mutated = structuredClone(original);
+    const selected = mutated.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    selected!.runtimeArtifacts[0]!.sha256 = "0".repeat(64);
+    expect(() => {
+      verifyManifestEvidence(mutated, integrationRoot);
+    }).toThrow("integration.manifest.evidence-digest");
   });
 
   it("rejects descriptor evidence that contradicts its manifest binding", () => {
@@ -268,8 +302,17 @@ describe("integration signed-manifest material policy", () => {
   it("compiles a harness-neutral exact-version signed release", () => {
     const original = manifestFixture();
     const evidence = signedEvidence(original);
+    const scenario = original.scenarios.find(
+      ({ harnessEvidenceId }) =>
+        harnessEvidenceId === original.evidence[0]!.evidenceId,
+    )!;
     const compiled = compileCapabilityManifest(
-      withIdentity({ ...original, evidence: [evidence] }),
+      withIdentity({
+        ...original,
+        evidence: [evidence],
+        requiredRepresentativeIds: [evidence.evidenceId],
+        scenarios: [scenario],
+      }),
     );
     expect(compiled.evidence[0]?.material.kind).toBe("signed-release-manifest");
   });
@@ -319,14 +362,20 @@ describe("integration capability execution modes", () => {
 describe("integration capability selection", () => {
   it("selects by harness, tag, scenario, and deterministic weighted shard", () => {
     const original = manifestFixture();
+    const fixtureEvidence = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "fixture-process-v1",
+    )!;
+    const fixtureScenario = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "fixture-process-smoke",
+    )!;
     const second = {
-      ...original.scenarios[0]!,
+      ...fixtureScenario,
       scenarioId: "fixture-process-regression",
       tags: ["nightly"],
       shardWeight: 200,
     };
     const third = {
-      ...original.scenarios[0]!,
+      ...fixtureScenario,
       scenarioId: "fixture-process-small",
       tags: ["nightly"],
       shardWeight: 50,
@@ -334,7 +383,9 @@ describe("integration capability selection", () => {
     const compiled = compileCapabilityManifest(
       withIdentity({
         ...original,
-        scenarios: [third, original.scenarios[0]!, second],
+        evidence: [fixtureEvidence],
+        requiredRepresentativeIds: [fixtureEvidence.evidenceId],
+        scenarios: [third, fixtureScenario, second],
       }),
     );
     expect(selectCapabilityScenarios(compiled, { tag: "smoke" })).toHaveLength(
@@ -371,7 +422,7 @@ describe("integration capability selection", () => {
     for (const shard of [
       { index: -1, total: 1 },
       { index: 1, total: 1 },
-      { index: 0, total: 3 },
+      { index: 0, total: 4 },
     ])
       expect(() => selectCapabilityScenarios(compiled, { shard })).toThrow(
         "integration.manifest.shard",

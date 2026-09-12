@@ -1,8 +1,83 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-297b7bd5767565a4b058a2edb396cb52d38dcd61d18c6c34ed6f1c6d1ecd798c",
-  "requiredRepresentativeIds": ["fixture-process-v1"],
+  "manifestIdentity": "sha256-de8aca6d384ea2e1c542920baae51a59b26f0fb6ad70b0cd4383cf229d59ce59",
+  "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
+    {
+      "evidenceId": "codex-0-149-1",
+      "harnessId": "codex",
+      "harnessPackage": "@agentscope/harness-codex",
+      "representativeVersion": "0.149.1",
+      "descriptorArtifact": {
+        "path": "fixtures/codex-harness-evidence.json",
+        "sha256": "25f8b98a211d7d0ae2943c26bd606bc2974b5a6641e2e6015e6683e77c5ab917"
+      },
+      "material": {
+        "kind": "npm",
+        "platformIdentity": "sha256-9d99a75171aea000c711b34c0e5e3f28d3d537dd99d110eafbfbc2bd8e52c2bf",
+        "verifierImage": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+        "registry": "https://registry.npmjs.org/",
+        "packages": [
+          {
+            "attestations": {
+              "url": "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
+              "bytes": 14368,
+              "sha256": "37960391dc8c43f5c1b88d0b4835a3f9479d2f39859ba64f9a0318626d4a7af7"
+            },
+            "installName": "@openai/codex",
+            "packageName": "@openai/codex",
+            "version": "0.149.1",
+            "tarballUrl": "https://registry.npmjs.org/@openai/codex/-/codex-0.149.1.tgz",
+            "bytes": 4495,
+            "integrity": "sha512-6q5pbcpFbJbqOpkubSDBwXmktQ55aD8eUzGzBF1zASob2DjwhBKDSNGtdZKalfrNJUdTDTPDMmzCXEXs5tMBYA==",
+            "shasum": "37bc183ebd129e01e404e932bcec4ea861c70933"
+          },
+          {
+            "attestations": {
+              "url": "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1-linux-x64",
+              "bytes": 14400,
+              "sha256": "b51be7ef1149cb1233a3147da4f9b8b227e9c62aab9a708817c6f461322598da"
+            },
+            "installName": "@openai/codex-linux-x64",
+            "packageName": "@openai/codex",
+            "version": "0.149.1-linux-x64",
+            "tarballUrl": "https://registry.npmjs.org/@openai/codex/-/codex-0.149.1-linux-x64.tgz",
+            "bytes": 125550959,
+            "integrity": "sha512-Of5fGYgr7tAMsyj6vhXb4/RM/UoA3Zq8BLegUBDC09UNy1XTLGYP/2XD+UX8z3qh0NDwxYdCjFIWdDNijKZggQ==",
+            "shasum": "4f02df1633de47903829650c38b02ec12f99214b"
+          }
+        ],
+        "provenance": {
+          "repository": "https://github.com/openai/codex",
+          "sourceCommit": "ff29a44391deccde0aba0f8390337d7f3c319ea4",
+          "tag": "rust-v0.149.1",
+          "workflowPath": ".github/workflows/rust-release.yml"
+        }
+      },
+      "admission": {
+        "evidenceSlot": "codex-0-149-1",
+        "eligibleRange": {
+          "minimumInclusive": "0.149.1",
+          "maximumExclusive": "0.150.0"
+        },
+        "distributionReference": "npm:@openai/codex@0.149.1",
+        "component": {
+          "fixture": {
+            "path": "packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+            "sha256": "fe2b9351d3c48507c38a30d6b1409795d4e998df373fb9f29d27ca9afb88afab"
+          },
+          "adapterArtifact": {
+            "path": "packages/harnesses/codex/src/testing.ts",
+            "sha256": "e1575a41ffcbdbcd0785861c927d3fe6b6cbd6e5a7af9f4d733829526a295c55"
+          },
+          "mappingArtifact": {
+            "path": "packages/harnesses/codex/src/mapping.ts",
+            "sha256": "8780fe63c4db0ce29dd4d4eaa8044f03ac8ac9cc48c7451dfc2e32d4110568ad"
+          },
+          "componentEvidenceDigest": "component-sha256-6e759e10cefadaa82b4029efabd81cf15e0efa3e4f631c96d9d3f6a1ea366c57"
+        }
+      }
+    },
     {
       "evidenceId": "fixture-process-v1",
       "harnessId": "fixture-process",
@@ -37,10 +112,18 @@
         "path": "fixtures/process-platform-adapter.mjs",
         "sha256": "b7f195570aa9f329ee0a5e301d2606d20989e82beddf664713f4621e31891c59"
       },
+      "scenarioOracle": {
+        "path": "process-platform-oracle.mjs",
+        "sha256": "dd61426dbdc53d02bb269840a921ba7f8845306eb499e157584c0f1456d4a0e9"
+      },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "e6c8416235d2c507cf22e06f7f36715a53529b7ebf950c5e44992c83ac7e3f2c"
+        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
       },
+      "runtimeArtifacts": [],
+      "terminalInputBase64": "AA==",
+      "postCompletionInputByteLength": 0,
+      "waitForSemanticCompletionBeforeEof": false,
       "resourceClass": "small",
       "shardWeight": 100
     },
@@ -63,12 +146,66 @@
         "path": "fixtures/process-platform-adapter.mjs",
         "sha256": "b7f195570aa9f329ee0a5e301d2606d20989e82beddf664713f4621e31891c59"
       },
+      "scenarioOracle": {
+        "path": "process-platform-oracle.mjs",
+        "sha256": "dd61426dbdc53d02bb269840a921ba7f8845306eb499e157584c0f1456d4a0e9"
+      },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "e6c8416235d2c507cf22e06f7f36715a53529b7ebf950c5e44992c83ac7e3f2c"
+        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
       },
+      "runtimeArtifacts": [],
+      "terminalInputBase64": "cnVuCg==",
+      "postCompletionInputByteLength": 0,
+      "waitForSemanticCompletionBeforeEof": false,
       "resourceClass": "small",
       "shardWeight": 120
+    },
+    {
+      "scenarioId": "codex-tui-trace-smoke",
+      "harnessEvidenceId": "codex-0-149-1",
+      "executionMode": "interactive",
+      "outputContract": "semantic-pty",
+      "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "modelRoutes": ["codex-tui-responses"],
+      "tags": ["codex", "interactive", "pr"],
+      "destinations": ["local-sqlite"],
+      "fixtureAdapter": {
+        "path": "fixtures/codex-platform-adapter.mjs",
+        "sha256": "814664ffe67445e67d4d611bdc76048c3a6fa3e8e9146556cf51a4be410cfd17"
+      },
+      "scenarioOracle": {
+        "path": "codex-platform-oracle.mjs",
+        "sha256": "6c8ca7f38b51e21f8908c0e64c77d399d675b0e70c1bd34adb7e1f8747875c02"
+      },
+      "scenarioProcess": {
+        "path": "codex-pty-scenario.mjs",
+        "sha256": "2130c636d419ca925f0f16d3a63ed44861d834ec7ba451cca66812224734e048"
+      },
+      "runtimeArtifacts": [
+        {
+          "source": {
+            "kind": "workspace",
+            "path": "packages/harnesses/codex/dist/configuration.js"
+          },
+          "destination": "codex-configuration.js",
+          "sha256": "b3ac1851d450f2c2b020208e9a1e89b0e6ba7c2cf5a6fdf1d2143386c89f5417"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "codex-hook-observer.mjs"
+          },
+          "destination": "codex-hook-observer.mjs",
+          "sha256": "38186104191ef88cf136e2c4b65aa7842884ee729d173f630ec62100fd790921"
+        }
+      ],
+      "terminalInputBase64": "UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLg0vcXVpdA0=",
+      "postCompletionInputByteLength": 6,
+      "waitForSemanticCompletionBeforeEof": true,
+      "resourceClass": "medium",
+      "shardWeight": 220
     }
   ]
 }

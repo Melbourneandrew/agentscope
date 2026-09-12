@@ -15,7 +15,7 @@ import {
   captureProcessFixtureRawProjection,
   correlateProcessFixtureObservations,
   PROCESS_FIXTURE_STIMULUS,
-} from "./process-platform-oracle.mjs";
+} from "./scenario-oracle.mjs";
 import { translatePlatformObservations } from "./scenario-adapter.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
 

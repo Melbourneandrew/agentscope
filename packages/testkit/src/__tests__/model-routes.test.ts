@@ -8,6 +8,7 @@ import {
 describe("model protocol routes", () => {
   it("defines the exact extensible provider inventory", () => {
     expect(MODEL_PROTOCOL_ROUTES.map(({ routeId }) => routeId)).toEqual([
+      "codex-tui-responses",
       "openai-responses",
       "openai-chat-completions",
       "anthropic-messages",
@@ -17,8 +18,9 @@ describe("model protocol routes", () => {
     expect(MODEL_PROTOCOL_ROUTES.every(Object.isFrozen)).toBe(true);
     expect(
       MODEL_PROTOCOL_ROUTES.every(
-        ({ requestBody, responseBody }) =>
-          Object.isFrozen(requestBody) && Object.isFrozen(responseBody),
+        (route) =>
+          (!("requestBody" in route) || Object.isFrozen(route.requestBody)) &&
+          (!("responseBody" in route) || Object.isFrozen(route.responseBody)),
       ),
     ).toBe(true);
   });
@@ -37,5 +39,24 @@ describe("model protocol routes", () => {
           Object.isFrozen(expectation),
       ),
     ).toBe(true);
+  });
+
+  it("keeps the Codex TUI response independent of its runtime prompt", () => {
+    const route = MODEL_PROTOCOL_ROUTES[0];
+    expect(route).toMatchObject({
+      routeId: "codex-tui-responses",
+      headers: { "content-type": "application/json" },
+    });
+    expect("requestBody" in route).toBe(false);
+    expect(route.responseBodyText).not.toContain("AGENTSCOPE_PTY_COMPLETE");
+    const expectation = createMockServerInitialization()[0] as {
+      httpRequest: Record<string, unknown>;
+      httpResponse: { headers: Record<string, readonly string[]> };
+    };
+    expect(expectation.httpRequest).not.toHaveProperty("body");
+    expect(expectation.httpRequest).not.toHaveProperty("authorization");
+    expect(expectation.httpResponse.headers["content-type"]).toEqual([
+      "text/event-stream",
+    ]);
   });
 });

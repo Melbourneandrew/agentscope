@@ -41,6 +41,20 @@ const relativeWorkspaceArtifactPath = z
     /^packages\/harnesses\/[a-z0-9-]+\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,191}$/u,
   )
   .refine((value) => !value.split("/").includes(".."));
+const runtimeArtifactSchema = z.strictObject({
+  source: z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("integration"),
+      path: relativeScenarioProcessPath,
+    }),
+    z.strictObject({
+      kind: z.literal("workspace"),
+      path: relativeWorkspaceArtifactPath,
+    }),
+  ]),
+  destination: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u),
+  sha256: fileDigest,
+});
 const uniqueList = <T extends z.ZodType<string>>(member: T) =>
   z
     .array(member)
@@ -237,19 +251,43 @@ const scenarioSchema = z
       path: relativeAdapterPath,
       sha256: fileDigest,
     }),
+    scenarioOracle: z.strictObject({
+      path: relativeScenarioProcessPath,
+      sha256: fileDigest,
+    }),
     scenarioProcess: z.strictObject({
       path: relativeScenarioProcessPath,
       sha256: fileDigest,
     }),
+    runtimeArtifacts: z
+      .array(runtimeArtifactSchema)
+      .max(8)
+      .refine(
+        (value) =>
+          new Set(value.map(({ destination }) => destination)).size ===
+          value.length,
+      ),
+    terminalInputBase64: z.string().regex(/^[A-Za-z0-9+/]{1,136}={0,2}$/u),
+    postCompletionInputByteLength: z.number().int().min(0).max(32),
+    waitForSemanticCompletionBeforeEof: z.boolean(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
   })
   .superRefine((value, context) => {
     if (
       (value.executionMode === "headless" &&
-        value.outputContract !== "jsonl") ||
+        (value.outputContract !== "jsonl" ||
+          value.terminalInputBase64 !== "AA==" ||
+          value.postCompletionInputByteLength !== 0 ||
+          value.waitForSemanticCompletionBeforeEof)) ||
       (value.executionMode === "interactive" &&
-        value.outputContract !== "semantic-pty")
+        (value.outputContract !== "semantic-pty" ||
+          Buffer.from(value.terminalInputBase64, "base64").byteLength < 1 ||
+          Buffer.from(value.terminalInputBase64, "base64").byteLength > 100 ||
+          value.waitForSemanticCompletionBeforeEof !==
+            value.postCompletionInputByteLength > 0 ||
+          value.postCompletionInputByteLength >=
+            Buffer.from(value.terminalInputBase64, "base64").byteLength))
     )
       context.addIssue({ code: "custom", message: "scenario mode drift" });
   });
@@ -366,6 +404,7 @@ const evidencePath = (root: string, relativePath: string): string => {
 export const verifyManifestEvidence = (
   manifest: CapabilityManifest,
   integrationRoot: string,
+  // eslint-disable-next-line complexity -- one closed manifest evidence boundary
 ): void => {
   for (const evidence of manifest.evidence) {
     const path = evidencePath(
@@ -426,6 +465,7 @@ export const verifyManifestEvidence = (
   for (const scenario of manifest.scenarios) {
     for (const [artifact, maximumBytes] of [
       [scenario.fixtureAdapter, 1_048_576],
+      [scenario.scenarioOracle, 1_048_576],
       [scenario.scenarioProcess, 16_777_216],
     ] as const) {
       const path = evidencePath(integrationRoot, artifact.path);
@@ -435,6 +475,26 @@ export const verifyManifestEvidence = (
         status.isSymbolicLink() ||
         status.size < 1 ||
         status.size > maximumBytes
+      )
+        throw new Error("integration.manifest.evidence-file");
+      const actual = sha256(readFileSync(path)).slice("sha256-".length);
+      if (actual !== artifact.sha256)
+        throw new Error("integration.manifest.evidence-digest");
+    }
+    for (const artifact of scenario.runtimeArtifacts) {
+      const root =
+        artifact.source.kind === "integration"
+          ? integrationRoot
+          : resolve(integrationRoot, "../..");
+      const path = resolve(root, artifact.source.path);
+      if (!path.startsWith(`${root}${sep}`))
+        throw new Error("integration.manifest.evidence-file");
+      const status = lstatSync(path);
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        status.size < 1 ||
+        status.size > 16_777_216
       )
         throw new Error("integration.manifest.evidence-file");
       const actual = sha256(readFileSync(path)).slice("sha256-".length);
