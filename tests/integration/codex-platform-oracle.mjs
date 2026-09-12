@@ -5,6 +5,7 @@ const assert = (condition, code) => {
 export const correlateCodexPlatformObservations = (
   observation,
   { artifactFileName, expectedPromptSha256, scenarioId },
+  // eslint-disable-next-line complexity, max-lines-per-function -- one independent oracle binds every translated success criterion
 ) => {
   assert(observation.scenarioId === scenarioId, "scenario");
   assert(
@@ -12,13 +13,58 @@ export const correlateCodexPlatformObservations = (
       "8fa471336a2b22881c19fc825a447c7f6c16c6f38ed937f7c0ecdf15d858276c",
     "stimulus",
   );
+  const request = observation.modelRequests[0];
   assert(
-    observation.modelRequest.promptSha256 === expectedPromptSha256 &&
-      observation.modelRequest.promptOccurrenceCount === 1 &&
-      observation.modelRequest.credentialHeaderCount === 0,
+    observation.promptSha256 === expectedPromptSha256 &&
+      observation.modelRequests.length === 1 &&
+      request.method === "POST" &&
+      request.path === "/v1/responses" &&
+      request.model === "fixture-model" &&
+      request.promptOccurrenceCount === 1 &&
+      request.credentialHeaderCount === 0,
     "model-request",
   );
-  assert(observation.search.traceId === observation.retrieval.traceId, "trace");
+  assert(
+    observation.hookLifecycle.length === 3 &&
+      JSON.stringify(
+        observation.hookLifecycle.map(({ eventName }) => eventName),
+      ) === JSON.stringify(["SessionStart", "Stop", "SessionEnd"]) &&
+      new Set(observation.hookLifecycle.map(({ sessionId }) => sessionId))
+        .size === 1 &&
+      observation.hookLifecycle[0].model === "fixture-model" &&
+      observation.hookLifecycle[1].model === "fixture-model" &&
+      observation.hookLifecycle[1].turnId !== null &&
+      observation.hookLifecycle[2].model === null,
+    "hook-lifecycle",
+  );
+  assert(
+    observation.search.completion === "complete" &&
+      observation.search.harness === "codex" &&
+      observation.search.spanCount === 2 &&
+      /^[a-f0-9]{32}$/u.test(observation.search.traceId) &&
+      observation.retrieval.completion === "complete" &&
+      observation.search.traceId === observation.retrieval.traceId &&
+      observation.retrieval.resourceSpanCount >= 1 &&
+      observation.retrieval.parentLinked === true &&
+      JSON.stringify(observation.retrieval.spanNames) ===
+        JSON.stringify(["codex.turn", "codex.response"]) &&
+      observation.retrieval.modelName === request.model &&
+      observation.retrieval.sessionId ===
+        observation.hookLifecycle[0].sessionId,
+    "trace",
+  );
+  assert(
+    observation.doctor.completion === "complete" &&
+      observation.doctor.errors === 0 &&
+      observation.uninstall.completion === "complete" &&
+      observation.uninstall.installedStatus.installation === "unchanged" &&
+      observation.uninstall.installedStatus.configurationPresentCount === 1 &&
+      observation.uninstall.uninstall.changedTargetCount === 1 &&
+      observation.uninstall.uninstall.disposition === "committed" &&
+      observation.uninstall.uninstalledStatus.installation === "ready" &&
+      observation.uninstall.uninstalledStatus.configurationPresentCount === 0,
+    "lifecycle",
+  );
   return Object.freeze({
     evidenceVersion: 1,
     resultStatus: "complete",
@@ -38,7 +84,7 @@ export const correlateCodexPlatformObservations = (
     harnessObservation: {
       observationVersion: 1,
       kind: "codex-tui-trace",
-      modelRequestBodySha256: observation.modelRequest.bodySha256,
+      modelRequestBodySha256: request.bodySha256,
       traceId: observation.search.traceId,
       resourceSpanCount: observation.retrieval.resourceSpanCount,
       spanNames: observation.retrieval.spanNames,
@@ -53,9 +99,9 @@ export const correlateCodexPlatformObservations = (
         {
           routeId: "codex-tui-responses",
           provider: "openai",
-          method: observation.modelRequest.method,
-          path: observation.modelRequest.path,
-          bodyBytes: observation.modelRequest.bodyBytes,
+          method: request.method,
+          path: request.path,
+          bodyBytes: request.bodyBytes,
         },
       ],
     },

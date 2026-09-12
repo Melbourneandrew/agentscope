@@ -4,79 +4,150 @@ const exactKeys = (value, keys) =>
   !Array.isArray(value) &&
   JSON.stringify(Object.keys(value).sort()) ===
     JSON.stringify([...keys].sort());
-
 const token = /^[a-z][a-z0-9-]{0,63}$/u;
 const digest = /^[a-f0-9]{64}$/u;
+const boundedString = (value, maximum = 4_096) =>
+  typeof value === "string" && value.length <= maximum;
+const countValue = (value, expected) => {
+  if (value === expected) return 1;
+  if (Array.isArray(value))
+    return value.reduce(
+      (count, child) => count + countValue(child, expected),
+      0,
+    );
+  if (typeof value === "object" && value !== null)
+    return Object.values(value).reduce(
+      (count, child) => count + countValue(child, expected),
+      0,
+    );
+  return 0;
+};
 
-// This checksum-bound adapter translates observations only. It has no expected
-// stimulus and cannot turn a missing Codex request or trace into passing data.
-// eslint-disable-next-line complexity -- one closed checksum-bound observation grammar
+const translateModelRequest = (request, prompt) => {
+  if (typeof request !== "object" || request === null || Array.isArray(request))
+    throw new Error("integration.codex.adapter-observation");
+  const bodyText =
+    typeof request.body === "string"
+      ? request.body
+      : typeof request.body?.string === "string"
+        ? request.body.string
+        : typeof request.body?.json === "string"
+          ? request.body.json
+          : undefined;
+  if (
+    !boundedString(request.method, 16) ||
+    !boundedString(request.path, 1_024) ||
+    bodyText === undefined ||
+    Buffer.byteLength(bodyText) > 1024 * 1024
+  )
+    throw new Error("integration.codex.adapter-observation");
+  let body;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    throw new Error("integration.codex.adapter-observation");
+  }
+  const headerNames = Array.isArray(request.headers)
+    ? request.headers.map(({ name }) => name)
+    : typeof request.headers === "object" && request.headers !== null
+      ? Object.keys(request.headers)
+      : [];
+  if (
+    headerNames.length > 64 ||
+    headerNames.some((name) => !boundedString(name, 128) || name.length < 1)
+  )
+    throw new Error("integration.codex.adapter-observation");
+  return Object.freeze({
+    method: request.method,
+    path: request.path,
+    bodyBytes: Buffer.byteLength(bodyText),
+    bodySha256: createHash("sha256").update(bodyText).digest("hex"),
+    model: typeof body?.model === "string" ? body.model : null,
+    promptOccurrenceCount: countValue(body, prompt),
+    credentialHeaderCount: headerNames.filter((name) =>
+      /^(?:authorization|api-key|x-api-key)$/iu.test(name),
+    ).length,
+  });
+};
+
+// The adapter translates bounded native shapes only. Expected outcomes belong
+// exclusively to the independently checksum-bound oracle.
+// eslint-disable-next-line complexity, max-lines-per-function -- one closed all-record native-shape translation grammar
 export const translateCodexPlatformObservations = (input) => {
   if (
     !exactKeys(input, [
       "scenarioId",
-      "modelRequest",
+      "prompt",
+      "promptSha256",
+      "modelRequests",
+      "hookLifecycle",
       "search",
       "retrieval",
       "doctor",
       "uninstall",
     ]) ||
-    typeof input.scenarioId !== "string" ||
-    !token.test(input.scenarioId)
+    !token.test(input.scenarioId) ||
+    !boundedString(input.prompt, 1_024) ||
+    !digest.test(input.promptSha256) ||
+    !Array.isArray(input.modelRequests) ||
+    input.modelRequests.length > 8 ||
+    !Array.isArray(input.hookLifecycle) ||
+    input.hookLifecycle.length > 8
   )
     throw new Error("integration.codex.adapter-observation");
-  const { modelRequest, search, retrieval, doctor, uninstall } = input;
+  const modelRequests = input.modelRequests.map((request) =>
+    translateModelRequest(request, input.prompt),
+  );
+  const hookLifecycle = input.hookLifecycle.map((record) => {
+    if (
+      !exactKeys(record, ["eventName", "model", "sessionId", "turnId"]) ||
+      !boundedString(record.eventName, 32) ||
+      !boundedString(record.sessionId, 256) ||
+      !(record.model === null || boundedString(record.model, 256)) ||
+      !(record.turnId === null || boundedString(record.turnId, 256))
+    )
+      throw new Error("integration.codex.adapter-observation");
+    return Object.freeze({ ...record });
+  });
+  const { search, retrieval, doctor, uninstall } = input;
   if (
-    !exactKeys(modelRequest, [
-      "bodyBytes",
-      "bodySha256",
-      "credentialHeaderCount",
-      "method",
-      "path",
-      "promptOccurrenceCount",
-      "promptSha256",
-    ]) ||
-    modelRequest.method !== "POST" ||
-    modelRequest.path !== "/v1/responses" ||
-    !Number.isSafeInteger(modelRequest.bodyBytes) ||
-    modelRequest.bodyBytes < 1 ||
-    modelRequest.bodyBytes > 1024 * 1024 ||
-    typeof modelRequest.bodySha256 !== "string" ||
-    !digest.test(modelRequest.bodySha256) ||
-    typeof modelRequest.promptSha256 !== "string" ||
-    !digest.test(modelRequest.promptSha256) ||
-    modelRequest.promptOccurrenceCount !== 1 ||
-    modelRequest.credentialHeaderCount !== 0 ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
-    search.completion !== "complete" ||
-    search.harness !== "codex" ||
+    !boundedString(search.completion, 32) ||
+    !boundedString(search.harness, 64) ||
     !Number.isSafeInteger(search.spanCount) ||
-    search.spanCount < 1 ||
+    search.spanCount < 0 ||
     search.spanCount > 256 ||
-    typeof search.traceId !== "string" ||
-    !/^[a-f0-9]{32}$/u.test(search.traceId) ||
+    !boundedString(search.traceId, 64) ||
     !exactKeys(retrieval, [
       "completion",
+      "modelName",
       "parentLinked",
       "resourceSpanCount",
+      "sessionId",
       "spanNames",
       "traceId",
     ]) ||
-    retrieval.completion !== "complete" ||
-    retrieval.traceId !== search.traceId ||
+    !boundedString(retrieval.completion, 32) ||
+    !boundedString(retrieval.traceId, 64) ||
     !Number.isSafeInteger(retrieval.resourceSpanCount) ||
-    retrieval.resourceSpanCount < 1 ||
+    retrieval.resourceSpanCount < 0 ||
     retrieval.resourceSpanCount > 256 ||
-    retrieval.parentLinked !== true ||
-    JSON.stringify(retrieval.spanNames) !==
-      JSON.stringify(["codex.turn", "codex.response"]) ||
+    typeof retrieval.parentLinked !== "boolean" ||
+    !Array.isArray(retrieval.spanNames) ||
+    retrieval.spanNames.length > 256 ||
+    retrieval.spanNames.some((name) => !boundedString(name, 256)) ||
+    !(
+      retrieval.modelName === null || boundedString(retrieval.modelName, 256)
+    ) ||
+    !(
+      retrieval.sessionId === null || boundedString(retrieval.sessionId, 256)
+    ) ||
     !exactKeys(doctor, ["completion", "errors", "findingCount", "warnings"]) ||
-    doctor.completion !== "complete" ||
-    doctor.errors !== 0 ||
+    !boundedString(doctor.completion, 32) ||
+    !Number.isSafeInteger(doctor.errors) ||
     !Number.isSafeInteger(doctor.warnings) ||
-    doctor.warnings < 0 ||
     !Number.isSafeInteger(doctor.findingCount) ||
-    doctor.findingCount < 1 ||
+    doctor.findingCount < 0 ||
     doctor.findingCount > 1_159 ||
     !exactKeys(uninstall, [
       "completion",
@@ -84,33 +155,43 @@ export const translateCodexPlatformObservations = (input) => {
       "uninstall",
       "uninstalledStatus",
     ]) ||
-    uninstall.completion !== "complete"
-  )
-    throw new Error("integration.codex.adapter-observation");
-  if (
+    !boundedString(uninstall.completion, 32) ||
     !exactKeys(uninstall.installedStatus, [
       "configurationPresentCount",
       "installation",
     ]) ||
-    uninstall.installedStatus.installation !== "unchanged" ||
-    uninstall.installedStatus.configurationPresentCount !== 1 ||
+    !boundedString(uninstall.installedStatus.installation, 32) ||
+    !Number.isSafeInteger(
+      uninstall.installedStatus.configurationPresentCount,
+    ) ||
     !exactKeys(uninstall.uninstall, ["changedTargetCount", "disposition"]) ||
-    uninstall.uninstall.changedTargetCount !== 1 ||
-    uninstall.uninstall.disposition !== "committed" ||
+    !boundedString(uninstall.uninstall.disposition, 32) ||
+    !Number.isSafeInteger(uninstall.uninstall.changedTargetCount) ||
     !exactKeys(uninstall.uninstalledStatus, [
       "configurationPresentCount",
       "installation",
     ]) ||
-    uninstall.uninstalledStatus.installation !== "ready" ||
-    uninstall.uninstalledStatus.configurationPresentCount !== 0
+    !boundedString(uninstall.uninstalledStatus.installation, 32) ||
+    !Number.isSafeInteger(uninstall.uninstalledStatus.configurationPresentCount)
   )
     throw new Error("integration.codex.adapter-observation");
   return Object.freeze({
     scenarioId: input.scenarioId,
-    modelRequest: Object.freeze({ ...modelRequest }),
+    promptSha256: input.promptSha256,
+    modelRequests: Object.freeze(modelRequests),
+    hookLifecycle: Object.freeze(hookLifecycle),
     search: Object.freeze({ ...search }),
-    retrieval: Object.freeze({ ...retrieval }),
+    retrieval: Object.freeze({
+      ...retrieval,
+      spanNames: Object.freeze([...retrieval.spanNames]),
+    }),
     doctor: Object.freeze({ ...doctor }),
-    uninstall: Object.freeze({ ...uninstall }),
+    uninstall: Object.freeze({
+      completion: uninstall.completion,
+      installedStatus: Object.freeze({ ...uninstall.installedStatus }),
+      uninstall: Object.freeze({ ...uninstall.uninstall }),
+      uninstalledStatus: Object.freeze({ ...uninstall.uninstalledStatus }),
+    }),
   });
 };
+import { createHash } from "node:crypto";
