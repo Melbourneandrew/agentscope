@@ -261,9 +261,11 @@ describe("integration workflow policy", () => {
     );
     const propagated = scenarios.indexOf("throw primaryError");
     const manifest = scenarios.lastIndexOf("publishControllerFailureManifest");
+    const readinessReleased = scenarios.lastIndexOf("fixtureResults.delete");
     expect(required).toBeGreaterThanOrEqual(0);
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
+    expect(readinessReleased).toBeGreaterThan(manifest);
     expect(finalized).toBeGreaterThanOrEqual(0);
     expect(propagated).toBeGreaterThan(finalized);
   });

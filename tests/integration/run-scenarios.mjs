@@ -1430,7 +1430,8 @@ const recordEvidence = async (evidence) => {
         2,
       )}\n`,
     );
-    fixtureResults.delete(verifiedEvidence.runId);
+    if (result.certificationReadiness === null)
+      fixtureResults.delete(verifiedEvidence.runId);
   }
 };
 
@@ -1811,6 +1812,7 @@ try {
         finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
       );
       publishControllerFailureManifest(identities);
+      for (const plan of plans) fixtureResults.delete(plan.runId);
     } catch {
       // The original controller failure remains primary. The workflow's
       // always-run exact verifier independently fails if evidence is absent.
