@@ -471,13 +471,13 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
-  it("atomically applies readiness-gated interrupt and terminal EOF semantics", async () => {
+  it("applies a raw control byte immediately before authenticated terminal EOF", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request({ stdin: new Uint8Array() }),
         interaction: {
           trigger: "semantic-ready",
-          actions: [{ action: "interrupt-and-eof" }],
+          actions: [{ action: "control-byte-and-eof" }],
         },
       },
       "clean",
@@ -486,7 +486,27 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       eofByte: 4,
       eofByteWritten: true,
-      actions: [{ action: "interrupt-and-eof", interruptByte: 3, eofByte: 4 }],
+      actions: [{ action: "control-byte-and-eof", controlByte: 3, eofByte: 4 }],
+    });
+  });
+
+  it.each([
+    "control-eof-substitution",
+    "control-write-substitution",
+    "eof-failure",
+  ] as const)("rejects combined control/EOF %s", async (seed) => {
+    const selected = {
+      ...request({ stdin: new Uint8Array() }),
+      interaction: {
+        trigger: "semantic-ready" as const,
+        actions: [{ action: "control-byte-and-eof" as const }],
+      },
+    };
+    const receipt = await executeSelectedPtyTransportForTest(selected, seed);
+    expect(receipt).toMatchObject({
+      outcome: "transport-failed",
+      eofByteWritten: false,
+      terminalInputJoined: false,
     });
   });
 
