@@ -212,10 +212,13 @@ describe("integration capability manifest", () => {
       '  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n");\n',
       traceFailureCapture,
     );
-    const codexJoin = source.indexOf("  await codexRun;\n", semanticComplete);
     const traceFailureRethrow = source.indexOf(
       '  if (traceFailure !== undefined) {\n    interactiveFailurePhase = "trace";\n    throw traceFailure;\n  }\n',
-      codexJoin,
+      semanticComplete,
+    );
+    const codexJoin = source.indexOf(
+      "  await codexRun;\n",
+      traceFailureRethrow,
     );
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
@@ -259,8 +262,8 @@ describe("integration capability manifest", () => {
     expect(semanticReady).toBeGreaterThan(modelRequest);
     expect(traceFailureCapture).toBeGreaterThan(semanticReady);
     expect(semanticComplete).toBeGreaterThan(traceFailureCapture);
-    expect(codexJoin).toBeGreaterThan(semanticComplete);
-    expect(traceFailureRethrow).toBeGreaterThan(codexJoin);
+    expect(traceFailureRethrow).toBeGreaterThan(semanticComplete);
+    expect(codexJoin).toBeGreaterThan(traceFailureRethrow);
   });
 
   it("selects mutually isolated MockServer expectations per scenario", () => {
