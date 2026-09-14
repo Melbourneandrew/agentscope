@@ -190,9 +190,9 @@ describe("integration capability manifest", () => {
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from("\f/quit\r"),
+      Buffer.from("\f/quit\r\r"),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(6);
+    expect(scenario.postCompletionInputByteLength).toBe(7);
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
