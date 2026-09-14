@@ -48,7 +48,7 @@ export const correlateCodexPlatformObservations = (
       observation.uninstall.uninstall.changedTargetCount === 1 &&
       observation.uninstall.uninstall.disposition === "committed" &&
       observation.uninstall.uninstalledStatus.installation === "ready" &&
-      observation.uninstall.uninstalledStatus.configurationPresentCount === 0,
+      observation.uninstall.uninstalledStatus.configurationPresentCount === 1,
     "lifecycle",
   );
   return Object.freeze({

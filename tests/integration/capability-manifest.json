@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-e125870372031661f50a431c5df6ee2485a9ce0e7f3bb521b758d05287f29109",
+  "manifestIdentity": "sha256-b51d7bad5c67605cc8f041c36f3ea94c02a2342cb9071d1bd4b5dc3efcf38c66",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -154,11 +154,11 @@
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "b7838cc08c4c53d4dbf5e83e858ea91a006428d1675f9053f16dd5735582499b"
+        "sha256": "285abb6b8647f0fce86301384968453172b381b633dd28fac33333762ac06f7c"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "f2db713f0d6e0d820d3d86cbcc550245668ca5a06471bcbdb2d478941823e61c"
+        "sha256": "8173da44e8112efa7c409aade1ee0baa7ec14228218e57264f489ae045d1bf34"
       },
       "runtimeArtifacts": [
         {
