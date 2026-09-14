@@ -247,38 +247,39 @@ describe("integration capability manifest", () => {
     const traceDeadline = source.indexOf(
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
     );
-    const quietObservationWindow = source.indexOf(
-      "  const firstObservationAt = Math.min(traceDeadline, bootNow() + 4_000);\n",
+    const terminalObservation = source.indexOf(
+      "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(),\n      expectedAssistantMessage,\n    )\n",
       traceDeadline,
     );
     const preQueryDeadline = source.indexOf(
-      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
-      traceDeadline,
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+      terminalObservation,
     );
     const boundedQuery = source.indexOf(
-      "    const summary = await readTraceSummary(traceDeadline);\n",
+      "  const summary = await readTraceSummary(traceDeadline);\n",
       preQueryDeadline,
     );
     const postQueryDeadline = source.indexOf(
-      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
       boundedQuery,
     );
     const acceptSummary = source.indexOf(
-      "    if (summary !== null) return summary;\n",
+      '  if (summary === null) throw new Error("integration.codex.trace-search");\n  return summary;\n',
       postQueryDeadline,
     );
     expect(traceDeadline).toBeGreaterThan(-1);
-    expect(quietObservationWindow).toBeGreaterThan(traceDeadline);
-    expect(quietObservationWindow).toBeLessThan(preQueryDeadline);
+    expect(terminalObservation).toBeGreaterThan(traceDeadline);
+    expect(terminalObservation).toBeLessThan(preQueryDeadline);
     expect(preQueryDeadline).toBeGreaterThan(traceDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
     const boundedBackoff = source.indexOf(
-      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 500,\n",
-      acceptSummary,
+      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
+      terminalObservation,
     );
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
-    expect(boundedBackoff).toBeGreaterThan(acceptSummary);
+    expect(boundedBackoff).toBeGreaterThan(terminalObservation);
+    expect(boundedBackoff).toBeLessThan(preQueryDeadline);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",
