@@ -2408,10 +2408,17 @@ const armSelectedPty = (
             });
             actionIndex += 1;
           } else if (action?.action === "raw-control-sequence") {
-            const controlBytes = safeBufferFrom([3, 4]);
-            const written = exactPtyWrite(child.write(controlBytes), 2);
-            if (written.bytesWritten !== 2)
+            // VINTR flushes the canonical input queue. Keep the fixed control
+            // sequence, but admit each byte through its own completed write so
+            // the following VEOF cannot be flushed with the interrupt.
+            const interrupt = exactPtyWrite(
+              child.write(safeBufferFrom([3])),
+              1,
+            );
+            if (interrupt.bytesWritten !== 1)
               return fail("testkit.pty.transport");
+            const eof = exactPtyWrite(child.write(safeBufferFrom([4])), 1);
+            if (eof.bytesWritten !== 1) return fail("testkit.pty.transport");
             recordAction({
               action: "raw-control-sequence",
               bytes: safeReflectApply(freeze, Object, [[3, 4]]) as readonly [
@@ -4087,6 +4094,7 @@ type SelectedPtyTestSeed =
   | "clean"
   | "close-failure"
   | "control-eof-substitution"
+  | "control-second-write-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
   | "descriptor-reuse"
@@ -4392,6 +4400,11 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           if (seed === "active-terminal" && transportReads === 0)
             throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
+          if (
+            (seed === "control-write-substitution" && inputCalls === 1) ||
+            (seed === "control-second-write-substitution" && inputCalls === 2)
+          )
+            return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "readiness-burst" && inputCalls === 2) {
             processes.delete(root.pid);
             terminal = true;
@@ -4406,8 +4419,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           const partial =
             (seed === "partial-input" ||
               seed === "partial-input-output-limit" ||
-              seed === "partial-input-timeout" ||
-              seed === "control-write-substitution") &&
+              seed === "partial-input-timeout") &&
             inputCalls === 1;
           return {
             status: partial ? ("partial" as const) : ("complete" as const),
