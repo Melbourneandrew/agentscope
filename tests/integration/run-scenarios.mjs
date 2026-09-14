@@ -1438,9 +1438,6 @@ const registerScenarioReceipt = (plan, receipt) => {
   else registerIntegrationHeadlessReceipt(receipt, performance.now());
 };
 const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
-  const scenario = manifest.scenarios.find(
-    ({ scenarioId }) => scenarioId === plan.scenarioId,
-  );
   return (
     ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
       (plan.executionMode === "interactive" &&
@@ -1456,9 +1453,9 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
         receipt.stdoutJoined === true &&
         receipt.stderrJoined === true)) &&
     (plan.executionMode === "headless" ||
-      ((scenario?.waitForSemanticCompletionBeforeEof === true
-        ? receipt.eofByteWritten === false
-        : receipt.eofByteWritten === true) &&
+      (receipt.eofByteWritten ===
+        (plan.terminalAction === "eof" ||
+          plan.terminalAction === "post-completion-controls") &&
         receipt.terminalInputJoined === true &&
         receipt.terminalOutputJoined === true &&
         receipt.terminalTransportClosed === true)) &&
