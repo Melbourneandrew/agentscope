@@ -269,6 +269,14 @@ const scenarioSchema = z
       ),
     terminalInputBase64: z.string().regex(/^[A-Za-z0-9+/]{1,136}={0,2}$/u),
     postCompletionInputByteLength: z.number().int().min(0).max(32),
+    postCompletionControls: z
+      .array(z.enum(["interrupt-byte", "eof"]))
+      .max(2)
+      .refine(
+        (value) =>
+          value.length === 0 ||
+          JSON.stringify(value) === JSON.stringify(["interrupt-byte", "eof"]),
+      ),
     waitForSemanticCompletionBeforeEof: z.boolean(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
@@ -279,13 +287,17 @@ const scenarioSchema = z
         (value.outputContract !== "jsonl" ||
           value.terminalInputBase64 !== "AA==" ||
           value.postCompletionInputByteLength !== 0 ||
+          value.postCompletionControls.length !== 0 ||
           value.waitForSemanticCompletionBeforeEof)) ||
       (value.executionMode === "interactive" &&
         (value.outputContract !== "semantic-pty" ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength < 1 ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength > 100 ||
           value.waitForSemanticCompletionBeforeEof !==
-            value.postCompletionInputByteLength > 0 ||
+            (value.postCompletionInputByteLength > 0 ||
+              value.postCompletionControls.length > 0) ||
+          (value.postCompletionControls.length > 0 &&
+            value.postCompletionInputByteLength !== 0) ||
           value.postCompletionInputByteLength >=
             Buffer.from(value.terminalInputBase64, "base64").byteLength))
     )
