@@ -301,6 +301,102 @@ const ptyReceiptFor = (
   };
 };
 
+const ptyControlReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      ...receipt.request.interaction.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const },
+      { action: "interrupt-byte" as const, byte: 3 },
+      { action: "eof" as const },
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    actions: [
+      ...receipt.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      {
+        action: "interrupt-byte" as const,
+        byte: 3,
+        monotonicAtMs: 2_003,
+      },
+      { action: "eof" as const, monotonicAtMs: 2_004 },
+    ],
+  };
+};
+
+const ptyPostInputReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const input = Buffer.from("run\n");
+  const firstInput = {
+    action: "input" as const,
+    byteLength: 3,
+    inputSha256: createHash("sha256")
+      .update(input.subarray(0, 3))
+      .digest("hex"),
+  };
+  const finalInput = {
+    action: "input" as const,
+    byteLength: 1,
+    inputSha256: createHash("sha256").update(input.subarray(3)).digest("hex"),
+  };
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      receipt.request.interaction.actions[0]!,
+      firstInput,
+      { action: "wait-for-semantic-completion" as const },
+      finalInput,
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    actions: [
+      receipt.actions[0]!,
+      { ...firstInput, monotonicAtMs: 2_001 },
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      { ...finalInput, monotonicAtMs: 2_003 },
+    ],
+    eofByteWritten: false,
+  };
+};
+
 const refingerprintPtyProcessDeadline = (
   field:
     | "monotonicStartupDeadlineMs"
@@ -929,7 +1025,7 @@ describe("selected PTY backend evidence", () => {
         {
           ...interactive,
           terminalAction: "post-completion-input",
-          ptyTerminalReceipt: { ...pty, eofByteWritten: false },
+          ptyTerminalReceipt: ptyPostInputReceiptFor(),
         },
         evidence,
       ),
@@ -940,6 +1036,20 @@ describe("selected PTY backend evidence", () => {
     expect(() =>
       compileWithPreparedAuthority(
         { ...interactive, terminalAction: "post-completion-input" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    const controlled = {
+      ...interactive,
+      terminalAction: "post-completion-controls" as const,
+      ptyTerminalReceipt: ptyControlReceiptFor(),
+    };
+    expect(compileWithPreparedAuthority(controlled, evidence)).toEqual(
+      controlled,
+    );
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...controlled, ptyTerminalReceipt: pty },
         evidence,
       ),
     ).toThrow("integration.isolation.evidence");
