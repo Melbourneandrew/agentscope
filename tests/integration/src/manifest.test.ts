@@ -198,6 +198,9 @@ describe("integration capability manifest", () => {
       "utf8",
     );
     const startupPrompt = source.indexOf("      prompt,\n");
+    const explicitHookEnablement = source.indexOf(
+      '      "--enable",\n      "hooks",\n',
+    );
     const explicitHookTrust = source.indexOf(
       '      "--dangerously-bypass-hook-trust",\n',
     );
@@ -221,7 +224,9 @@ describe("integration capability manifest", () => {
       traceFailureRethrow,
     );
     expect(startupPrompt).toBeGreaterThan(-1);
+    expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
+    expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
     expect(explicitHookTrust).toBeLessThan(startupPrompt);
     expect(source).toContain(
       "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
