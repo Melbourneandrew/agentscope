@@ -33,6 +33,7 @@ export const SCENARIO_TMPFS_MOUNTS = deepFreeze([
   "/home/agentscope",
   "/harness-home",
   "/agentscope-home",
+  "/agentscope-home/bin",
   "/worktree",
   "/ledger",
   "/tmp",
@@ -47,7 +48,7 @@ export const ISOLATION_EXECUTOR_LIMITS = deepFreeze({
       pidsLimit: 128,
       tmpfs: SCENARIO_TMPFS_MOUNTS.map((path) => ({
         path,
-        bytes: mebibytes(16),
+        bytes: path === "/agentscope-home/bin" ? mebibytes(1) : mebibytes(16),
       })),
     },
     collector: {
