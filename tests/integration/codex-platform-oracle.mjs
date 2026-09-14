@@ -46,6 +46,7 @@ export const correlateCodexPlatformObservations = (
       observation.uninstall.installedStatus.installation === "unchanged" &&
       observation.uninstall.installedStatus.configurationPresentCount === 1 &&
       observation.uninstall.uninstall.changedTargetCount === 3 &&
+      observation.uninstall.uninstall.targetCount === 3 &&
       observation.uninstall.uninstall.disposition === "committed" &&
       observation.uninstall.uninstalledStatus.installation === "ready" &&
       observation.uninstall.uninstalledStatus.configurationPresentCount === 1,
