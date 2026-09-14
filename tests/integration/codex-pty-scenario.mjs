@@ -2,11 +2,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   chmodSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -15,6 +20,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  codexTurnTerminalObserved,
   readBoundedJsonResponse,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
@@ -124,6 +130,7 @@ const parseMachine = (bytes, command) => {
 const agentscope = "/opt/agentscope/installed/node_modules/.bin/agentscope";
 const codex = "/opt/agentscope/harness/node_modules/.bin/codex";
 const home = required("HOME");
+const codexHome = join(home, ".codex");
 const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
 const ledger = required("AGENTSCOPE_LEDGER");
@@ -156,6 +163,7 @@ const cli = async (arguments_, command, options) =>
   );
 
 const prompt = "Reply with one short confirmation and do not use tools.";
+const expectedAssistantMessage = "Codex PTY fixture turn finished.";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
@@ -217,6 +225,78 @@ const readModelRequests = async () =>
 const waitForModelRequest = async () => {
   while ((await readModelRequests()).length === 0)
     await new Promise((resolve) => setTimeout(resolve, 25));
+};
+const boundedDirectory = (path, pattern, kind) => {
+  let entries;
+  try {
+    entries = readdirSync(path, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  if (
+    entries.length > 32 ||
+    entries.some(
+      (entry) =>
+        !pattern.test(entry.name) ||
+        (kind === "directory" ? !entry.isDirectory() : !entry.isFile()),
+    )
+  )
+    throw new Error("integration.codex.session-ledger");
+  return entries.map(({ name }) => name).sort();
+};
+const readAuthenticatedLedger = (path) => {
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size < 1 || before.size > 2 * 1024 * 1024)
+      throw new Error("integration.codex.session-ledger");
+    const content = readFileSync(`/proc/self/fd/${descriptor}`, "utf8");
+    const after = fstatSync(descriptor);
+    if (before.dev !== after.dev || before.ino !== after.ino)
+      throw new Error("integration.codex.session-ledger");
+    if (
+      before.size !== after.size ||
+      Buffer.byteLength(content) !== before.size
+    )
+      return null;
+    return content;
+  } finally {
+    closeSync(descriptor);
+  }
+};
+const readCodexSessionLedgers = () => {
+  const sessions = join(codexHome, "sessions");
+  let directories = boundedDirectory(sessions, /^\d{4}$/u, "directory").map(
+    (name) => join(sessions, name),
+  );
+  for (const pattern of [/^(?:0[1-9]|1[0-2])$/u, /^(?:0[1-9]|[12]\d|3[01])$/u])
+    directories = directories.flatMap((directory) =>
+      boundedDirectory(directory, pattern, "directory").map((name) =>
+        join(directory, name),
+      ),
+    );
+  const paths = directories.flatMap((directory) =>
+    boundedDirectory(
+      directory,
+      /^rollout-[0-9A-Za-z:.+-]{1,128}\.jsonl$/u,
+      "file",
+    ).map((name) => join(directory, name)),
+  );
+  if (paths.length > 8) throw new Error("integration.codex.session-ledger");
+  const ledgers = paths
+    .map(readAuthenticatedLedger)
+    .filter((content) => content !== null);
+  return ledgers;
 };
 const projectHarnessStatus = (
   records,
@@ -357,38 +437,32 @@ const readTraceSummary = async (monotonicDeadline) => {
 };
 const waitForTraceSummary = async () => {
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  // Codex owns a fixed three-second command-hook window around the installed
-  // hook's 2.5 second write deadline.  Do not repeatedly
-  // open the Local SQLite retriever while that write is in flight: an
-  // aggressive reader loop can consume the same deadline it is meant to
-  // observe.  One hook-deadline-sized quiet period followed by bounded,
-  // low-frequency snapshots observes the durable result without competing
-  // with its producer.  The quiet period starts when the model request is
-  // observed and covers response settlement plus the complete vendor hook
-  // window before the first retrieval snapshot.
-  const firstObservationAt = Math.min(traceDeadline, bootNow() + 4_000);
-  while (bootNow() < firstObservationAt) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(250, firstObservationAt - bootNow())),
-    );
-    remaining();
-  }
-  while (true) {
-    if (bootNow() >= traceDeadline)
-      throw new Error("integration.codex.trace-deadline");
-    const summary = await readTraceSummary(traceDeadline);
-    if (bootNow() >= traceDeadline)
-      throw new Error("integration.codex.trace-deadline");
-    if (summary !== null) return summary;
+  // The exact Codex version records task_complete only after its Stop hook
+  // settles. Observe that native terminal witness before opening Local SQLite,
+  // then perform one bounded query so the observer cannot contend with the
+  // installed hook's writer.
+  while (
+    !codexTurnTerminalObserved(
+      readCodexSessionLedgers(),
+      expectedAssistantMessage,
+    )
+  ) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
-      maximumWaitMilliseconds: 500,
+      maximumWaitMilliseconds: 100,
       now: bootNow,
       wait: (milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, milliseconds)),
     });
     remaining();
   }
+  if (bootNow() >= traceDeadline)
+    throw new Error("integration.codex.trace-deadline");
+  const summary = await readTraceSummary(traceDeadline);
+  if (bootNow() >= traceDeadline)
+    throw new Error("integration.codex.trace-deadline");
+  if (summary === null) throw new Error("integration.codex.trace-search");
+  return summary;
 };
 
 let completed = false;
@@ -406,7 +480,6 @@ try {
     "unchanged",
     1,
   );
-  const codexHome = join(home, ".codex");
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));

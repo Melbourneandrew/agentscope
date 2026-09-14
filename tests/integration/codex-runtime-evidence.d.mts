@@ -7,6 +7,11 @@ export function boundedRequestLedger(
   value: unknown,
 ): readonly Readonly<Record<string, unknown>>[];
 
+export function codexTurnTerminalObserved(
+  ledgers: readonly string[],
+  expectedMessage: string,
+): boolean;
+
 export function waitWithinObservationDeadline(input: {
   deadline: number;
   maximumWaitMilliseconds: number;

@@ -54,6 +54,55 @@ export const boundedRequestLedger = (value) => {
   return Object.freeze(value.map((entry) => Object.freeze({ ...entry })));
 };
 
+export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
+  if (
+    !Array.isArray(ledgers) ||
+    ledgers.length > 8 ||
+    ledgers.some(
+      (ledger) => typeof ledger !== "string" || ledger.length > 2 * 1024 * 1024,
+    ) ||
+    typeof expectedMessage !== "string" ||
+    expectedMessage.length < 1 ||
+    expectedMessage.length > 1_024
+  )
+    throw new Error("integration.codex.session-ledger");
+  const matches = [];
+  for (const ledger of ledgers) {
+    const complete = ledger.endsWith("\n")
+      ? ledger
+      : ledger.slice(0, ledger.lastIndexOf("\n") + 1);
+    const lines = complete.split("\n");
+    if (lines.length > 4_097)
+      throw new Error("integration.codex.session-ledger");
+    for (const line of lines) {
+      if (line === "") continue;
+      if (line.length > 262_144)
+        throw new Error("integration.codex.session-ledger");
+      let entry;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        throw new Error("integration.codex.session-ledger");
+      }
+      if (
+        entry?.type === "event_msg" &&
+        entry?.payload?.type === "task_complete"
+      ) {
+        if (
+          typeof entry.payload.turn_id !== "string" ||
+          entry.payload.turn_id.length < 1 ||
+          entry.payload.turn_id.length > 256 ||
+          entry.payload.last_agent_message !== expectedMessage
+        )
+          throw new Error("integration.codex.session-ledger");
+        matches.push(entry.payload.turn_id);
+      }
+    }
+  }
+  if (matches.length > 1) throw new Error("integration.codex.session-ledger");
+  return matches.length === 1;
+};
+
 export const waitWithinObservationDeadline = async ({
   deadline,
   maximumWaitMilliseconds,
