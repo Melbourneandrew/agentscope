@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-e613ba26b45d3507d906064cf005b812ba13b5433be50140b3a284fb526d1c0f",
+  "manifestIdentity": "sha256-279a27c922e8fbdf28a785c0b894987afea8c1f6b8df3dec9e57def90c2fb6a7",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -152,15 +152,15 @@
       "destinations": ["local-sqlite"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "bbcd1f402ef72abf56641d87c3b4033a10d652c750332f44751e1d7b9633ec13"
+        "sha256": "880c53ea9c22f969e442c15424a8b3adfed27d6a44fe314205e9c783327c0487"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "dc8d1b6e6b26ab29d752075819c5e9aecc716fb80d6545314950fd581dd6ae78"
+        "sha256": "9da72052ed9944ba06bbbee1fcf0da4a77562ba274c5fc46601e47ba2bfe3052"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "8612c2207f0fc74919625fed5e0602cbbf57f4bddce1d6ca933ce0e1eec568c0"
+        "sha256": "e3b442d0219663b49a4d02fab0baa7fa92027c22b3d63681f102779c5c25bac7"
       },
       "runtimeArtifacts": [
         {

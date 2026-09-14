@@ -295,10 +295,14 @@ const projectUninstall = (records) => {
     value.disposition !== "committed" ||
     value.harness !== "codex" ||
     value.operation !== "uninstall" ||
-    value.targetCount !== 1
+    value.targetCount !== 3
   )
     throw new Error("integration.codex.uninstall");
-  return { disposition: value.disposition, changedTargetCount: 3 };
+  return {
+    disposition: value.disposition,
+    changedTargetCount: 3,
+    targetCount: 3,
+  };
 };
 const projectTraceGraph = (graph, traceId) => {
   if (!Array.isArray(graph?.resourceSpans) || graph.resourceSpans.length < 1)
