@@ -1,6 +1,7 @@
 export {
   capabilityScenarioImages,
   capabilityManifestIdentity,
+  compileInteractivePtyActions,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
   selectCapabilityScenarios,

@@ -25,6 +25,7 @@ import {
   compileCapabilityManifest,
   compileHarnessAdmissionCompletion,
   compileHarnessAdmissionSeed,
+  compileInteractivePtyActions,
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
@@ -982,42 +983,10 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
     );
     if (selectedScenario === undefined) return false;
     const input = Buffer.from(selectedScenario.terminalInputBase64, "base64");
-    const initialInputBytes =
-      input.length - selectedScenario.postCompletionInputByteLength;
-    const expectedActions = [
-      { action: "resize", geometry: { columns: 100, rows: 30 } },
-      {
-        action: "input",
-        byteLength: initialInputBytes,
-        inputSha256: createHash("sha256")
-          .update(input.subarray(0, initialInputBytes))
-          .digest("hex"),
-      },
-      ...(selectedScenario.waitForSemanticCompletionBeforeEof
-        ? [
-            { action: "wait-for-semantic-completion" },
-            ...(selectedScenario.postCompletionInputByteLength === 0
-              ? []
-              : [
-                  {
-                    action: "input",
-                    byteLength: selectedScenario.postCompletionInputByteLength,
-                    inputSha256: createHash("sha256")
-                      .update(input.subarray(initialInputBytes))
-                      .digest("hex"),
-                  },
-                ]),
-            ...selectedScenario.postCompletionControls.map((control) =>
-              control === "interrupt-byte"
-                ? { action: "interrupt-byte", byte: 3 }
-                : { action: "eof" },
-            ),
-          ]
-        : []),
-      ...(selectedScenario.waitForSemanticCompletionBeforeEof
-        ? []
-        : [{ action: "eof" }]),
-    ];
+    const expectedActions = compileInteractivePtyActions(
+      selectedScenario,
+      input,
+    );
     return (
       receipt?.receiptVersion === 1 &&
       receipt?.transport === "pty" &&
