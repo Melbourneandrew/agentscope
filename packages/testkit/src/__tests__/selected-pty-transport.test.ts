@@ -471,7 +471,7 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
-  it("delivers the fixed raw control sequence in one write", async () => {
+  it("delivers the fixed raw control sequence in ordered writes", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request({ stdin: new Uint8Array() }),
@@ -521,24 +521,27 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("rejects a partial raw control-sequence write", async () => {
-    const selected = {
-      ...request({ stdin: new Uint8Array() }),
-      interaction: {
-        trigger: "semantic-ready" as const,
-        actions: [{ action: "raw-control-sequence" as const }],
-      },
-    };
-    const receipt = await executeSelectedPtyTransportForTest(
-      selected,
-      "control-write-substitution",
-    );
-    expect(receipt).toMatchObject({
-      outcome: "transport-failed",
-      eofByteWritten: false,
-      terminalInputJoined: false,
-    });
-  });
+  it.each([
+    "control-write-substitution",
+    "control-second-write-substitution",
+  ] as const)(
+    "rejects a missing raw control-sequence write under %s",
+    async (seed) => {
+      const selected = {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready" as const,
+          actions: [{ action: "raw-control-sequence" as const }],
+        },
+      };
+      const receipt = await executeSelectedPtyTransportForTest(selected, seed);
+      expect(receipt).toMatchObject({
+        outcome: "transport-failed",
+        eofByteWritten: false,
+        terminalInputJoined: false,
+      });
+    },
+  );
 
   it.each(["control-eof-substitution", "eof-failure"] as const)(
     "does not invoke canonical EOF authority for a raw sequence under %s",
