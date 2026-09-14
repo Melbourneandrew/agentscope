@@ -247,6 +247,10 @@ describe("integration capability manifest", () => {
     const traceDeadline = source.indexOf(
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
     );
+    const quietObservationWindow = source.indexOf(
+      "  const firstObservationAt = Math.min(traceDeadline, bootNow() + 2_750);\n",
+      traceDeadline,
+    );
     const preQueryDeadline = source.indexOf(
       '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
       traceDeadline,
@@ -264,9 +268,14 @@ describe("integration capability manifest", () => {
       postQueryDeadline,
     );
     expect(traceDeadline).toBeGreaterThan(-1);
+    expect(quietObservationWindow).toBeGreaterThan(traceDeadline);
+    expect(quietObservationWindow).toBeLessThan(preQueryDeadline);
     expect(preQueryDeadline).toBeGreaterThan(traceDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
+    expect(source).toContain(
+      "    await new Promise((resolve) => setTimeout(resolve, 500));\n",
+    );
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
