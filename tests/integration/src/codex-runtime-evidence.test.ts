@@ -1,13 +1,111 @@
+import {
+  closeSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
+  readCodexSessionLedgers,
   readBoundedJsonResponse,
+  settledCodexLedgerSnapshot,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
 describe("Codex bounded native ledgers", () => {
+  it.runIf(process.platform === "linux")(
+    "holds the home identity and rejects symlinked session ancestors",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-ledger-"));
+      const moved = `${root}-moved`;
+      const external = mkdtempSync(
+        join(tmpdir(), "agentscope-codex-external-"),
+      );
+      const day = join(root, ".codex", "sessions", "2026", "09", "14");
+      mkdirSync(day, { recursive: true });
+      const terminal = `${JSON.stringify({ type: "event_msg" })}\n`;
+      writeFileSync(join(day, "rollout-exact.jsonl"), terminal);
+      const descriptor = openSync(
+        root,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+      );
+      try {
+        expect(readCodexSessionLedgers(descriptor)).toEqual([terminal]);
+        renameSync(root, moved);
+        mkdirSync(root);
+        symlinkSync(external, join(root, ".codex"));
+        expect(readCodexSessionLedgers(descriptor)).toEqual([terminal]);
+        rmSync(join(moved, ".codex", "sessions", "2026", "09"), {
+          recursive: true,
+        });
+        symlinkSync(external, join(moved, ".codex", "sessions", "2026", "09"));
+        expect(() => readCodexSessionLedgers(descriptor)).toThrow(
+          "integration.codex.session-ledger",
+        );
+      } finally {
+        closeSync(descriptor);
+        rmSync(root, { recursive: true, force: true });
+        rmSync(moved, { recursive: true, force: true });
+        rmSync(external, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rejects same-size rewrites and growth across ledger snapshots", () => {
+    const identity = {
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100600n,
+      uid: 3n,
+      gid: 4n,
+      size: 2n,
+      mtimeNs: 5n,
+      ctimeNs: 6n,
+    };
+    expect(
+      settledCodexLedgerSnapshot({
+        before: identity,
+        first: Buffer.from("a\n"),
+        middle: identity,
+        second: Buffer.from("a\n"),
+        after: identity,
+      }),
+    ).toBe("a\n");
+    expect(
+      settledCodexLedgerSnapshot({
+        before: identity,
+        first: Buffer.from("a\n"),
+        middle: identity,
+        second: Buffer.from("b\n"),
+        after: identity,
+      }),
+    ).toBeNull();
+    expect(
+      settledCodexLedgerSnapshot({
+        before: identity,
+        first: Buffer.from("a\n"),
+        middle: identity,
+        second: Buffer.from("a\n"),
+        after: { ...identity, size: 3n, mtimeNs: 7n, ctimeNs: 7n },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("Codex bounded native records", () => {
   it("accepts exactly one complete native task-terminal witness", () => {
     const message = "Codex PTY fixture turn finished.";
     const terminal = JSON.stringify({

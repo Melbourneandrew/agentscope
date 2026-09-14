@@ -1,3 +1,12 @@
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  readdirSync,
+} from "node:fs";
+
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
@@ -101,6 +110,178 @@ export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
   }
   if (matches.length > 1) throw new Error("integration.codex.session-ledger");
   return matches.length === 1;
+};
+
+const ledgerLimit = 2 * 1024 * 1024;
+const descriptorRoot =
+  process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+const directoryFlags =
+  constants.O_RDONLY |
+  constants.O_DIRECTORY |
+  constants.O_NOFOLLOW |
+  constants.O_NONBLOCK;
+const sameSnapshotIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.uid === right.uid &&
+  left.gid === right.gid &&
+  left.size === right.size &&
+  left.mtimeNs === right.mtimeNs &&
+  left.ctimeNs === right.ctimeNs;
+const openChild = (parent, name, flags) => {
+  try {
+    return openSync(`${descriptorRoot}/${parent}/${name}`, flags);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+};
+const authenticatedEntries = (descriptor, pattern, kind, budget) => {
+  const status = fstatSync(descriptor, { bigint: true });
+  if (!status.isDirectory())
+    throw new Error("integration.codex.session-ledger");
+  const entries = readdirSync(`${descriptorRoot}/${descriptor}`, {
+    withFileTypes: true,
+  });
+  budget.count += entries.length;
+  if (
+    budget.count > 64 ||
+    entries.some(
+      (entry) =>
+        !pattern.test(entry.name) ||
+        (kind === "directory" ? !entry.isDirectory() : !entry.isFile()),
+    )
+  )
+    throw new Error("integration.codex.session-ledger");
+  return entries.map(({ name }) => name).sort();
+};
+const readCapped = (descriptor) => {
+  const buffer = Buffer.allocUnsafe(ledgerLimit + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const count = readSync(
+      descriptor,
+      buffer,
+      offset,
+      buffer.length - offset,
+      offset,
+    );
+    if (count === 0) break;
+    offset += count;
+  }
+  if (offset > ledgerLimit) throw new Error("integration.codex.session-ledger");
+  return buffer.subarray(0, offset);
+};
+export const settledCodexLedgerSnapshot = ({
+  before,
+  first,
+  middle,
+  second,
+  after,
+}) => {
+  if (
+    !Buffer.isBuffer(first) ||
+    !Buffer.isBuffer(second) ||
+    typeof before?.size !== "bigint" ||
+    typeof middle?.size !== "bigint" ||
+    typeof after?.size !== "bigint"
+  )
+    throw new Error("integration.codex.session-ledger");
+  if (
+    !sameSnapshotIdentity(before, middle) ||
+    !sameSnapshotIdentity(middle, after) ||
+    first.length !== Number(before.size) ||
+    !first.equals(second)
+  )
+    return null;
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(first);
+  } catch {
+    throw new Error("integration.codex.session-ledger");
+  }
+};
+const readStableLedger = (parent, name) => {
+  const descriptor = openChild(
+    parent,
+    name,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  if (descriptor === null) return null;
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile()) throw new Error("integration.codex.session-ledger");
+    if (before.size < 1n) return null;
+    if (before.size > BigInt(ledgerLimit))
+      throw new Error("integration.codex.session-ledger");
+    const first = readCapped(descriptor);
+    const middle = fstatSync(descriptor, { bigint: true });
+    const second = readCapped(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    return settledCodexLedgerSnapshot({
+      before,
+      first,
+      middle,
+      second,
+      after,
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+export const readCodexSessionLedgers = (homeDescriptor) => {
+  if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
+    throw new Error("integration.codex.session-ledger");
+  const homeStatus = fstatSync(homeDescriptor, { bigint: true });
+  if (!homeStatus.isDirectory())
+    throw new Error("integration.codex.session-ledger");
+  const budget = { count: 0 };
+  const opened = [];
+  const openDirectories = (parents, pattern) => {
+    const children = [];
+    for (const parent of parents) {
+      for (const name of authenticatedEntries(
+        parent,
+        pattern,
+        "directory",
+        budget,
+      )) {
+        const descriptor = openChild(parent, name, directoryFlags);
+        if (descriptor !== null) children.push(descriptor);
+      }
+    }
+    opened.push(...children);
+    return children;
+  };
+  try {
+    const codex = openChild(homeDescriptor, ".codex", directoryFlags);
+    if (codex === null) return [];
+    opened.push(codex);
+    const sessions = openChild(codex, "sessions", directoryFlags);
+    if (sessions === null) return [];
+    opened.push(sessions);
+    let directories = openDirectories([sessions], /^\d{4}$/u);
+    directories = openDirectories(directories, /^(?:0[1-9]|1[0-2])$/u);
+    directories = openDirectories(directories, /^(?:0[1-9]|[12]\d|3[01])$/u);
+    const ledgers = [];
+    for (const directory of directories) {
+      const names = authenticatedEntries(
+        directory,
+        /^rollout-[0-9A-Za-z:.+-]{1,128}\.jsonl$/u,
+        "file",
+        budget,
+      );
+      for (const name of names) {
+        const content = readStableLedger(directory, name);
+        if (content !== null) ledgers.push(content);
+      }
+    }
+    if (ledgers.length > 8) throw new Error("integration.codex.session-ledger");
+    return ledgers;
+  } finally {
+    for (const descriptor of opened.reverse()) closeSync(descriptor);
+  }
 };
 
 export const waitWithinObservationDeadline = async ({
