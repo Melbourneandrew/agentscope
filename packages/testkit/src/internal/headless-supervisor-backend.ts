@@ -1859,14 +1859,14 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
-    } else if (actionKind === "interrupt-and-eof") {
+    } else if (actionKind === "control-byte-and-eof") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
       eofCount += 1;
       defineArrayIndex(
         stableActions,
         index,
         safeReflectApply(freeze, Object, [
-          { action: "interrupt-and-eof" },
+          { action: "control-byte-and-eof" },
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "wait-for-semantic-completion") {
@@ -2327,23 +2327,27 @@ const armSelectedPty = (
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
-          } else if (action?.action === "interrupt-and-eof") {
+          } else if (action?.action === "control-byte-and-eof") {
             eofAttempted = true;
-            const controlBytes = safeBufferFrom([
-              3,
-              terminalObservation.eofByte,
-            ]);
-            const written = exactPtyWrite(
-              child.write(controlBytes),
-              controlBytes.length,
-            );
-            if (written.bytesWritten !== 2)
+            const controlByte = safeBufferFrom([3]);
+            const written = exactPtyWrite(child.write(controlByte), 1);
+            const eof = child.eof();
+            if (
+              written.bytesWritten !== 1 ||
+              !plainRecord(eof) ||
+              safeReflectApply(objectKeys, Object, [eof]).sort().join("\0") !==
+                "bytesWritten\0canonical\0eofByte\0status" ||
+              eof.status !== "eof-byte-written" ||
+              eof.canonical !== true ||
+              eof.bytesWritten !== 1 ||
+              eof.eofByte !== terminalObservation.eofByte
+            )
               return fail("testkit.pty.transport");
             eofByteWritten = true;
             recordAction({
-              action: "interrupt-and-eof",
-              interruptByte: 3,
-              eofByte: terminalObservation.eofByte,
+              action: "control-byte-and-eof",
+              controlByte: 3,
+              eofByte: eof.eofByte,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
@@ -3174,10 +3178,10 @@ const ptyTerminalControlActionMatches = (
   )
     return true;
   if (
-    expected.action === "interrupt-and-eof" &&
-    observed.action === "interrupt-and-eof"
+    expected.action === "control-byte-and-eof" &&
+    observed.action === "control-byte-and-eof"
   )
-    return observed.interruptByte === 3 && observed.eofByte === eofByte;
+    return observed.controlByte === 3 && observed.eofByte === eofByte;
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -3261,7 +3265,7 @@ const assertPtyReceiptBinding = (
   const authority = selectedPtyRequestFingerprint(request);
   const requestRequiresEof = request.interaction.actions.some(
     (action) =>
-      action.action === "eof" || action.action === "interrupt-and-eof",
+      action.action === "eof" || action.action === "control-byte-and-eof",
   );
   const expectedGeometry = finalRequestedPtyGeometry(request);
   const terminalActionOutcome =
@@ -4012,6 +4016,8 @@ type SelectedPtyTestSeed =
   | "adopted-zombie"
   | "clean"
   | "close-failure"
+  | "control-eof-substitution"
+  | "control-write-substitution"
   | "descriptor-closure"
   | "descriptor-reuse"
   | "descriptor-substitution"
@@ -4248,7 +4254,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           return {
             status: "eof-byte-written" as const,
             canonical: true as const,
-            eofByte: 4,
+            eofByte: seed === "control-eof-substitution" ? 5 : 4,
             bytesWritten: 1 as const,
           };
         },
@@ -4307,7 +4313,8 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           const partial =
             (seed === "partial-input" ||
               seed === "partial-input-output-limit" ||
-              seed === "partial-input-timeout") &&
+              seed === "partial-input-timeout" ||
+              seed === "control-write-substitution") &&
             inputCalls === 1;
           return {
             status: partial ? ("partial" as const) : ("complete" as const),
