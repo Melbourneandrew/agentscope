@@ -1859,14 +1859,13 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
-    } else if (actionKind === "control-byte-and-eof") {
+    } else if (actionKind === "raw-control-sequence") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
-      eofCount += 1;
       defineArrayIndex(
         stableActions,
         index,
         safeReflectApply(freeze, Object, [
-          { action: "control-byte-and-eof" },
+          { action: "raw-control-sequence" },
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "wait-for-semantic-completion") {
@@ -2327,27 +2326,17 @@ const armSelectedPty = (
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
-          } else if (action?.action === "control-byte-and-eof") {
-            eofAttempted = true;
-            const controlByte = safeBufferFrom([3]);
-            const written = exactPtyWrite(child.write(controlByte), 1);
-            const eof = child.eof();
-            if (
-              written.bytesWritten !== 1 ||
-              !plainRecord(eof) ||
-              safeReflectApply(objectKeys, Object, [eof]).sort().join("\0") !==
-                "bytesWritten\0canonical\0eofByte\0status" ||
-              eof.status !== "eof-byte-written" ||
-              eof.canonical !== true ||
-              eof.bytesWritten !== 1 ||
-              eof.eofByte !== terminalObservation.eofByte
-            )
+          } else if (action?.action === "raw-control-sequence") {
+            const controlBytes = safeBufferFrom([3, 4]);
+            const written = exactPtyWrite(child.write(controlBytes), 2);
+            if (written.bytesWritten !== 2)
               return fail("testkit.pty.transport");
-            eofByteWritten = true;
             recordAction({
-              action: "control-byte-and-eof",
-              controlByte: 3,
-              eofByte: eof.eofByte,
+              action: "raw-control-sequence",
+              bytes: safeReflectApply(freeze, Object, [[3, 4]]) as readonly [
+                3,
+                4,
+              ],
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
@@ -3165,7 +3154,6 @@ export const executeSelectedHeadlessProcessWithCapability = async (
 const ptyTerminalControlActionMatches = (
   expected: SelectedPtyExecutionAction,
   observed: PtyTransportAction,
-  eofByte: number,
 ): boolean => {
   if (
     expected.action === "interrupt-byte" &&
@@ -3178,10 +3166,14 @@ const ptyTerminalControlActionMatches = (
   )
     return true;
   if (
-    expected.action === "control-byte-and-eof" &&
-    observed.action === "control-byte-and-eof"
+    expected.action === "raw-control-sequence" &&
+    observed.action === "raw-control-sequence"
   )
-    return observed.controlByte === 3 && observed.eofByte === eofByte;
+    return (
+      observed.bytes.length === 2 &&
+      observed.bytes[0] === 3 &&
+      observed.bytes[1] === 4
+    );
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -3239,9 +3231,7 @@ const ptyReceiptActionsMatch = (
       )
         return false;
       inputOffset += expected.byteLength;
-    } else if (
-      !ptyTerminalControlActionMatches(expected, observed, receipt.eofByte)
-    )
+    } else if (!ptyTerminalControlActionMatches(expected, observed))
       return false;
   }
   return true;
@@ -3264,8 +3254,7 @@ const assertPtyReceiptBinding = (
   const outcome = receipt.outcome;
   const authority = selectedPtyRequestFingerprint(request);
   const requestRequiresEof = request.interaction.actions.some(
-    (action) =>
-      action.action === "eof" || action.action === "control-byte-and-eof",
+    (action) => action.action === "eof",
   );
   const expectedGeometry = finalRequestedPtyGeometry(request);
   const terminalActionOutcome =

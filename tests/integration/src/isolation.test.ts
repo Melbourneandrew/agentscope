@@ -308,7 +308,7 @@ const ptyControlReceiptFor = () => {
     actions: [
       ...receipt.request.interaction.actions.slice(0, 2),
       { action: "wait-for-semantic-completion" as const },
-      { action: "control-byte-and-eof" as const },
+      { action: "raw-control-sequence" as const },
     ],
   };
   const request = { ...receipt.request, interaction };
@@ -330,13 +330,13 @@ const ptyControlReceiptFor = () => {
     ...receipt,
     request,
     requestFingerprint,
+    eofByteWritten: false,
     actions: [
       ...receipt.actions.slice(0, 2),
       { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
       {
-        action: "control-byte-and-eof" as const,
-        controlByte: 3,
-        eofByte: receipt.eofByte,
+        action: "raw-control-sequence" as const,
+        bytes: [3, 4] as const,
         monotonicAtMs: 2_003,
       },
     ],
