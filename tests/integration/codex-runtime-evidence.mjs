@@ -53,3 +53,24 @@ export const boundedRequestLedger = (value) => {
     throw new Error("integration.codex.model-request");
   return Object.freeze(value.map((entry) => Object.freeze({ ...entry })));
 };
+
+export const waitWithinObservationDeadline = async ({
+  deadline,
+  maximumWaitMilliseconds,
+  now,
+  wait,
+}) => {
+  if (
+    !Number.isFinite(deadline) ||
+    !Number.isSafeInteger(maximumWaitMilliseconds) ||
+    maximumWaitMilliseconds < 1 ||
+    typeof now !== "function" ||
+    typeof wait !== "function"
+  )
+    throw new Error("integration.codex.trace-deadline");
+  const remainingMilliseconds = deadline - now();
+  if (!Number.isFinite(remainingMilliseconds) || remainingMilliseconds <= 0)
+    throw new Error("integration.codex.trace-deadline");
+  await wait(Math.min(maximumWaitMilliseconds, remainingMilliseconds));
+  if (now() >= deadline) throw new Error("integration.codex.trace-deadline");
+};
