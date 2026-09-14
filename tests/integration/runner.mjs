@@ -23,6 +23,7 @@ import {
   compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
+import { compileInteractivePtyActions } from "./dist/index.js";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
@@ -414,32 +415,8 @@ try {
     const scriptSha256 = scenarioProcessSha256;
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
-    const initialInputBytes =
-      request.stdin.byteLength - scenario.postCompletionInputByteLength;
     const interaction = {
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        {
-          action: "input",
-          byteLength: initialInputBytes,
-          inputSha256: rawSha256(request.stdin.subarray(0, initialInputBytes)),
-        },
-        ...(scenario.waitForSemanticCompletionBeforeEof
-          ? [
-              { action: "wait-for-semantic-completion" },
-              {
-                action: "input",
-                byteLength: scenario.postCompletionInputByteLength,
-                inputSha256: rawSha256(
-                  request.stdin.subarray(initialInputBytes),
-                ),
-              },
-            ]
-          : []),
-        ...(scenario.waitForSemanticCompletionBeforeEof
-          ? []
-          : [{ action: "eof" }]),
-      ],
+      actions: compileInteractivePtyActions(scenario, request.stdin),
       trigger: "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
