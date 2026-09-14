@@ -308,8 +308,7 @@ const ptyControlReceiptFor = () => {
     actions: [
       ...receipt.request.interaction.actions.slice(0, 2),
       { action: "wait-for-semantic-completion" as const },
-      { action: "interrupt-byte" as const, byte: 3 },
-      { action: "eof" as const },
+      { action: "interrupt-and-eof" as const },
     ],
   };
   const request = { ...receipt.request, interaction };
@@ -335,11 +334,11 @@ const ptyControlReceiptFor = () => {
       ...receipt.actions.slice(0, 2),
       { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
       {
-        action: "interrupt-byte" as const,
-        byte: 3,
+        action: "interrupt-and-eof" as const,
+        interruptByte: 3,
+        eofByte: receipt.eofByte,
         monotonicAtMs: 2_003,
       },
-      { action: "eof" as const, monotonicAtMs: 2_004 },
     ],
   };
 };

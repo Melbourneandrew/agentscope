@@ -35,6 +35,7 @@ import {
 import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
+  type PtyTerminalGeometry,
   validatePtyTerminalSemanticSnapshot,
 } from "../bounded-terminal-emulator.js";
 import type {
@@ -1858,6 +1859,16 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
+    } else if (actionKind === "interrupt-and-eof") {
+      if (actionKeys !== "action") return fail("testkit.pty.request");
+      eofCount += 1;
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "interrupt-and-eof" },
+        ]) as SelectedPtyExecutionAction,
+      );
     } else if (actionKind === "wait-for-semantic-completion") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
       defineArrayIndex(
@@ -2313,6 +2324,26 @@ const armSelectedPty = (
             eofByteWritten = true;
             recordAction({
               action: "eof",
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+            });
+            actionIndex += 1;
+          } else if (action?.action === "interrupt-and-eof") {
+            eofAttempted = true;
+            const controlBytes = safeBufferFrom([
+              3,
+              terminalObservation.eofByte,
+            ]);
+            const written = exactPtyWrite(
+              child.write(controlBytes),
+              controlBytes.length,
+            );
+            if (written.bytesWritten !== 2)
+              return fail("testkit.pty.transport");
+            eofByteWritten = true;
+            recordAction({
+              action: "interrupt-and-eof",
+              interruptByte: 3,
+              eofByte: terminalObservation.eofByte,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
@@ -3127,6 +3158,34 @@ export const executeSelectedHeadlessProcessWithCapability = async (
   }
 };
 
+const ptyTerminalControlActionMatches = (
+  expected: SelectedPtyExecutionAction,
+  observed: PtyTransportAction,
+  eofByte: number,
+): boolean => {
+  if (
+    expected.action === "interrupt-byte" &&
+    observed.action === "interrupt-byte"
+  )
+    return expected.byte === observed.byte;
+  if (
+    expected.action === "wait-for-semantic-completion" &&
+    observed.action === "wait-for-semantic-completion"
+  )
+    return true;
+  if (
+    expected.action === "interrupt-and-eof" &&
+    observed.action === "interrupt-and-eof"
+  )
+    return observed.interruptByte === 3 && observed.eofByte === eofByte;
+  if (expected.action === "signal" && observed.action === "signal")
+    return (
+      expected.signal === observed.signal &&
+      /^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(observed.targetStartIdentity)
+    );
+  return true;
+};
+
 const ptyReceiptActionsMatch = (
   receipt: SelectedPtyExecutionReceipt,
   request: SelectedPtyExecutionRequest,
@@ -3177,28 +3236,21 @@ const ptyReceiptActionsMatch = (
         return false;
       inputOffset += expected.byteLength;
     } else if (
-      expected.action === "interrupt-byte" &&
-      observed.action === "interrupt-byte"
-    ) {
-      if (expected.byte !== observed.byte) return false;
-    } else if (
-      expected.action === "wait-for-semantic-completion" &&
-      observed.action === "wait-for-semantic-completion"
-    ) {
-      // The backend records this action only after the bounded emulator has
-      // observed the authenticated semantic completion marker.
-    } else if (expected.action === "signal" && observed.action === "signal") {
-      if (
-        expected.signal !== observed.signal ||
-        !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(
-          observed.targetStartIdentity,
-        )
-      )
-        return false;
-    }
+      !ptyTerminalControlActionMatches(expected, observed, receipt.eofByte)
+    )
+      return false;
   }
   return true;
 };
+
+const finalRequestedPtyGeometry = (
+  request: SelectedPtyExecutionRequest,
+): PtyTerminalGeometry =>
+  request.interaction.actions.reduce(
+    (geometry, action) =>
+      action.action === "resize" ? action.geometry : geometry,
+    request.initialGeometry,
+  );
 
 const assertPtyReceiptBinding = (
   receipt: SelectedPtyExecutionReceipt,
@@ -3207,13 +3259,11 @@ const assertPtyReceiptBinding = (
 ): void => {
   const outcome = receipt.outcome;
   const authority = selectedPtyRequestFingerprint(request);
-  let requestRequiresEof = false;
-  let expectedGeometry = request.initialGeometry;
-  for (let index = 0; index < request.interaction.actions.length; index += 1) {
-    const action = request.interaction.actions[index];
-    if (action?.action === "eof") requestRequiresEof = true;
-    else if (action?.action === "resize") expectedGeometry = action.geometry;
-  }
+  const requestRequiresEof = request.interaction.actions.some(
+    (action) =>
+      action.action === "eof" || action.action === "interrupt-and-eof",
+  );
+  const expectedGeometry = finalRequestedPtyGeometry(request);
   const terminalActionOutcome =
     outcome === "completed" ||
     outcome === "signaled" ||
