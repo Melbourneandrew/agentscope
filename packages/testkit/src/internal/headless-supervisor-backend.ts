@@ -2205,8 +2205,23 @@ const armSelectedPty = (
     // eslint-disable-next-line complexity,max-lines-per-function
     const pumpTransport = (allowInput: boolean): void => {
       try {
-        for (let index = 0; index < 64 && !outputTerminal; index += 1) {
-          const observation = exactPtyRead(child.read(4_096));
+        const pendingActionBeforeRead =
+          request.interaction.actions[actionIndex];
+        const shouldReadBeforeAction =
+          !allowInput ||
+          pendingActionBeforeRead === undefined ||
+          request.interaction.trigger === "immediate" ||
+          !readinessObserved ||
+          pendingActionBeforeRead.action === "wait-for-semantic-completion";
+        for (
+          let index = 0;
+          shouldReadBeforeAction && index < 64 && !outputTerminal;
+          index += 1
+        ) {
+          // Keep one complete semantic marker inside the emulator's bounded
+          // recent window, then stop at readiness so its gated action cannot
+          // be overtaken by a fast child's later completion output.
+          const observation = exactPtyRead(child.read(512));
           if (observation.status === "would-block") break;
           if (observation.status === "eof" || observation.status === "eio") {
             outputTerminal = true;
@@ -2232,8 +2247,10 @@ const armSelectedPty = (
               semanticState === "completed"
             )
               semanticCompletionObservedAtOutputBytes = outputBytes;
-            if (semanticState === "ready") readinessObserved = true;
-            else if (
+            if (semanticState === "ready") {
+              readinessObserved = true;
+              break;
+            } else if (
               semanticState === "credential-prompt" ||
               semanticState === "malformed-control"
             )
@@ -4035,6 +4052,7 @@ type SelectedPtyTestSeed =
   | "partial-input-output-limit"
   | "partial-input-timeout"
   | "post-input-completion"
+  | "readiness-burst"
   | "residual"
   | "root-missing"
   | "signal-failure"
@@ -4179,15 +4197,21 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               output.subarray(0, 2),
               output.subarray(2),
             ]
-          : seed === "output-limit" || seed === "partial-input-output-limit"
-            ? [output.subarray(0, 4_096), output.subarray(4_096)]
-            : seed === "active-terminal" ||
-                seed === "missing-ready" ||
-                seed === "credential-prompt" ||
-                seed === "malformed-control"
-              ? [output]
-              : [ready, output];
+          : seed === "readiness-burst"
+            ? [
+                safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
+                output,
+              ]
+            : seed === "output-limit" || seed === "partial-input-output-limit"
+              ? [output.subarray(0, 4_096), output.subarray(4_096)]
+              : seed === "active-terminal" ||
+                  seed === "missing-ready" ||
+                  seed === "credential-prompt" ||
+                  seed === "malformed-control"
+                ? [output]
+                : [ready, output];
       let chunkIndex = 0;
+      let chunkOffset = 0;
       let inputCalls = 0;
       let transportReads = 0;
       let currentGeometry = geometry;
@@ -4200,6 +4224,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           seed !== "output-limit" &&
           seed !== "partial-input-output-limit" &&
           seed !== "partial-input-timeout" &&
+          seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure"
         )
@@ -4257,7 +4282,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        read: () => {
+        read: (maximumBytes) => {
           transportReads += 1;
           if (seed === "action-deadline-crossing" && transportReads === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
@@ -4281,8 +4306,16 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
             return { status: "would-block" as const };
           const chunk = chunks[chunkIndex];
           if (chunk !== undefined) {
-            chunkIndex += 1;
-            return { status: "data" as const, bytes: chunk };
+            const bytes = chunk.subarray(
+              chunkOffset,
+              Math.min(chunk.length, chunkOffset + maximumBytes),
+            );
+            chunkOffset += bytes.length;
+            if (chunkOffset === chunk.length) {
+              chunkIndex += 1;
+              chunkOffset = 0;
+            }
+            return { status: "data" as const, bytes };
           }
           return terminal
             ? { status: "eio" as const }
@@ -4292,7 +4325,14 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           currentGeometry = { columns, rows };
         },
         write: (bytes) => {
+          if (seed === "active-terminal" && transportReads === 0)
+            throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
+          if (seed === "readiness-burst" && inputCalls === 2) {
+            processes.delete(root.pid);
+            terminal = true;
+            close({ code: 0, signal: 0 });
+          }
           if (seed === "partial-input-timeout" && inputCalls === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
             while (performance.now() < stopAt) {

@@ -490,6 +490,37 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("applies readiness-gated input before a fast completion burst", async () => {
+    const input = new Uint8Array([12]);
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: input }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 1,
+              inputSha256:
+                "ef6cbd2161eaea7943ce8693b9824d23d1793ffb1c0fca05b600d3899b44c977",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "raw-control-sequence" },
+          ],
+        },
+      },
+      "readiness-burst",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input", byteLength: 1 },
+        { action: "wait-for-semantic-completion" },
+        { action: "raw-control-sequence", bytes: [3, 4] },
+      ],
+    });
+  });
+
   it("rejects a partial raw control-sequence write", async () => {
     const selected = {
       ...request({ stdin: new Uint8Array() }),
