@@ -18,7 +18,7 @@ export type SelectedPtyExecutionAction =
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
   | Readonly<{ action: "wait-for-semantic-completion" }>
-  | Readonly<{ action: "raw-control-sequence" }>
+  | Readonly<{ action: "raw-control-sequence"; reactionUtf8: string }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{

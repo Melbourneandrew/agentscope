@@ -349,7 +349,10 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({ action: z.literal("eof") }),
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
-  z.strictObject({ action: z.literal("raw-control-sequence") }),
+  z.strictObject({
+    action: z.literal("raw-control-sequence"),
+    reactionUtf8: z.string().min(1).max(128),
+  }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),

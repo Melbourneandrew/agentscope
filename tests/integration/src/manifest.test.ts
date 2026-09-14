@@ -186,6 +186,7 @@ describe("integration capability manifest", () => {
     }).toThrow("integration.manifest.evidence-digest");
   });
 
+  // eslint-disable-next-line max-lines-per-function
   it("starts the Codex turn before admitting PTY control input", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -196,17 +197,20 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(0);
     expect(scenario.postCompletionControl).toBe("raw-control-sequence");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
-    expect(
-      compileInteractivePtyActions(
-        scenario,
-        Buffer.from(scenario.terminalInputBase64, "base64"),
-      ).map(({ action }) => action),
-    ).toEqual([
+    const actions = compileInteractivePtyActions(
+      scenario,
+      Buffer.from(scenario.terminalInputBase64, "base64"),
+    );
+    expect(actions.map(({ action }) => action)).toEqual([
       "resize",
       "input",
       "wait-for-semantic-completion",
       "raw-control-sequence",
     ]);
+    expect(actions.at(-1)).toEqual({
+      action: "raw-control-sequence",
+      reactionUtf8: "Shutting down...",
+    });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
