@@ -262,7 +262,7 @@ const labelArguments = (plan) => [
   "--label",
   `com.agentscope.integration.run=${plan.runId}`,
 ];
-const tmpfsIsExecutable = (path) => path === "/agentscope-home/bin";
+const tmpfsIsExecutable = (path) => path === "/agentscope-home";
 const tmpfsArguments = (limits, ownership = true) =>
   limits.tmpfs.flatMap(({ path, bytes }) => [
     "--tmpfs",
