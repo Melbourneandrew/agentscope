@@ -19,6 +19,8 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
+  localSqliteReporterSettled,
+  openLocalSqliteLifecycle,
   readCodexSessionLedgers,
   readBoundedJsonResponse,
   waitWithinObservationDeadline,
@@ -146,6 +148,7 @@ const homeDescriptor = openSync(
     constants.O_NOFOLLOW |
     constants.O_NONBLOCK,
 );
+let localSqliteLifecycleDescriptor;
 let interactiveFailurePhase = "bootstrap";
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
@@ -373,18 +376,29 @@ const readTraceSummary = async (monotonicDeadline) => {
     throw new Error("integration.codex.trace-search");
   return summary;
 };
-const waitForTraceSummary = async () => {
-  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  // The exact Codex version records task_complete only after its Stop hook
-  // settles. Observe that native terminal witness before opening Local SQLite,
-  // then perform one bounded query so the observer cannot contend with the
-  // installed hook's writer.
+const waitForCodexTurnTerminal = async (traceDeadline) => {
   while (
     !codexTurnTerminalObserved(
       readCodexSessionLedgers(homeDescriptor),
       expectedAssistantMessage,
     )
   ) {
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 100,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
+    remaining();
+  }
+};
+const waitForTraceSummary = async (traceDeadline) => {
+  // The exact Codex version records task_complete after its Stop hook returns,
+  // but its accepted reporter retains the Local SQLite lease until the TUI
+  // exits. The PTY controller sends the documented terminal controls first;
+  // only a stable empty lifecycle can then authorize the one bounded query.
+  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -413,6 +427,7 @@ try {
   );
   await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
+  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "unchanged",
@@ -462,31 +477,18 @@ try {
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   interactiveFailurePhase = "trace";
-  let observedBeforeQuit;
-  let traceFailure;
-  try {
-    observedBeforeQuit = await waitForTraceSummary();
-  } catch (error) {
-    traceFailure = error;
-  }
+  await waitForCodexTurnTerminal(traceDeadline);
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   interactiveFailurePhase = "tui-exit";
-  if (traceFailure !== undefined) {
-    interactiveFailurePhase = "trace";
-    throw traceFailure;
-  }
   await codexRun;
+  interactiveFailurePhase = "trace";
+  const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
   const modelRequests = await readModelRequests();
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
-  const summary = await readTraceSummary();
-  if (
-    summary === null ||
-    summary.locator.traceId !== observedBeforeQuit?.locator.traceId
-  )
-    throw new Error("integration.codex.trace-search");
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
     throw new Error("integration.codex.trace-search");
@@ -555,6 +557,8 @@ try {
   );
   completed = true;
 } finally {
+  if (localSqliteLifecycleDescriptor !== undefined)
+    closeSync(localSqliteLifecycleDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {

@@ -16,9 +16,12 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
+  localSqliteReporterSettled,
+  openLocalSqliteLifecycle,
   readCodexSessionLedgers,
   readBoundedJsonResponse,
   settledCodexLedgerSnapshot,
+  settledLocalSqliteLifecycleSnapshot,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
@@ -102,6 +105,158 @@ describe("Codex bounded native ledgers", () => {
         after: { ...identity, size: 3n, mtimeNs: 7n, ctimeNs: 7n },
       }),
     ).toBeNull();
+  });
+});
+
+describe("Codex Local SQLite reporter settlement", () => {
+  it.runIf(process.platform === "linux")(
+    "binds one exact lifecycle and accepts only stable empty settlement",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-sqlite-"));
+      const namespace = join(
+        root,
+        ".agentscope",
+        "destinations",
+        "local-sqlite",
+        "a".repeat(64),
+      );
+      const lifecycle = join(namespace, "lifecycle");
+      mkdirSync(lifecycle, { recursive: true });
+      const homeDescriptor = openSync(
+        root,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+      let lifecycleDescriptor;
+      try {
+        lifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+        expect(localSqliteReporterSettled(lifecycleDescriptor)).toBe(true);
+        writeFileSync(join(lifecycle, `lease-${"b".repeat(32)}.json`), "{}\n");
+        expect(localSqliteReporterSettled(lifecycleDescriptor)).toBe(false);
+        rmSync(join(lifecycle, `lease-${"b".repeat(32)}.json`));
+        writeFileSync(
+          join(lifecycle, `lease-cleanup-${"c".repeat(32)}.json`),
+          "{}\n",
+        );
+        expect(localSqliteReporterSettled(lifecycleDescriptor)).toBe(false);
+      } finally {
+        if (lifecycleDescriptor !== undefined) closeSync(lifecycleDescriptor);
+        closeSync(homeDescriptor);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "rejects ambiguous namespaces, symlink ancestors, and unknown entries",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-sqlite-"));
+      const localSqlite = join(
+        root,
+        ".agentscope",
+        "destinations",
+        "local-sqlite",
+      );
+      mkdirSync(join(localSqlite, "a".repeat(64), "lifecycle"), {
+        recursive: true,
+      });
+      const homeDescriptor = openSync(
+        root,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+      try {
+        mkdirSync(join(localSqlite, "b".repeat(64), "lifecycle"), {
+          recursive: true,
+        });
+        expect(() => openLocalSqliteLifecycle(homeDescriptor)).toThrow(
+          "integration.codex.local-sqlite-settlement",
+        );
+        rmSync(join(localSqlite, "b".repeat(64)), { recursive: true });
+        const lifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+        try {
+          writeFileSync(
+            join(localSqlite, "a".repeat(64), "lifecycle", "unknown"),
+            "",
+          );
+          expect(() => localSqliteReporterSettled(lifecycleDescriptor)).toThrow(
+            "integration.codex.local-sqlite-settlement",
+          );
+        } finally {
+          closeSync(lifecycleDescriptor);
+        }
+        rmSync(join(root, ".agentscope"), { recursive: true });
+        symlinkSync(tmpdir(), join(root, ".agentscope"));
+        expect(() => openLocalSqliteLifecycle(homeDescriptor)).toThrow(
+          "integration.codex.local-sqlite-settlement",
+        );
+      } finally {
+        closeSync(homeDescriptor);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
+describe("Codex Local SQLite settlement snapshots", () => {
+  it("accepts only an unchanged empty lifecycle snapshot", () => {
+    const identity = {
+      dev: 1n,
+      ino: 2n,
+      mode: 0o40700n,
+      uid: 3n,
+      gid: 4n,
+      size: 0n,
+      mtimeNs: 5n,
+      ctimeNs: 6n,
+    };
+    expect(
+      settledLocalSqliteLifecycleSnapshot({
+        before: identity,
+        first: [],
+        middle: identity,
+        second: [],
+        after: identity,
+      }),
+    ).toBe(true);
+    const lease = {
+      kind: "file",
+      name: `lease-${"a".repeat(32)}.json`,
+    };
+    expect(
+      settledLocalSqliteLifecycleSnapshot({
+        before: identity,
+        first: [lease],
+        middle: identity,
+        second: [lease],
+        after: identity,
+      }),
+    ).toBe(false);
+    expect(
+      settledLocalSqliteLifecycleSnapshot({
+        before: identity,
+        first: [],
+        middle: { ...identity, mtimeNs: 7n },
+        second: [],
+        after: { ...identity, mtimeNs: 7n },
+      }),
+    ).toBe(false);
+    expect(() =>
+      settledLocalSqliteLifecycleSnapshot({
+        before: identity,
+        first: [{ kind: "other", name: "exclusive-fence-v1" }],
+        middle: identity,
+        second: [{ kind: "other", name: "exclusive-fence-v1" }],
+        after: identity,
+      }),
+    ).toThrow("integration.codex.local-sqlite-settlement");
+    expect(() =>
+      settledLocalSqliteLifecycleSnapshot({
+        before: identity,
+        first: [{ kind: "file", name: "unknown" }],
+        middle: identity,
+        second: [{ kind: "file", name: "unknown" }],
+        after: identity,
+      }),
+    ).toThrow("integration.codex.local-sqlite-settlement");
   });
 });
 

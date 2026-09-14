@@ -222,20 +222,22 @@ describe("integration capability manifest", () => {
     const semanticReady = source.indexOf(
       '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
     );
-    const traceFailureCapture = source.indexOf(
-      "  let traceFailure;\n  try {\n    observedBeforeQuit = await waitForTraceSummary();\n  } catch (error) {\n    traceFailure = error;\n  }\n",
+    const traceDeadline = source.indexOf(
+      "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
+      semanticReady,
+    );
+    const terminalWait = source.indexOf(
+      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+      traceDeadline,
     );
     const semanticComplete = source.indexOf(
       '  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n");\n',
-      traceFailureCapture,
+      terminalWait,
     );
-    const traceFailureRethrow = source.indexOf(
-      '  if (traceFailure !== undefined) {\n    interactiveFailurePhase = "trace";\n    throw traceFailure;\n  }\n',
-      semanticComplete,
-    );
-    const codexJoin = source.indexOf(
-      "  await codexRun;\n",
-      traceFailureRethrow,
+    const codexJoin = source.indexOf("  await codexRun;\n", semanticComplete);
+    const traceQueryAfterJoin = source.indexOf(
+      "  const summary = await waitForTraceSummary(traceDeadline);\n",
+      codexJoin,
     );
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeGreaterThan(-1);
@@ -258,16 +260,16 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
-    const traceDeadline = source.indexOf(
-      "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
-    );
     const terminalObservation = source.indexOf(
       "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(homeDescriptor),\n      expectedAssistantMessage,\n    )\n",
-      traceDeadline,
+    );
+    const lifecycleSettlement = source.indexOf(
+      "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
+      terminalObservation,
     );
     const preQueryDeadline = source.indexOf(
       '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
-      terminalObservation,
+      lifecycleSettlement,
     );
     const boundedQuery = source.indexOf(
       "  const summary = await readTraceSummary(traceDeadline);\n",
@@ -281,18 +283,16 @@ describe("integration capability manifest", () => {
       '  if (summary === null) throw new Error("integration.codex.trace-search");\n  return summary;\n',
       postQueryDeadline,
     );
-    expect(traceDeadline).toBeGreaterThan(-1);
-    expect(terminalObservation).toBeGreaterThan(traceDeadline);
-    expect(terminalObservation).toBeLessThan(preQueryDeadline);
-    expect(preQueryDeadline).toBeGreaterThan(traceDeadline);
+    expect(lifecycleSettlement).toBeGreaterThan(terminalObservation);
+    expect(lifecycleSettlement).toBeLessThan(preQueryDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
     const boundedBackoff = source.indexOf(
       "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
-      terminalObservation,
+      lifecycleSettlement,
     );
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
-    expect(boundedBackoff).toBeGreaterThan(terminalObservation);
+    expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeLessThan(preQueryDeadline);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
@@ -300,10 +300,11 @@ describe("integration capability manifest", () => {
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(semanticReady).toBeGreaterThan(modelRequest);
-    expect(traceFailureCapture).toBeGreaterThan(semanticReady);
-    expect(semanticComplete).toBeGreaterThan(traceFailureCapture);
-    expect(traceFailureRethrow).toBeGreaterThan(semanticComplete);
-    expect(codexJoin).toBeGreaterThan(traceFailureRethrow);
+    expect(traceDeadline).toBeGreaterThan(semanticReady);
+    expect(terminalWait).toBeGreaterThan(traceDeadline);
+    expect(semanticComplete).toBeGreaterThan(terminalWait);
+    expect(codexJoin).toBeGreaterThan(semanticComplete);
+    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
   });
 
   it("selects mutually isolated MockServer expectations per scenario", () => {

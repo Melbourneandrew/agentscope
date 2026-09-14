@@ -156,6 +156,134 @@ const authenticatedEntries = (descriptor, pattern, kind, budget) => {
     throw new Error("integration.codex.session-ledger");
   return entries.map(({ name }) => name).sort();
 };
+
+const localSqliteSettlementError = () =>
+  new Error("integration.codex.local-sqlite-settlement");
+const localSqliteLifecycleName =
+  /^(?:exclusive-fence-v1|intent-v1\.json|operation-phase-v1\.json|ownership-receipt-v1\.json|lease-[a-f0-9]{32}\.json|lease-cleanup-[a-f0-9]{32}\.json)$/u;
+const requireDirectory = (parent, name) => {
+  const descriptor = openChild(parent, name, directoryFlags);
+  if (descriptor === null) throw localSqliteSettlementError();
+  return descriptor;
+};
+
+export const openLocalSqliteLifecycle = (homeDescriptor) => {
+  if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
+    throw localSqliteSettlementError();
+  const homeStatus = fstatSync(homeDescriptor, { bigint: true });
+  if (!homeStatus.isDirectory()) throw localSqliteSettlementError();
+  const opened = [];
+  try {
+    const agentscope = requireDirectory(homeDescriptor, ".agentscope");
+    opened.push(agentscope);
+    const destinations = requireDirectory(agentscope, "destinations");
+    opened.push(destinations);
+    const localSqlite = requireDirectory(destinations, "local-sqlite");
+    opened.push(localSqlite);
+    const namespaces = readdirSync(`${descriptorRoot}/${localSqlite}`, {
+      withFileTypes: true,
+    });
+    if (
+      namespaces.length !== 1 ||
+      !/^[a-f0-9]{64}$/u.test(namespaces[0].name) ||
+      !namespaces[0].isDirectory()
+    )
+      throw localSqliteSettlementError();
+    const namespace = requireDirectory(localSqlite, namespaces[0].name);
+    opened.push(namespace);
+    const lifecycle = requireDirectory(namespace, "lifecycle");
+    const status = fstatSync(lifecycle, { bigint: true });
+    if (!status.isDirectory()) {
+      closeSync(lifecycle);
+      throw localSqliteSettlementError();
+    }
+    return lifecycle;
+  } catch (error) {
+    if (error?.message === "integration.codex.local-sqlite-settlement")
+      throw error;
+    throw localSqliteSettlementError();
+  } finally {
+    for (const descriptor of opened.reverse()) closeSync(descriptor);
+  }
+};
+
+export const localSqliteReporterSettled = (lifecycleDescriptor) => {
+  if (!Number.isSafeInteger(lifecycleDescriptor) || lifecycleDescriptor < 0)
+    throw localSqliteSettlementError();
+  try {
+    const before = fstatSync(lifecycleDescriptor, { bigint: true });
+    if (!before.isDirectory()) throw localSqliteSettlementError();
+    const readEntries = () =>
+      readdirSync(`${descriptorRoot}/${lifecycleDescriptor}`, {
+        withFileTypes: true,
+      });
+    const first = readEntries();
+    const middle = fstatSync(lifecycleDescriptor, { bigint: true });
+    const second = readEntries();
+    const after = fstatSync(lifecycleDescriptor, { bigint: true });
+    return settledLocalSqliteLifecycleSnapshot({
+      before,
+      first: first.map((entry) => ({
+        kind: entry.isFile() ? "file" : "other",
+        name: entry.name,
+      })),
+      middle,
+      second: second.map((entry) => ({
+        kind: entry.isFile() ? "file" : "other",
+        name: entry.name,
+      })),
+      after,
+    });
+  } catch (error) {
+    if (error?.message === "integration.codex.local-sqlite-settlement")
+      throw error;
+    throw localSqliteSettlementError();
+  }
+};
+
+export const settledLocalSqliteLifecycleSnapshot = ({
+  before,
+  first,
+  middle,
+  second,
+  after,
+}) => {
+  if (
+    typeof before?.size !== "bigint" ||
+    typeof middle?.size !== "bigint" ||
+    typeof after?.size !== "bigint" ||
+    !Array.isArray(first) ||
+    !Array.isArray(second) ||
+    first.length > 132 ||
+    second.length > 132
+  )
+    throw localSqliteSettlementError();
+  const names = (entries) => {
+    if (
+      entries.some(
+        (entry) =>
+          !plainRecord(entry) ||
+          entry.kind !== "file" ||
+          typeof entry.name !== "string" ||
+          !localSqliteLifecycleName.test(entry.name),
+      )
+    )
+      throw localSqliteSettlementError();
+    const result = entries.map(({ name }) => name).sort();
+    if (new Set(result).size !== result.length)
+      throw localSqliteSettlementError();
+    return result;
+  };
+  const firstNames = names(first);
+  const secondNames = names(second);
+  if (
+    !sameSnapshotIdentity(before, middle) ||
+    !sameSnapshotIdentity(middle, after) ||
+    JSON.stringify(firstNames) !== JSON.stringify(secondNames)
+  )
+    return false;
+  return firstNames.length === 0;
+};
 const readCapped = (descriptor) => {
   const buffer = Buffer.allocUnsafe(ledgerLimit + 1);
   let offset = 0;
