@@ -235,6 +235,9 @@ describe("integration capability manifest", () => {
       'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
     );
     expect(source).toContain(
+      "value.discovery.configurationLocationCount !== 2",
+    );
+    expect(source).toContain(
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
     );
     expect(source).toContain('  interactiveFailurePhase = "trace";\n');
@@ -307,6 +310,14 @@ describe("integration capability manifest", () => {
     const codex = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
+    expect(codex.image).toBe(
+      "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    );
+    expect(codex.image).not.toBe(
+      manifest.scenarios.find(
+        ({ scenarioId }) => scenarioId === "fixture-process-smoke",
+      )!.image,
+    );
     const material = manifest.evidence.find(
       ({ evidenceId }) => evidenceId === codex.harnessEvidenceId,
     )!.material;

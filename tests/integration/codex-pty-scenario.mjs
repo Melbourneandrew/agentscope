@@ -231,7 +231,7 @@ const projectHarnessStatus = (
     value.discovery.state !== "installed" ||
     value.discovery.reason !== "compatible" ||
     value.discovery.version !== "0.149.1" ||
-    value.discovery.configurationLocationCount !== 1 ||
+    value.discovery.configurationLocationCount !== 2 ||
     value.discovery.configurationPresentCount !== configurationPresentCount
   )
     throw new Error("integration.codex.harness-status");
