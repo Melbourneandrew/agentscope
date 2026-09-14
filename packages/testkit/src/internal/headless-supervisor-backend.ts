@@ -2245,6 +2245,8 @@ const armSelectedPty = (
     let actionIndex = 0;
     let lastCompletedInputOutputBytes = -1;
     let semanticCompletionObservedAtOutputBytes = -1;
+    let rawControlInterruptOutputBytes: number | undefined;
+    let outputQuiescentObserved = false;
     const actionsApplied: PtyTransportAction[] = [];
     const recordAction = (action: PtyTransportAction): void => {
       defineArrayIndex(
@@ -2264,6 +2266,26 @@ const armSelectedPty = (
       maximumOutputBytes: outputLimitBytes,
     });
     const input = safeBufferFrom(processRequest.stdin);
+    const applyRawControlSequence = (): void => {
+      if (rawControlInterruptOutputBytes === undefined) {
+        if (!outputQuiescentObserved) return;
+        const interrupt = exactPtyWrite(child.write(safeBufferFrom([3])), 1);
+        if (interrupt.bytesWritten !== 1) return fail("testkit.pty.transport");
+        rawControlInterruptOutputBytes = outputBytes;
+        outputQuiescentObserved = false;
+        return;
+      }
+      if (outputBytes <= rawControlInterruptOutputBytes) return;
+      const eof = exactPtyWrite(child.write(safeBufferFrom([4])), 1);
+      if (eof.bytesWritten !== 1) return fail("testkit.pty.transport");
+      recordAction({
+        action: "raw-control-sequence",
+        bytes: safeReflectApply(freeze, Object, [[3, 4]]) as readonly [3, 4],
+        monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+      });
+      rawControlInterruptOutputBytes = undefined;
+      actionIndex += 1;
+    };
     // The PTY pump keeps read, semantic readiness, and the write-closed action
     // sequence adjacent so no action can escape the selected backend authority.
     // eslint-disable-next-line complexity,max-lines-per-function
@@ -2276,7 +2298,8 @@ const armSelectedPty = (
           pendingActionBeforeRead === undefined ||
           request.interaction.trigger === "immediate" ||
           !readinessObserved ||
-          pendingActionBeforeRead.action === "wait-for-semantic-completion";
+          pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
+          pendingActionBeforeRead.action === "raw-control-sequence";
         for (
           let index = 0;
           shouldReadBeforeAction && index < 64 && !outputTerminal;
@@ -2286,7 +2309,10 @@ const armSelectedPty = (
           // recent window, then stop at readiness so its gated action cannot
           // be overtaken by a fast child's later completion output.
           const observation = exactPtyRead(child.read(512));
-          if (observation.status === "would-block") break;
+          if (observation.status === "would-block") {
+            outputQuiescentObserved = true;
+            break;
+          }
           if (observation.status === "eof" || observation.status === "eio") {
             outputTerminal = true;
             break;
@@ -2301,6 +2327,7 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
+            outputQuiescentObserved = false;
             const priorSemanticState = terminal.snapshot().semanticState;
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
@@ -2409,25 +2436,9 @@ const armSelectedPty = (
             actionIndex += 1;
           } else if (action?.action === "raw-control-sequence") {
             // VINTR flushes the canonical input queue. Keep the fixed control
-            // sequence, but admit each byte through its own completed write so
-            // the following VEOF cannot be flushed with the interrupt.
-            const interrupt = exactPtyWrite(
-              child.write(safeBufferFrom([3])),
-              1,
-            );
-            if (interrupt.bytesWritten !== 1)
-              return fail("testkit.pty.transport");
-            const eof = exactPtyWrite(child.write(safeBufferFrom([4])), 1);
-            if (eof.bytesWritten !== 1) return fail("testkit.pty.transport");
-            recordAction({
-              action: "raw-control-sequence",
-              bytes: safeReflectApply(freeze, Object, [[3, 4]]) as readonly [
-                3,
-                4,
-              ],
-              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
-            });
-            actionIndex += 1;
+            // sequence, but require a causal output reaction before VEOF so it
+            // cannot be flushed or race the application's interrupt handling.
+            applyRawControlSequence();
           } else if (action?.action === "wait-for-semantic-completion") {
             if (
               terminal.snapshot().semanticState === "completed" &&
@@ -4094,6 +4105,7 @@ type SelectedPtyTestSeed =
   | "clean"
   | "close-failure"
   | "control-eof-substitution"
+  | "control-reaction-missing"
   | "control-second-write-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
@@ -4125,6 +4137,7 @@ type SelectedPtyTestSeed =
   | "partial-input-timeout"
   | "post-input-completion"
   | "readiness-burst"
+  | "raw-control-clean"
   | "residual"
   | "root-missing"
   | "signal-failure"
@@ -4132,6 +4145,15 @@ type SelectedPtyTestSeed =
   | "transport-failure"
   | "timeout"
   | "unsupported-signal";
+
+const rawControlExpectedForTest = (seed: SelectedPtyTestSeed): boolean =>
+  seed === "raw-control-clean" ||
+  seed === "readiness-burst" ||
+  seed === "control-write-substitution" ||
+  seed === "control-second-write-substitution" ||
+  seed === "control-reaction-missing" ||
+  seed === "control-eof-substitution" ||
+  seed === "eof-failure";
 
 // eslint-disable-next-line max-lines-per-function
 const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
@@ -4287,6 +4309,20 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let inputCalls = 0;
       let transportReads = 0;
       let currentGeometry = geometry;
+      const rawControlExpected = rawControlExpectedForTest(seed);
+      let rawControlStarted = false;
+      const observeRawControlWrite = (bytes: Buffer): void => {
+        if (bytes.length === 1 && bytes[0] === 3 && rawControlExpected) {
+          rawControlStarted = true;
+          if (seed !== "control-reaction-missing")
+            chunks.push(safeBufferFrom("interrupt-observed"));
+        }
+        if (bytes.length === 1 && bytes[0] === 4 && rawControlStarted) {
+          processes.delete(root.pid);
+          terminal = true;
+          close({ code: 0, signal: 0 });
+        }
+      };
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -4302,6 +4338,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         )
           safeSetTimeout(
             () => {
+              if (rawControlExpected) return;
               processes.delete(root.pid);
               if (seed === "adopted-zombie")
                 processes.set(descendant.pid, {
@@ -4405,7 +4442,12 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
             (seed === "control-second-write-substitution" && inputCalls === 2)
           )
             return { status: "would-block" as const, bytesWritten: 0 };
-          if (seed === "readiness-burst" && inputCalls === 2) {
+          observeRawControlWrite(bytes);
+          if (
+            seed === "readiness-burst" &&
+            inputCalls === 2 &&
+            !rawControlStarted
+          ) {
             processes.delete(root.pid);
             terminal = true;
             close({ code: 0, signal: 0 });
