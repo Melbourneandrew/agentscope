@@ -262,10 +262,11 @@ const labelArguments = (plan) => [
   "--label",
   `com.agentscope.integration.run=${plan.runId}`,
 ];
+const tmpfsIsExecutable = (path) => path === "/agentscope-home/bin";
 const tmpfsArguments = (limits, ownership = true) =>
   limits.tmpfs.flatMap(({ path, bytes }) => [
     "--tmpfs",
-    `${path}:rw,noexec,nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
+    `${path}:rw,${tmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
 const confinementArguments = (plan) => [
   "--network",
@@ -572,9 +573,11 @@ const assertContainer = async (
   const expectedPaths = limits.tmpfs.map(({ path }) => path).sort();
   const tmpfsMatches = limits.tmpfs.every(({ path, bytes }) => {
     const options = new Set(String(tmpfs[path] ?? "").split(","));
+    const executable = tmpfsIsExecutable(path);
     return (
       options.has("rw") &&
-      options.has("noexec") &&
+      options.has(executable ? "exec" : "noexec") &&
+      !options.has(executable ? "noexec" : "exec") &&
       options.has("nosuid") &&
       options.has("nodev") &&
       options.has(`size=${bytes}`)

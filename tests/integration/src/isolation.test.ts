@@ -445,6 +445,7 @@ describe("scenario isolation", () => {
       "/home/agentscope",
       "/harness-home",
       "/agentscope-home",
+      "/agentscope-home/bin",
       "/worktree",
       "/ledger",
       "/tmp",
