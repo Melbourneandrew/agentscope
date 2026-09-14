@@ -352,7 +352,7 @@ export const compileInteractivePtyActions = (
               ]),
           ...(JSON.stringify(scenario.postCompletionControls) ===
           JSON.stringify(["interrupt-byte", "eof"])
-            ? [{ action: "control-byte-and-eof" as const }]
+            ? [{ action: "raw-control-sequence" as const }]
             : scenario.postCompletionControls.map((control) =>
                 control === "interrupt-byte"
                   ? ({ action: "interrupt-byte", byte: 3 } as const)

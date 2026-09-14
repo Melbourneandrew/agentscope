@@ -1001,7 +1001,9 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
         JSON.stringify(expectedActions.map(({ action }) => action)) &&
       receipt?.eofByteWritten ===
-        selectedScenario.postCompletionControls.includes("eof") &&
+        (selectedScenario.postCompletionControls.includes("eof") &&
+          JSON.stringify(selectedScenario.postCompletionControls) !==
+            JSON.stringify(["interrupt-byte", "eof"])) &&
       receipt?.isTTY === true &&
       receipt?.observedCanonicalMode === true
     );
@@ -1453,9 +1455,7 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
         receipt.stdoutJoined === true &&
         receipt.stderrJoined === true)) &&
     (plan.executionMode === "headless" ||
-      (receipt.eofByteWritten ===
-        (plan.terminalAction === "eof" ||
-          plan.terminalAction === "post-completion-controls") &&
+      (receipt.eofByteWritten === (plan.terminalAction === "eof") &&
         receipt.terminalInputJoined === true &&
         receipt.terminalOutputJoined === true &&
         receipt.terminalTransportClosed === true)) &&

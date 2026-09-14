@@ -471,13 +471,13 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
-  it("applies a raw control byte immediately before authenticated terminal EOF", async () => {
+  it("delivers the fixed raw control sequence in one write", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request({ stdin: new Uint8Array() }),
         interaction: {
           trigger: "semantic-ready",
-          actions: [{ action: "control-byte-and-eof" }],
+          actions: [{ action: "raw-control-sequence" }],
         },
       },
       "clean",
@@ -485,30 +485,50 @@ describe("selected PTY transport", () => {
     expect(receipt).toMatchObject({
       outcome: "completed",
       eofByte: 4,
-      eofByteWritten: true,
-      actions: [{ action: "control-byte-and-eof", controlByte: 3, eofByte: 4 }],
+      eofByteWritten: false,
+      actions: [{ action: "raw-control-sequence", bytes: [3, 4] }],
     });
   });
 
-  it.each([
-    "control-eof-substitution",
-    "control-write-substitution",
-    "eof-failure",
-  ] as const)("rejects combined control/EOF %s", async (seed) => {
+  it("rejects a partial raw control-sequence write", async () => {
     const selected = {
       ...request({ stdin: new Uint8Array() }),
       interaction: {
         trigger: "semantic-ready" as const,
-        actions: [{ action: "control-byte-and-eof" as const }],
+        actions: [{ action: "raw-control-sequence" as const }],
       },
     };
-    const receipt = await executeSelectedPtyTransportForTest(selected, seed);
+    const receipt = await executeSelectedPtyTransportForTest(
+      selected,
+      "control-write-substitution",
+    );
     expect(receipt).toMatchObject({
       outcome: "transport-failed",
       eofByteWritten: false,
       terminalInputJoined: false,
     });
   });
+
+  it.each(["control-eof-substitution", "eof-failure"] as const)(
+    "does not invoke canonical EOF authority for a raw sequence under %s",
+    async (seed) => {
+      const receipt = await executeSelectedPtyTransportForTest(
+        {
+          ...request({ stdin: new Uint8Array() }),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [{ action: "raw-control-sequence" }],
+          },
+        },
+        seed,
+      );
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        eofByteWritten: false,
+        actions: [{ action: "raw-control-sequence", bytes: [3, 4] }],
+      });
+    },
+  );
 
   it("signals the authenticated selected root from the action plan", async () => {
     const receipt = await executeSelectedPtyTransportForTest(

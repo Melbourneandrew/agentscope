@@ -349,7 +349,7 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({ action: z.literal("eof") }),
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
-  z.strictObject({ action: z.literal("control-byte-and-eof") }),
+  z.strictObject({ action: z.literal("raw-control-sequence") }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),
@@ -377,9 +377,8 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
-    action: z.literal("control-byte-and-eof"),
-    controlByte: z.literal(3),
-    eofByte: z.number().int().nonnegative().max(255),
+    action: z.literal("raw-control-sequence"),
+    bytes: z.tuple([z.literal(3), z.literal(4)]),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
@@ -559,12 +558,10 @@ const ptyTerminalReceiptSchema = z
         )
           return requested.byte !== observed.byte;
         if (
-          requested.action === "control-byte-and-eof" &&
-          observed.action === "control-byte-and-eof"
+          requested.action === "raw-control-sequence" &&
+          observed.action === "raw-control-sequence"
         )
-          return (
-            observed.controlByte !== 3 || observed.eofByte !== value.eofByte
-          );
+          return observed.bytes[0] !== 3 || observed.bytes[1] !== 4;
         return (
           requested.action === "signal" &&
           observed.action === "signal" &&
@@ -667,7 +664,7 @@ const ptyReceiptPasses = (
       JSON.stringify(actions.slice(-2)) ===
         JSON.stringify([
           "wait-for-semantic-completion",
-          "control-byte-and-eof",
+          "raw-control-sequence",
         ]));
   return (
     terminalActionMatches &&
@@ -677,9 +674,7 @@ const ptyReceiptPasses = (
     receipt.cleanup === "clean" &&
     receipt.residualProcessCount === 0 &&
     receipt.finalSnapshot.semanticState === "completed" &&
-    receipt.eofByteWritten ===
-      (terminalAction === "eof" ||
-        terminalAction === "post-completion-controls") &&
+    receipt.eofByteWritten === (terminalAction === "eof") &&
     receipt.processJoined &&
     receipt.terminalInputJoined &&
     receipt.terminalOutputJoined &&
