@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-8e02c22fbb401259c34cd14a81aab6684f438148bdc16b6243e81e250dd63ee8",
+  "manifestIdentity": "sha256-3bdb84aa708dddbe8c00f951222bec8a35b62cada421af2cdf7e621e0747f123",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -100,6 +100,7 @@
       "runtimeArtifacts": [],
       "terminalInputBase64": "AA==",
       "postCompletionInputByteLength": 0,
+      "postCompletionControls": [],
       "waitForSemanticCompletionBeforeEof": false,
       "resourceClass": "small",
       "shardWeight": 100
@@ -134,6 +135,7 @@
       "runtimeArtifacts": [],
       "terminalInputBase64": "cnVuCg==",
       "postCompletionInputByteLength": 0,
+      "postCompletionControls": [],
       "waitForSemanticCompletionBeforeEof": false,
       "resourceClass": "small",
       "shardWeight": 120
@@ -178,8 +180,9 @@
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
         }
       ],
-      "terminalInputBase64": "DAME",
-      "postCompletionInputByteLength": 2,
+      "terminalInputBase64": "DA==",
+      "postCompletionInputByteLength": 0,
+      "postCompletionControls": ["interrupt-byte", "eof"],
       "waitForSemanticCompletionBeforeEof": true,
       "resourceClass": "medium",
       "shardWeight": 220
