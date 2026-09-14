@@ -204,6 +204,7 @@ describe("immutable candidate authority", () => {
       expect.arrayContaining([
         "testkit/bounded-terminal-emulator.js",
         "testkit/pty-terminal-contract.js",
+        "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
         "testkit/pty-runtime/node127-linux-x64-musl/pty.node",
       ]),
     );
