@@ -273,10 +273,12 @@ describe("integration capability manifest", () => {
     expect(preQueryDeadline).toBeGreaterThan(traceDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
-    expect(source).toContain(
-      "    await new Promise((resolve) => setTimeout(resolve, 500));\n",
+    const boundedBackoff = source.indexOf(
+      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 500,\n",
+      acceptSummary,
     );
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
+    expect(boundedBackoff).toBeGreaterThan(acceptSummary);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",
