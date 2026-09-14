@@ -204,7 +204,7 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "wait-for-semantic-completion",
-      "control-byte-and-eof",
+      "raw-control-sequence",
     ]);
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
