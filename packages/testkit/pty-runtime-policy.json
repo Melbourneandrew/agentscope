@@ -15,6 +15,27 @@
     "config": "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
     "nodeHeaderInventorySha256": "5b587fb37921c66e1c3fffb48470b85e272dd214a0b0aa81418b38135aa8ca2b"
   },
+  "glibcTarget": {
+    "tuple": "node127-linux-x64-glibc",
+    "nodeVersion": "22.18.0",
+    "nodeAbi": 127,
+    "os": "linux",
+    "architecture": "x64",
+    "libc": "glibc",
+    "debianVersion": "12"
+  },
+  "glibcCanonicalImage": {
+    "index": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "manifest": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+    "config": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+    "nodeHeaderInventorySha256": "df267e4a58d393081c7eeb1f669c33b1f2c3b371bee5ed62b7bcac31a9b34432"
+  },
+  "glibcBuild": {
+    "gxxSha256": "dd91977c184e327710578363ad93ebb175c3a457b6236b874fd3911b7c055c65",
+    "cc1plusSha256": "323f308b79cab3005857c1f3a103fd690eb1e8f044159929bad4e8526daee2bf",
+    "assemblerSha256": "41fe4f5a03389ea5cf7c92d6753fa1ecc69b45b12534fd8713c53bba0e2d7e17",
+    "linkerSha256": "f6d71a1bcd45764550a42dfaa179bc43b63ee879ec6f875bfd39fca013515da7"
+  },
   "alpineAuthority": {
     "repository": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64",
     "index": {

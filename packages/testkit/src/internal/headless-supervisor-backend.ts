@@ -1310,8 +1310,71 @@ type NativePtyBinding = Readonly<{
   ) => void;
   write: (handle: PtyTerminalHandle, bytes: Buffer) => PtyWriteObservation;
 }>;
-const ptyRuntimeDigest =
-  "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff";
+const ptyRuntimeArtifacts = Object.freeze({
+  glibc: Object.freeze({
+    digest: "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727",
+    tuple: "node127-linux-x64-glibc",
+  }),
+  musl: Object.freeze({
+    digest: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
+    tuple: "node127-linux-x64-musl",
+  }),
+});
+type PtyRuntimePlatformFacts = Readonly<{
+  alpineRelease?: string;
+  architecture: string;
+  nodeAbi: string;
+  os: string;
+  osRelease?: string;
+}>;
+const exactPtyRuntimeArtifact = (facts: PtyRuntimePlatformFacts) => {
+  if (
+    facts.os !== "linux" ||
+    facts.architecture !== "x64" ||
+    facts.nodeAbi !== "127"
+  )
+    return fail("testkit.pty.runtime.identity");
+  if (facts.alpineRelease !== undefined) {
+    if (facts.alpineRelease === "3.24.1\n" && facts.osRelease === undefined)
+      return ptyRuntimeArtifacts.musl;
+    return fail("testkit.pty.runtime.identity");
+  }
+  const fields = facts.osRelease?.trimEnd().split("\n") ?? [];
+  if (
+    fields.length > 32 ||
+    fields.some((field) => field.length > 256) ||
+    fields.filter((field) => field === "ID=debian").length !== 1 ||
+    fields.filter((field) => field === 'VERSION_ID="12"').length !== 1
+  )
+    return fail("testkit.pty.runtime.identity");
+  return ptyRuntimeArtifacts.glibc;
+};
+const selectedPtyRuntimeArtifact = () => {
+  let alpineRelease: string | undefined;
+  try {
+    alpineRelease = readFileSync("/etc/alpine-release", "utf8");
+  } catch (error: unknown) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      (error as { code?: unknown }).code !== "ENOENT"
+    )
+      throw error;
+  }
+  return exactPtyRuntimeArtifact({
+    architecture: process.arch,
+    nodeAbi: process.versions.modules,
+    os: process.platform,
+    ...(alpineRelease === undefined
+      ? { osRelease: boundedProcFile("/etc/os-release", 4 * 1024) }
+      : { alpineRelease }),
+  });
+};
+/** Package-private platform oracle; it conveys no loading authority. */
+export const selectPtyRuntimeTupleForTest = (
+  facts: PtyRuntimePlatformFacts,
+): string => exactPtyRuntimeArtifact(facts).tuple;
 // Linux O_CLOEXEC is not exposed by every supported @types/node version.
 const linuxCloseOnExec = 0x8_0000;
 const assertAuthenticatedRegularFileDescriptor = (
@@ -1367,13 +1430,14 @@ const loadNativePtyBinding = (
   authority: ImmutableCandidateAuthority,
 ): NativePtyBinding => {
   if (nativePtyBinding !== undefined) return nativePtyBinding;
+  const artifact = selectedPtyRuntimeArtifact();
   const path = resolve(
     import.meta.dirname,
-    "../pty-runtime/node127-linux-x64-musl/pty.node",
+    `../pty-runtime/${artifact.tuple}/pty.node`,
   );
   const descriptor = openAuthenticatedRegularFile(
     path,
-    ptyRuntimeDigest,
+    artifact.digest,
     1024 * 1024,
     authority.assertFile,
   );
@@ -1383,7 +1447,7 @@ const loadNativePtyBinding = (
     assertAuthenticatedRegularFileDescriptor(
       descriptor,
       path,
-      ptyRuntimeDigest,
+      artifact.digest,
       1024 * 1024,
       authority.assertFile,
     );

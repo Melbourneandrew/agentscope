@@ -100,6 +100,7 @@ export const selectedRuntimeFiles = Object.freeze([
   "testkit/headless-supervisor.js",
   "testkit/internal/headless-supervisor-backend.js",
   "testkit/pty-terminal-contract.js",
+  "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
   "testkit/pty-runtime/node127-linux-x64-musl/pty.node",
 ]);
 
