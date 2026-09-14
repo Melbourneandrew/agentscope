@@ -231,6 +231,12 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
     );
+    expect(source).toContain(
+      'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
+    );
+    expect(source).toContain(
+      '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
+    );
     expect(source).toContain('  interactiveFailurePhase = "trace";\n');
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
