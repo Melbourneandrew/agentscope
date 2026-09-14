@@ -248,7 +248,7 @@ describe("integration capability manifest", () => {
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
     );
     const quietObservationWindow = source.indexOf(
-      "  const firstObservationAt = Math.min(traceDeadline, bootNow() + 2_750);\n",
+      "  const firstObservationAt = Math.min(traceDeadline, bootNow() + 4_000);\n",
       traceDeadline,
     );
     const preQueryDeadline = source.indexOf(

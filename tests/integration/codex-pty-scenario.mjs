@@ -357,13 +357,16 @@ const readTraceSummary = async (monotonicDeadline) => {
 };
 const waitForTraceSummary = async () => {
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  // The installed hook owns a 2.5 second write deadline.  Do not repeatedly
+  // Codex owns a fixed three-second command-hook window around the installed
+  // hook's 2.5 second write deadline.  Do not repeatedly
   // open the Local SQLite retriever while that write is in flight: an
   // aggressive reader loop can consume the same deadline it is meant to
   // observe.  One hook-deadline-sized quiet period followed by bounded,
   // low-frequency snapshots observes the durable result without competing
-  // with its producer.
-  const firstObservationAt = Math.min(traceDeadline, bootNow() + 2_750);
+  // with its producer.  The quiet period starts when the model request is
+  // observed and covers response settlement plus the complete vendor hook
+  // window before the first retrieval snapshot.
+  const firstObservationAt = Math.min(traceDeadline, bootNow() + 4_000);
   while (bootNow() < firstObservationAt) {
     await new Promise((resolve) =>
       setTimeout(resolve, Math.min(250, firstObservationAt - bootNow())),
