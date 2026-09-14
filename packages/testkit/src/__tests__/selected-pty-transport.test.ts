@@ -471,7 +471,7 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
-  it("delivers the fixed raw control sequence in ordered writes", async () => {
+  it("delivers the fixed raw control sequence after causal output", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request({ stdin: new Uint8Array() }),
@@ -480,13 +480,31 @@ describe("selected PTY transport", () => {
           actions: [{ action: "raw-control-sequence" }],
         },
       },
-      "clean",
+      "raw-control-clean",
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
       eofByte: 4,
       eofByteWritten: false,
       actions: [{ action: "raw-control-sequence", bytes: [3, 4] }],
+    });
+  });
+
+  it("does not deliver EOF before the application reacts to interrupt", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [{ action: "raw-control-sequence" }],
+        },
+      },
+      "control-reaction-missing",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "timeout",
+      actions: [],
+      eofByteWritten: false,
     });
   });
 
