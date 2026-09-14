@@ -6,12 +6,10 @@ import {
   constants,
   chmodSync,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
-  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +19,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
+  readCodexSessionLedgers,
   readBoundedJsonResponse,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
@@ -140,6 +139,13 @@ if (worktree !== "/worktree")
   throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");
 for (const directory of [home, agentscopeHome, worktree, ledger])
   mkdirSync(directory, { recursive: true });
+const homeDescriptor = openSync(
+  home,
+  constants.O_RDONLY |
+    constants.O_DIRECTORY |
+    constants.O_NOFOLLOW |
+    constants.O_NONBLOCK,
+);
 let interactiveFailurePhase = "bootstrap";
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
@@ -225,78 +231,6 @@ const readModelRequests = async () =>
 const waitForModelRequest = async () => {
   while ((await readModelRequests()).length === 0)
     await new Promise((resolve) => setTimeout(resolve, 25));
-};
-const boundedDirectory = (path, pattern, kind) => {
-  let entries;
-  try {
-    entries = readdirSync(path, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === "ENOENT") return [];
-    throw error;
-  }
-  if (
-    entries.length > 32 ||
-    entries.some(
-      (entry) =>
-        !pattern.test(entry.name) ||
-        (kind === "directory" ? !entry.isDirectory() : !entry.isFile()),
-    )
-  )
-    throw new Error("integration.codex.session-ledger");
-  return entries.map(({ name }) => name).sort();
-};
-const readAuthenticatedLedger = (path) => {
-  let descriptor;
-  try {
-    descriptor = openSync(
-      path,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-  try {
-    const before = fstatSync(descriptor);
-    if (!before.isFile() || before.size < 1 || before.size > 2 * 1024 * 1024)
-      throw new Error("integration.codex.session-ledger");
-    const content = readFileSync(`/proc/self/fd/${descriptor}`, "utf8");
-    const after = fstatSync(descriptor);
-    if (before.dev !== after.dev || before.ino !== after.ino)
-      throw new Error("integration.codex.session-ledger");
-    if (
-      before.size !== after.size ||
-      Buffer.byteLength(content) !== before.size
-    )
-      return null;
-    return content;
-  } finally {
-    closeSync(descriptor);
-  }
-};
-const readCodexSessionLedgers = () => {
-  const sessions = join(codexHome, "sessions");
-  let directories = boundedDirectory(sessions, /^\d{4}$/u, "directory").map(
-    (name) => join(sessions, name),
-  );
-  for (const pattern of [/^(?:0[1-9]|1[0-2])$/u, /^(?:0[1-9]|[12]\d|3[01])$/u])
-    directories = directories.flatMap((directory) =>
-      boundedDirectory(directory, pattern, "directory").map((name) =>
-        join(directory, name),
-      ),
-    );
-  const paths = directories.flatMap((directory) =>
-    boundedDirectory(
-      directory,
-      /^rollout-[0-9A-Za-z:.+-]{1,128}\.jsonl$/u,
-      "file",
-    ).map((name) => join(directory, name)),
-  );
-  if (paths.length > 8) throw new Error("integration.codex.session-ledger");
-  const ledgers = paths
-    .map(readAuthenticatedLedger)
-    .filter((content) => content !== null);
-  return ledgers;
 };
 const projectHarnessStatus = (
   records,
@@ -443,7 +377,7 @@ const waitForTraceSummary = async () => {
   // installed hook's writer.
   while (
     !codexTurnTerminalObserved(
-      readCodexSessionLedgers(),
+      readCodexSessionLedgers(homeDescriptor),
       expectedAssistantMessage,
     )
   ) {
@@ -617,6 +551,7 @@ try {
   );
   completed = true;
 } finally {
+  closeSync(homeDescriptor);
   if (!completed) {
     try {
       rmSync(join(ledger, "fixture-result.json"));

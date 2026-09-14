@@ -248,7 +248,7 @@ describe("integration capability manifest", () => {
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
     );
     const terminalObservation = source.indexOf(
-      "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(),\n      expectedAssistantMessage,\n    )\n",
+      "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(homeDescriptor),\n      expectedAssistantMessage,\n    )\n",
       traceDeadline,
     );
     const preQueryDeadline = source.indexOf(
