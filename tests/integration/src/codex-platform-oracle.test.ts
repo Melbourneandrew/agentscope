@@ -40,7 +40,11 @@ const raw = () => ({
       installation: "unchanged",
       configurationPresentCount: 1,
     },
-    uninstall: { disposition: "committed", changedTargetCount: 3 },
+    uninstall: {
+      disposition: "committed",
+      changedTargetCount: 3,
+      targetCount: 3,
+    },
     uninstalledStatus: { installation: "ready", configurationPresentCount: 1 },
   },
 });
@@ -209,6 +213,12 @@ describe("Codex PTY scenario observation boundary", () => {
       "incomplete installed hook removal",
       (value: RawObservation) => {
         value.uninstall.uninstall.changedTargetCount = 1;
+      },
+    ],
+    [
+      "incomplete uninstall target set",
+      (value: RawObservation) => {
+        value.uninstall.uninstall.targetCount = 1;
       },
     ],
     [

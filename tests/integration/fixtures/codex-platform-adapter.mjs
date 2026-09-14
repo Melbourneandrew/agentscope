@@ -150,9 +150,14 @@ export const translateCodexPlatformObservations = (input) => {
     !Number.isSafeInteger(
       uninstall.installedStatus.configurationPresentCount,
     ) ||
-    !exactKeys(uninstall.uninstall, ["changedTargetCount", "disposition"]) ||
+    !exactKeys(uninstall.uninstall, [
+      "changedTargetCount",
+      "disposition",
+      "targetCount",
+    ]) ||
     !boundedString(uninstall.uninstall.disposition, 32) ||
     !Number.isSafeInteger(uninstall.uninstall.changedTargetCount) ||
+    !Number.isSafeInteger(uninstall.uninstall.targetCount) ||
     !exactKeys(uninstall.uninstalledStatus, [
       "configurationPresentCount",
       "installation",
