@@ -348,6 +348,7 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
     inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
   }),
   z.strictObject({ action: z.literal("eof") }),
+  z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),
@@ -368,6 +369,10 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("eof"),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("wait-for-semantic-completion"),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
@@ -574,7 +579,8 @@ export interface IsolationPlan {
   readonly runId: string;
   readonly scenarioId: string;
   readonly executionMode: "headless" | "interactive";
-  readonly terminalAction: "none" | "eof" | "post-completion-input";
+  readonly terminalAction:
+    "none" | "eof" | "post-completion-input" | "post-completion-controls";
   readonly manifestIdentity: string;
   readonly candidateBundleIdentity: string;
   readonly candidateRevision: string;
@@ -628,19 +634,45 @@ const headlessReceiptPasses = (
 const ptyReceiptPasses = (
   receipt: PtyTerminalReceipt | null,
   terminalAction: IsolationPlan["terminalAction"],
-): boolean =>
-  receipt !== null &&
-  receipt.outcome === "completed" &&
-  receipt.exitCode === 0 &&
-  receipt.signal === null &&
-  receipt.cleanup === "clean" &&
-  receipt.residualProcessCount === 0 &&
-  receipt.finalSnapshot.semanticState === "completed" &&
-  receipt.eofByteWritten === (terminalAction === "eof") &&
-  receipt.processJoined &&
-  receipt.terminalInputJoined &&
-  receipt.terminalOutputJoined &&
-  receipt.terminalTransportClosed;
+): boolean => {
+  if (receipt === null) return false;
+  const actions = receipt.request.interaction.actions.map(
+    ({ action }) => action,
+  );
+  const terminalActionMatches =
+    (terminalAction === "eof" &&
+      actions.at(-1) === "eof" &&
+      !actions.includes("wait-for-semantic-completion") &&
+      !actions.includes("interrupt-byte")) ||
+    (terminalAction === "post-completion-input" &&
+      actions.at(-1) === "input" &&
+      actions.includes("wait-for-semantic-completion") &&
+      !actions.includes("eof") &&
+      !actions.includes("interrupt-byte")) ||
+    (terminalAction === "post-completion-controls" &&
+      JSON.stringify(actions.slice(-3)) ===
+        JSON.stringify([
+          "wait-for-semantic-completion",
+          "interrupt-byte",
+          "eof",
+        ]));
+  return (
+    terminalActionMatches &&
+    receipt.outcome === "completed" &&
+    receipt.exitCode === 0 &&
+    receipt.signal === null &&
+    receipt.cleanup === "clean" &&
+    receipt.residualProcessCount === 0 &&
+    receipt.finalSnapshot.semanticState === "completed" &&
+    receipt.eofByteWritten ===
+      (terminalAction === "eof" ||
+        terminalAction === "post-completion-controls") &&
+    receipt.processJoined &&
+    receipt.terminalInputJoined &&
+    receipt.terminalOutputJoined &&
+    receipt.terminalTransportClosed
+  );
+};
 
 const terminalEvidencePasses = (value: {
   executionMode: "headless" | "interactive";
@@ -665,7 +697,12 @@ const isolationEvidenceSchema = z
     candidateBundleIdentity: digest,
     candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
     executionMode: z.enum(["headless", "interactive"]),
-    terminalAction: z.enum(["none", "eof", "post-completion-input"]),
+    terminalAction: z.enum([
+      "none",
+      "eof",
+      "post-completion-input",
+      "post-completion-controls",
+    ]),
     baseImage: imageReference,
     mockServerImage: imageReference,
     baseImageIdentity: preparedImageIdentitySchema,
@@ -835,9 +872,11 @@ export const createIsolationPlan = (input: {
     terminalAction:
       input.scenario.executionMode === "headless"
         ? "none"
-        : input.scenario.waitForSemanticCompletionBeforeEof
-          ? "post-completion-input"
-          : "eof",
+        : input.scenario.postCompletionControls.length > 0
+          ? "post-completion-controls"
+          : input.scenario.waitForSemanticCompletionBeforeEof
+            ? "post-completion-input"
+            : "eof",
     manifestIdentity: input.manifestIdentity,
     candidateBundleIdentity: input.candidate.bundleIdentity,
     candidateRevision: input.candidate.candidateRevision,
