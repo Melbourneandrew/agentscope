@@ -13,6 +13,7 @@ import {
 import {
   capabilityScenarioImages,
   capabilityManifestIdentity,
+  compileInteractivePtyActions,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
   selectCapabilityScenarios,
@@ -194,6 +195,18 @@ describe("integration capability manifest", () => {
     );
     expect(scenario.postCompletionInputByteLength).toBe(0);
     expect(scenario.postCompletionControls).toEqual(["interrupt-byte", "eof"]);
+    expect(
+      compileInteractivePtyActions(
+        scenario,
+        Buffer.from(scenario.terminalInputBase64, "base64"),
+      ).map(({ action }) => action),
+    ).toEqual([
+      "resize",
+      "input",
+      "wait-for-semantic-completion",
+      "interrupt-byte",
+      "eof",
+    ]);
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
