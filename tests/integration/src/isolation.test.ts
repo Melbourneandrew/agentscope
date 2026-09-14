@@ -308,7 +308,10 @@ const ptyControlReceiptFor = () => {
     actions: [
       ...receipt.request.interaction.actions.slice(0, 2),
       { action: "wait-for-semantic-completion" as const },
-      { action: "raw-control-sequence" as const },
+      {
+        action: "raw-control-sequence" as const,
+        reactionUtf8: "Shutting down...",
+      },
     ],
   };
   const request = { ...receipt.request, interaction };

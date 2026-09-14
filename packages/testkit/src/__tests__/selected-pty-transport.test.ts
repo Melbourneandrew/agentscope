@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.js";
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
-import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
+import type {
+  SelectedPtyExecutionAction,
+  SelectedPtyExecutionRequest,
+} from "../pty-terminal-contract.js";
 import {
   executeSelectedPtyTransportForTest,
   validateSelectedContainerFilesystemFactsForTest,
@@ -16,6 +19,10 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const rawControlAction = {
+  action: "raw-control-sequence" as const,
+  reactionUtf8: "interrupt-observed",
+};
 
 const request = (
   overrides: Partial<HeadlessExecutionRequest> = {},
@@ -477,7 +484,7 @@ describe("selected PTY transport", () => {
         ...request({ stdin: new Uint8Array() }),
         interaction: {
           trigger: "semantic-ready",
-          actions: [{ action: "raw-control-sequence" }],
+          actions: [rawControlAction],
         },
       },
       "raw-control-clean",
@@ -490,23 +497,52 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("does not deliver EOF before the application reacts to interrupt", async () => {
-    const receipt = await executeSelectedPtyTransportForTest(
-      {
-        ...request({ stdin: new Uint8Array() }),
-        interaction: {
-          trigger: "semantic-ready",
-          actions: [{ action: "raw-control-sequence" }],
+  it.each([
+    ["missing", undefined, "testkit.headless.kernel.request"],
+    ["empty", "", "testkit.pty.request"],
+    ["oversize", "x".repeat(129), "testkit.pty.request"],
+  ] as const)(
+    "rejects a %s raw-control reaction",
+    async (_name, reaction, code) => {
+      const action = {
+        action: "raw-control-sequence",
+        ...(reaction === undefined ? {} : { reactionUtf8: reaction }),
+      } as unknown as SelectedPtyExecutionAction;
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...request({ stdin: new Uint8Array() }),
+            interaction: { trigger: "semantic-ready", actions: [action] },
+          },
+          "raw-control-clean",
+        ),
+      ).rejects.toMatchObject({ code });
+    },
+  );
+
+  it.each([
+    "control-reaction-missing",
+    "control-reaction-substitution",
+  ] as const)(
+    "does not deliver EOF without the exact application reaction under %s",
+    async (seed) => {
+      const receipt = await executeSelectedPtyTransportForTest(
+        {
+          ...request({ stdin: new Uint8Array() }),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [rawControlAction],
+          },
         },
-      },
-      "control-reaction-missing",
-    );
-    expect(receipt).toMatchObject({
-      outcome: "timeout",
-      actions: [],
-      eofByteWritten: false,
-    });
-  });
+        seed,
+      );
+      expect(receipt).toMatchObject({
+        outcome: "timeout",
+        actions: [],
+        eofByteWritten: false,
+      });
+    },
+  );
 
   it("applies readiness-gated input before a fast completion burst", async () => {
     const input = new Uint8Array([12]);
@@ -523,7 +559,7 @@ describe("selected PTY transport", () => {
                 "ef6cbd2161eaea7943ce8693b9824d23d1793ffb1c0fca05b600d3899b44c977",
             },
             { action: "wait-for-semantic-completion" },
-            { action: "raw-control-sequence" },
+            rawControlAction,
           ],
         },
       },
@@ -549,7 +585,7 @@ describe("selected PTY transport", () => {
         ...request({ stdin: new Uint8Array() }),
         interaction: {
           trigger: "semantic-ready" as const,
-          actions: [{ action: "raw-control-sequence" as const }],
+          actions: [rawControlAction],
         },
       };
       const receipt = await executeSelectedPtyTransportForTest(selected, seed);
@@ -569,7 +605,7 @@ describe("selected PTY transport", () => {
           ...request({ stdin: new Uint8Array() }),
           interaction: {
             trigger: "semantic-ready",
-            actions: [{ action: "raw-control-sequence" }],
+            actions: [rawControlAction],
           },
         },
         seed,

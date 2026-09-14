@@ -344,7 +344,12 @@ export const compileInteractivePtyActions = (
                 ),
               ]),
           ...(scenario.postCompletionControl === "raw-control-sequence"
-            ? [{ action: "raw-control-sequence" as const }]
+            ? [
+                {
+                  action: "raw-control-sequence" as const,
+                  reactionUtf8: "Shutting down...",
+                },
+              ]
             : []),
         ]
       : [{ action: "eof" as const }]),
