@@ -136,6 +136,7 @@ const productionSources = sourceFiles
   .sort();
 const expectedArtifacts = [
   ...productionSources.flatMap((file) => [`${file}.d.ts`, `${file}.js`]),
+  "pty-runtime/node127-linux-x64-glibc/pty.node",
   "pty-runtime/node127-linux-x64-musl/pty.node",
 ].sort();
 const artifactAncestorDirectories = (file) => {
