@@ -16,6 +16,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   readBoundedJsonResponse,
+  waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
 import { translateCodexPlatformObservations } from "./scenario-adapter.mjs";
@@ -376,7 +377,13 @@ const waitForTraceSummary = async () => {
     if (bootNow() >= traceDeadline)
       throw new Error("integration.codex.trace-deadline");
     if (summary !== null) return summary;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 500,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
     remaining();
   }
 };
