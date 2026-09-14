@@ -471,6 +471,25 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
+  it("atomically applies readiness-gated interrupt and terminal EOF semantics", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [{ action: "interrupt-and-eof" }],
+        },
+      },
+      "clean",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      eofByte: 4,
+      eofByteWritten: true,
+      actions: [{ action: "interrupt-and-eof", interruptByte: 3, eofByte: 4 }],
+    });
+  });
+
   it("signals the authenticated selected root from the action plan", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
