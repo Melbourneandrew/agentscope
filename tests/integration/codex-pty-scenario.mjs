@@ -408,6 +408,8 @@ try {
     codex,
     [
       "--no-alt-screen",
+      "--enable",
+      "hooks",
       "--dangerously-bypass-hook-trust",
       "--sandbox",
       "read-only",
