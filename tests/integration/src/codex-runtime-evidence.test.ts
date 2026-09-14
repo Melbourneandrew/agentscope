@@ -2,11 +2,48 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
+  codexTurnTerminalObserved,
   readBoundedJsonResponse,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
 describe("Codex bounded native ledgers", () => {
+  it("accepts exactly one complete native task-terminal witness", () => {
+    const message = "Codex PTY fixture turn finished.";
+    const terminal = JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-1",
+        last_agent_message: message,
+      },
+    });
+    expect(codexTurnTerminalObserved([], message)).toBe(false);
+    expect(codexTurnTerminalObserved([`${terminal}\n`], message)).toBe(true);
+    expect(codexTurnTerminalObserved([terminal], message)).toBe(false);
+    expect(() =>
+      codexTurnTerminalObserved([`${terminal}\n${terminal}\n`], message),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexTurnTerminalObserved(
+        [
+          `${JSON.stringify({
+            type: "event_msg",
+            payload: {
+              type: "task_complete",
+              turn_id: "turn-1",
+              last_agent_message: "substituted",
+            },
+          })}\n`,
+        ],
+        message,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() => codexTurnTerminalObserved(["{\n"], message)).toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+
   it("reads one bounded JSON response and rejects overflow or malformed data", async () => {
     await expect(
       readBoundedJsonResponse(
