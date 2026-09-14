@@ -41,7 +41,7 @@ const raw = () => ({
       configurationPresentCount: 1,
     },
     uninstall: { disposition: "committed", changedTargetCount: 1 },
-    uninstalledStatus: { installation: "ready", configurationPresentCount: 0 },
+    uninstalledStatus: { installation: "ready", configurationPresentCount: 1 },
   },
 });
 type RawObservation = ReturnType<typeof raw>;
@@ -203,6 +203,12 @@ describe("Codex PTY scenario observation boundary", () => {
       "uninstall failure",
       (value: RawObservation) => {
         value.uninstall.uninstall.disposition = "rolled-back";
+      },
+    ],
+    [
+      "scenario-owned configuration deletion",
+      (value: RawObservation) => {
+        value.uninstall.uninstalledStatus.configurationPresentCount = 0;
       },
     ],
   ])("rejects %s", (_name, mutate) => {

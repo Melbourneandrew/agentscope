@@ -480,7 +480,7 @@ try {
   const uninstalledStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "ready",
-    0,
+    1,
   );
   const translated = translateCodexPlatformObservations({
     scenarioId,
