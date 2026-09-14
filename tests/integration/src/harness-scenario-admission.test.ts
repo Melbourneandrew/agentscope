@@ -93,6 +93,7 @@ const fixture = () => ({
     runtimeArtifacts: [],
     terminalInputBase64: "AA==",
     postCompletionInputByteLength: 0,
+    postCompletionControls: [],
     waitForSemanticCompletionBeforeEof: false,
     resourceClass: "small" as const,
     shardWeight: 1,

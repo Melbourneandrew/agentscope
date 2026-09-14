@@ -190,9 +190,10 @@ describe("integration capability manifest", () => {
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from("\f\u0003\u0004"),
+      Buffer.from("\f"),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(2);
+    expect(scenario.postCompletionInputByteLength).toBe(0);
+    expect(scenario.postCompletionControls).toEqual(["interrupt-byte", "eof"]);
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
@@ -551,6 +552,37 @@ describe("integration capability execution modes", () => {
             ...original.scenarios[0]!,
             executionMode: "interactive",
             outputContract: "jsonl",
+          },
+        ],
+      }),
+    ).toThrow("integration.manifest.invalid");
+  });
+
+  it("rejects misordered or headless terminal controls", () => {
+    const original = manifestFixture();
+    const interactive = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    for (const postCompletionControls of [
+      ["eof", "interrupt-byte"],
+      ["interrupt-byte"],
+      ["eof"],
+    ])
+      expect(() =>
+        compileCapabilityManifest({
+          ...original,
+          scenarios: [
+            { ...interactive, postCompletionControls } as typeof interactive,
+          ],
+        }),
+      ).toThrow("integration.manifest.invalid");
+    expect(() =>
+      compileCapabilityManifest({
+        ...original,
+        scenarios: [
+          {
+            ...original.scenarios[0]!,
+            postCompletionControls: ["interrupt-byte", "eof"],
           },
         ],
       }),

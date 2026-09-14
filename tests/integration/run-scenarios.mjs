@@ -996,13 +996,22 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       ...(selectedScenario.waitForSemanticCompletionBeforeEof
         ? [
             { action: "wait-for-semantic-completion" },
-            {
-              action: "input",
-              byteLength: selectedScenario.postCompletionInputByteLength,
-              inputSha256: createHash("sha256")
-                .update(input.subarray(initialInputBytes))
-                .digest("hex"),
-            },
+            ...(selectedScenario.postCompletionInputByteLength === 0
+              ? []
+              : [
+                  {
+                    action: "input",
+                    byteLength: selectedScenario.postCompletionInputByteLength,
+                    inputSha256: createHash("sha256")
+                      .update(input.subarray(initialInputBytes))
+                      .digest("hex"),
+                  },
+                ]),
+            ...selectedScenario.postCompletionControls.map((control) =>
+              control === "interrupt-byte"
+                ? { action: "interrupt-byte", byte: 3 }
+                : { action: "eof" },
+            ),
           ]
         : []),
       ...(selectedScenario.waitForSemanticCompletionBeforeEof
@@ -1022,6 +1031,8 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
         JSON.stringify(expectedActions) &&
       JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
         JSON.stringify(expectedActions.map(({ action }) => action)) &&
+      receipt?.eofByteWritten ===
+        selectedScenario.postCompletionControls.includes("eof") &&
       receipt?.isTTY === true &&
       receipt?.observedCanonicalMode === true
     );
