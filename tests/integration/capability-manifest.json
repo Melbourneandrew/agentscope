@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-e6ee72376cee4e708d39e5340f946490c496e52b9448a8af6ae9c9c2d17fe154",
+  "manifestIdentity": "sha256-e125870372031661f50a431c5df6ee2485a9ce0e7f3bb521b758d05287f29109",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -143,7 +143,7 @@
       "harnessEvidenceId": "codex-0-149-1",
       "executionMode": "interactive",
       "outputContract": "semantic-pty",
-      "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
       "modelRoutes": ["codex-tui-responses"],
       "tags": ["codex", "interactive", "pr"],
@@ -158,7 +158,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "a2ff98ff09c540f1443dfbc0c6bd3945d2adec4834c7931a272e635df6db3503"
+        "sha256": "f2db713f0d6e0d820d3d86cbcc550245668ca5a06471bcbdb2d478941823e61c"
       },
       "runtimeArtifacts": [
         {
@@ -175,7 +175,7 @@
             "path": "packages/harnesses/codex/dist/configuration.js"
           },
           "destination": "codex-configuration.js",
-          "sha256": "b3ac1851d450f2c2b020208e9a1e89b0e6ba7c2cf5a6fdf1d2143386c89f5417"
+          "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
         }
       ],
       "terminalInputBase64": "DC9xdWl0DQ==",
