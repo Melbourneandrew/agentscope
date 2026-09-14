@@ -434,11 +434,11 @@ try {
   }
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   interactiveFailurePhase = "tui-exit";
-  await codexRun;
   if (traceFailure !== undefined) {
     interactiveFailurePhase = "trace";
     throw traceFailure;
   }
+  await codexRun;
   interactiveFailurePhase = "verify";
   const modelRequests = await readModelRequests();
   if (readFileSync(hookPath, "utf8") !== originalHooks)
