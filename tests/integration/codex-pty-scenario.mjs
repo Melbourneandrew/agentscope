@@ -128,6 +128,8 @@ const worktree = required("AGENTSCOPE_WORKTREE");
 const ledger = required("AGENTSCOPE_LEDGER");
 const scenarioId = required("AGENTSCOPE_SCENARIO_ID");
 const modelEndpoint = required("AGENTSCOPE_MODEL_SERVER_URL");
+if (worktree !== "/worktree")
+  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");
 for (const directory of [home, agentscopeHome, worktree, ledger])
   mkdirSync(directory, { recursive: true });
 let interactiveFailurePhase = "bootstrap";
@@ -394,10 +396,10 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
-  const configuration = createCodexInternalProviderConfiguration({
+  const configuration = `${createCodexInternalProviderConfiguration({
     baseUrl: `${modelEndpoint}/v1`,
     model: "fixture-model",
-  });
+  })}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
   writeFileSync(join(codexHome, "config.toml"), configuration, {
     flag: "wx",
     mode: 0o600,
