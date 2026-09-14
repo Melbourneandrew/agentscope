@@ -270,15 +270,8 @@ const scenarioSchema = z
       ),
     terminalInputBase64: z.string().regex(/^[A-Za-z0-9+/]{1,136}={0,2}$/u),
     postCompletionInputByteLength: z.number().int().min(0).max(32),
-    postCompletionControls: z
-      .array(z.enum(["interrupt-byte", "eof"]))
-      .max(2)
-      .refine(
-        (value) =>
-          value.length === 0 ||
-          JSON.stringify(value) === JSON.stringify(["interrupt-byte", "eof"]),
-      ),
-    waitForSemanticCompletionBeforeEof: z.boolean(),
+    postCompletionControl: z.enum(["none", "raw-control-sequence"]),
+    waitForSemanticCompletionBeforeTerminalAction: z.boolean(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
   })
@@ -288,16 +281,16 @@ const scenarioSchema = z
         (value.outputContract !== "jsonl" ||
           value.terminalInputBase64 !== "AA==" ||
           value.postCompletionInputByteLength !== 0 ||
-          value.postCompletionControls.length !== 0 ||
-          value.waitForSemanticCompletionBeforeEof)) ||
+          value.postCompletionControl !== "none" ||
+          value.waitForSemanticCompletionBeforeTerminalAction)) ||
       (value.executionMode === "interactive" &&
         (value.outputContract !== "semantic-pty" ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength < 1 ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength > 100 ||
-          value.waitForSemanticCompletionBeforeEof !==
+          value.waitForSemanticCompletionBeforeTerminalAction !==
             (value.postCompletionInputByteLength > 0 ||
-              value.postCompletionControls.length > 0) ||
-          (value.postCompletionControls.length > 0 &&
+              value.postCompletionControl !== "none") ||
+          (value.postCompletionControl !== "none" &&
             value.postCompletionInputByteLength !== 0) ||
           value.postCompletionInputByteLength >=
             Buffer.from(value.terminalInputBase64, "base64").byteLength))
@@ -339,7 +332,7 @@ export const compileInteractivePtyActions = (
   return deepFreeze([
     { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
     inputAction(0, initialInputBytes),
-    ...(scenario.waitForSemanticCompletionBeforeEof
+    ...(scenario.waitForSemanticCompletionBeforeTerminalAction
       ? [
           { action: "wait-for-semantic-completion" as const },
           ...(scenario.postCompletionInputByteLength === 0
@@ -350,14 +343,9 @@ export const compileInteractivePtyActions = (
                   scenario.postCompletionInputByteLength,
                 ),
               ]),
-          ...(JSON.stringify(scenario.postCompletionControls) ===
-          JSON.stringify(["interrupt-byte", "eof"])
+          ...(scenario.postCompletionControl === "raw-control-sequence"
             ? [{ action: "raw-control-sequence" as const }]
-            : scenario.postCompletionControls.map((control) =>
-                control === "interrupt-byte"
-                  ? ({ action: "interrupt-byte", byte: 3 } as const)
-                  : ({ action: "eof" } as const),
-              )),
+            : []),
         ]
       : [{ action: "eof" as const }]),
   ]);
