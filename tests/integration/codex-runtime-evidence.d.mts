@@ -14,6 +14,20 @@ export function codexTurnTerminalObserved(
 
 export function readCodexSessionLedgers(homeDescriptor: number): string[];
 
+export function openLocalSqliteLifecycle(homeDescriptor: number): number;
+
+export function localSqliteReporterSettled(
+  lifecycleDescriptor: number,
+): boolean;
+
+export function settledLocalSqliteLifecycleSnapshot(input: {
+  before: Readonly<Record<string, unknown>>;
+  first: ReadonlyArray<Readonly<{ kind: string; name: string }>>;
+  middle: Readonly<Record<string, unknown>>;
+  second: ReadonlyArray<Readonly<{ kind: string; name: string }>>;
+  after: Readonly<Record<string, unknown>>;
+}): boolean;
+
 export function settledCodexLedgerSnapshot(input: {
   before: Readonly<Record<string, unknown>>;
   first: Buffer;
