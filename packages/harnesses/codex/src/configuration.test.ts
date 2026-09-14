@@ -72,7 +72,7 @@ it("pins the upstream 0.149.1 external capability registry authority", () => {
     createHash("sha256")
       .update(CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features.join("\n"))
       .digest("hex"),
-  ).toBe("d2ec2685df722cf37f717a2e0d3fd689327b5b984d66da0cfdba943024ab8c2f");
+  ).toBe("4ac102ace3144147eebb14217ba8bcfa927bc1272dcea285764d16c6a8e0aea0");
 });
 
 describe("Codex configuration prototype boundary", () => {
@@ -141,6 +141,7 @@ describe("Codex internal provider configuration", () => {
     expect(configuration).toContain("stream_max_retries = 0");
     expect(configuration).toContain('trace_exporter = "none"');
     expect(configuration).toContain('metrics_exporter = "none"');
+    expect(configuration).not.toContain("tool_registry = false");
     expect(configuration).not.toMatch(/api[_-]?key|authorization|token/iu);
   });
 
