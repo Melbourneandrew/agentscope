@@ -194,7 +194,8 @@ describe("integration capability manifest", () => {
       Buffer.from("\f"),
     );
     expect(scenario.postCompletionInputByteLength).toBe(0);
-    expect(scenario.postCompletionControls).toEqual(["interrupt-byte", "eof"]);
+    expect(scenario.postCompletionControl).toBe("raw-control-sequence");
+    expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     expect(
       compileInteractivePtyActions(
         scenario,
@@ -570,21 +571,21 @@ describe("integration capability execution modes", () => {
     ).toThrow("integration.manifest.invalid");
   });
 
-  it("rejects misordered or headless terminal controls", () => {
+  it("rejects unknown or headless raw terminal controls", () => {
     const original = manifestFixture();
     const interactive = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
-    for (const postCompletionControls of [
-      ["eof", "interrupt-byte"],
-      ["interrupt-byte"],
-      ["eof"],
+    for (const postCompletionControl of [
+      "eof",
+      "interrupt-byte",
+      ["interrupt-byte", "eof"],
     ])
       expect(() =>
         compileCapabilityManifest({
           ...original,
           scenarios: [
-            { ...interactive, postCompletionControls } as typeof interactive,
+            { ...interactive, postCompletionControl } as typeof interactive,
           ],
         }),
       ).toThrow("integration.manifest.invalid");
@@ -594,7 +595,8 @@ describe("integration capability execution modes", () => {
         scenarios: [
           {
             ...original.scenarios[0]!,
-            postCompletionControls: ["interrupt-byte", "eof"],
+            postCompletionControl: "raw-control-sequence",
+            waitForSemanticCompletionBeforeTerminalAction: true,
           },
         ],
       }),

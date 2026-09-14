@@ -880,9 +880,9 @@ export const createIsolationPlan = (input: {
     terminalAction:
       input.scenario.executionMode === "headless"
         ? "none"
-        : input.scenario.postCompletionControls.length > 0
+        : input.scenario.postCompletionControl !== "none"
           ? "post-completion-controls"
-          : input.scenario.waitForSemanticCompletionBeforeEof
+          : input.scenario.waitForSemanticCompletionBeforeTerminalAction
             ? "post-completion-input"
             : "eof",
     manifestIdentity: input.manifestIdentity,

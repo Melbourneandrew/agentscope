@@ -1001,9 +1001,7 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
         JSON.stringify(expectedActions.map(({ action }) => action)) &&
       receipt?.eofByteWritten ===
-        (selectedScenario.postCompletionControls.includes("eof") &&
-          JSON.stringify(selectedScenario.postCompletionControls) !==
-            JSON.stringify(["interrupt-byte", "eof"])) &&
+        !selectedScenario.waitForSemanticCompletionBeforeTerminalAction &&
       receipt?.isTTY === true &&
       receipt?.observedCanonicalMode === true
     );
