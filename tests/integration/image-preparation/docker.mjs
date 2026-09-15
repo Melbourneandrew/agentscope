@@ -863,6 +863,8 @@ export const createDockerOperations = (state) => {
       "default",
       "--platform",
       platformText(platform),
+      "--progress",
+      "plain",
       "--pull=false",
       "--tag",
       tag,
