@@ -288,6 +288,7 @@ const verifyFailureEvidence = (expectedCase) => {
         "certificationCase",
         "certificationPredicate",
         "certificationReadiness",
+        "causalFailure",
         "cleanupFailure",
         "controllerFailureEvidenceVersion",
         "controllerOutcome",
@@ -314,6 +315,10 @@ const verifyFailureEvidence = (expectedCase) => {
           )
         : record.certificationReadiness !== null) ||
       !validPtyFailure(record.installedPtyFailure) ||
+      !(
+        record.causalFailure === null ||
+        /^integration\.[a-z.-]{1,96}$/u.test(record.causalFailure)
+      ) ||
       !validPrivateCleanup(
         record.privateCleanup,
         manifest.preparedAuthorityDigests,
