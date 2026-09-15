@@ -1656,6 +1656,15 @@ const runScenario = async (plan, signal) => {
   } catch (error) {
     let terminalMutationProved = false;
     try {
+      terminalMutationProved = await proveFailedAttachSettled(
+        error,
+        plan,
+        signal,
+      );
+      if (!terminalMutationProved)
+        throw new Error("integration.isolation.child-failure", {
+          cause: error,
+        });
       if (plan.executionMode === "interactive")
         process.stderr.write(
           `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
@@ -1673,15 +1682,6 @@ const runScenario = async (plan, signal) => {
           fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
         })
       ) {
-        terminalMutationProved = await proveFailedAttachSettled(
-          error,
-          plan,
-          signal,
-        );
-        if (!terminalMutationProved)
-          throw new Error("integration.isolation.child-failure", {
-            cause: error,
-          });
         observeSubstrateCertificationPredicate(
           plan.runId,
           SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
@@ -1703,15 +1703,6 @@ const runScenario = async (plan, signal) => {
             : captureHeadlessReceipt(output, plan, {
                 outerMonotonicDeadline,
               });
-        terminalMutationProved = await proveFailedAttachSettled(
-          error,
-          plan,
-          signal,
-        );
-        if (!terminalMutationProved)
-          throw new Error("integration.isolation.child-failure", {
-            cause: error,
-          });
         observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
         registerScenarioReceipt(plan, receipt);
         return { receipt, succeeded: false };
