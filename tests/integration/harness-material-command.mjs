@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const maximumOutputBytes = 8 * 1024 * 1024;
-let diagnosticStage = "dispatch";
 const fail = () => {
   throw new Error("integration.harness-material-command.failed");
 };
@@ -55,7 +54,6 @@ const gpgArguments = (home) => [
 ];
 
 const verifyNpm = async (root, policy) => {
-  diagnosticStage = "npm-policy";
   const packages = Array.isArray(policy.packages) ? policy.packages : fail();
   writeFileSync(
     resolve(root, "package.json"),
@@ -76,7 +74,6 @@ const verifyNpm = async (root, policy) => {
   );
   const environment = npmEnvironment(resolve(root, "home"), policy.registry);
   const npm = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
-  diagnosticStage = "npm-version";
   const { stdout: npmVersion } = await execute(
     "/usr/local/bin/node",
     [npm, "--version"],
@@ -88,7 +85,6 @@ const verifyNpm = async (root, policy) => {
     },
   );
   if (npmVersion !== `${policy.verifierNpmVersion}\n`) fail();
-  diagnosticStage = "npm-install";
   await execute(
     "/usr/local/bin/node",
     [
@@ -102,7 +98,6 @@ const verifyNpm = async (root, policy) => {
     ],
     { cwd: root, env: environment, maxBuffer: maximumOutputBytes },
   );
-  diagnosticStage = "npm-lock";
   const lock = readJson(resolve(root, "package-lock.json"));
   for (const entry of packages) {
     const installed = record(
@@ -115,7 +110,6 @@ const verifyNpm = async (root, policy) => {
     )
       fail();
   }
-  diagnosticStage = "npm-audit";
   const { stdout } = await execute(
     "/usr/local/bin/node",
     [
@@ -135,7 +129,6 @@ const verifyNpm = async (root, policy) => {
     },
   );
   if (Buffer.byteLength(stdout) > maximumOutputBytes) fail();
-  diagnosticStage = "npm-audit-shape";
   const audit = record(JSON.parse(stdout));
   if (
     !Array.isArray(audit.invalid) ||
@@ -146,7 +139,6 @@ const verifyNpm = async (root, policy) => {
     audit.verified.length !== packages.length
   )
     fail();
-  diagnosticStage = "npm-attestation-match";
   for (const entry of packages) {
     const verified = audit.verified.find(
       (candidate) =>
@@ -248,6 +240,5 @@ try {
   if (operation === "npm-verify") await verifyNpm(root, policy);
   else await verifyGpg(root, policy);
 } catch {
-  process.stderr.write(`agentscope-material-command:${diagnosticStage}\n`);
   process.exitCode = 1;
 }
