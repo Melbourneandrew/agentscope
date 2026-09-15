@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
@@ -93,6 +92,7 @@ const harnessMaterialSchema = z.discriminatedUnion("kind", [
     kind: z.literal("npm"),
     platformIdentity: digest,
     verifierImage: dockerImage,
+    verifierNpmVersion: semver,
     registry: z.literal("https://registry.npmjs.org/"),
     packages: z
       .array(npmMaterialPackageSchema)
@@ -308,53 +308,7 @@ const manifestSchema = z.strictObject({
 
 export type CapabilityManifest = z.infer<typeof manifestSchema>;
 export type CapabilityScenario = CapabilityManifest["scenarios"][number];
-
-export const compileInteractivePtyActions = (
-  scenario: CapabilityScenario,
-  input: Uint8Array,
-) => {
-  if (
-    scenario.executionMode !== "interactive" ||
-    scenario.outputContract !== "semantic-pty" ||
-    input.byteLength !==
-      Buffer.from(scenario.terminalInputBase64, "base64").byteLength
-  )
-    throw new Error("integration.manifest.interaction");
-  const initialInputBytes =
-    input.byteLength - scenario.postCompletionInputByteLength;
-  const inputAction = (start: number, byteLength: number) => ({
-    action: "input" as const,
-    byteLength,
-    inputSha256: createHash("sha256")
-      .update(input.subarray(start, start + byteLength))
-      .digest("hex"),
-  });
-  return deepFreeze([
-    { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
-    inputAction(0, initialInputBytes),
-    ...(scenario.waitForSemanticCompletionBeforeTerminalAction
-      ? [
-          { action: "wait-for-semantic-completion" as const },
-          ...(scenario.postCompletionInputByteLength === 0
-            ? []
-            : [
-                inputAction(
-                  initialInputBytes,
-                  scenario.postCompletionInputByteLength,
-                ),
-              ]),
-          ...(scenario.postCompletionControl === "interrupt-byte"
-            ? [
-                {
-                  action: "interrupt-byte" as const,
-                  byte: 3 as const,
-                },
-              ]
-            : []),
-        ]
-      : [{ action: "eof" as const }]),
-  ]);
-};
+export { compileInteractivePtyActions } from "./interactive-pty-actions.js";
 
 const sortedUnique = (values: readonly string[]): string[] =>
   [...values].sort((left, right) => left.localeCompare(right));

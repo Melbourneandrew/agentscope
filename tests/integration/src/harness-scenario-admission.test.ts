@@ -20,6 +20,7 @@ const fixture = () => ({
       kind: "npm" as const,
       platformIdentity: digest("9"),
       verifierImage: `node@sha256:${"a".repeat(64)}`,
+      verifierNpmVersion: "11.19.1",
       registry: "https://registry.npmjs.org/" as const,
       packages: [
         {

@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-99a9c3fcd2964dc2f492187f6ded441d61fee9a24ffa180021246a23485c940c",
+  "manifestIdentity": "sha256-a5cc3913ce07c2f5366dd06d5ec754301a624ac415d6f12634a67d87817bc907",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -15,7 +15,8 @@
       "material": {
         "kind": "npm",
         "platformIdentity": "sha256-9d99a75171aea000c711b34c0e5e3f28d3d537dd99d110eafbfbc2bd8e52c2bf",
-        "verifierImage": "node@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553",
+        "verifierImage": "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+        "verifierNpmVersion": "11.19.1",
         "registry": "https://registry.npmjs.org/",
         "packages": [
           {

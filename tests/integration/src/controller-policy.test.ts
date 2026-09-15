@@ -90,6 +90,10 @@ describe("integration controller policy", () => {
     expect(material).not.toContain("runSupervisedProcess");
     expect(command).toContain('root !== "/verify"');
     expect(command).toContain('NPM_CONFIG_IGNORE_SCRIPTS: "true"');
+    expect(command).toContain(
+      "npmVersion !== `${policy.verifierNpmVersion}\\n`",
+    );
+    expect(command).toContain("verified.attestationBundles");
     expect(command).toContain('"--no-auto-key-retrieve"');
   });
 
@@ -210,6 +214,7 @@ describe("integration controller supervision", () => {
 // The workflow policy inventory is kept in one closed review surface.
 // eslint-disable-next-line max-lines-per-function
 describe("integration workflow policy", () => {
+  // eslint-disable-next-line max-lines-per-function -- one closed workflow and staged-runtime inventory
   it("routes candidate, clean replay, and controlled rejection through one command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -319,6 +324,15 @@ describe("integration workflow policy", () => {
     expect(scenarios).toContain('["container", "wait", containerId]');
     expect(scenarios).toContain('["container", "inspect", containerId]');
     expect(scenarios).toContain('"COPY dist ./dist"');
+    expect(scenarios).toContain(
+      'const packageBoundaryPath = resolve(context, "dist/package.json")',
+    );
+    expect(scenarios).toContain("fchmodSync(packageBoundaryDescriptor, 0o644)");
+    expect(scenarios).toContain("constants.O_NOFOLLOW");
+    expect(scenarios).toContain("descriptorStatus.ino !== pathStatus.ino");
+    expect(scenarios.indexOf('"COPY dist ./dist"')).toBeLessThan(
+      scenarios.indexOf('"USER node"'),
+    );
     expect(required).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeLessThan(required);

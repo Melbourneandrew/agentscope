@@ -19,6 +19,7 @@ export type VerifiedNpmHarnessMaterial = Readonly<{
   kind: "npm";
   materialIdentity: string;
   platformIdentity: string;
+  verifierNpmVersion: string;
   packages: readonly Readonly<{
     packageName: string;
     installName: string;
@@ -270,6 +271,7 @@ export const compileNpmVerifierPolicy = (
       };
     }),
     registry: material.registry,
+    verifierNpmVersion: material.verifierNpmVersion,
   };
 };
 
@@ -469,6 +471,7 @@ export const compileVerifiedNpmHarnessMaterial = (
     kind: "npm" as const,
     packages,
     platformIdentity: input.material.platformIdentity,
+    verifierNpmVersion: input.material.verifierNpmVersion,
     verifier: input.verifier,
   };
   return deepFreeze({

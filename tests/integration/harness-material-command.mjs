@@ -74,6 +74,17 @@ const verifyNpm = async (root, policy) => {
   );
   const environment = npmEnvironment(resolve(root, "home"), policy.registry);
   const npm = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+  const { stdout: npmVersion } = await execute(
+    "/usr/local/bin/node",
+    [npm, "--version"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: environment,
+      maxBuffer: maximumOutputBytes,
+    },
+  );
+  if (npmVersion !== `${policy.verifierNpmVersion}\n`) fail();
   await execute(
     "/usr/local/bin/node",
     [

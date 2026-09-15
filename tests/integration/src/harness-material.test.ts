@@ -30,6 +30,7 @@ const material: NpmHarnessMaterial = {
   kind: "npm",
   platformIdentity: `sha256-${"9".repeat(64)}`,
   verifierImage: `node@sha256:${"f".repeat(64)}`,
+  verifierNpmVersion: "11.19.1",
   registry: "https://registry.npmjs.org/",
   packages: [descriptor],
   provenance: {
@@ -188,7 +189,10 @@ describe("authenticated npm harness material", () => {
     const policy = compileNpmVerifierPolicy(
       { ...material, packages: [descriptor, otherDescriptor] },
       { invalid: [], missing: [], verified: [first, second] },
-    ) as { packages: { attestationBundleDigest: string }[] };
+    ) as {
+      packages: { attestationBundleDigest: string }[];
+      verifierNpmVersion: string;
+    };
 
     expect(policy.packages).toHaveLength(2);
     expect(policy.packages[0]!.attestationBundleDigest).toMatch(
@@ -197,6 +201,7 @@ describe("authenticated npm harness material", () => {
     expect(policy.packages[0]!.attestationBundleDigest).not.toBe(
       policy.packages[1]!.attestationBundleDigest,
     );
+    expect(policy.verifierNpmVersion).toBe("11.19.1");
   });
 
   it("rejects archive, audit, source, and subject substitutions", () => {
