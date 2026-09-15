@@ -31,6 +31,7 @@ import {
   ISOLATION_EXECUTOR_LIMITS,
   mapWithConcurrency,
   sanitizeFixtureResult,
+  scenarioContainerTerminalWitness,
   selectCapabilityScenarios,
   verifyManifestEvidence,
   verifyPreparedCandidate,
@@ -631,6 +632,11 @@ const assertContainer = async (
     }
   }
   if (
+    !/^[a-f0-9]{64}$/u.test(container?.Id ?? "") ||
+    container?.Name !== `/${name}` ||
+    container?.Config?.Labels?.["com.agentscope.integration"] !== "true" ||
+    container?.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId ||
     container?.HostConfig?.ReadonlyRootfs !== true ||
     container?.HostConfig?.NetworkMode !== plan.networkName ||
     container?.HostConfig?.Memory !== limits.memoryBytes ||
@@ -644,6 +650,7 @@ const assertContainer = async (
     !imageConfigMatches
   )
     throw new Error("integration.isolation.container");
+  return container.Id;
 };
 
 const createImmutableCandidateHandoff = async (plan, signal) => {
@@ -673,6 +680,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const scenarioContainerIdentities = new Map();
 const scenarioOutcomes = new Map();
 const observedCertificationRunIds = new Set();
 const observeSubstrateCertificationPredicate = (runId, predicate) => {
@@ -1419,7 +1427,7 @@ const createScenarioContainer = async (
     signal,
     { mutationCapable: true },
   );
-  await assertContainer(
+  const containerId = await assertContainer(
     plan,
     plan.scenarioName,
     ISOLATION_EXECUTOR_LIMITS.containers.scenario,
@@ -1427,6 +1435,9 @@ const createScenarioContainer = async (
     undefined,
     immutableCandidate,
   );
+  if (scenarioContainerIdentities.has(plan.runId))
+    throw new Error("integration.isolation.container");
+  scenarioContainerIdentities.set(plan.runId, containerId);
   if (testMode === "sidecar-failure")
     await dockerWithSignal(["stop", plan.collectorName], signal, {
       mutationCapable: true,
@@ -1511,13 +1522,34 @@ const contentFreeChildFailureCode = (error) => {
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
-const failedAttachSettled = (error) =>
-  Number.isSafeInteger(error?.code) &&
-  error.code > 0 &&
-  error.code <= 255 &&
-  error?.signal == null &&
-  error?.killed !== true &&
-  error?.name !== "AbortError";
+const proveFailedAttachSettled = async (error, plan, signal) => {
+  if (signal.aborted) return false;
+  const containerId = scenarioContainerIdentities.get(plan.runId);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) return false;
+  try {
+    const waited = await dockerWithSignal(
+      ["container", "wait", containerId],
+      signal,
+    );
+    const inspected = await dockerWithSignal(
+      ["container", "inspect", containerId],
+      signal,
+    );
+    const records = JSON.parse(inspected.stdout);
+    const container =
+      Array.isArray(records) && records.length === 1 ? records[0] : undefined;
+    return scenarioContainerTerminalWitness({
+      attach: error,
+      container,
+      containerId,
+      runId: plan.runId,
+      scenarioName: plan.scenarioName,
+      waitOutput: waited.stdout,
+    });
+  } catch {
+    return false;
+  }
+};
 const runScenario = async (plan, signal) => {
   const remainingOuterMilliseconds = Math.min(
     scenarioTimeoutMilliseconds,
@@ -1579,7 +1611,11 @@ const runScenario = async (plan, signal) => {
           fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
         })
       ) {
-        terminalMutationProved = failedAttachSettled(error);
+        terminalMutationProved = await proveFailedAttachSettled(
+          error,
+          plan,
+          signal,
+        );
         if (!terminalMutationProved)
           throw new Error("integration.isolation.child-failure", {
             cause: error,
@@ -1605,7 +1641,11 @@ const runScenario = async (plan, signal) => {
             : captureHeadlessReceipt(output, plan, {
                 outerMonotonicDeadline,
               });
-        terminalMutationProved = failedAttachSettled(error);
+        terminalMutationProved = await proveFailedAttachSettled(
+          error,
+          plan,
+          signal,
+        );
         if (!terminalMutationProved)
           throw new Error("integration.isolation.child-failure", {
             cause: error,
@@ -1974,6 +2014,7 @@ const createDriver = (plan) => {
         recursive: true,
       });
       rmSync(activeMarkerFor(runId), { force: true });
+      scenarioContainerIdentities.delete(runId);
     },
     inspectCleanup: async (plan) => {
       const signal = AbortSignal.timeout(

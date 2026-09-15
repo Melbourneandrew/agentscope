@@ -11,6 +11,7 @@ import {
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
+  scenarioContainerTerminalWitness,
   type IsolationDriver,
 } from "./isolation.js";
 import { compileCapabilityManifest } from "./manifest.js";
@@ -110,6 +111,77 @@ const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
   containers: ISOLATION_EXECUTOR_LIMITS.containers,
   requests: ISOLATION_EXECUTOR_LIMITS.requests,
+});
+
+const terminalContainer = (overrides: Record<string, unknown> = {}) => ({
+  Id: "a".repeat(64),
+  Name: "/agentscope-int-scenario",
+  RestartCount: 0,
+  Config: {
+    Labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": "0123456789abcdef",
+    },
+  },
+  State: {
+    Status: "exited",
+    Running: false,
+    Paused: false,
+    Restarting: false,
+    OOMKilled: false,
+    Dead: false,
+    Pid: 0,
+    ExitCode: 7,
+    Error: "",
+    FinishedAt: "2026-09-15T01:00:00.000000000Z",
+  },
+  ...overrides,
+});
+
+describe("scenario attach terminal witness", () => {
+  const witness = (overrides: Record<string, unknown> = {}) =>
+    scenarioContainerTerminalWitness({
+      attach: { code: 7, killed: false, name: "Error", signal: null },
+      container: terminalContainer(),
+      containerId: "a".repeat(64),
+      runId: "0123456789abcdef",
+      scenarioName: "agentscope-int-scenario",
+      waitOutput: "7\n",
+      ...overrides,
+    });
+
+  it("accepts an exact same-container wait and terminal state", () => {
+    expect(witness()).toBe(true);
+  });
+
+  it("rejects transport-only exit metadata without the daemon witness", () => {
+    expect(witness({ container: undefined })).toBe(false);
+    expect(witness({ waitOutput: "" })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: true, signal: null } })).toBe(
+      false,
+    );
+  });
+
+  it("rejects substituted, live, restarted, and mismatched containers", () => {
+    expect(witness({ containerId: "b".repeat(64) })).toBe(false);
+    expect(witness({ container: terminalContainer({ RestartCount: 1 }) })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, Running: true },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, ExitCode: 8 },
+        }),
+      }),
+    ).toBe(false);
+  });
 });
 
 const emptyCleanupInventory = () => ({

@@ -783,6 +783,59 @@ export interface IsolationDriver {
   inspectCleanup(plan: IsolationPlan): Promise<unknown>;
 }
 
+/* eslint-disable complexity -- one closed exact daemon terminal witness */
+export const scenarioContainerTerminalWitness = (input: {
+  readonly attach: {
+    readonly code?: unknown;
+    readonly killed?: unknown;
+    readonly name?: unknown;
+    readonly signal?: unknown;
+  };
+  readonly container: unknown;
+  readonly containerId: string;
+  readonly runId: string;
+  readonly scenarioName: string;
+  readonly waitOutput: string;
+}): boolean => {
+  const { attach, container, containerId, runId, scenarioName, waitOutput } =
+    input;
+  const record =
+    typeof container === "object" && container !== null
+      ? (container as Record<string, unknown>)
+      : undefined;
+  const config = record?.Config as Record<string, unknown> | undefined;
+  const labels = config?.Labels as Record<string, unknown> | undefined;
+  const state = record?.State as Record<string, unknown> | undefined;
+  const exitCode = typeof attach.code === "number" ? attach.code : NaN;
+  return (
+    Number.isSafeInteger(exitCode) &&
+    exitCode > 0 &&
+    exitCode <= 255 &&
+    attach.signal == null &&
+    attach.killed !== true &&
+    attach.name !== "AbortError" &&
+    /^[a-f0-9]{64}$/u.test(containerId) &&
+    waitOutput === `${exitCode}\n` &&
+    record?.Id === containerId &&
+    record?.Name === `/${scenarioName}` &&
+    labels?.["com.agentscope.integration"] === "true" &&
+    labels?.["com.agentscope.integration.run"] === runId &&
+    record?.RestartCount === 0 &&
+    state?.Status === "exited" &&
+    state?.Running === false &&
+    state?.Paused === false &&
+    state?.Restarting === false &&
+    state?.OOMKilled === false &&
+    state?.Dead === false &&
+    state?.Pid === 0 &&
+    state?.ExitCode === exitCode &&
+    state?.Error === "" &&
+    typeof state?.FinishedAt === "string" &&
+    state.FinishedAt !== "0001-01-01T00:00:00Z"
+  );
+};
+/* eslint-enable complexity */
+
 export const compileIsolationExecutionPolicy = (
   input: unknown,
 ): Readonly<IsolationExecutionPolicy> => {
