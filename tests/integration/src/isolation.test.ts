@@ -842,7 +842,7 @@ describe("scenario cleanup evidence", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-scenario-container");
     expect(fixture.calls).toContain(
       "remove-network:agentscope-int-0123456789abcdef-network",
     );
@@ -980,7 +980,7 @@ describe("scenario evidence validation", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-inventory");
     expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
       outcome: "verification-failed",
       removalFailureCount: 0,
@@ -989,6 +989,31 @@ describe("scenario evidence validation", () => {
     expect(diagnostic).toHaveBeenCalledWith(
       'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
     );
+    diagnostic.mockRestore();
+  });
+
+  it("classifies a proven cleanup survivor separately from inventory failure", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    fixture.inspectCleanup.mockResolvedValueOnce({
+      ...emptyCleanupInventory(),
+      containers: 1,
+    });
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.cleanup-remaining");
+    expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
+      outcome: "failed",
+      removalFailureCount: 0,
+      remaining: {
+        ...emptyCleanupInventory(),
+        containers: 1,
+      },
+    });
     diagnostic.mockRestore();
   });
 });
