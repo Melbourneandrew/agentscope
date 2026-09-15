@@ -291,11 +291,27 @@ describe("integration workflow policy", () => {
       "integration.controller.causal-diagnostic:${failureCode(error)}",
     );
     expect(scenarios).toContain(
-      'dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    )',
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    ))',
     );
     expect(scenarios).toContain(
       "terminalMutationProved = await proveFailedAttachSettled(",
     );
+    const attachStart = scenarios.indexOf(
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName]',
+    );
+    const attachCatch = scenarios.indexOf("  } catch (error) {", attachStart);
+    const successfulReceipt = scenarios.indexOf(
+      '  const receipt =\n    plan.executionMode === "interactive"',
+      attachCatch,
+    );
+    expect(attachStart).toBeGreaterThan(-1);
+    expect(attachCatch).toBeGreaterThan(attachStart);
+    expect(successfulReceipt).toBeGreaterThan(attachCatch);
+    expect(
+      scenarios
+        .slice(attachStart, attachCatch)
+        .includes("captureHeadlessReceipt"),
+    ).toBe(false);
     expect(scenarios).toContain('["container", "wait", containerId]');
     expect(scenarios).toContain('["container", "inspect", containerId]');
     expect(required).toBeGreaterThanOrEqual(0);

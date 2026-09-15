@@ -1569,28 +1569,12 @@ const runScenario = async (plan, signal) => {
     outerMonotonicDeadline,
     immutableCandidate,
   );
+  let stdout;
   try {
-    const { stdout } = await dockerWithSignal(
+    ({ stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
-    );
-    const receipt =
-      plan.executionMode === "interactive"
-        ? captureInteractivePtyReceipt(stdout, plan, {
-            outerMonotonicDeadline,
-          })
-        : captureHeadlessReceipt(stdout, plan, {
-            outerMonotonicDeadline,
-          });
-    const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
-    const fixtureCaptured = captureFixtureResult(stdout, plan);
-    observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
-    registerScenarioReceipt(plan, receipt);
-    return {
-      receipt,
-      succeeded:
-        scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
-    };
+    ));
   } catch (error) {
     let terminalMutationProved = false;
     try {
@@ -1661,6 +1645,23 @@ const runScenario = async (plan, signal) => {
       throw handledError;
     }
   }
+  const receipt =
+    plan.executionMode === "interactive"
+      ? captureInteractivePtyReceipt(stdout, plan, {
+          outerMonotonicDeadline,
+        })
+      : captureHeadlessReceipt(stdout, plan, {
+          outerMonotonicDeadline,
+        });
+  const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
+  const fixtureCaptured = captureFixtureResult(stdout, plan);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  registerScenarioReceipt(plan, receipt);
+  return {
+    receipt,
+    succeeded:
+      scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
+  };
 };
 // eslint-disable-next-line max-lines-per-function -- one atomic retained evidence settlement
 const recordEvidence = async (evidence) => {
