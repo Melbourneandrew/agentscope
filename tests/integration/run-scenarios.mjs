@@ -224,7 +224,7 @@ if (cliArtifact === undefined)
 let preparedDockerClient;
 const docker = async (
   arguments_,
-  { mutationCapable = false, ...options } = {},
+  { mutationCapable = false, terminal = false, ...options } = {},
 ) => {
   const invocation = await prepareDockerInvocation(
     preparedDockerClient,
@@ -237,6 +237,7 @@ const docker = async (
       maxBuffer: 16 * 1024 * 1024,
       timeout: remainingIntegrationOperationMilliseconds(
         scenarioTimeoutMilliseconds,
+        terminal,
       ),
       ...options,
       cwd: integrationRoot,
@@ -254,7 +255,8 @@ const ignoreMissing = async (arguments_, signal) => {
   try {
     await docker(arguments_, {
       signal,
-      timeout: remainingIntegrationOperationMilliseconds(30_000),
+      terminal: true,
+      timeout: remainingIntegrationOperationMilliseconds(30_000, true),
     });
   } catch (error) {
     handlePreparedDockerCleanupFailure(preparedDockerClient, error);
@@ -2069,7 +2071,10 @@ const countDockerResources = async (kind, plan, signal) => {
       ...(kind === "container" ? ["--all"] : []),
     ],
     signal,
-    { timeout: ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds },
+    {
+      terminal: true,
+      timeout: ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds,
+    },
   );
   return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
 };
