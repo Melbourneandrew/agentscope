@@ -161,7 +161,7 @@ export declare const retirePreparedDockerNetwork: (
     runId: string;
     signal?: AbortSignal;
   }>,
-) => Promise<boolean>;
+) => Promise<void>;
 
 export declare const registerPreparedDockerNetwork: (
   client: PreparedDockerClient,
@@ -225,7 +225,7 @@ export declare const retirePreparedDockerImage: (
     signal?: AbortSignal;
     tag: string;
   }>,
-) => Promise<void>;
+) => Promise<boolean>;
 
 export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
