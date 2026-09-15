@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   cpSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -293,6 +294,40 @@ const sidecarResourceArguments = (limits) => [
   String(limits.memoryBytes),
 ];
 
+const stageEsmPackageBoundary = (context) => {
+  const packageBoundaryPath = resolve(context, "dist/package.json");
+  const packageBoundaryBytes = Buffer.from('{"type":"module"}\n');
+  const packageBoundaryDescriptor = openSync(
+    packageBoundaryPath,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    writeFileSync(packageBoundaryDescriptor, packageBoundaryBytes);
+    fchmodSync(packageBoundaryDescriptor, 0o644);
+    fsyncSync(packageBoundaryDescriptor);
+    const descriptorStatus = fstatSync(packageBoundaryDescriptor);
+    const pathStatus = lstatSync(packageBoundaryPath);
+    if (
+      !descriptorStatus.isFile() ||
+      !pathStatus.isFile() ||
+      pathStatus.isSymbolicLink() ||
+      descriptorStatus.dev !== pathStatus.dev ||
+      descriptorStatus.ino !== pathStatus.ino ||
+      descriptorStatus.size !== packageBoundaryBytes.byteLength ||
+      pathStatus.size !== packageBoundaryBytes.byteLength ||
+      (descriptorStatus.mode & 0o777) !== 0o644 ||
+      (pathStatus.mode & 0o777) !== 0o644
+    )
+      throw new Error("integration.isolation.context");
+  } finally {
+    closeSync(packageBoundaryDescriptor);
+  }
+};
+
 // The exact staged inventory and Dockerfile are reviewed as one authority.
 // eslint-disable-next-line max-lines-per-function
 const stageBuildContext = (plan) => {
@@ -341,7 +376,11 @@ const stageBuildContext = (plan) => {
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
     ],
-    ["dist/index.js", resolve(integrationRoot, "dist/index.js")],
+    ["dist/canonical.js", resolve(integrationRoot, "dist/canonical.js")],
+    [
+      "dist/interactive-pty-actions.js",
+      resolve(integrationRoot, "dist/interactive-pty-actions.js"),
+    ],
     [
       "fixtures/substrate-negative-process.mjs",
       resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
@@ -457,6 +496,7 @@ const stageBuildContext = (plan) => {
       closeSync(descriptor);
     }
   }
+  stageEsmPackageBoundary(context);
   cpSync(
     candidateDirectory,
     resolve(context, "prepared/candidates", candidate.bundleIdentity),
