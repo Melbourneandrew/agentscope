@@ -24,24 +24,24 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 647_840,
+  bytes: 648_096,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
+  sha256: "95e61f47b3db63276e503608340059a2d2125e2870fc29924219227bbe1f9eba",
   tuple: "node127-linux-x64-musl",
 });
 const expectedGlibcArtifact = Object.freeze({
-  bytes: 424_976,
+  bytes: 425_128,
   needed: Object.freeze(["libc.so.6", "ld-linux-x86-64.so.2"]),
   path: "pty-runtime/node127-linux-x64-glibc/pty.node",
-  sha256: "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727",
+  sha256: "4c11e2948f4de9489a50ce41cb2b0f91c0a13bc96a1e3659a34c6bee1d06c1c6",
   tuple: "node127-linux-x64-glibc",
 });
 const expectedFaultArtifact = Object.freeze({
-  bytes: 648_176,
+  bytes: 648_480,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-  sha256: "7a5468057ae55ba587e66ccef1858e59586a05039019c88d4bd196650a47faaa",
+  sha256: "fc6501a10c39f654636a0df5eb1f23b5663a592f36b710b82775c32cee5b90f5",
   tuple: "node127-linux-x64-musl-test-faults",
 });
 const runtimeReceiptKeys = Object.freeze([
@@ -55,6 +55,7 @@ const runtimeReceiptKeys = Object.freeze([
   "eofByteWritten",
   "faultCleanup",
   "finalizerSafe",
+  "foregroundInterrupt",
   "geometry",
   "openRollback",
   "processTerminal",
@@ -77,6 +78,7 @@ export const verifyRuntimeReceipt = (value) => {
 const runtimeFixture = `import {fstatSync} from "node:fs";
 let extraOpen=true;try{fstatSync(Number(process.env.EXTRA_FD));}catch{extraOpen=false;}
 process.stdout.write(JSON.stringify({canonical:process.stdin.isRaw!==true,columns:process.stdout.columns,extraOpen,isTTY:process.stdin.isTTY===true&&process.stdout.isTTY===true,rows:process.stdout.rows})+"\\n");
+process.on("SIGINT",()=>process.stdout.write("INTERRUPTED\\n"));
 process.stdin.resume();process.stdin.on("end",()=>process.exit(0));\n`;
 
 const runtimeDriver = `import {createRequire} from "node:module";
@@ -94,13 +96,13 @@ const wrong=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);const 
 const hostile=(args,env)=>rejects(()=>invoke(production,{args,env}),/inventory|value is not a string|admission exceeded/);const sparse=[];sparse.length=0xffffffff;hostile([],sparse);hostile(sparse,[]);hostile(["bad\\0tail"],[]);hostile([], ["BAD=bad\\0tail"]);hostile([7],[]);const throwingArg=[];Object.defineProperty(throwingArg,0,{get(){throw new Error("argv getter rejected");}});throwingArg.length=1;rejects(()=>invoke(production,{args:throwingArg}),/argv getter rejected/);const throwingEnv=[];Object.defineProperty(throwingEnv,0,{get(){throw new Error("env getter rejected");}});throwingEnv.length=1;rejects(()=>invoke(production,{env:throwingEnv}),/env getter rejected/);const argvEnvAuthority=fds()===initialFds&&children()===initialChildren;
 const faultResults=[];for(const bit of [1,2,3,4,7,8,9]){faults.testFault((1<<bit)|(bit===8?(1<<7):0));const before=children();const message=rejects(()=>invoke(faults,{milliseconds:bit===9?20:250}),/failed|invalid|expired|child joined/);faultResults.push(before===children()&&!message.includes("uncertain"));}for(const bit of [6,12]){faults.testFault((1<<bit)|(1<<7));const message=rejects(()=>invoke(faults,{milliseconds:80}),/cleanup uncertain/);faultResults.push(message.includes("uncertain"));}faults.testFault(0);const faultCleanup=faultResults.every(Boolean)&&children()===initialChildren;
 const beforeOpen=fds();for(const bit of [10,11]){faults.testFault(1<<bit);rejects(()=>faults.open(80,24,process.hrtime.bigint()+1000000000n),/publication failed/);}const openRollback=fds()===beforeOpen;
-const live=invoke(faults);for(const fd of [live.p.interpreter,live.p.script,live.extra])closeSync(fd);const first=faults.inspect(live.result.handle);faults.resize(live.result.handle,91,31,0,0);const resized=faults.inspect(live.result.handle);rejects(()=>faults.read(live.result.handle,0),/read bound/);rejects(()=>faults.write(live.result.handle,"not-bytes"),/Usage/);const write=faults.write(live.result.handle,Buffer.from("hello\\n"));const eof=faults.eof(live.result.handle);let output="";let observedTerminal=false;const end=Date.now()+2000;while(Date.now()<end){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();if((observed.status==="eof"||observed.status==="eio")&&live.terminal()){observedTerminal=true;break;}await new Promise(resolve=>setTimeout(resolve,10));}faults.close(live.result.handle);rejects(()=>faults.inspect(live.result.handle),/identity changed/);
-const parsed=JSON.parse(output.trim().split("\\n").find(line=>line.startsWith("{"))??"null");const descriptorClosure=parsed.extraOpen===false;const geometry=first.isTTY===true&&first.columns===80&&first.rows===24&&resized.columns===91&&resized.rows===31&&parsed.isTTY===true&&parsed.columns===91&&parsed.rows===31;const termios=first.canonical===true&&parsed.canonical===true&&Number.isInteger(first.eofByte);const eofByteWritten=eof.status==="eof-byte-written"&&eof.bytesWritten===1&&eof.eofByte===first.eofByte;const drainTerminal=write.status==="complete"&&write.bytesWritten===6&&output.includes("hello\\r\\n")&&observedTerminal&&live.terminal()!==undefined;const processTerminal=live.terminal()?.code===0&&live.terminal()?.signal===0;
+const live=invoke(faults);for(const fd of [live.p.interpreter,live.p.script,live.extra])closeSync(fd);const first=faults.inspect(live.result.handle);faults.resize(live.result.handle,91,31,0,0);const resized=faults.inspect(live.result.handle);rejects(()=>faults.read(live.result.handle,0),/read bound/);rejects(()=>faults.write(live.result.handle,"not-bytes"),/Usage/);const write=faults.write(live.result.handle,Buffer.from("hello\\n"));let output="";const readyEnd=Date.now()+2000;while(Date.now()<readyEnd&&!output.includes("}\\r\\n")){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();await new Promise(resolve=>setTimeout(resolve,10));}if(!output.includes("}\\r\\n"))throw new Error("PTY foreground interrupt readiness was not observed");const interrupt=faults.interruptForeground(live.result.handle);const interruptEnd=Date.now()+2000;while(Date.now()<interruptEnd&&!output.includes("INTERRUPTED\\r\\n")){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();await new Promise(resolve=>setTimeout(resolve,10));}if(!output.includes("INTERRUPTED\\r\\n"))throw new Error("PTY foreground interrupt delivery was not observed");const eof=faults.eof(live.result.handle);let observedTerminal=false;const end=Date.now()+2000;while(Date.now()<end){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();if((observed.status==="eof"||observed.status==="eio")&&live.terminal()){observedTerminal=true;break;}await new Promise(resolve=>setTimeout(resolve,10));}faults.close(live.result.handle);rejects(()=>faults.inspect(live.result.handle),/identity changed/);
+const parsed=JSON.parse(output.trim().split("\\n").find(line=>line.startsWith("{"))??"null");const descriptorClosure=parsed.extraOpen===false;const geometry=first.isTTY===true&&first.columns===80&&first.rows===24&&resized.columns===91&&resized.rows===31&&parsed.isTTY===true&&parsed.columns===91&&parsed.rows===31;const termios=first.canonical===true&&parsed.canonical===true&&Number.isInteger(first.eofByte);const eofByteWritten=eof.status==="eof-byte-written"&&eof.bytesWritten===1&&eof.eofByte===first.eofByte;const foregroundInterrupt=interrupt.status==="foreground-interrupt-queued"&&interrupt.signal==="SIGINT"&&output.includes("INTERRUPTED\\r\\n");const drainTerminal=write.status==="complete"&&write.bytesWritten===6&&output.includes("hello\\r\\n")&&observedTerminal&&live.terminal()!==undefined;const processTerminal=live.terminal()?.code===0&&live.terminal()?.signal===0;
 const closeFinalizerToken=Symbol("agentscope-pty-close-finalizer");let closeFinalizerState="pending";let closeFinalizerCount=0;let closeFinalizerDropped=false;const closeRegistry=new FinalizationRegistry(value=>{closeFinalizerCount+=1;closeFinalizerState=closeFinalizerDropped&&value===closeFinalizerToken&&closeFinalizerCount===1?"exact":"invalid";});const terminalBeforeClose=new Set(terminalFds());let closeLive=invoke(faults);for(const fd of [closeLive.p.interpreter,closeLive.p.script,closeLive.extra])closeSync(fd);const ownedTerminalFds=terminalFds().filter(fd=>!terminalBeforeClose.has(fd));if(ownedTerminalFds.length!==1)throw new Error("owned PTY descriptor inventory is not exact");const detachedPtyFd=ownedTerminalFds[0];if(detachedPtyFd<3||detachedPtyFd>255)throw new Error("detached PTY descriptor exceeds the reuse bound");faults.testFault(1<<5);const closeMessage=rejects(()=>faults.close(closeLive.result.handle),/close is uncertain/);rejects(()=>faults.inspect(closeLive.result.handle),/identity changed/);closeRegistry.register(closeLive.result.handle,closeFinalizerToken);const closeTerminalReceipt=closeLive.terminal;closeLive.result.handle=undefined;closeLive.result=undefined;closeLive=null;closeFinalizerDropped=true;const reuseFds=[];const reuseSet=new Set();for(let count=0;count<64&&reuseFds.at(-1)!==detachedPtyFd;count+=1){const candidate=openSync("/dev/null",constants.O_RDONLY);if(reuseSet.has(candidate))throw new Error("descriptor reuse filler was duplicated");if(candidate>detachedPtyFd)throw new Error("exact detached PTY descriptor reuse was skipped");reuseSet.add(candidate);reuseFds.push(candidate);}const reuse=reuseFds.at(-1);if(reuse!==detachedPtyFd)throw new Error("exact detached PTY descriptor was not reused");const reuseIdentity=fstatSync(reuse);const closeEnd=Date.now()+1000;while(Date.now()<closeEnd&&(closeFinalizerState==="pending"||closeTerminalReceipt()===undefined)){global.gc?.();await new Promise(resolve=>setTimeout(resolve,10));}let reuseLive=true;try{const after=fstatSync(reuse);reuseLive=after.dev===reuseIdentity.dev&&after.ino===reuseIdentity.ino&&after.mode===reuseIdentity.mode;}catch{reuseLive=false;}for(const fd of reuseFds.reverse())closeSync(fd);const closeTerminal=closeMessage.includes("uncertain")&&closeFinalizerState==="exact"&&closeFinalizerCount===1&&reuseLive&&closeTerminalReceipt()!==undefined;
 const finalizerToken=Symbol("agentscope-pty-finalizer");let finalizerState="pending";let finalizerCount=0;let finalizerDropped=false;const registry=new FinalizationRegistry(value=>{finalizerCount+=1;finalizerState=finalizerDropped&&value===finalizerToken&&finalizerCount===1?"exact":"invalid";});let abandoned=invoke(faults);for(const fd of [abandoned.p.interpreter,abandoned.p.script,abandoned.extra])closeSync(fd);const abandonedTerminal=abandoned.terminal;registry.register(abandoned.result.handle,finalizerToken);if(finalizerState!=="pending"||finalizerCount!==0)throw new Error("finalizer receipt arrived before authority release");abandoned.result.handle=undefined;abandoned.result=undefined;abandoned=null;finalizerDropped=true;const finalizerEnd=Date.now()+1000;while(Date.now()<finalizerEnd&&(finalizerState==="pending"||abandonedTerminal()===undefined)){global.gc?.();await new Promise(resolve=>setTimeout(resolve,10));}const finalizerSafe=reuseLive&&finalizerState==="exact"&&finalizerCount===1&&abandonedTerminal()!==undefined;
-const semanticFaults=[];for(const [bit,method,argument,pattern] of [[14,"inspect",undefined,/inspection failed/],[16,"write",Buffer.from("x"),/write failed/],[17,"eof",undefined,/EOF mode/]]){const opened=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<bit);const action=()=>argument===undefined?faults[method](opened.master):faults[method](opened.master,argument);semanticFaults.push(pattern.test(rejects(action,pattern)));faults.testFault(0);faults.close(opened.slave);faults.close(opened.master);}const readFault=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<15);const readFaultReceipt=faults.read(readFault.master,16);const readFaultDescriptor=Object.getOwnPropertyDescriptor(readFaultReceipt,"status");semanticFaults.push(Object.getPrototypeOf(readFaultReceipt)===Object.prototype&&Object.keys(readFaultReceipt).length===1&&Object.hasOwn(readFaultReceipt,"status")&&!Object.hasOwn(readFaultReceipt,"bytes")&&!("bytes" in readFaultReceipt)&&readFaultDescriptor!==undefined&&Object.hasOwn(readFaultDescriptor,"value")&&readFaultDescriptor.value==="eio"&&readFaultDescriptor.get===undefined&&readFaultDescriptor.set===undefined);faults.testFault(0);faults.close(readFault.slave);faults.close(readFault.master);if(!semanticFaults.every(Boolean))throw new Error("semantic fault matrix failed");
+const semanticFaults=[];for(const [bit,method,argument,pattern] of [[0,"interruptForeground",undefined,/foreground interrupt failed/],[14,"inspect",undefined,/inspection failed/],[16,"write",Buffer.from("x"),/write failed/],[17,"eof",undefined,/EOF mode/]]){const opened=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<bit);const action=()=>argument===undefined?faults[method](opened.master):faults[method](opened.master,argument);semanticFaults.push(pattern.test(rejects(action,pattern)));faults.testFault(0);faults.close(opened.slave);faults.close(opened.master);}const readFault=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<15);const readFaultReceipt=faults.read(readFault.master,16);const readFaultDescriptor=Object.getOwnPropertyDescriptor(readFaultReceipt,"status");semanticFaults.push(Object.getPrototypeOf(readFaultReceipt)===Object.prototype&&Object.keys(readFaultReceipt).length===1&&Object.hasOwn(readFaultReceipt,"status")&&!Object.hasOwn(readFaultReceipt,"bytes")&&!("bytes" in readFaultReceipt)&&readFaultDescriptor!==undefined&&Object.hasOwn(readFaultDescriptor,"value")&&readFaultDescriptor.value==="eio"&&readFaultDescriptor.get===undefined&&readFaultDescriptor.set===undefined);faults.testFault(0);faults.close(readFault.slave);faults.close(readFault.master);if(!semanticFaults.every(Boolean))throw new Error("semantic fault matrix failed");
 const happy=invoke(production);for(const fd of [happy.p.interpreter,happy.p.script,happy.extra])closeSync(fd);production.eof(happy.result.handle);const happyEnd=Date.now()+2000;while(Date.now()<happyEnd&&!happy.terminal()){production.read(happy.result.handle,4096);await new Promise(resolve=>setTimeout(resolve,10));}production.close(happy.result.handle);const residual=pidOneChildren()===initialPidOneChildren&&children()===initialChildren&&fds()===initialFds;
-process.stdout.write(JSON.stringify({argvEnvAuthority,closeTerminal,deadlineNoLaunch,descriptorAuthority,descriptorClosure,drainTerminal,eofByteWritten,faultCleanup,finalizerSafe,geometry,openRollback,processTerminal,reapPidOneOnly,residual,termios}));\n`;
+process.stdout.write(JSON.stringify({argvEnvAuthority,closeTerminal,deadlineNoLaunch,descriptorAuthority,descriptorClosure,drainTerminal,eofByteWritten,faultCleanup,finalizerSafe,foregroundInterrupt,geometry,openRollback,processTerminal,reapPidOneOnly,residual,termios}));\n`;
 
 const readBoundedRegular = (
   path,
@@ -281,13 +283,13 @@ export const verifySourceAuthority = (sourceRoot) => {
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
-    47_812,
-    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
+    48_663,
+    "89e8e793678eec14a7497fc93ff4a2cfbdfdbb5c2dc6400df4ae6a2e296ced5f",
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
-    1_719,
-    "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4",
+    1_747,
+    "dc17a3d8f38c4a156ce167a10f21db7d8ceca92f7751b8ecc5f0a5e266d0eab8",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -321,12 +323,12 @@ export const verifySourceAuthority = (sourceRoot) => {
     nodePtyManifest.agentscopePatch?.path !==
       "patches/agentscope-terminal-authority.patch" ||
     nodePtyManifest.agentscopePatch?.sha256 !==
-      "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9" ||
-    nodePtyManifest.agentscopePatch?.bytes !== 47_812 ||
+      "89e8e793678eec14a7497fc93ff4a2cfbdfdbb5c2dc6400df4ae6a2e296ced5f" ||
+    nodePtyManifest.agentscopePatch?.bytes !== 48_663 ||
     nodePtyManifest.agentscopePatch?.mode !== "0644" ||
-    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 60_514 ||
+    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 61_305 ||
     nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
-      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b" ||
+      "69da18f7a91c189dc5c6af243ef4f5fdbaf62abedf89720a95149e930422c152" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -343,8 +345,8 @@ export const verifySourceAuthority = (sourceRoot) => {
 export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    9_852,
-    "b951e49f0859137a9ec78d12b1dba5394abf0788685fa408c7b5a30d14c76198",
+    9_881,
+    "7e691c064d22f776795b5e8d1ea0741746592f3f7314a31b4d4bfda3a8e761a5",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -363,19 +365,20 @@ export const verifyPolicy = (root) => {
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
-      "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9" ||
+      "89e8e793678eec14a7497fc93ff4a2cfbdfdbb5c2dc6400df4ae6a2e296ced5f" ||
     policy.build?.patch?.path !==
       "third_party/node-pty/patches/agentscope-terminal-authority.patch" ||
-    policy.build?.patch?.bytes !== 47_812 ||
-    policy.build?.patch?.patchedSourceBytes !== 60_514 ||
+    policy.build?.patch?.bytes !== 48_663 ||
+    policy.build?.patch?.patchedSourceBytes !== 61_305 ||
     policy.build?.patch?.patchedSourceSha256 !==
-      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b" ||
+      "69da18f7a91c189dc5c6af243ef4f5fdbaf62abedf89720a95149e930422c152" ||
     JSON.stringify(policy.build?.nativeExports) !==
       JSON.stringify([
         "close",
         "eof",
         "fork",
         "inspect",
+        "interruptForeground",
         "open",
         "process",
         "read",
@@ -415,7 +418,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "7887af4db8a33cbbb7dcb1480765a67791501794d8764197901359163cf9f09d" ||
+      "7e691c064d22f776795b5e8d1ea0741746592f3f7314a31b4d4bfda3a8e761a5" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -428,7 +431,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4" ||
+      "dc17a3d8f38c4a156ce167a10f21db7d8ceca92f7751b8ecc5f0a5e266d0eab8" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -465,7 +468,7 @@ const verifyGlibcManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.glibcCanonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.glibcCanonicalImage.config ||
     authority.policySha256 !==
-      "b951e49f0859137a9ec78d12b1dba5394abf0788685fa408c7b5a30d14c76198" ||
+      "7e691c064d22f776795b5e8d1ea0741746592f3f7314a31b4d4bfda3a8e761a5" ||
     authority.buildArgumentsSha256 !==
       "f1737d49aeacda8fa9e082ff71eedb5c8fbd4f93ab378b7c4850e377f9a5b082" ||
     authority.buildEnvironmentSha256 !==
@@ -477,7 +480,7 @@ const verifyGlibcManifestAuthority = (authority, policy) => {
     authority.assemblerSha256 !== policy.glibcBuild.assemblerSha256 ||
     authority.linkerSha256 !== policy.glibcBuild.linkerSha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4" ||
+      "dc17a3d8f38c4a156ce167a10f21db7d8ceca92f7751b8ecc5f0a5e266d0eab8" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -559,8 +562,8 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    5_057,
-    "c260e5a0edd26158fda75319dfead05970408965a32f5da43a3765a8cca48a2c",
+    5_115,
+    "d57f8d7103da5a67d80ead5fb69b923a4215fd67903770691a9f115abdb4b364",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
