@@ -249,9 +249,9 @@ const runMaterialVerification = async ({
     .update(`${runId}:${operation}:${commandSourceAuthority.sha256}`)
     .digest("hex")
     .slice(0, 24)}`;
-  const retirementDeadline = deadline - materialSettlementReserveMilliseconds;
+  const retirementBoundary = deadline - materialSettlementReserveMilliseconds;
   const buildDeadline =
-    retirementDeadline - materialRetirementReserveMilliseconds;
+    retirementBoundary - materialRetirementReserveMilliseconds;
   const imageId = await buildPreparedDockerImage(client, {
     buildArguments: { BASE_IMAGE: material.verifierImage },
     context,
@@ -266,6 +266,10 @@ const runMaterialVerification = async ({
     signal,
     tag,
   });
+  const retirementDeadline = Math.min(
+    retirementBoundary,
+    performance.now() + materialRetirementReserveMilliseconds,
+  );
   await retirePreparedDockerImage(client, {
     deadline: retirementDeadline,
     imageId,
