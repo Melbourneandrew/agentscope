@@ -337,9 +337,7 @@ const verifyFailureEvidence = (expectedCase) => {
     )
       fail();
     if (
-      expectedCase !== null &&
-      SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES[expectedCase] ===
-        "integration.controller.unsettled-operation" &&
+      record.primaryFailure === "integration.controller.unsettled-operation" &&
       record.privateCleanup === null
     )
       fail();

@@ -467,7 +467,7 @@ describe("integration workflow policy", () => {
   // The fixture must rewrite one exact manifest repeatedly to prove every
   // cross-bound substitution against the same file identities.
   // eslint-disable-next-line max-lines-per-function
-  it("requires retirement-bound negatives to retain exact private authority evidence", () => {
+  it("separates unsettled retirement evidence from witnessed certification", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-retirement-"));
     const artifacts = resolve(directory, "artifacts/integration");
     const runId = "0123456789abcdef";
@@ -490,16 +490,23 @@ describe("integration workflow policy", () => {
       images: diagnostic.authorityDigests.images,
       socket: diagnostic.authorityDigests.socket,
     };
-    const writeEvidence = (privateCleanup: unknown) => {
+    const writeEvidence = (
+      privateCleanup: unknown,
+      certification = {
+        certificationCase: null as string | null,
+        certificationPredicate: null as string | null,
+        primaryFailure: "integration.controller.unsettled-operation",
+      },
+    ) => {
       const content = `${JSON.stringify({
         controllerFailureEvidenceVersion: 2,
         runId,
-        certificationCase: "wrong-argv",
-        certificationPredicate: "request-argv-mismatch",
+        certificationCase: certification.certificationCase,
+        certificationPredicate: certification.certificationPredicate,
         certificationReadiness: null,
         scenarioOutcome: "failed",
         controllerOutcome: "retired-failure",
-        primaryFailure: "integration.controller.unsettled-operation",
+        primaryFailure: certification.primaryFailure,
         cleanupFailure: null,
         installedPtyFailure: null,
         privateCleanup,
@@ -513,7 +520,7 @@ describe("integration workflow policy", () => {
         `${JSON.stringify({
           controllerFailureManifestVersion: 1,
           controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
-          certificationCase: "wrong-argv",
+          certificationCase: certification.certificationCase,
           preparedAuthorityDigests,
           runIds: [runId],
           failureEvidence: [
@@ -529,7 +536,7 @@ describe("integration workflow policy", () => {
         { mode: 0o600 },
       );
     };
-    const verify = () =>
+    const verify = (mode = "failure", certificationCase?: string) =>
       spawnSync(
         process.execPath,
         [
@@ -537,12 +544,16 @@ describe("integration workflow policy", () => {
             workspaceRoot,
             "tests/integration/verify-substrate-certification.mjs",
           ),
-          "negative",
+          mode,
         ],
         {
           cwd: directory,
           env: {
-            AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: "wrong-argv",
+            ...(certificationCase === undefined
+              ? {}
+              : {
+                  AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
+                }),
             PATH: process.env.PATH,
           },
         },
@@ -623,6 +634,18 @@ describe("integration workflow policy", () => {
         expectedResourceDigest: `sha256:${"a".repeat(64)}`,
       });
       expect(verify()).not.toBe(0);
+      const witnessedWrongArgv = {
+        certificationCase: "wrong-argv",
+        certificationPredicate: "request-argv-mismatch",
+        primaryFailure: "integration.certification.wrong-argv",
+      };
+      writeEvidence(null, witnessedWrongArgv);
+      expect(verify("negative", "wrong-argv")).toBe(0);
+      writeEvidence(diagnostic, {
+        ...witnessedWrongArgv,
+        primaryFailure: "integration.controller.unsettled-operation",
+      });
+      expect(verify("negative", "wrong-argv")).not.toBe(0);
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }
