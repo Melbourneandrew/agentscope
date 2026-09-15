@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import {
@@ -257,6 +258,31 @@ const ignoreMissing = async (arguments_, signal) => {
     });
   } catch (error) {
     handlePreparedDockerCleanupFailure(preparedDockerClient, error);
+  }
+};
+const waitForNetworkDetach = async (name, signal) => {
+  while (true) {
+    try {
+      const { stdout } = await docker(["network", "inspect", name], {
+        signal,
+        timeout: remainingIntegrationOperationMilliseconds(30_000),
+      });
+      const records = JSON.parse(stdout);
+      const attachments = records?.[0]?.Containers;
+      if (
+        !Array.isArray(records) ||
+        records.length !== 1 ||
+        typeof attachments !== "object" ||
+        attachments === null ||
+        Array.isArray(attachments)
+      )
+        throw new Error("integration.isolation.cleanup-network-inspection");
+      if (Object.keys(attachments).length === 0) return;
+      await delay(20, undefined, { signal });
+    } catch (error) {
+      handlePreparedDockerCleanupFailure(preparedDockerClient, error);
+      return;
+    }
   }
 };
 const labelArguments = (plan) => [
@@ -2108,7 +2134,7 @@ const createDriver = (plan) => {
     recordEvidence,
     removeContainer: (name) =>
       ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
-    removeNetwork: (name) => {
+    removeNetwork: async (name) => {
       if (substrateCertificationCase === "cleanup-failure") {
         observeSubstrateCertificationPredicate(
           plan.runId,
@@ -2118,7 +2144,9 @@ const createDriver = (plan) => {
           `integration.certification.${substrateCertificationCase}`,
         );
       }
-      return ignoreMissing(["network", "rm", name], boundedRemovalSignal());
+      const signal = boundedRemovalSignal();
+      await waitForNetworkDetach(name, signal);
+      await ignoreMissing(["network", "rm", name], signal);
     },
     removeImage: (tag) =>
       ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
