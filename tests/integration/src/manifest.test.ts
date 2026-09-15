@@ -187,15 +187,15 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("starts the Codex turn before admitting PTY control input", () => {
+  it("starts the Codex turn before sending its authenticated quit shortcut", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from("\f"),
+      Buffer.from([12, 4]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(0);
-    expect(scenario.postCompletionControl).toBe("foreground-interrupt-eot");
+    expect(scenario.postCompletionInputByteLength).toBe(1);
+    expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
       scenario,
@@ -205,10 +205,13 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "wait-for-semantic-completion",
-      "foreground-interrupt-eot",
+      "input",
     ]);
     expect(actions.at(-1)).toEqual({
-      action: "foreground-interrupt-eot",
+      action: "input",
+      byteLength: 1,
+      inputSha256:
+        "e52d9c508c502347344d8c07ad91cbd6068afc75ff6292f062a09ca381c89e71",
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
@@ -599,7 +602,7 @@ describe("integration capability execution modes", () => {
         scenarios: [
           {
             ...original.scenarios[0]!,
-            postCompletionControl: "foreground-interrupt-eot",
+            postCompletionControl: "interrupt-byte",
             waitForSemanticCompletionBeforeTerminalAction: true,
           },
         ],
