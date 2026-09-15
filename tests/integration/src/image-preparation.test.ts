@@ -2335,7 +2335,7 @@ describe("authenticated buildx consumption", () => {
     {
       buildFailure: true,
       daemonSwitch: false,
-      expected: "integration.images.build",
+      expected: "integration.images.build.image-build.unknown",
       noDestructiveCleanup: false,
     },
     {
