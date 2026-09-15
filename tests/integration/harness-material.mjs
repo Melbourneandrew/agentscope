@@ -39,15 +39,6 @@ const commandSource = resolve(
   "harness-material-command.mjs",
 );
 const preparedMaterials = new WeakMap();
-const materialDiagnosticClasses = new Set([
-  "material-npm-attestation-match",
-  "material-npm-audit-shape",
-  "material-npm-audit",
-  "material-npm-lock",
-  "material-npm-install",
-  "material-npm-version",
-  "material-npm-policy",
-]);
 
 const fail = () => {
   throw new Error("integration.harness-material.failed");
@@ -402,10 +393,6 @@ export const prepareNpmHarnessMaterial = async (input) => {
         // failure reconciliation when its identity can no longer be proved.
       }
     }
-    if (materialDiagnosticClasses.has(error?.stderrClass))
-      throw new Error(`integration.harness-material.${error.stderrClass}`, {
-        cause: error,
-      });
     if (
       error instanceof Error &&
       error.message === "integration.harness-material.failed"

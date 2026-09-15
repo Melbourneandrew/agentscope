@@ -61,16 +61,6 @@ export const fixedError = (code, timedOut = false) => {
 export const diagnosticDigest = (value) =>
   digestBytes(Buffer.from(JSON.stringify(value), "utf8"));
 const buildxStderrClassifiers = Object.freeze([
-  [
-    "material-npm-attestation-match",
-    /agentscope-material-command:npm-attestation-match/u,
-  ],
-  ["material-npm-audit-shape", /agentscope-material-command:npm-audit-shape/u],
-  ["material-npm-audit", /agentscope-material-command:npm-audit/u],
-  ["material-npm-lock", /agentscope-material-command:npm-lock/u],
-  ["material-npm-install", /agentscope-material-command:npm-install/u],
-  ["material-npm-version", /agentscope-material-command:npm-version/u],
-  ["material-npm-policy", /agentscope-material-command:npm-policy/u],
   ["resource-conflict", /(?:already exists|existing instance)/iu],
   ["build-failed", /(?:failed to solve|failed to build)/iu],
   [

@@ -1351,8 +1351,8 @@ export const createDockerOperations = (state) => {
       }
       throw error;
     }
-    if (failure !== undefined) {
-      const reported = [
+    if (failure !== undefined)
+      throw [
         "integration.images.executable",
         "integration.images.interrupted",
         "integration.images.output",
@@ -1360,10 +1360,6 @@ export const createDockerOperations = (state) => {
       ].includes(failure?.message)
         ? failure
         : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
-      reported.stderrClass =
-        readImageProcessDiagnostic(failure)?.stderrClass ?? "unknown";
-      throw reported;
-    }
     const imageId = built.Id.replace(":", "-");
     if (retirementRequired) state.recordPendingImage(client, tag, imageId);
     return imageId;
