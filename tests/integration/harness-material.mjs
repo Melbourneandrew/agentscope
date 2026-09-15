@@ -306,6 +306,14 @@ const runNpmMaterialVerification = async (input) => {
     return await runMaterialVerification(input);
   } catch (error) {
     if (materialDiagnosticClasses.has(error?.stderrClass)) throw error;
+    if (
+      error instanceof Error &&
+      /^integration\.images\.[a-z-]{1,48}$/u.test(error.message)
+    )
+      throw new Error(
+        `integration.harness-material.npm-verifier-${error.message.slice("integration.images.".length)}`,
+        { cause: error },
+      );
     throw new Error("integration.harness-material.npm-verifier", {
       cause: error,
     });
