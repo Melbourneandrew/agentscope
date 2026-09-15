@@ -248,10 +248,17 @@ const validateGeometry = (
 const parseCsiParameters = (
   value: string,
 ):
-  Readonly<{ privateMode: boolean; values: readonly number[] }> | undefined => {
-  const privateMode = value.startsWith("?");
-  const body = privateMode ? value.slice(1) : value;
-  if (!/^\d*(?:;\d*)*$/u.test(body)) return undefined;
+  | Readonly<{
+      intermediate: "" | " ";
+      prefix: "" | "<" | "=" | ">" | "?";
+      values: readonly number[];
+    }>
+  | undefined => {
+  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(value);
+  if (match === null) return undefined;
+  const prefix = match[1] as "" | "<" | "=" | ">" | "?";
+  const body = match[2]!;
+  const intermediate = match[3] as "" | " ";
   const parts = body.split(";");
   const values: number[] = [];
   for (let index = 0; index < parts.length; index += 1) {
@@ -259,7 +266,7 @@ const parseCsiParameters = (
     if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
     setOwnIndex(values, index, part);
   }
-  return { privateMode, values };
+  return { intermediate, prefix, values };
 };
 
 export class BoundedTerminalEmulator {
@@ -271,6 +278,8 @@ export class BoundedTerminalEmulator {
   #column = 0;
   #alternateScreen = false;
   #cursorVisible = true;
+  #savedColumn = 0;
+  #savedRow = 0;
   #state: ParserState = "ground";
   #control = "";
   #outputBytes = 0;
@@ -438,6 +447,14 @@ export class BoundedTerminalEmulator {
       } else if (character === "]") {
         this.#state = "osc";
         this.#control = "";
+      } else if (character === "7") {
+        this.#savedRow = this.#row;
+        this.#savedColumn = this.#column;
+        this.#state = "ground";
+      } else if (character === "8") {
+        this.#row = this.#savedRow;
+        this.#column = this.#savedColumn;
+        this.#state = "ground";
       } else {
         this.#malformedControlCount += 1;
         this.#state = "ground";
@@ -487,6 +504,7 @@ export class BoundedTerminalEmulator {
       );
       return;
     }
+    if (character === "\u0007") return;
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
       this.#malformedControlCount += 1;
@@ -505,7 +523,13 @@ export class BoundedTerminalEmulator {
     if (code >= 0x40 && code <= 0x7e) {
       const parameters = parseCsiParameters(this.#control);
       if (parameters === undefined) this.#malformedControlCount += 1;
-      else this.#applyCsi(character, parameters.privateMode, parameters.values);
+      else
+        this.#applyCsi(
+          character,
+          parameters.prefix,
+          parameters.intermediate,
+          parameters.values,
+        );
       this.#control = "";
       this.#state = "ground";
       return;
@@ -521,13 +545,14 @@ export class BoundedTerminalEmulator {
 
   #applyCsi(
     final: string,
-    privateMode: boolean,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
     values: readonly number[],
   ): void {
     const first = values[0] ?? 0;
     const amount = Math.max(1, first);
-    if (privateMode) {
-      this.#applyPrivateCsi(final, first);
+    if (prefix !== "" || intermediate !== "") {
+      this.#applyExtendedCsi(final, prefix, intermediate, values);
       return;
     }
     if (final === "H" || final === "f") {
@@ -545,22 +570,75 @@ export class BoundedTerminalEmulator {
         this.#column + amount,
       );
     else if (final === "D") this.#column = Math.max(0, this.#column - amount);
+    else if (final === "E") {
+      this.#row = Math.min(this.#geometry.rows - 1, this.#row + amount);
+      this.#column = 0;
+    } else if (final === "F") {
+      this.#row = Math.max(0, this.#row - amount);
+      this.#column = 0;
+    } else if (final === "G")
+      this.#column = Math.min(this.#geometry.columns - 1, amount - 1);
+    else if (final === "d")
+      this.#row = Math.min(this.#geometry.rows - 1, amount - 1);
     else if (final === "J" && (first === 0 || first === 2)) this.#clearScreen();
     else if (final === "K" && (first === 0 || first === 2))
       this.#clearLine(first === 2);
     else if (final === "m") return;
     else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
+    else if (final === "c" && first === 0) return;
+    else if (final === "s") {
+      this.#savedRow = this.#row;
+      this.#savedColumn = this.#column;
+    } else if (final === "u") {
+      this.#row = this.#savedRow;
+      this.#column = this.#savedColumn;
+    } else if (
+      ["@", "L", "M", "P", "S", "T", "X"].includes(final) &&
+      values.length === 1
+    )
+      return;
     else this.#unsupportedControlCount += 1;
   }
 
-  #applyPrivateCsi(final: string, first: number): void {
-    if (final !== "h" && final !== "l") {
+  #applyExtendedCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
+    values: readonly number[],
+  ): void {
+    if (intermediate === " " && prefix === "" && final === "q") return;
+    if (intermediate !== "") {
       this.#unsupportedControlCount += 1;
       return;
     }
-    if (first === 1049) this.#alternateScreen = final === "h";
-    else if (first === 25) this.#cursorVisible = final === "h";
-    else this.#unsupportedControlCount += 1;
+    if (prefix === "?" && (final === "h" || final === "l")) {
+      for (const mode of values) {
+        if (mode === 1049) this.#alternateScreen = final === "h";
+        else if (mode === 25) this.#cursorVisible = final === "h";
+        else if (![1004, 1007, 2004, 2026].includes(mode)) {
+          this.#unsupportedControlCount += 1;
+          return;
+        }
+      }
+      return;
+    }
+    if (
+      (prefix === "?" &&
+        final === "u" &&
+        values.length === 1 &&
+        values[0] === 0) ||
+      ((prefix === ">" || prefix === "<") &&
+        final === "u" &&
+        values.length === 1 &&
+        values[0]! <= 31) ||
+      (prefix === ">" &&
+        final === "m" &&
+        values.length === 2 &&
+        values[0] === 4 &&
+        (values[1] === 0 || values[1] === 2))
+    )
+      return;
+    this.#unsupportedControlCount += 1;
   }
 
   #appendControl(character: string): void {
@@ -580,11 +658,15 @@ export class BoundedTerminalEmulator {
     const selector = separator < 0 ? "" : this.#control.slice(0, separator);
     const title = separator < 0 ? "" : this.#control.slice(separator + 1);
     if (
-      (selector !== "0" && selector !== "2") ||
+      (selector !== "0" &&
+        selector !== "2" &&
+        !((selector === "10" || selector === "11") && title === "?") &&
+        selector !== "8") ||
       Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
     )
       this.#unsupportedControlCount += 1;
-    else this.#titleSha256 = hash(title);
+    else if (selector === "0" || selector === "2")
+      this.#titleSha256 = hash(title);
     this.#control = "";
     this.#state = "ground";
   }

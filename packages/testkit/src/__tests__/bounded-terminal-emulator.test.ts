@@ -47,6 +47,40 @@ describe("bounded semantic terminal emulator", () => {
     expect(snapshot.nonEmptyLineCount).toBeGreaterThan(0);
   });
 
+  it("accepts the exact bounded terminal controls emitted by the pinned Codex TUI", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    terminal.write(
+      bytes(
+        [
+          "\u001b[6n",
+          "\u001b]10;?\u001b\\",
+          "\u001b]11;?\u001b\\",
+          "\u001b[?u",
+          "\u001b[c",
+          "\u001b[?2004h",
+          "\u001b[?1004h",
+          "\u001b[>7u",
+          "\u001b[?2026h",
+          "\u001b7",
+          "\u001b[12G",
+          "\u001b8",
+          "\u001b[0 q",
+          "\u001b[?2026l",
+          "AGENTSCOPE_PTY_COMPLETE",
+          "\u001b[<u",
+          "\u001b[?1004l",
+          "\u001b[?2004l",
+        ].join(""),
+      ),
+    );
+
+    expect(terminal.end()).toMatchObject({
+      malformedControlCount: 0,
+      semanticState: "completed",
+      unsupportedControlCount: 0,
+    });
+  });
+
   it("classifies credential prompts without retaining their bytes", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     terminal.write(bytes("Please sign in\r\nPassword: "));
