@@ -1522,23 +1522,88 @@ const contentFreeChildFailureCode = (error) => {
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
+const terminalWitnessDiagnostic = ({
+  container,
+  containerId,
+  error,
+  plan,
+  waitOutput,
+}) => {
+  const record =
+    typeof container === "object" && container !== null ? container : {};
+  const state =
+    typeof record.State === "object" && record.State !== null
+      ? record.State
+      : {};
+  const labels =
+    typeof record.Config?.Labels === "object" && record.Config.Labels !== null
+      ? record.Config.Labels
+      : {};
+  return {
+    attachCode: Number.isSafeInteger(error?.code),
+    attachKilled: error?.killed === false,
+    attachName: error?.name === "Error",
+    attachSignal: error?.signal === null,
+    containerId: record.Id === containerId,
+    containerName: record.Name === `/${plan.scenarioName}`,
+    finishedAt:
+      typeof state.FinishedAt === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(
+        state.FinishedAt,
+      ),
+    labels:
+      labels["com.agentscope.integration"] === "true" &&
+      labels["com.agentscope.integration.run"] === plan.runId,
+    restart: record.RestartCount === 0,
+    state:
+      state.Status === "exited" &&
+      state.Running === false &&
+      state.Paused === false &&
+      state.Restarting === false &&
+      state.OOMKilled === false &&
+      state.Dead === false &&
+      state.Pid === 0 &&
+      state.ExitCode === error?.code &&
+      state.Error === "",
+    wait: waitOutput === `${error?.code}\n`,
+  };
+};
 const proveFailedAttachSettled = async (error, plan, signal) => {
-  if (signal.aborted) return false;
-  const containerId = scenarioContainerIdentities.get(plan.runId);
-  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) return false;
-  try {
-    const waited = await dockerWithSignal(
-      ["container", "wait", containerId],
-      signal,
+  const reject = (reason) => {
+    process.stderr.write(
+      `integration.isolation.attach-terminal-diagnostic:${reason}\n`,
     );
-    const inspected = await dockerWithSignal(
+    return false;
+  };
+  if (signal.aborted) return reject("signal-aborted");
+  const containerId = scenarioContainerIdentities.get(plan.runId);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? ""))
+    return reject("container-identity-missing");
+  let waited;
+  try {
+    waited = await dockerWithSignal(["container", "wait", containerId], signal);
+  } catch {
+    return reject("wait-failed");
+  }
+  let inspected;
+  try {
+    inspected = await dockerWithSignal(
       ["container", "inspect", containerId],
       signal,
     );
-    const records = JSON.parse(inspected.stdout);
+  } catch {
+    return reject("inspect-failed");
+  }
+  let records;
+  try {
+    records = JSON.parse(inspected.stdout);
+  } catch {
+    return reject("inspect-malformed");
+  }
+  try {
     const container =
       Array.isArray(records) && records.length === 1 ? records[0] : undefined;
-    return scenarioContainerTerminalWitness({
+    const proved = scenarioContainerTerminalWitness({
       attach: error,
       container,
       containerId,
@@ -1546,8 +1611,21 @@ const proveFailedAttachSettled = async (error, plan, signal) => {
       scenarioName: plan.scenarioName,
       waitOutput: waited.stdout,
     });
+    if (proved) return true;
+    process.stderr.write(
+      `integration.isolation.attach-terminal-shape:${JSON.stringify(
+        terminalWitnessDiagnostic({
+          container,
+          containerId,
+          error,
+          plan,
+          waitOutput: waited.stdout,
+        }),
+      )}\n`,
+    );
+    return reject("witness-rejected");
   } catch {
-    return false;
+    return reject("witness-error");
   }
 };
 const runScenario = async (plan, signal) => {
