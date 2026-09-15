@@ -931,6 +931,13 @@ const cleanup = async (
   return failureCount;
 };
 
+const failCleanup = (cleanup: IsolationEvidence["cleanup"]): never => {
+  process.stderr.write(
+    `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
+  );
+  throw new Error("integration.isolation.cleanup");
+};
+
 export const executeIsolationPlan = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
@@ -1040,9 +1047,7 @@ export const executeIsolationPlan = async (
     },
   );
   await driver.recordEvidence(evidence);
-  if (cleanupOutcome !== "complete") {
-    throw new Error("integration.isolation.cleanup");
-  }
+  if (cleanupOutcome !== "complete") failCleanup(evidence.cleanup);
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");
