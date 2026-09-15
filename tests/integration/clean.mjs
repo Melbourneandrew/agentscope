@@ -255,7 +255,6 @@ const assertFailureEvidence = (identity) => {
       JSON.stringify(
         [
           "cleanupFailure",
-          "causalFailure",
           "certificationCase",
           "certificationPredicate",
           "certificationReadiness",
@@ -272,10 +271,6 @@ const assertFailureEvidence = (identity) => {
     record.runId !== identity.runId ||
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
-    !(
-      record.causalFailure === null ||
-      /^(?:integration\.[a-z.-]{1,96})$/u.test(record.causalFailure)
-    ) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
     !certificationFailureAuthorityIsValid(record) ||
     !(
