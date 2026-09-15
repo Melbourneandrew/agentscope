@@ -284,6 +284,13 @@ describe("integration workflow policy", () => {
     const causalDiagnostic = scenarios.indexOf(
       "integration.controller.causal-diagnostic:${failureCode(error)}",
     );
+    expect(scenarios).toContain(
+      'dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    )',
+    );
+    expect(scenarios).toContain(
+      "terminalMutationProved = failedAttachSettled(error)",
+    );
+    expect(scenarios).toContain('error?.name !== "AbortError"');
     expect(required).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeLessThan(required);
