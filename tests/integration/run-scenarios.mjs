@@ -536,6 +536,14 @@ const stageBuildContext = (plan) => {
         resolve(context, "harness/package.json"),
         `${JSON.stringify({ name: "agentscope-harness-runtime", version: "1.0.0", private: true, dependencies })}\n`,
       );
+      writeFileSync(resolve(context, "harness/npm-globalconfig"), "", {
+        flag: "wx",
+        mode: 0o600,
+      });
+      writeFileSync(resolve(context, "harness/npm-userconfig"), "", {
+        flag: "wx",
+        mode: 0o600,
+      });
     }
   }
   const harnessAuthority =
@@ -549,7 +557,7 @@ const stageBuildContext = (plan) => {
         ? [
             "COPY harness-material ./harness-material",
             "COPY harness ./harness",
-            'RUN --network=none ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/harness", "--ignore-scripts", "--offline", "--audit=false", "--fund=false", "--package-lock=false", "--userconfig=/dev/null", "--globalconfig=/dev/null", "--cache=/tmp/agentscope-harness-npm-cache"]',
+            'RUN --network=none ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/harness", "--ignore-scripts", "--offline", "--audit=false", "--fund=false", "--package-lock=false", "--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig", "--cache=/tmp/agentscope-harness-npm-cache"]',
           ]
         : [
             `COPY --chmod=0755 harness-material/${harnessAuthority.binary.fileName} /usr/local/bin/${harnessAuthority.binary.executableName}`,
