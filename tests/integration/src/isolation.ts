@@ -349,10 +349,6 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({ action: z.literal("eof") }),
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
-  z.strictObject({
-    action: z.literal("raw-control-sequence"),
-    reactionUtf8: z.string().min(1).max(128),
-  }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),
@@ -377,11 +373,6 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("wait-for-semantic-completion"),
-    monotonicAtMs: z.number().finite().nonnegative(),
-  }),
-  z.strictObject({
-    action: z.literal("raw-control-sequence"),
-    bytes: z.tuple([z.literal(3), z.literal(4)]),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
@@ -560,11 +551,6 @@ const ptyTerminalReceiptSchema = z
           observed.action === "interrupt-byte"
         )
           return requested.byte !== observed.byte;
-        if (
-          requested.action === "raw-control-sequence" &&
-          observed.action === "raw-control-sequence"
-        )
-          return observed.bytes[0] !== 3 || observed.bytes[1] !== 4;
         return (
           requested.action === "signal" &&
           observed.action === "signal" &&
@@ -665,10 +651,7 @@ const ptyReceiptPasses = (
       !actions.includes("interrupt-byte")) ||
     (terminalAction === "post-completion-controls" &&
       JSON.stringify(actions.slice(-2)) ===
-        JSON.stringify([
-          "wait-for-semantic-completion",
-          "raw-control-sequence",
-        ]));
+        JSON.stringify(["wait-for-semantic-completion", "interrupt-byte"]));
   return (
     terminalActionMatches &&
     receipt.outcome === "completed" &&
