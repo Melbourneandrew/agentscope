@@ -7,15 +7,6 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const maximumOutputBytes = 8 * 1024 * 1024;
 let diagnosticStage = "dispatch";
-const diagnosticExitCodes = Object.freeze({
-  "npm-policy": 41,
-  "npm-version": 42,
-  "npm-install": 43,
-  "npm-lock": 44,
-  "npm-audit": 45,
-  "npm-audit-shape": 46,
-  "npm-attestation-match": 47,
-});
 const fail = () => {
   throw new Error("integration.harness-material-command.failed");
 };
@@ -258,5 +249,5 @@ try {
   else await verifyGpg(root, policy);
 } catch {
   process.stderr.write(`agentscope-material-command:${diagnosticStage}\n`);
-  process.exitCode = diagnosticExitCodes[diagnosticStage] ?? 1;
+  process.exitCode = 1;
 }
