@@ -3,6 +3,33 @@ import { createHash } from "node:crypto";
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
 };
+export const ptyExecutionFailurePredicates = Object.freeze([
+  "child-failure",
+  "integration.fixture.codex-bootstrap",
+  "integration.fixture.codex-install",
+  "integration.fixture.codex-model-request",
+  "integration.fixture.codex-trace",
+  "integration.fixture.codex-tui-exit",
+  "integration.fixture.codex-tui-start",
+  "integration.fixture.codex-verify",
+  "integration.runner.fixture-failed",
+  "integration.runner.fixture-result",
+  "integration.runner.pty-authority",
+  "testkit.headless.kernel.failure",
+  "testkit.pty.geometry",
+  "testkit.pty.immutable-candidate",
+  "testkit.pty.receipt",
+  "testkit.pty.request",
+  "testkit.pty.runtime.identity",
+  "testkit.pty.transport",
+  "testkit.pty.transport.exit",
+  "testkit.pty.transport.initialization",
+  "testkit.pty.transport.semantic-credential-prompt",
+  "testkit.pty.transport.semantic-incomplete",
+  "testkit.pty.transport.semantic-malformed-control",
+  "testkit.pty.transport.semantic-missing-readiness",
+  "testkit.pty.transport.semantic-nonzero",
+]);
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
@@ -42,6 +69,7 @@ export const installedPtyFailurePredicates = Object.freeze({
     "terminal-output-join",
     "transport-close",
   ]),
+  "pty-execution": ptyExecutionFailurePredicates,
   "runner-bootstrap": Object.freeze(["runner-rejected"]),
 });
 const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];

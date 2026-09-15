@@ -67,6 +67,7 @@ import {
   decodeInteractivePtyReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeInstalledCliPtyReceipt,
+  ptyExecutionFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } from "./immutable-candidate-authority.mjs";
@@ -1547,6 +1548,17 @@ const recordInteractiveReceiptFailure = (
           )) ?? fallback,
   });
 };
+const recordInteractiveExecutionFailure = (plan, error) => {
+  if (plan.executionMode !== "interactive") return;
+  const diagnostic = contentFreeChildFailureCode(error);
+  installedPtyFailures.set(plan.runId, {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate: ptyExecutionFailurePredicates.includes(diagnostic)
+      ? diagnostic
+      : "child-failure",
+  });
+};
 const captureFailedScenarioReceipt = (
   output,
   plan,
@@ -1772,7 +1784,7 @@ const runScenario = async (plan, signal) => {
       const fixtureCaptured = captureFixtureResult(output, plan);
       if (output.includes("AGENTSCOPE_PTY_FAILURE="))
         captureInstalledPtyFailure(output, plan);
-      else recordInteractiveReceiptFailure(plan);
+      else recordInteractiveExecutionFailure(plan, error);
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({
