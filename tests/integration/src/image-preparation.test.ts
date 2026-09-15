@@ -442,6 +442,7 @@ const engineFixture = ({
   localValue = local,
   localInitiallyPresent = true,
   networkAttached = false,
+  networkInternal = true,
   networkName,
   networkRunId,
   preexistingVolume = false,
@@ -472,6 +473,7 @@ const engineFixture = ({
   localValue?: string;
   localInitiallyPresent?: boolean;
   networkAttached?: boolean;
+  networkInternal?: boolean;
   networkName?: string;
   networkRunId?: string;
   preexistingVolume?: boolean;
@@ -643,7 +645,7 @@ const engineFixture = ({
             statusCode: 200,
             body: JSON.stringify({
               Name: networkName,
-              Internal: true,
+              Internal: networkInternal,
               Labels: {
                 "com.agentscope.integration": "true",
                 "com.agentscope.integration.run": networkRunId,
@@ -2073,6 +2075,34 @@ describe("authenticated buildx consumption", () => {
     const networkRunId = "0123456789abcdef";
     const networkName = `agentscope-int-${networkRunId}-network`;
     const engine = engineFixture({ networkName, networkRunId });
+    const client = buildClient(engine);
+    try {
+      await expect(
+        retirePreparedDockerNetwork(client, {
+          deadline: performance.now() + 4_000,
+          name: networkName,
+          runId: networkRunId,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.some(
+          ({ method, path }) =>
+            method === "DELETE" && path.endsWith(`/networks/${networkName}`),
+        ),
+      ).toBe(true);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("retires an exact owned external network after hostile-policy evidence", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkInternal: false,
+      networkName,
+      networkRunId,
+    });
     const client = buildClient(engine);
     try {
       await expect(
