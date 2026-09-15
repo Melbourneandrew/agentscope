@@ -275,9 +275,17 @@ const waitForNetworkDetach = async (name, signal) => {
       try {
         handlePreparedDockerCleanupFailure(preparedDockerClient, error);
       } catch {
-        throw new Error("integration.isolation.cleanup-network-inspect", {
-          cause: error,
-        });
+        const failure =
+          signal.aborted || error?.name === "AbortError"
+            ? "deadline"
+            : error instanceof Error &&
+                error.message === "integration.images.docker-client"
+              ? "authority"
+              : "command";
+        throw new Error(
+          `integration.isolation.cleanup-network-inspect-${failure}`,
+          { cause: error },
+        );
       }
       return;
     }
@@ -2162,7 +2170,7 @@ const createDriver = (plan) => {
       } catch (error) {
         if (
           error instanceof Error &&
-          /^integration\.isolation\.cleanup-network-(?:attached|inspect|inspection)$/u.test(
+          /^integration\.isolation\.cleanup-network-(?:attached|inspect-(?:authority|command|deadline)|inspection)$/u.test(
             error.message,
           )
         )
