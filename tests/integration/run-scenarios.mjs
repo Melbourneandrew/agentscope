@@ -1924,10 +1924,6 @@ const finalizeControllerFailureEvidence = (
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
-    causalFailure:
-      primaryError?.cause === undefined
-        ? null
-        : failureCode(primaryError.cause),
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
     installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
