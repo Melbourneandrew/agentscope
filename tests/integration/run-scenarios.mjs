@@ -341,6 +341,7 @@ const stageBuildContext = (plan) => {
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
     ],
+    ["dist/index.js", resolve(integrationRoot, "dist/index.js")],
     [
       "fixtures/substrate-negative-process.mjs",
       resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
@@ -518,6 +519,7 @@ const stageBuildContext = (plan) => {
       "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
+      "COPY dist ./dist",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       ...harnessInstall,
