@@ -260,6 +260,20 @@ const ignoreMissing = async (arguments_, signal) => {
     handlePreparedDockerCleanupFailure(preparedDockerClient, error);
   }
 };
+const disconnectContainer = async (networkName, containerName, signal) => {
+  try {
+    await docker(
+      ["network", "disconnect", "--force", networkName, containerName],
+      {
+        mutationCapable: true,
+        signal,
+        timeout: remainingIntegrationOperationMilliseconds(30_000),
+      },
+    );
+  } catch (error) {
+    handlePreparedDockerCleanupFailure(preparedDockerClient, error);
+  }
+};
 const waitForNetworkDetach = async (name, signal) => {
   while (true) {
     let stdout;
@@ -2152,8 +2166,11 @@ const createDriver = (plan) => {
     startMockServer,
     runScenario,
     recordEvidence,
-    removeContainer: (name) =>
-      ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
+    removeContainer: async (name) => {
+      const signal = boundedRemovalSignal();
+      await disconnectContainer(plan.networkName, name, signal);
+      await ignoreMissing(["rm", "--force", name], signal);
+    },
     removeNetwork: async (name) => {
       if (substrateCertificationCase === "cleanup-failure") {
         observeSubstrateCertificationPredicate(
