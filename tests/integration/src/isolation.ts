@@ -1001,10 +1001,16 @@ const unavailableExecutionPolicyFor = (
     requests: ISOLATION_EXECUTOR_LIMITS.requests,
   });
 
+type CleanupResult = Readonly<{
+  failureCount: number;
+  firstFailure: string | null;
+  firstFailureCause: unknown;
+}>;
+
 const cleanup = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
-): Promise<Readonly<{ failureCount: number; firstFailure: string | null }>> => {
+): Promise<CleanupResult> => {
   const operations: ReadonlyArray<readonly [string, () => Promise<void>]> = [
     ["scenario-container", () => driver.removeContainer(plan.scenarioName)],
     ["collector-container", () => driver.removeContainer(plan.collectorName)],
@@ -1020,6 +1026,7 @@ const cleanup = async (
   ];
   let failureCount = 0;
   let firstFailure: string | null = null;
+  let firstFailureCause: unknown;
   for (const [name, operation] of operations) {
     try {
       await operation();
@@ -1031,25 +1038,29 @@ const cleanup = async (
         /^integration\.isolation\.cleanup-network-remove$/u.test(error.message)
           ? error.message.slice("integration.isolation.cleanup-".length)
           : name;
-      firstFailure ??= classified;
+      if (firstFailure === null) {
+        firstFailure = classified;
+        firstFailureCause = error instanceof Error ? error.cause : undefined;
+      }
     }
   }
-  return { failureCount, firstFailure };
+  return { failureCount, firstFailure, firstFailureCause };
 };
 
 const failCleanup = (
   cleanup: IsolationEvidence["cleanup"],
-  firstFailure: string | null,
+  result: CleanupResult,
 ): never => {
   process.stderr.write(
     `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
   );
   throw new Error(
-    firstFailure === null
+    result.firstFailure === null
       ? cleanup.remaining === null
         ? "integration.isolation.cleanup-inventory"
         : "integration.isolation.cleanup-remaining"
-      : `integration.isolation.cleanup-${firstFailure}`,
+      : `integration.isolation.cleanup-${result.firstFailure}`,
+    { cause: result.firstFailureCause },
   );
 };
 
@@ -1164,7 +1175,7 @@ export const executeIsolationPlan = async (
   );
   await driver.recordEvidence(evidence);
   if (cleanupOutcome !== "complete")
-    failCleanup(evidence.cleanup, cleanupResult.firstFailure);
+    failCleanup(evidence.cleanup, cleanupResult);
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");

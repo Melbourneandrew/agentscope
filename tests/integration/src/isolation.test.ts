@@ -861,16 +861,26 @@ describe("scenario cleanup evidence", () => {
   it("retains the fixed network cleanup removal subphase", async () => {
     const fixture = driver();
     const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const causal = new Error("integration.images.deadline");
     vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
-      new Error("integration.isolation.cleanup-network-remove"),
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: causal,
+      }),
     );
-    await expect(
-      executeIsolationPlan(
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
         planFor("0123456789abcdef"),
         fixture.implementation,
         new AbortController().signal,
-      ),
-    ).rejects.toThrow("integration.isolation.cleanup-network-remove");
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: causal,
+    });
     diagnostic.mockRestore();
   });
 
