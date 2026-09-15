@@ -1210,6 +1210,30 @@ export const createDockerOperations = (state) => {
         unavailableProcessDiagnostic(failure),
     });
   };
+  const settledBuildFailure = (authority, failure) => {
+    const diagnostic = authority.firstFailureDiagnostic;
+    const operation = [
+      "preflight",
+      "builder-create",
+      "builder-bootstrap",
+      "image-build",
+    ].includes(diagnostic?.operationKind)
+      ? diagnostic.operationKind
+      : "unknown-operation";
+    const stderrClass = [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].includes(diagnostic?.process?.stderrClass)
+      ? diagnostic.process.stderrClass
+      : "unknown";
+    return fixedError(
+      `integration.images.build.${operation}.${stderrClass}`,
+      failure?.code === "ETIMEDOUT",
+    );
+  };
   const recordPreparedDockerDiagnostic = (
     client,
     authority,
@@ -1359,7 +1383,7 @@ export const createDockerOperations = (state) => {
         "integration.images.timeout",
       ].includes(failure?.message)
         ? failure
-        : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
+        : settledBuildFailure(authority, failure);
     const imageId = built.Id.replace(":", "-");
     if (retirementRequired) state.recordPendingImage(client, tag, imageId);
     return imageId;
