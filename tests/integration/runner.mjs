@@ -23,6 +23,7 @@ import {
   compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
+import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
@@ -319,6 +320,7 @@ try {
     ),
     AGENTSCOPE_RETRIEVAL_URL: requiredEnvironment("AGENTSCOPE_RETRIEVAL_URL"),
     AGENTSCOPE_SCENARIO_ID: scenarioId,
+    AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String(headlessOuterDeadline - 5_000),
     AGENTSCOPE_WORKTREE: worktree,
     HARNESS_HOME: harnessHome,
     HOME: home,
@@ -374,7 +376,7 @@ try {
         : childEnvironment,
     stdin:
       scenario.executionMode === "interactive"
-        ? new TextEncoder().encode("run\n")
+        ? new Uint8Array(Buffer.from(scenario.terminalInputBase64, "base64"))
         : new Uint8Array(),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
@@ -414,15 +416,7 @@ try {
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
     const interaction = {
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        {
-          action: "input",
-          byteLength: 4,
-          inputSha256: rawSha256(request.stdin),
-        },
-        { action: "eof" },
-      ],
+      actions: compileInteractivePtyActions(scenario, request.stdin),
       trigger: "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {

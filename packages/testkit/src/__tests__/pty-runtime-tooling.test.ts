@@ -24,6 +24,8 @@ import { gzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { selectPtyRuntimeTupleForTest } from "../internal/headless-supervisor-backend.js";
+
 const packageRoot = resolve(import.meta.dirname, "../..");
 const verifierUrl = pathToFileURL(
   resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
@@ -174,6 +176,55 @@ afterEach(() => {
 // Runtime authority and its hostile artifact cases stay in one adjacent table.
 // eslint-disable-next-line max-lines-per-function
 describe("PTY runtime artifact tooling", () => {
+  it("selects only the exact admitted libc runtime tuple", () => {
+    expect(
+      selectPtyRuntimeTupleForTest({
+        alpineRelease: "3.24.1\n",
+        architecture: "x64",
+        nodeAbi: "127",
+        os: "linux",
+      }),
+    ).toBe("node127-linux-x64-musl");
+    expect(
+      selectPtyRuntimeTupleForTest({
+        architecture: "x64",
+        nodeAbi: "127",
+        os: "linux",
+        osRelease: 'ID=debian\nVERSION_ID="12"\n',
+      }),
+    ).toBe("node127-linux-x64-glibc");
+    for (const facts of [
+      {
+        alpineRelease: "3.23.0\n",
+        architecture: "x64",
+        nodeAbi: "127",
+        os: "linux",
+      },
+      {
+        architecture: "x64",
+        nodeAbi: "127",
+        os: "linux",
+        osRelease: 'ID=ubuntu\nVERSION_ID="24.04"\n',
+      },
+      {
+        architecture: "x64",
+        nodeAbi: "128",
+        os: "linux",
+        osRelease: 'ID=debian\nVERSION_ID="12"\n',
+      },
+      {
+        alpineRelease: "3.24.1\n",
+        architecture: "x64",
+        nodeAbi: "127",
+        os: "linux",
+        osRelease: 'ID=debian\nVERSION_ID="12"\n',
+      },
+    ])
+      expect(() => selectPtyRuntimeTupleForTest(facts)).toThrow(
+        "testkit.pty.runtime.identity",
+      );
+  });
+
   it("accepts only a complete causal runtime receipt", () => {
     const verify = (receipt: unknown) =>
       evaluate(
@@ -393,6 +444,13 @@ describe("PTY runtime artifact tooling", () => {
       resolve(packageRoot, "pty-runtime/node127-linux-x64-musl/pty.node"),
       resolve(root, "pty-runtime/node127-linux-x64-musl/pty.node"),
     );
+    mkdirSync(resolve(root, "pty-runtime/node127-linux-x64-glibc"), {
+      recursive: true,
+    });
+    copyFileSync(
+      resolve(packageRoot, "pty-runtime/node127-linux-x64-glibc/pty.node"),
+      resolve(root, "pty-runtime/node127-linux-x64-glibc/pty.node"),
+    );
     writeFileSync(
       resolve(
         root,
@@ -487,16 +545,13 @@ describe("PTY authenticated build-material tooling", () => {
       readFileSync(resolve(packageRoot, "pty-runtime-artifacts.json"), "utf8"),
     ) as { artifacts: Array<{ sha256: string }> };
     const production = artifacts.artifacts;
-    expect(production).toHaveLength(1);
+    expect(production).toHaveLength(2);
     const backend = readFileSync(
       resolve(packageRoot, "src/internal/headless-supervisor-backend.ts"),
       "utf8",
     );
     const verify = (source: string) => {
-      const match = /const ptyRuntimeDigest =\n\s+"([0-9a-f]{64})";/u.exec(
-        source,
-      );
-      if (match?.[1] !== production[0]?.sha256)
+      if (!production.every(({ sha256 }) => source.includes(sha256)))
         throw new Error("selected PTY artifact authority is not exact");
     };
     expect(() => {
@@ -926,7 +981,11 @@ describe("PTY authenticated build-material tooling", () => {
       "utf8",
     );
     expect(build).toContain(
-      'digest !==\n    "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"',
+      '"00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"',
     );
+    expect(build).toContain(
+      '"18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727"',
+    );
+    expect(build).toContain('process.argv[2] !== "--glibc"');
   });
 });

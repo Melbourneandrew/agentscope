@@ -47,5 +47,7 @@ export const {
   handlePreparedDockerCleanupFailure,
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientRequiresOuterHostRetirement,
+  registerPreparedDockerNetwork,
   retirePreparedDockerImage,
+  retirePreparedDockerNetwork,
 } = retirement;

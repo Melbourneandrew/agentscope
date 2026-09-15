@@ -19,6 +19,7 @@ export type VerifiedNpmHarnessMaterial = Readonly<{
   kind: "npm";
   materialIdentity: string;
   platformIdentity: string;
+  verifierNpmVersion: string;
   packages: readonly Readonly<{
     packageName: string;
     installName: string;
@@ -241,6 +242,39 @@ export const compileNpmAttestationAudit = (
   }),
 });
 
+export const compileNpmVerifierPolicy = (
+  material: NpmHarnessMaterial,
+  auditInput: unknown,
+): unknown => {
+  const audit = record(auditInput);
+  exactKeys(audit, ["invalid", "missing", "verified"]);
+  if (
+    exactArray(audit.invalid, 32).length !== 0 ||
+    exactArray(audit.missing, 32).length !== 0
+  )
+    return invalid();
+  const verified = exactArray(audit.verified, 16).map(record);
+  return {
+    packages: material.packages.map((descriptor) => {
+      const matches = verified.filter(
+        (entry) =>
+          entry.name === descriptor.packageName &&
+          entry.version === descriptor.version,
+      );
+      if (matches.length !== 1) return invalid();
+      const bundles = exactArray(matches[0]!.attestationBundles, 4);
+      return {
+        ...descriptor,
+        attestationBundleDigest: sha256Bytes(
+          Buffer.from(canonicalJson(bundles)),
+        ),
+      };
+    }),
+    registry: material.registry,
+    verifierNpmVersion: material.verifierNpmVersion,
+  };
+};
+
 const verifyProvenance = (
   verified: Readonly<Record<string, unknown>>,
   material: NpmHarnessMaterial,
@@ -437,6 +471,7 @@ export const compileVerifiedNpmHarnessMaterial = (
     kind: "npm" as const,
     packages,
     platformIdentity: input.material.platformIdentity,
+    verifierNpmVersion: input.material.verifierNpmVersion,
     verifier: input.verifier,
   };
   return deepFreeze({

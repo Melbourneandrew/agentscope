@@ -17,6 +17,7 @@ import {
   SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES,
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./dist/substrate-certification.js";
+import { installedPtyFailurePredicates } from "./immutable-candidate-authority.mjs";
 
 const fail = () => {
   throw new Error("integration.certification.verification");
@@ -63,29 +64,12 @@ const parseJson = (content) => {
     fail();
   }
 };
-const ptyFailurePredicates = {
-  "candidate-inventory": ["candidate-rejected"],
-  "immutable-candidate": ["authority-rejected"],
-  "installed-cli": [
-    "bin-authority",
-    "cli-authority",
-    "cli-boundary",
-    "driver-input",
-    "execution-rejected",
-    "interpreter-authority",
-    "package-authority",
-    "package-manifest",
-    "receipt-rejected",
-  ],
-  "pty-receipt": ["receipt-rejected"],
-  "runner-bootstrap": ["runner-rejected"],
-};
 const validPtyFailure = (value) =>
   value === null ||
   (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
     value.receiptVersion === 1 &&
-    Object.hasOwn(ptyFailurePredicates, value.phase) &&
-    ptyFailurePredicates[value.phase].includes(value.predicate));
+    Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
+    installedPtyFailurePredicates[value.phase].includes(value.predicate));
 const digest = /^sha256:[a-f0-9]{64}$/u;
 const diagnosticDigest = (value) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
@@ -288,6 +272,7 @@ const verifyFailureEvidence = (expectedCase) => {
         "certificationCase",
         "certificationPredicate",
         "certificationReadiness",
+        "causalFailure",
         "cleanupFailure",
         "controllerFailureEvidenceVersion",
         "controllerOutcome",
@@ -314,6 +299,10 @@ const verifyFailureEvidence = (expectedCase) => {
           )
         : record.certificationReadiness !== null) ||
       !validPtyFailure(record.installedPtyFailure) ||
+      !(
+        record.causalFailure === null ||
+        /^integration\.[a-z.-]{1,96}$/u.test(record.causalFailure)
+      ) ||
       !validPrivateCleanup(
         record.privateCleanup,
         manifest.preparedAuthorityDigests,
@@ -337,9 +326,7 @@ const verifyFailureEvidence = (expectedCase) => {
     )
       fail();
     if (
-      expectedCase !== null &&
-      SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES[expectedCase] ===
-        "integration.controller.unsettled-operation" &&
+      record.primaryFailure === "integration.controller.unsettled-operation" &&
       record.privateCleanup === null
     )
       fail();

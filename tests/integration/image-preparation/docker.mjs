@@ -1210,6 +1210,35 @@ export const createDockerOperations = (state) => {
         unavailableProcessDiagnostic(failure),
     });
   };
+  const settledBuildFailure = (authority, failure) => {
+    const diagnostic = authority.firstFailureDiagnostic;
+    const operation = [
+      "preflight",
+      "builder-create",
+      "builder-bootstrap",
+      "image-build",
+    ].includes(diagnostic?.operationKind)
+      ? diagnostic.operationKind
+      : "unknown-operation";
+    const stderrClass = [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].includes(diagnostic?.process?.stderrClass)
+      ? diagnostic.process.stderrClass
+      : "unknown";
+    return fixedError(
+      `integration.images.build.${operation}.${stderrClass}`,
+      failure?.code === "ETIMEDOUT",
+    );
+  };
+  const buildPhaseFailure = (error, phase, retainedCodes) =>
+    retainedCodes.includes(error?.message) ||
+    /^integration\.images\.build\.context-[a-z-]+$/u.test(error?.message)
+      ? error
+      : fixedError(`integration.images.build.${phase}`);
   const recordPreparedDockerDiagnostic = (
     client,
     authority,
@@ -1291,7 +1320,7 @@ export const createDockerOperations = (state) => {
       typeof retirementRequired !== "boolean" ||
       state.pendingCount(client) !== 0
     )
-      throw fixedError("integration.images.build");
+      throw fixedError("integration.images.build.input");
     const policy = preparationPolicy([client.evidence.images[0].image], {
       maximumPreparationMilliseconds: maximumMilliseconds,
       teardownMilliseconds: Math.min(
@@ -1299,18 +1328,36 @@ export const createDockerOperations = (state) => {
         Math.floor(maximumMilliseconds / 4),
       ),
     });
-    const archive = createBoundedBuildContext(context, {
-      afterEntryForTesting: afterBuildContextEntryForTesting,
-      deadline: policy.workDeadline,
-      maximumBytes: maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
-      signal,
-    });
-    const authority = await createBuildAuthority(
-      client,
-      policy,
-      signal,
-      labels["com.agentscope.integration.run"],
-    );
+    let archive;
+    try {
+      archive = createBoundedBuildContext(context, {
+        afterEntryForTesting: afterBuildContextEntryForTesting,
+        deadline: policy.workDeadline,
+        maximumBytes:
+          maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
+        signal,
+      });
+    } catch (error) {
+      throw buildPhaseFailure(error, "context", [
+        "integration.images.interrupted",
+        "integration.images.timeout",
+      ]);
+    }
+    let authority;
+    try {
+      authority = await createBuildAuthority(
+        client,
+        policy,
+        signal,
+        labels["com.agentscope.integration.run"],
+      );
+    } catch (error) {
+      throw buildPhaseFailure(error, "authority", [
+        "integration.images.executable",
+        "integration.images.interrupted",
+        "integration.images.timeout",
+      ]);
+    }
     let built;
     let failure;
     try {
@@ -1359,7 +1406,7 @@ export const createDockerOperations = (state) => {
         "integration.images.timeout",
       ].includes(failure?.message)
         ? failure
-        : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
+        : settledBuildFailure(authority, failure);
     const imageId = built.Id.replace(":", "-");
     if (retirementRequired) state.recordPendingImage(client, tag, imageId);
     return imageId;

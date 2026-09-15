@@ -424,7 +424,7 @@ describe("Codex root hook capture mapping", () => {
         completeHookInput({
           hook_event_name: "Stop",
           session_id: "session-1",
-          turn_id: "turn-1",
+          turn_id: "01a0a0f6-5086-7940-8edd-8bd11e10eb81",
           model: "component-model",
           last_assistant_message: "must-not-be-retained",
         }),
@@ -433,7 +433,7 @@ describe("Codex root hook capture mapping", () => {
     expect(mapped.captureBoundary).toEqual({
       session: { kind: "boundary-scoped" },
       boundaryKind: "hook-invocation",
-      boundaryId: "turn-1",
+      boundaryId: "codex:01a0a0f6-5086-7940-8edd-8bd11e10eb81",
       generation: 0,
       positionKind: "sequence",
       startPosition: 0,
@@ -449,6 +449,10 @@ describe("Codex root hook capture mapping", () => {
     expect(mapped.operations.map(({ name }) => name)).toEqual([
       "codex.turn",
       "codex.response",
+    ]);
+    expect(mapped.operations.map(({ locator }) => locator.nativeId)).toEqual([
+      "codex:01a0a0f6-5086-7940-8edd-8bd11e10eb81",
+      "codex:01a0a0f6-5086-7940-8edd-8bd11e10eb81:llm",
     ]);
     expect(mapped.operations[1]?.fields).toEqual([
       {

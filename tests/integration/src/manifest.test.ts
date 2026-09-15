@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  createMockServerInitialization,
+  MODEL_PROTOCOL_ROUTES,
+} from "@agentscope/testkit";
+
+import {
+  capabilityScenarioImages,
   capabilityManifestIdentity,
+  compileInteractivePtyActions,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
   selectCapabilityScenarios,
@@ -27,12 +34,43 @@ const withIdentity = (
   manifestIdentity: capabilityManifestIdentity(value),
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed manifest boundary matrix
 describe("integration capability manifest", () => {
   it("compiles the committed manifest and verifies descriptor evidence", () => {
     const compiled = compileCapabilityManifest(manifestFixture());
     verifyManifestEvidence(compiled, integrationRoot);
     expect(compiled.manifestIdentity).toMatch(/^sha256-[a-f\d]{64}$/u);
     expect(Object.isFrozen(compiled.scenarios[0])).toBe(true);
+    const codex = compiled.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    );
+    expect(codex?.material.kind).toBe("npm");
+    expect(codex?.admission).toBeUndefined();
+  });
+
+  it("keeps authenticated diagnostic material distinct from support admission", () => {
+    const original = manifestFixture();
+    const codex = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    )!;
+    expect(codex.material.kind).toBe("npm");
+    expect(codex.admission).toBeUndefined();
+
+    const fixture = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "fixture-process-v1",
+    )!;
+    expect(() =>
+      compileCapabilityManifest(
+        withIdentity({
+          ...original,
+          evidence: [{ ...fixture, admission: {} as never }],
+          requiredRepresentativeIds: [fixture.evidenceId],
+          scenarios: original.scenarios.filter(
+            ({ harnessEvidenceId }) => harnessEvidenceId === fixture.evidenceId,
+          ),
+        }),
+      ),
+    ).toThrow("integration.manifest.invalid");
   });
 
   it("rejects identity, duplicate, reference, and coverage drift", () => {
@@ -113,6 +151,226 @@ describe("integration capability manifest", () => {
     } finally {
       writeFileSync(adapterPath, bytes);
     }
+  });
+
+  it("detects scenario oracle mutation", () => {
+    const original = manifestFixture();
+    const oraclePath = resolve(
+      integrationRoot,
+      original.scenarios[0]!.scenarioOracle.path,
+    );
+    const bytes = readFileSync(oraclePath);
+    try {
+      writeFileSync(oraclePath, `${bytes.toString("utf8")}\n`);
+      expect(() => {
+        verifyManifestEvidence(original, integrationRoot);
+      }).toThrow("integration.manifest.evidence-digest");
+    } finally {
+      writeFileSync(oraclePath, bytes);
+    }
+  });
+
+  it("rejects substituted runtime artifact authority", () => {
+    const original = manifestFixture();
+    const scenario = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    expect(scenario?.runtimeArtifacts).toHaveLength(2);
+    const mutated = structuredClone(original);
+    const selected = mutated.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    selected!.runtimeArtifacts[0]!.sha256 = "0".repeat(64);
+    expect(() => {
+      verifyManifestEvidence(mutated, integrationRoot);
+    }).toThrow("integration.manifest.evidence-digest");
+  });
+
+  // eslint-disable-next-line max-lines-per-function
+  it("starts the Codex turn before sending its authenticated quit shortcut", () => {
+    const scenario = manifestFixture().scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
+      Buffer.from([12, 4]),
+    );
+    expect(scenario.postCompletionInputByteLength).toBe(1);
+    expect(scenario.postCompletionControl).toBe("none");
+    expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
+    const actions = compileInteractivePtyActions(
+      scenario,
+      Buffer.from(scenario.terminalInputBase64, "base64"),
+    );
+    expect(actions.map(({ action }) => action)).toEqual([
+      "resize",
+      "input",
+      "wait-for-semantic-completion",
+      "input",
+    ]);
+    expect(actions.at(-1)).toEqual({
+      action: "input",
+      byteLength: 1,
+      inputSha256:
+        "e52d9c508c502347344d8c07ad91cbd6068afc75ff6292f062a09ca381c89e71",
+    });
+    const source = readFileSync(
+      resolve(integrationRoot, scenario.scenarioProcess.path),
+      "utf8",
+    );
+    const startupPrompt = source.indexOf("      prompt,\n");
+    const explicitHookEnablement = source.indexOf(
+      '      "--enable",\n      "hooks",\n',
+    );
+    const explicitHookTrust = source.indexOf(
+      '      "--dangerously-bypass-hook-trust",\n',
+    );
+    const modelRequest = source.indexOf("  await waitForModelRequest();\n");
+    const semanticReady = source.indexOf(
+      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
+    );
+    const traceDeadline = source.indexOf(
+      "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
+      semanticReady,
+    );
+    const terminalWait = source.indexOf(
+      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+      traceDeadline,
+    );
+    const semanticComplete = source.indexOf(
+      '  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n");\n',
+      terminalWait,
+    );
+    const codexJoin = source.indexOf("  await codexRun;\n", semanticComplete);
+    const traceQueryAfterJoin = source.indexOf(
+      "  const summary = await waitForTraceSummary(traceDeadline);\n",
+      codexJoin,
+    );
+    expect(startupPrompt).toBeGreaterThan(-1);
+    expect(explicitHookEnablement).toBeGreaterThan(-1);
+    expect(explicitHookTrust).toBeGreaterThan(-1);
+    expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
+    expect(explicitHookTrust).toBeLessThan(startupPrompt);
+    expect(source).toContain(
+      "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
+    );
+    expect(source).toContain(
+      'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
+    );
+    expect(source).toContain(
+      "value.discovery.configurationLocationCount !== 2",
+    );
+    expect(source).toContain(
+      '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
+    );
+    expect(source).toContain('  interactiveFailurePhase = "trace";\n');
+    expect(source).toContain(
+      "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
+    );
+    const terminalObservation = source.indexOf(
+      "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(homeDescriptor),\n      expectedAssistantMessage,\n    )\n",
+    );
+    const lifecycleSettlement = source.indexOf(
+      "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
+      terminalObservation,
+    );
+    const preQueryDeadline = source.indexOf(
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+      lifecycleSettlement,
+    );
+    const boundedQuery = source.indexOf(
+      "  const summary = await readTraceSummary(traceDeadline);\n",
+      preQueryDeadline,
+    );
+    const postQueryDeadline = source.indexOf(
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+      boundedQuery,
+    );
+    const acceptSummary = source.indexOf(
+      '  if (summary === null) throw new Error("integration.codex.trace-search");\n  return summary;\n',
+      postQueryDeadline,
+    );
+    expect(lifecycleSettlement).toBeGreaterThan(terminalObservation);
+    expect(lifecycleSettlement).toBeLessThan(preQueryDeadline);
+    expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
+    expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
+    const boundedBackoff = source.indexOf(
+      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
+      lifecycleSettlement,
+    );
+    expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
+    expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
+    expect(boundedBackoff).toBeLessThan(preQueryDeadline);
+    expect(source).toContain('            child.kill("SIGKILL");\n');
+    expect(source).toContain(
+      "      if (timer !== undefined) clearTimeout(timer);\n",
+    );
+    expect(modelRequest).toBeGreaterThan(startupPrompt);
+    expect(semanticReady).toBeGreaterThan(modelRequest);
+    expect(traceDeadline).toBeGreaterThan(semanticReady);
+    expect(terminalWait).toBeGreaterThan(traceDeadline);
+    expect(semanticComplete).toBeGreaterThan(terminalWait);
+    expect(codexJoin).toBeGreaterThan(semanticComplete);
+    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
+  });
+
+  it("selects mutually isolated MockServer expectations per scenario", () => {
+    const manifest = manifestFixture();
+    const initialization = createMockServerInitialization() as readonly {
+      id: string;
+    }[];
+    const selectedIds = (scenarioId: string) => {
+      const scenario = manifest.scenarios.find(
+        (candidate) => candidate.scenarioId === scenarioId,
+      );
+      return scenario!.modelRoutes.map((routeId) => {
+        const index = MODEL_PROTOCOL_ROUTES.findIndex(
+          (route) => route.routeId === routeId,
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        return initialization[index]!.id;
+      });
+    };
+    expect(selectedIds("codex-tui-trace-smoke")).toEqual([
+      "codex-tui-responses",
+    ]);
+    expect(selectedIds("fixture-process-smoke")).not.toContain(
+      "codex-tui-responses",
+    );
+  });
+
+  it("prepares every selected scenario material verifier image", () => {
+    const manifest = compileCapabilityManifest(manifestFixture());
+    const codex = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    expect(codex.image).toBe(
+      "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    );
+    expect(codex.image).not.toBe(
+      manifest.scenarios.find(
+        ({ scenarioId }) => scenarioId === "fixture-process-smoke",
+      )!.image,
+    );
+    const material = manifest.evidence.find(
+      ({ evidenceId }) => evidenceId === codex.harnessEvidenceId,
+    )!.material;
+    expect(material.kind).toBe("npm");
+    if (material.kind !== "npm") throw new Error("test.material");
+    expect(material.verifierImage).toBe(
+      "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+    );
+    expect(material.verifierNpmVersion).toBe("11.19.1");
+    expect(capabilityScenarioImages(manifest, [codex.scenarioId])).toEqual(
+      [codex.image, codex.mockServerImage, material.verifierImage].sort(),
+    );
+    for (const scenarioIds of [
+      [],
+      [codex.scenarioId, codex.scenarioId],
+      ["missing"],
+    ])
+      expect(() => capabilityScenarioImages(manifest, scenarioIds)).toThrow(
+        "integration.manifest.image-selection",
+      );
   });
 
   it("rejects descriptor evidence that contradicts its manifest binding", () => {
@@ -268,8 +526,17 @@ describe("integration signed-manifest material policy", () => {
   it("compiles a harness-neutral exact-version signed release", () => {
     const original = manifestFixture();
     const evidence = signedEvidence(original);
+    const scenario = original.scenarios.find(
+      ({ harnessEvidenceId }) =>
+        harnessEvidenceId === original.evidence[0]!.evidenceId,
+    )!;
     const compiled = compileCapabilityManifest(
-      withIdentity({ ...original, evidence: [evidence] }),
+      withIdentity({
+        ...original,
+        evidence: [evidence],
+        requiredRepresentativeIds: [evidence.evidenceId],
+        scenarios: [scenario],
+      }),
     );
     expect(compiled.evidence[0]?.material.kind).toBe("signed-release-manifest");
   });
@@ -314,19 +581,57 @@ describe("integration capability execution modes", () => {
       }),
     ).toThrow("integration.manifest.invalid");
   });
+
+  it("rejects unknown or headless raw terminal controls", () => {
+    const original = manifestFixture();
+    const interactive = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    for (const postCompletionControl of [
+      "eof",
+      "raw-control-sequence",
+      ["interrupt-byte", "eof"],
+    ])
+      expect(() =>
+        compileCapabilityManifest({
+          ...original,
+          scenarios: [
+            { ...interactive, postCompletionControl } as typeof interactive,
+          ],
+        }),
+      ).toThrow("integration.manifest.invalid");
+    expect(() =>
+      compileCapabilityManifest({
+        ...original,
+        scenarios: [
+          {
+            ...original.scenarios[0]!,
+            postCompletionControl: "interrupt-byte",
+            waitForSemanticCompletionBeforeTerminalAction: true,
+          },
+        ],
+      }),
+    ).toThrow("integration.manifest.invalid");
+  });
 });
 
 describe("integration capability selection", () => {
   it("selects by harness, tag, scenario, and deterministic weighted shard", () => {
     const original = manifestFixture();
+    const fixtureEvidence = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "fixture-process-v1",
+    )!;
+    const fixtureScenario = original.scenarios.find(
+      ({ scenarioId }) => scenarioId === "fixture-process-smoke",
+    )!;
     const second = {
-      ...original.scenarios[0]!,
+      ...fixtureScenario,
       scenarioId: "fixture-process-regression",
       tags: ["nightly"],
       shardWeight: 200,
     };
     const third = {
-      ...original.scenarios[0]!,
+      ...fixtureScenario,
       scenarioId: "fixture-process-small",
       tags: ["nightly"],
       shardWeight: 50,
@@ -334,7 +639,9 @@ describe("integration capability selection", () => {
     const compiled = compileCapabilityManifest(
       withIdentity({
         ...original,
-        scenarios: [third, original.scenarios[0]!, second],
+        evidence: [fixtureEvidence],
+        requiredRepresentativeIds: [fixtureEvidence.evidenceId],
+        scenarios: [third, fixtureScenario, second],
       }),
     );
     expect(selectCapabilityScenarios(compiled, { tag: "smoke" })).toHaveLength(
@@ -371,7 +678,7 @@ describe("integration capability selection", () => {
     for (const shard of [
       { index: -1, total: 1 },
       { index: 1, total: 1 },
-      { index: 0, total: 3 },
+      { index: 0, total: 4 },
     ])
       expect(() => selectCapabilityScenarios(compiled, { shard })).toThrow(
         "integration.manifest.shard",

@@ -64,7 +64,6 @@ export const CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION = Object.freeze({
     "skill_mcp_dependency_install",
     "skill_search",
     "tool_call_mcp_elicitation",
-    "tool_registry",
     "tool_search",
     "tool_search_always_defer_mcp_tools",
     "tool_suggest",

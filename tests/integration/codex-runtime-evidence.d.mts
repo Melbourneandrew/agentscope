@@ -1,0 +1,44 @@
+export function readBoundedJsonResponse(
+  response: Response,
+  maximumBytes: number,
+): Promise<unknown>;
+
+export function boundedRequestLedger(
+  value: unknown,
+): readonly Readonly<Record<string, unknown>>[];
+
+export function codexTurnTerminalObserved(
+  ledgers: readonly string[],
+  expectedMessage: string,
+): boolean;
+
+export function readCodexSessionLedgers(homeDescriptor: number): string[];
+
+export function openLocalSqliteLifecycle(homeDescriptor: number): number;
+
+export function localSqliteReporterSettled(
+  lifecycleDescriptor: number,
+): boolean;
+
+export function settledLocalSqliteLifecycleSnapshot(input: {
+  before: Readonly<Record<string, unknown>>;
+  first: ReadonlyArray<Readonly<{ kind: string; name: string }>>;
+  middle: Readonly<Record<string, unknown>>;
+  second: ReadonlyArray<Readonly<{ kind: string; name: string }>>;
+  after: Readonly<Record<string, unknown>>;
+}): boolean;
+
+export function settledCodexLedgerSnapshot(input: {
+  before: Readonly<Record<string, unknown>>;
+  first: Buffer;
+  middle: Readonly<Record<string, unknown>>;
+  second: Buffer;
+  after: Readonly<Record<string, unknown>>;
+}): string | null;
+
+export function waitWithinObservationDeadline(input: {
+  deadline: number;
+  maximumWaitMilliseconds: number;
+  now: () => number;
+  wait: (milliseconds: number) => Promise<void>;
+}): Promise<void>;

@@ -759,6 +759,10 @@ export const mapCodexRootHookCapture = (
     return invalid();
   const hookProvenance = (field: string): FieldProvenanceCandidate =>
     provenance(field, "hook-payload");
+  // Codex 0.149.1 emits UUID-form turn IDs whose first character can be a
+  // digit. Core identifiers deliberately require a leading letter, so retain
+  // the complete vendor identity behind one injective harness namespace.
+  const turnIdentity = `codex:${hook.turnId}`;
   const nativeUnavailable = (field: string): FieldUnavailableCandidate =>
     createNativeUnavailableField({
       field,
@@ -782,7 +786,7 @@ export const mapCodexRootHookCapture = (
     captureBoundary: createEphemeralCaptureBoundary({
       scope: "boundary-scoped",
       boundaryKind: "hook-invocation",
-      boundaryId: hook.turnId,
+      boundaryId: turnIdentity,
       generation: 0,
       positionKind: "sequence",
       startPosition: 0,
@@ -799,7 +803,7 @@ export const mapCodexRootHookCapture = (
         logicalKey: "codex-turn",
         locator: Object.freeze({
           kind: "native-operation" as const,
-          nativeId: hook.turnId,
+          nativeId: turnIdentity,
         }),
         kind: "AGENT" as const,
         name: "codex.turn",
@@ -814,7 +818,7 @@ export const mapCodexRootHookCapture = (
         parentLogicalKey: "codex-turn",
         locator: Object.freeze({
           kind: "native-operation" as const,
-          nativeId: `${hook.turnId}:llm`,
+          nativeId: `${turnIdentity}:llm`,
         }),
         kind: "LLM" as const,
         name: "codex.response",

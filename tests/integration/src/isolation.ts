@@ -348,6 +348,7 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
     inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
   }),
   z.strictObject({ action: z.literal("eof") }),
+  z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),
@@ -368,6 +369,10 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("eof"),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("wait-for-semantic-completion"),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
@@ -574,6 +579,8 @@ export interface IsolationPlan {
   readonly runId: string;
   readonly scenarioId: string;
   readonly executionMode: "headless" | "interactive";
+  readonly terminalAction:
+    "none" | "eof" | "post-completion-input" | "post-completion-controls";
   readonly manifestIdentity: string;
   readonly candidateBundleIdentity: string;
   readonly candidateRevision: string;
@@ -624,30 +631,56 @@ const headlessReceiptPasses = (
   receipt.stdoutJoined &&
   receipt.stderrJoined;
 
-const ptyReceiptPasses = (receipt: PtyTerminalReceipt | null): boolean =>
-  receipt !== null &&
-  receipt.outcome === "completed" &&
-  receipt.exitCode === 0 &&
-  receipt.signal === null &&
-  receipt.cleanup === "clean" &&
-  receipt.residualProcessCount === 0 &&
-  receipt.finalSnapshot.semanticState === "completed" &&
-  receipt.eofByteWritten &&
-  receipt.processJoined &&
-  receipt.terminalInputJoined &&
-  receipt.terminalOutputJoined &&
-  receipt.terminalTransportClosed;
+const ptyReceiptPasses = (
+  receipt: PtyTerminalReceipt | null,
+  terminalAction: IsolationPlan["terminalAction"],
+): boolean => {
+  if (receipt === null) return false;
+  const actions = receipt.request.interaction.actions.map(
+    ({ action }) => action,
+  );
+  const terminalActionMatches =
+    (terminalAction === "eof" &&
+      actions.at(-1) === "eof" &&
+      !actions.includes("wait-for-semantic-completion") &&
+      !actions.includes("interrupt-byte")) ||
+    (terminalAction === "post-completion-input" &&
+      actions.at(-1) === "input" &&
+      actions.includes("wait-for-semantic-completion") &&
+      !actions.includes("eof") &&
+      !actions.includes("interrupt-byte")) ||
+    (terminalAction === "post-completion-controls" &&
+      JSON.stringify(actions.slice(-2)) ===
+        JSON.stringify(["wait-for-semantic-completion", "interrupt-byte"]));
+  return (
+    terminalActionMatches &&
+    receipt.outcome === "completed" &&
+    receipt.exitCode === 0 &&
+    receipt.signal === null &&
+    receipt.cleanup === "clean" &&
+    receipt.residualProcessCount === 0 &&
+    receipt.finalSnapshot.semanticState === "completed" &&
+    receipt.eofByteWritten === (terminalAction === "eof") &&
+    receipt.processJoined &&
+    receipt.terminalInputJoined &&
+    receipt.terminalOutputJoined &&
+    receipt.terminalTransportClosed
+  );
+};
 
 const terminalEvidencePasses = (value: {
   executionMode: "headless" | "interactive";
+  terminalAction: IsolationPlan["terminalAction"];
   headlessTerminalReceipt: HeadlessTerminalReceipt | null;
   ptyTerminalReceipt: PtyTerminalReceipt | null;
 }): boolean =>
   value.executionMode === "headless"
-    ? value.ptyTerminalReceipt === null &&
+    ? value.terminalAction === "none" &&
+      value.ptyTerminalReceipt === null &&
       headlessReceiptPasses(value.headlessTerminalReceipt)
-    : value.headlessTerminalReceipt === null &&
-      ptyReceiptPasses(value.ptyTerminalReceipt);
+    : value.terminalAction !== "none" &&
+      value.headlessTerminalReceipt === null &&
+      ptyReceiptPasses(value.ptyTerminalReceipt, value.terminalAction);
 
 const isolationEvidenceSchema = z
   .strictObject({
@@ -658,6 +691,12 @@ const isolationEvidenceSchema = z
     candidateBundleIdentity: digest,
     candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
     executionMode: z.enum(["headless", "interactive"]),
+    terminalAction: z.enum([
+      "none",
+      "eof",
+      "post-completion-input",
+      "post-completion-controls",
+    ]),
     baseImage: imageReference,
     mockServerImage: imageReference,
     baseImageIdentity: preparedImageIdentitySchema,
@@ -744,6 +783,101 @@ export interface IsolationDriver {
   inspectCleanup(plan: IsolationPlan): Promise<unknown>;
 }
 
+/* eslint-disable complexity -- one closed exact daemon terminal witness */
+export const scenarioContainerTerminalWitness = (input: {
+  readonly attach: {
+    readonly code?: unknown;
+    readonly killed?: unknown;
+    readonly name?: unknown;
+    readonly signal?: unknown;
+  };
+  readonly container: unknown;
+  readonly containerId: string;
+  readonly runId: string;
+  readonly scenarioName: string;
+  readonly waitOutput: string;
+}): boolean => {
+  const { attach, container, containerId, runId, scenarioName, waitOutput } =
+    input;
+  const record =
+    typeof container === "object" && container !== null
+      ? (container as Record<string, unknown>)
+      : undefined;
+  const config = record?.Config as Record<string, unknown> | undefined;
+  const labels = config?.Labels as Record<string, unknown> | undefined;
+  const state = record?.State as Record<string, unknown> | undefined;
+  const exitCode = typeof attach.code === "number" ? attach.code : NaN;
+  const finishedAt = state?.FinishedAt;
+  const timestampMatch =
+    typeof finishedAt === "string"
+      ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u.exec(
+          finishedAt,
+        )
+      : null;
+  const canonicalFinishedAt = (() => {
+    if (timestampMatch === null) return false;
+    const [, year, month, day, hour, minute, second] = timestampMatch;
+    const yearNumber = Number(year);
+    const monthNumber = Number(month);
+    const dayNumber = Number(day);
+    const hourNumber = Number(hour);
+    const minuteNumber = Number(minute);
+    const secondNumber = Number(second);
+    const leapYear =
+      yearNumber % 4 === 0 &&
+      (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
+    const daysInMonth = [
+      31,
+      leapYear ? 29 : 28,
+      31,
+      30,
+      31,
+      30,
+      31,
+      31,
+      30,
+      31,
+      30,
+      31,
+    ][monthNumber - 1];
+    return (
+      yearNumber > 1 &&
+      daysInMonth !== undefined &&
+      dayNumber >= 1 &&
+      dayNumber <= daysInMonth &&
+      hourNumber <= 23 &&
+      minuteNumber <= 59 &&
+      secondNumber <= 59
+    );
+  })();
+  return (
+    Number.isSafeInteger(exitCode) &&
+    exitCode > 0 &&
+    exitCode <= 255 &&
+    attach.signal === null &&
+    attach.killed === false &&
+    attach.name === "Error" &&
+    /^[a-f0-9]{64}$/u.test(containerId) &&
+    waitOutput === `${exitCode}\n` &&
+    record?.Id === containerId &&
+    record?.Name === `/${scenarioName}` &&
+    labels?.["com.agentscope.integration"] === "true" &&
+    labels?.["com.agentscope.integration.run"] === runId &&
+    record?.RestartCount === 0 &&
+    state?.Status === "exited" &&
+    state?.Running === false &&
+    state?.Paused === false &&
+    state?.Restarting === false &&
+    state?.OOMKilled === false &&
+    state?.Dead === false &&
+    state?.Pid === 0 &&
+    state?.ExitCode === exitCode &&
+    state?.Error === "" &&
+    canonicalFinishedAt
+  );
+};
+/* eslint-enable complexity */
+
 export const compileIsolationExecutionPolicy = (
   input: unknown,
 ): Readonly<IsolationExecutionPolicy> => {
@@ -824,6 +958,14 @@ export const createIsolationPlan = (input: {
     runId: parsedToken.data,
     scenarioId: input.scenario.scenarioId,
     executionMode: input.scenario.executionMode,
+    terminalAction:
+      input.scenario.executionMode === "headless"
+        ? "none"
+        : input.scenario.postCompletionControl !== "none"
+          ? "post-completion-controls"
+          : input.scenario.waitForSemanticCompletionBeforeTerminalAction
+            ? "post-completion-input"
+            : "eof",
     manifestIdentity: input.manifestIdentity,
     candidateBundleIdentity: input.candidate.bundleIdentity,
     candidateRevision: input.candidate.candidateRevision,
@@ -859,29 +1001,68 @@ const unavailableExecutionPolicyFor = (
     requests: ISOLATION_EXECUTOR_LIMITS.requests,
   });
 
+type CleanupResult = Readonly<{
+  failureCount: number;
+  firstFailure: string | null;
+  firstFailureCause: unknown;
+}>;
+
 const cleanup = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
-): Promise<number> => {
-  const operations = [
-    () => driver.removeContainer(plan.scenarioName),
-    () => driver.removeContainer(plan.collectorName),
-    () => driver.removeContainer(plan.retrievalName),
-    () => driver.removeContainer(plan.mockServerName),
-    () => driver.removeNetwork(plan.networkName),
-    () => driver.removeImage(plan.imageTag),
-    () => driver.removeImage(plan.mockServerImageTag),
-    () => driver.removeContext(plan.runId),
+): Promise<CleanupResult> => {
+  const operations: ReadonlyArray<readonly [string, () => Promise<void>]> = [
+    ["scenario-container", () => driver.removeContainer(plan.scenarioName)],
+    ["collector-container", () => driver.removeContainer(plan.collectorName)],
+    ["retrieval-container", () => driver.removeContainer(plan.retrievalName)],
+    [
+      "mock-server-container",
+      () => driver.removeContainer(plan.mockServerName),
+    ],
+    ["network", () => driver.removeNetwork(plan.networkName)],
+    ["scenario-image", () => driver.removeImage(plan.imageTag)],
+    ["mock-server-image", () => driver.removeImage(plan.mockServerImageTag)],
+    ["context", () => driver.removeContext(plan.runId)],
   ];
   let failureCount = 0;
-  for (const operation of operations) {
+  let firstFailure: string | null = null;
+  let firstFailureCause: unknown;
+  for (const [name, operation] of operations) {
     try {
       await operation();
-    } catch {
+    } catch (error) {
       failureCount += 1;
+      const classified =
+        name === "network" &&
+        error instanceof Error &&
+        /^integration\.isolation\.cleanup-network-remove$/u.test(error.message)
+          ? error.message.slice("integration.isolation.cleanup-".length)
+          : name;
+      if (firstFailure === null) {
+        firstFailure = classified;
+        firstFailureCause = error instanceof Error ? error.cause : undefined;
+      }
     }
   }
-  return failureCount;
+  return { failureCount, firstFailure, firstFailureCause };
+};
+
+const failCleanup = (
+  cleanup: IsolationEvidence["cleanup"],
+  result: CleanupResult,
+  workFailure: unknown,
+): never => {
+  process.stderr.write(
+    `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
+  );
+  throw new Error(
+    result.firstFailure === null
+      ? cleanup.remaining === null
+        ? "integration.isolation.cleanup-inventory"
+        : "integration.isolation.cleanup-remaining"
+      : `integration.isolation.cleanup-${result.firstFailure}`,
+    { cause: workFailure ?? result.firstFailureCause },
+  );
 };
 
 export const executeIsolationPlan = async (
@@ -933,7 +1114,8 @@ export const executeIsolationPlan = async (
     failure = error;
     workOutcome = signal.aborted ? "interrupted" : "failed";
   }
-  const removalFailureCount = await cleanup(plan, driver);
+  const cleanupResult = await cleanup(plan, driver);
+  const removalFailureCount = cleanupResult.failureCount;
   let cleanupInventory: IsolationCleanupInventory | null = null;
   let cleanupInspectionFailed = false;
   try {
@@ -966,6 +1148,7 @@ export const executeIsolationPlan = async (
       candidateBundleIdentity: plan.candidateBundleIdentity,
       candidateRevision: plan.candidateRevision,
       executionMode: plan.executionMode,
+      terminalAction: plan.terminalAction,
       baseImage: plan.baseImage,
       mockServerImage: plan.mockServerImage,
       baseImageIdentity: plan.baseImageIdentity,
@@ -992,9 +1175,8 @@ export const executeIsolationPlan = async (
     },
   );
   await driver.recordEvidence(evidence);
-  if (cleanupOutcome !== "complete") {
-    throw new Error("integration.isolation.cleanup");
-  }
+  if (cleanupOutcome !== "complete")
+    failCleanup(evidence.cleanup, cleanupResult, failure);
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");

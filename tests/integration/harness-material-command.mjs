@@ -38,6 +38,7 @@ const npmEnvironment = (home, registry) => ({
   NPM_CONFIG_GLOBALCONFIG: resolve(home, "global.npmrc"),
   NPM_CONFIG_IGNORE_SCRIPTS: "true",
   NPM_CONFIG_REGISTRY: registry,
+  NPM_CONFIG_UPDATE_NOTIFIER: "false",
   NPM_CONFIG_USERCONFIG: resolve(home, "user.npmrc"),
   PATH: "/usr/local/bin:/usr/bin:/bin",
 });
@@ -73,6 +74,17 @@ const verifyNpm = async (root, policy) => {
   );
   const environment = npmEnvironment(resolve(root, "home"), policy.registry);
   const npm = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+  const { stdout: npmVersion } = await execute(
+    "/usr/local/bin/node",
+    [npm, "--version"],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: environment,
+      maxBuffer: maximumOutputBytes,
+    },
+  );
+  if (npmVersion !== `${policy.verifierNpmVersion}\n`) fail();
   await execute(
     "/usr/local/bin/node",
     [

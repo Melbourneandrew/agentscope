@@ -16,7 +16,6 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
-
 const request = (
   overrides: Partial<HeadlessExecutionRequest> = {},
 ): SelectedPtyExecutionRequest => {
@@ -287,6 +286,34 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("does not accept a completion marker observed before the preceding input", async () => {
+    expect(
+      await executeSelectedPtyTransportForTest(
+        {
+          ...request(),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [
+              {
+                action: "input",
+                byteLength: 4,
+                inputSha256:
+                  "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+              },
+              { action: "wait-for-semantic-completion" },
+              { action: "eof" },
+            ],
+          },
+        },
+        "fragmented-output",
+      ),
+    ).toMatchObject({
+      actions: [{ action: "input" }],
+      outcome: "input-incomplete",
+      terminalInputJoined: false,
+    });
+  });
+
   it("applies a readiness-gated resize before segmented input and EOF", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
@@ -322,6 +349,37 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 2 },
         { action: "eof" },
       ],
+    });
+  });
+
+  it("waits for semantic completion before applying a terminal action", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request(),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 4,
+              inputSha256:
+                "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "eof" },
+          ],
+        },
+      },
+      "post-input-completion",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input" },
+        { action: "wait-for-semantic-completion" },
+        { action: "eof" },
+      ],
+      terminalInputJoined: true,
     });
   });
 
@@ -410,6 +468,47 @@ describe("selected PTY transport", () => {
       actions: [{ action: "interrupt-byte", byte: 3 }],
     });
     expect(JSON.stringify(receipt)).not.toContain("stdin");
+  });
+
+  it("applies readiness-gated input before a fast completion burst", async () => {
+    const input = new Uint8Array([12]);
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({
+          stdin: input,
+          // This case proves ordering, not deadline expiry. Keep its absolute
+          // authority distinct from the deliberately short deadline cases so
+          // coverage instrumentation cannot turn scheduler delay into a
+          // different semantic test.
+          monotonicStartupDeadlineMs: now + 1_000,
+          monotonicExecutionDeadlineMs: now + 2_000,
+          monotonicShutdownDeadlineMs: now + 4_000,
+        }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 1,
+              inputSha256:
+                "ef6cbd2161eaea7943ce8693b9824d23d1793ffb1c0fca05b600d3899b44c977",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "interrupt-byte", byte: 3 },
+          ],
+        },
+      },
+      "readiness-burst",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input", byteLength: 1 },
+        { action: "wait-for-semantic-completion" },
+        { action: "interrupt-byte", byte: 3 },
+      ],
+    });
   });
 
   it("signals the authenticated selected root from the action plan", async () => {

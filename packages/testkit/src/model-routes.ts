@@ -8,8 +8,9 @@ export interface ModelProtocolRoute {
   readonly path: string;
   readonly query?: Readonly<Record<string, string>>;
   readonly headers: Readonly<Record<string, string>>;
-  readonly requestBody: Readonly<Record<string, unknown>>;
-  readonly responseBody: Readonly<Record<string, unknown>>;
+  readonly requestBody?: Readonly<Record<string, unknown>>;
+  readonly responseBody?: Readonly<Record<string, unknown>>;
+  readonly responseBodyText?: string;
 }
 
 const deepFreeze = <T>(value: T): Readonly<T> => {
@@ -21,6 +22,46 @@ const deepFreeze = <T>(value: T): Readonly<T> => {
 };
 
 export const MODEL_PROTOCOL_ROUTES = deepFreeze([
+  {
+    routeId: "codex-tui-responses",
+    provider: "openai-responses",
+    method: "POST",
+    path: "/v1/responses",
+    headers: { "content-type": "application/json" },
+    responseBodyText:
+      [
+        {
+          type: "response.created",
+          response: { id: "resp_agentscope_pty_0001" },
+        },
+        {
+          type: "response.output_item.done",
+          item: {
+            type: "message",
+            role: "assistant",
+            id: "msg_agentscope_pty_0001",
+            content: [
+              { type: "output_text", text: "Codex PTY fixture turn finished." },
+            ],
+          },
+        },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_agentscope_pty_0001",
+            usage: {
+              input_tokens: 8,
+              input_tokens_details: null,
+              output_tokens: 6,
+              output_tokens_details: null,
+              total_tokens: 14,
+            },
+          },
+        },
+      ]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+        .join("") + "data: [DONE]\n\n",
+  },
   {
     routeId: "openai-responses",
     provider: "openai-responses",
@@ -208,16 +249,26 @@ export const createMockServerInitialization = (): readonly unknown[] =>
           headers: Object.fromEntries(
             Object.entries(route.headers).map(([key, value]) => [key, [value]]),
           ),
-          body: {
-            type: "JSON",
-            json: JSON.stringify(route.requestBody),
-            matchType: "STRICT",
-          },
+          ...(route.requestBody === undefined
+            ? {}
+            : {
+                body: {
+                  type: "JSON",
+                  json: JSON.stringify(route.requestBody),
+                  matchType: "STRICT",
+                },
+              }),
         },
         httpResponse: {
           statusCode: 200,
-          headers: { "content-type": ["application/json"] },
-          body: JSON.stringify(route.responseBody),
+          headers: {
+            "content-type": [
+              route.responseBodyText === undefined
+                ? "application/json"
+                : "text/event-stream",
+            ],
+          },
+          body: route.responseBodyText ?? JSON.stringify(route.responseBody),
         },
         times: { unlimited: true },
         timeToLive: { unlimited: true },

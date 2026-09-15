@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   compileNpmAttestationAudit,
+  compileNpmVerifierPolicy,
   compileVerifiedNpmHarnessMaterial,
   compileVerifiedSignedManifestHarnessMaterial,
 } from "./dist/harness-material.js";
@@ -202,15 +203,6 @@ const download = (descriptor, signal, deadline) =>
     requestHandle.end();
   });
 
-const canonical = (value) => {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null)
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-};
 const verifierImage = (client, image) => {
   const matches = client?.evidence?.images?.filter(
     (candidate) => candidate.image === image,
@@ -257,9 +249,9 @@ const runMaterialVerification = async ({
     .update(`${runId}:${operation}:${commandSourceAuthority.sha256}`)
     .digest("hex")
     .slice(0, 24)}`;
-  const retirementDeadline = deadline - materialSettlementReserveMilliseconds;
+  const retirementBoundary = deadline - materialSettlementReserveMilliseconds;
   const buildDeadline =
-    retirementDeadline - materialRetirementReserveMilliseconds;
+    retirementBoundary - materialRetirementReserveMilliseconds;
   const imageId = await buildPreparedDockerImage(client, {
     buildArguments: { BASE_IMAGE: material.verifierImage },
     context,
@@ -274,6 +266,10 @@ const runMaterialVerification = async ({
     signal,
     tag,
   });
+  const retirementDeadline = Math.min(
+    retirementBoundary,
+    performance.now() + materialRetirementReserveMilliseconds,
+  );
   await retirePreparedDockerImage(client, {
     deadline: retirementDeadline,
     imageId,
@@ -292,7 +288,6 @@ const runMaterialVerification = async ({
 
 // One acquisition authority must span download, verification, publication,
 // and identity-checked cleanup without delegating a restartable sub-phase.
-// eslint-disable-next-line max-lines-per-function
 export const prepareNpmHarnessMaterial = async (input) => {
   let owned;
   try {
@@ -359,20 +354,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
       );
     }
     const audit = compileNpmAttestationAudit(material, attestations);
-    const policy = {
-      packages: material.packages.map((descriptor) => {
-        const verified = audit.verified.find(
-          (entry) => entry.name === descriptor.packageName,
-        );
-        return {
-          ...descriptor,
-          attestationBundleDigest: createHash("sha256")
-            .update(canonical(verified.attestationBundles))
-            .digest("hex"),
-        };
-      }),
-      registry: material.registry,
-    };
+    const policy = compileNpmVerifierPolicy(material, audit);
     const verifier = await runMaterialVerification({
       client: dockerClient,
       deadline,

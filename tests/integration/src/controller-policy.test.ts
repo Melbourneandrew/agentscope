@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
+import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -90,6 +91,10 @@ describe("integration controller policy", () => {
     expect(material).not.toContain("runSupervisedProcess");
     expect(command).toContain('root !== "/verify"');
     expect(command).toContain('NPM_CONFIG_IGNORE_SCRIPTS: "true"');
+    expect(command).toContain(
+      "npmVersion !== `${policy.verifierNpmVersion}\\n`",
+    );
+    expect(command).toContain("verified.attestationBundles");
     expect(command).toContain('"--no-auto-key-retrieve"');
   });
 
@@ -134,6 +139,54 @@ describe("integration controller policy", () => {
       expect(`${result.stdout}${result.stderr}`, stage).toContain(
         "integration.outer-host.capability-required",
       );
+    }
+  });
+});
+
+describe("integration cleanup authority", () => {
+  it("reserves the terminal controller window for Docker cleanup only", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(30_000, true)",
+    );
+    expect(source).toContain("terminal: true");
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(\n        scenarioTimeoutMilliseconds,\n        terminal,\n      )",
+    );
+  });
+
+  it("uses distinct closed npm configuration files for offline harness installation", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      '"--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig"',
+    );
+    expect(source).toContain('resolve(context, "harness/npm-userconfig")');
+    expect(source).toContain('resolve(context, "harness/npm-globalconfig")');
+    expect(source).not.toContain(
+      '"--userconfig=/dev/null", "--globalconfig=/dev/null"',
+    );
+  });
+
+  it("settles empty npm configuration identity despite a restrictive umask", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-npm-config-"));
+    const target = resolve(directory, "npm-userconfig");
+    const priorUmask = process.umask(0o777);
+    try {
+      writeExactRegularFile(target, Buffer.alloc(0), 0o600);
+      const status = lstatSync(target);
+      expect(status.isFile()).toBe(true);
+      expect(status.isSymbolicLink()).toBe(false);
+      expect(status.size).toBe(0);
+      expect(status.mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(priorUmask);
+      rmSync(directory, { force: true, recursive: true });
     }
   });
 });
@@ -210,6 +263,7 @@ describe("integration controller supervision", () => {
 // The workflow policy inventory is kept in one closed review surface.
 // eslint-disable-next-line max-lines-per-function
 describe("integration workflow policy", () => {
+  // eslint-disable-next-line max-lines-per-function -- one closed workflow and staged-runtime inventory
   it("routes candidate, clean replay, and controlled rejection through one command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -272,6 +326,10 @@ describe("integration workflow policy", () => {
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
       "utf8",
     );
+    const exactFile = readFileSync(
+      resolve(workspaceRoot, "tests/integration/exact-file.mjs"),
+      "utf8",
+    );
     const finalized = scenarios.indexOf(
       "finalizeControllerFailureEvidence(plan",
     );
@@ -281,7 +339,59 @@ describe("integration workflow policy", () => {
     const propagated = scenarios.indexOf("throw primaryError");
     const manifest = scenarios.lastIndexOf("publishControllerFailureManifest");
     const readinessReleased = scenarios.lastIndexOf("fixtureResults.delete");
+    const causalDiagnostic = scenarios.indexOf(
+      "integration.controller.causal-diagnostic:${failureCode(error)}",
+    );
+    expect(scenarios).toContain(
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    ))',
+    );
+    expect(scenarios).toContain(
+      "terminalMutationProved = await proveFailedAttachSettled(",
+    );
+    const attachStart = scenarios.indexOf(
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName]',
+    );
+    const attachCatch = scenarios.indexOf("  } catch (error) {", attachStart);
+    const successfulReceipt = scenarios.indexOf(
+      '  const receipt =\n    plan.executionMode === "interactive"',
+      attachCatch,
+    );
+    const rejectedAttachProof = scenarios.indexOf(
+      "terminalMutationProved = await proveFailedAttachSettled(",
+      attachCatch,
+    );
+    const rejectedAttachOutput = scenarios.indexOf(
+      'const output = `${error?.stdout ?? ""}`;',
+      attachCatch,
+    );
+    expect(attachStart).toBeGreaterThan(-1);
+    expect(attachCatch).toBeGreaterThan(attachStart);
+    expect(successfulReceipt).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachProof).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachOutput).toBeGreaterThan(rejectedAttachProof);
+    expect(
+      scenarios
+        .slice(attachStart, attachCatch)
+        .includes("captureHeadlessReceipt"),
+    ).toBe(false);
+    expect(scenarios).toContain('["container", "wait", containerId]');
+    expect(scenarios).toContain('["container", "inspect", containerId]');
+    expect(scenarios).toContain('"COPY dist ./dist"');
+    expect(scenarios).toContain(
+      'const packageBoundaryPath = resolve(context, "dist/package.json")',
+    );
+    expect(scenarios).toContain(
+      "writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644)",
+    );
+    expect(exactFile).toContain("fchmodSync(descriptor, mode)");
+    expect(exactFile).toContain("constants.O_NOFOLLOW");
+    expect(exactFile).toContain("descriptorStatus.ino !== pathStatus.ino");
+    expect(scenarios.indexOf('"COPY dist ./dist"')).toBeLessThan(
+      scenarios.indexOf('"USER node"'),
+    );
     expect(required).toBeGreaterThanOrEqual(0);
+    expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
+    expect(causalDiagnostic).toBeLessThan(required);
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
     expect(readinessReleased).toBeGreaterThan(manifest);
@@ -307,6 +417,7 @@ describe("integration workflow policy", () => {
           scenarioOutcome: "not-complete",
           controllerOutcome: "retired-failure",
           primaryFailure: "integration.controller.failed",
+          causalFailure: null,
           cleanupFailure: null,
           installedPtyFailure: null,
           privateCleanup: null,
@@ -422,7 +533,7 @@ describe("integration workflow policy", () => {
   // The fixture must rewrite one exact manifest repeatedly to prove every
   // cross-bound substitution against the same file identities.
   // eslint-disable-next-line max-lines-per-function
-  it("requires retirement-bound negatives to retain exact private authority evidence", () => {
+  it("separates unsettled retirement evidence from witnessed certification", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-retirement-"));
     const artifacts = resolve(directory, "artifacts/integration");
     const runId = "0123456789abcdef";
@@ -445,16 +556,24 @@ describe("integration workflow policy", () => {
       images: diagnostic.authorityDigests.images,
       socket: diagnostic.authorityDigests.socket,
     };
-    const writeEvidence = (privateCleanup: unknown) => {
+    const writeEvidence = (
+      privateCleanup: unknown,
+      certification = {
+        certificationCase: null as string | null,
+        certificationPredicate: null as string | null,
+        primaryFailure: "integration.controller.unsettled-operation",
+      },
+    ) => {
       const content = `${JSON.stringify({
         controllerFailureEvidenceVersion: 2,
         runId,
-        certificationCase: "wrong-argv",
-        certificationPredicate: "request-argv-mismatch",
+        certificationCase: certification.certificationCase,
+        certificationPredicate: certification.certificationPredicate,
         certificationReadiness: null,
         scenarioOutcome: "failed",
         controllerOutcome: "retired-failure",
-        primaryFailure: "integration.controller.unsettled-operation",
+        primaryFailure: certification.primaryFailure,
+        causalFailure: null,
         cleanupFailure: null,
         installedPtyFailure: null,
         privateCleanup,
@@ -468,7 +587,7 @@ describe("integration workflow policy", () => {
         `${JSON.stringify({
           controllerFailureManifestVersion: 1,
           controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
-          certificationCase: "wrong-argv",
+          certificationCase: certification.certificationCase,
           preparedAuthorityDigests,
           runIds: [runId],
           failureEvidence: [
@@ -484,7 +603,7 @@ describe("integration workflow policy", () => {
         { mode: 0o600 },
       );
     };
-    const verify = () =>
+    const verify = (mode = "failure", certificationCase?: string) =>
       spawnSync(
         process.execPath,
         [
@@ -492,12 +611,16 @@ describe("integration workflow policy", () => {
             workspaceRoot,
             "tests/integration/verify-substrate-certification.mjs",
           ),
-          "negative",
+          mode,
         ],
         {
           cwd: directory,
           env: {
-            AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: "wrong-argv",
+            ...(certificationCase === undefined
+              ? {}
+              : {
+                  AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
+                }),
             PATH: process.env.PATH,
           },
         },
@@ -578,6 +701,18 @@ describe("integration workflow policy", () => {
         expectedResourceDigest: `sha256:${"a".repeat(64)}`,
       });
       expect(verify()).not.toBe(0);
+      const witnessedWrongArgv = {
+        certificationCase: "wrong-argv",
+        certificationPredicate: "request-argv-mismatch",
+        primaryFailure: "integration.certification.wrong-argv",
+      };
+      writeEvidence(null, witnessedWrongArgv);
+      expect(verify("negative", "wrong-argv")).toBe(0);
+      writeEvidence(diagnostic, {
+        ...witnessedWrongArgv,
+        primaryFailure: "integration.controller.unsettled-operation",
+      });
+      expect(verify("negative", "wrong-argv")).not.toBe(0);
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }

@@ -1,5 +1,7 @@
 export {
+  capabilityScenarioImages,
   capabilityManifestIdentity,
+  compileInteractivePtyActions,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
   selectCapabilityScenarios,
@@ -37,6 +39,7 @@ export {
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
+  scenarioContainerTerminalWitness,
   SCENARIO_TMPFS_MOUNTS,
 } from "./isolation.js";
 export type {

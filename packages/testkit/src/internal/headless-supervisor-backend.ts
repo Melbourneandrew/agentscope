@@ -35,6 +35,7 @@ import {
 import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
+  type PtyTerminalGeometry,
   validatePtyTerminalSemanticSnapshot,
 } from "../bounded-terminal-emulator.js";
 import type {
@@ -1309,8 +1310,71 @@ type NativePtyBinding = Readonly<{
   ) => void;
   write: (handle: PtyTerminalHandle, bytes: Buffer) => PtyWriteObservation;
 }>;
-const ptyRuntimeDigest =
-  "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff";
+const ptyRuntimeArtifacts = Object.freeze({
+  glibc: Object.freeze({
+    digest: "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727",
+    tuple: "node127-linux-x64-glibc",
+  }),
+  musl: Object.freeze({
+    digest: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
+    tuple: "node127-linux-x64-musl",
+  }),
+});
+type PtyRuntimePlatformFacts = Readonly<{
+  alpineRelease?: string;
+  architecture: string;
+  nodeAbi: string;
+  os: string;
+  osRelease?: string;
+}>;
+const exactPtyRuntimeArtifact = (facts: PtyRuntimePlatformFacts) => {
+  if (
+    facts.os !== "linux" ||
+    facts.architecture !== "x64" ||
+    facts.nodeAbi !== "127"
+  )
+    return fail("testkit.pty.runtime.identity");
+  if (facts.alpineRelease !== undefined) {
+    if (facts.alpineRelease === "3.24.1\n" && facts.osRelease === undefined)
+      return ptyRuntimeArtifacts.musl;
+    return fail("testkit.pty.runtime.identity");
+  }
+  const fields = facts.osRelease?.trimEnd().split("\n") ?? [];
+  if (
+    fields.length > 32 ||
+    fields.some((field) => field.length > 256) ||
+    fields.filter((field) => field === "ID=debian").length !== 1 ||
+    fields.filter((field) => field === 'VERSION_ID="12"').length !== 1
+  )
+    return fail("testkit.pty.runtime.identity");
+  return ptyRuntimeArtifacts.glibc;
+};
+const selectedPtyRuntimeArtifact = () => {
+  let alpineRelease: string | undefined;
+  try {
+    alpineRelease = readFileSync("/etc/alpine-release", "utf8");
+  } catch (error: unknown) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      (error as { code?: unknown }).code !== "ENOENT"
+    )
+      throw error;
+  }
+  return exactPtyRuntimeArtifact({
+    architecture: process.arch,
+    nodeAbi: process.versions.modules,
+    os: process.platform,
+    ...(alpineRelease === undefined
+      ? { osRelease: boundedProcFile("/etc/os-release", 4 * 1024) }
+      : { alpineRelease }),
+  });
+};
+/** Package-private platform oracle; it conveys no loading authority. */
+export const selectPtyRuntimeTupleForTest = (
+  facts: PtyRuntimePlatformFacts,
+): string => exactPtyRuntimeArtifact(facts).tuple;
 // Linux O_CLOEXEC is not exposed by every supported @types/node version.
 const linuxCloseOnExec = 0x8_0000;
 const assertAuthenticatedRegularFileDescriptor = (
@@ -1366,13 +1430,14 @@ const loadNativePtyBinding = (
   authority: ImmutableCandidateAuthority,
 ): NativePtyBinding => {
   if (nativePtyBinding !== undefined) return nativePtyBinding;
+  const artifact = selectedPtyRuntimeArtifact();
   const path = resolve(
     import.meta.dirname,
-    "../pty-runtime/node127-linux-x64-musl/pty.node",
+    `../pty-runtime/${artifact.tuple}/pty.node`,
   );
   const descriptor = openAuthenticatedRegularFile(
     path,
-    ptyRuntimeDigest,
+    artifact.digest,
     1024 * 1024,
     authority.assertFile,
   );
@@ -1382,7 +1447,7 @@ const loadNativePtyBinding = (
     assertAuthenticatedRegularFileDescriptor(
       descriptor,
       path,
-      ptyRuntimeDigest,
+      artifact.digest,
       1024 * 1024,
       authority.assertFile,
     );
@@ -1858,6 +1923,15 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
+    } else if (actionKind === "wait-for-semantic-completion") {
+      if (actionKeys !== "action") return fail("testkit.pty.request");
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "wait-for-semantic-completion" },
+        ]) as SelectedPtyExecutionAction,
+      );
     } else if (actionKind === "interrupt-byte") {
       if (actionKeys !== "action\0byte" || ownData(action, "byte") !== 3)
         return fail("testkit.pty.request");
@@ -2160,6 +2234,8 @@ const armSelectedPty = (
     let inputOffset = 0;
     let actionInputOffset = 0;
     let actionIndex = 0;
+    let lastCompletedInputOutputBytes = -1;
+    let semanticCompletionObservedAtOutputBytes = -1;
     const actionsApplied: PtyTransportAction[] = [];
     const recordAction = (action: PtyTransportAction): void => {
       defineArrayIndex(
@@ -2184,8 +2260,23 @@ const armSelectedPty = (
     // eslint-disable-next-line complexity,max-lines-per-function
     const pumpTransport = (allowInput: boolean): void => {
       try {
-        for (let index = 0; index < 64 && !outputTerminal; index += 1) {
-          const observation = exactPtyRead(child.read(4_096));
+        const pendingActionBeforeRead =
+          request.interaction.actions[actionIndex];
+        const shouldReadBeforeAction =
+          !allowInput ||
+          pendingActionBeforeRead === undefined ||
+          request.interaction.trigger === "immediate" ||
+          !readinessObserved ||
+          pendingActionBeforeRead.action === "wait-for-semantic-completion";
+        for (
+          let index = 0;
+          shouldReadBeforeAction && index < 64 && !outputTerminal;
+          index += 1
+        ) {
+          // Keep one complete semantic marker inside the emulator's bounded
+          // recent window, then stop at readiness so its gated action cannot
+          // be overtaken by a fast child's later completion output.
+          const observation = exactPtyRead(child.read(512));
           if (observation.status === "would-block") break;
           if (observation.status === "eof" || observation.status === "eio") {
             outputTerminal = true;
@@ -2201,12 +2292,20 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
+            const priorSemanticState = terminal.snapshot().semanticState;
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
             terminal.write(new SafeUint8Array(captured));
             const semanticState = terminal.snapshot().semanticState;
-            if (semanticState === "ready") readinessObserved = true;
-            else if (
+            if (
+              priorSemanticState !== "completed" &&
+              semanticState === "completed"
+            )
+              semanticCompletionObservedAtOutputBytes = outputBytes;
+            if (semanticState === "ready") {
+              readinessObserved = true;
+              break;
+            } else if (
               semanticState === "credential-prompt" ||
               semanticState === "malformed-control"
             )
@@ -2276,6 +2375,7 @@ const armSelectedPty = (
                   [],
                 ),
               });
+              lastCompletedInputOutputBytes = outputBytes;
               actionInputOffset = 0;
               actionIndex += 1;
             }
@@ -2298,6 +2398,22 @@ const armSelectedPty = (
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
+          } else if (action?.action === "wait-for-semantic-completion") {
+            if (
+              terminal.snapshot().semanticState === "completed" &&
+              semanticCompletionObservedAtOutputBytes >
+                lastCompletedInputOutputBytes
+            ) {
+              recordAction({
+                action: "wait-for-semantic-completion",
+                monotonicAtMs: safeReflectApply(
+                  performanceNow,
+                  performance,
+                  [],
+                ),
+              });
+              actionIndex += 1;
+            }
           } else if (action?.action === "interrupt-byte") {
             const interrupt = safeBufferFrom([action.byte]);
             const written = exactPtyWrite(
@@ -3093,6 +3209,28 @@ export const executeSelectedHeadlessProcessWithCapability = async (
   }
 };
 
+const ptyTerminalControlActionMatches = (
+  expected: SelectedPtyExecutionAction,
+  observed: PtyTransportAction,
+): boolean => {
+  if (
+    expected.action === "interrupt-byte" &&
+    observed.action === "interrupt-byte"
+  )
+    return expected.byte === observed.byte;
+  if (
+    expected.action === "wait-for-semantic-completion" &&
+    observed.action === "wait-for-semantic-completion"
+  )
+    return true;
+  if (expected.action === "signal" && observed.action === "signal")
+    return (
+      expected.signal === observed.signal &&
+      /^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(observed.targetStartIdentity)
+    );
+  return true;
+};
+
 const ptyReceiptActionsMatch = (
   receipt: SelectedPtyExecutionReceipt,
   request: SelectedPtyExecutionRequest,
@@ -3142,23 +3280,20 @@ const ptyReceiptActionsMatch = (
       )
         return false;
       inputOffset += expected.byteLength;
-    } else if (
-      expected.action === "interrupt-byte" &&
-      observed.action === "interrupt-byte"
-    ) {
-      if (expected.byte !== observed.byte) return false;
-    } else if (expected.action === "signal" && observed.action === "signal") {
-      if (
-        expected.signal !== observed.signal ||
-        !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(
-          observed.targetStartIdentity,
-        )
-      )
-        return false;
-    }
+    } else if (!ptyTerminalControlActionMatches(expected, observed))
+      return false;
   }
   return true;
 };
+
+const finalRequestedPtyGeometry = (
+  request: SelectedPtyExecutionRequest,
+): PtyTerminalGeometry =>
+  request.interaction.actions.reduce(
+    (geometry, action) =>
+      action.action === "resize" ? action.geometry : geometry,
+    request.initialGeometry,
+  );
 
 const assertPtyReceiptBinding = (
   receipt: SelectedPtyExecutionReceipt,
@@ -3167,13 +3302,10 @@ const assertPtyReceiptBinding = (
 ): void => {
   const outcome = receipt.outcome;
   const authority = selectedPtyRequestFingerprint(request);
-  let requestRequiresEof = false;
-  let expectedGeometry = request.initialGeometry;
-  for (let index = 0; index < request.interaction.actions.length; index += 1) {
-    const action = request.interaction.actions[index];
-    if (action?.action === "eof") requestRequiresEof = true;
-    else if (action?.action === "resize") expectedGeometry = action.geometry;
-  }
+  const requestRequiresEof = request.interaction.actions.some(
+    (action) => action.action === "eof",
+  );
+  const expectedGeometry = finalRequestedPtyGeometry(request);
   const terminalActionOutcome =
     outcome === "completed" ||
     outcome === "signaled" ||
@@ -3922,6 +4054,8 @@ type SelectedPtyTestSeed =
   | "adopted-zombie"
   | "clean"
   | "close-failure"
+  | "control-eof-substitution"
+  | "control-write-substitution"
   | "descriptor-closure"
   | "descriptor-reuse"
   | "descriptor-substitution"
@@ -3949,6 +4083,8 @@ type SelectedPtyTestSeed =
   | "partial-input"
   | "partial-input-output-limit"
   | "partial-input-timeout"
+  | "post-input-completion"
+  | "readiness-burst"
   | "residual"
   | "root-missing"
   | "signal-failure"
@@ -4093,15 +4229,21 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               output.subarray(0, 2),
               output.subarray(2),
             ]
-          : seed === "output-limit" || seed === "partial-input-output-limit"
-            ? [output.subarray(0, 4_096), output.subarray(4_096)]
-            : seed === "active-terminal" ||
-                seed === "missing-ready" ||
-                seed === "credential-prompt" ||
-                seed === "malformed-control"
-              ? [output]
-              : [ready, output];
+          : seed === "readiness-burst"
+            ? [
+                safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
+                output,
+              ]
+            : seed === "output-limit" || seed === "partial-input-output-limit"
+              ? [output.subarray(0, 4_096), output.subarray(4_096)]
+              : seed === "active-terminal" ||
+                  seed === "missing-ready" ||
+                  seed === "credential-prompt" ||
+                  seed === "malformed-control"
+                ? [output]
+                : [ready, output];
       let chunkIndex = 0;
+      let chunkOffset = 0;
       let inputCalls = 0;
       let transportReads = 0;
       let currentGeometry = geometry;
@@ -4114,6 +4256,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           seed !== "output-limit" &&
           seed !== "partial-input-output-limit" &&
           seed !== "partial-input-timeout" &&
+          seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure"
         )
@@ -4157,7 +4300,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           return {
             status: "eof-byte-written" as const,
             canonical: true as const,
-            eofByte: 4,
+            eofByte: seed === "control-eof-substitution" ? 5 : 4,
             bytesWritten: 1 as const,
           };
         },
@@ -4171,7 +4314,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        read: () => {
+        read: (maximumBytes) => {
           transportReads += 1;
           if (seed === "action-deadline-crossing" && transportReads === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
@@ -4182,6 +4325,12 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
           if (
+            seed === "post-input-completion" &&
+            chunkIndex === 1 &&
+            inputCalls === 0
+          )
+            return { status: "would-block" as const };
+          if (
             seed === "late-tail" &&
             chunkIndex > 0 &&
             (!terminal || performance.now() < tailReadyAt)
@@ -4189,8 +4338,16 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
             return { status: "would-block" as const };
           const chunk = chunks[chunkIndex];
           if (chunk !== undefined) {
-            chunkIndex += 1;
-            return { status: "data" as const, bytes: chunk };
+            const bytes = chunk.subarray(
+              chunkOffset,
+              Math.min(chunk.length, chunkOffset + maximumBytes),
+            );
+            chunkOffset += bytes.length;
+            if (chunkOffset === chunk.length) {
+              chunkIndex += 1;
+              chunkOffset = 0;
+            }
+            return { status: "data" as const, bytes };
           }
           return terminal
             ? { status: "eio" as const }
@@ -4200,7 +4357,16 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           currentGeometry = { columns, rows };
         },
         write: (bytes) => {
+          if (seed === "active-terminal" && transportReads === 0)
+            throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
+          if (seed === "control-write-substitution" && inputCalls === 1)
+            return { status: "would-block" as const, bytesWritten: 0 };
+          if (seed === "readiness-burst" && inputCalls === 2) {
+            processes.delete(root.pid);
+            terminal = true;
+            close({ code: 0, signal: 0 });
+          }
           if (seed === "partial-input-timeout" && inputCalls === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
             while (performance.now() < stopAt) {

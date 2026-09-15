@@ -11,6 +11,7 @@ import {
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
+  scenarioContainerTerminalWitness,
   type IsolationDriver,
 } from "./isolation.js";
 import { compileCapabilityManifest } from "./manifest.js";
@@ -55,7 +56,9 @@ const planFor = (
   executionMode: "headless" | "interactive" = "headless",
 ) => {
   const scenario = manifest.scenarios.find(
-    (candidate) => candidate.executionMode === executionMode,
+    (candidate) =>
+      candidate.executionMode === executionMode &&
+      candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
   return createIsolationPlan({
     scenario,
@@ -108,6 +111,121 @@ const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
   containers: ISOLATION_EXECUTOR_LIMITS.containers,
   requests: ISOLATION_EXECUTOR_LIMITS.requests,
+});
+
+const terminalContainer = (overrides: Record<string, unknown> = {}) => ({
+  Id: "a".repeat(64),
+  Name: "/agentscope-int-scenario",
+  RestartCount: 0,
+  Config: {
+    Labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": "0123456789abcdef",
+    },
+  },
+  State: {
+    Status: "exited",
+    Running: false,
+    Paused: false,
+    Restarting: false,
+    OOMKilled: false,
+    Dead: false,
+    Pid: 0,
+    ExitCode: 7,
+    Error: "",
+    FinishedAt: "2026-09-15T01:00:00.000000000Z",
+  },
+  ...overrides,
+});
+
+describe("scenario attach terminal witness", () => {
+  const witness = (overrides: Record<string, unknown> = {}) =>
+    scenarioContainerTerminalWitness({
+      attach: { code: 7, killed: false, name: "Error", signal: null },
+      container: terminalContainer(),
+      containerId: "a".repeat(64),
+      runId: "0123456789abcdef",
+      scenarioName: "agentscope-int-scenario",
+      waitOutput: "7\n",
+      ...overrides,
+    });
+
+  it("accepts an exact same-container wait and terminal state", () => {
+    expect(witness()).toBe(true);
+  });
+
+  it("rejects transport-only exit metadata without the daemon witness", () => {
+    expect(witness({ container: undefined })).toBe(false);
+    expect(witness({ waitOutput: "" })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: true, signal: null } })).toBe(
+      false,
+    );
+    expect(witness({ attach: { code: 7, signal: null } })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: false, signal: null } })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        attach: { code: 7, killed: "false", name: "Error", signal: null },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: {
+          code: 7,
+          killed: false,
+          name: "UnexpectedError",
+          signal: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: { code: 7, killed: false, name: "Error", signal: "SIGTERM" },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects substituted, live, restarted, and mismatched containers", () => {
+    expect(witness({ containerId: "b".repeat(64) })).toBe(false);
+    expect(witness({ container: terminalContainer({ RestartCount: 1 }) })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, Running: true },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, ExitCode: 8 },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "not-a-timestamp",
+          },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "2026-02-31T01:00:00Z",
+          },
+        }),
+      }),
+    ).toBe(false);
+  });
 });
 
 const emptyCleanupInventory = () => ({
@@ -296,6 +414,101 @@ const ptyReceiptFor = (
     terminalInputJoined: true,
     terminalOutputJoined: true,
     terminalTransportClosed: true,
+  };
+};
+
+const ptyControlReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      ...receipt.request.interaction.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const },
+      { action: "interrupt-byte" as const, byte: 3 as const },
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    eofByteWritten: false,
+    actions: [
+      ...receipt.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      {
+        action: "interrupt-byte" as const,
+        byte: 3 as const,
+        monotonicAtMs: 2_003,
+      },
+    ],
+  };
+};
+
+const ptyPostInputReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const input = Buffer.from("run\n");
+  const firstInput = {
+    action: "input" as const,
+    byteLength: 3,
+    inputSha256: createHash("sha256")
+      .update(input.subarray(0, 3))
+      .digest("hex"),
+  };
+  const finalInput = {
+    action: "input" as const,
+    byteLength: 1,
+    inputSha256: createHash("sha256").update(input.subarray(3)).digest("hex"),
+  };
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      receipt.request.interaction.actions[0]!,
+      firstInput,
+      { action: "wait-for-semantic-completion" as const },
+      finalInput,
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    actions: [
+      receipt.actions[0]!,
+      { ...firstInput, monotonicAtMs: 2_001 },
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      { ...finalInput, monotonicAtMs: 2_003 },
+    ],
+    eofByteWritten: false,
   };
 };
 
@@ -592,6 +805,7 @@ describe("scenario isolation outcomes", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
   it("records unavailable runtime inspection and still tears down", async () => {
     const fixture = driver();
@@ -621,6 +835,7 @@ describe("scenario cleanup evidence", () => {
 
   it("surfaces cleanup failures after attempting every teardown step", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.removeContainer.mockRejectedValueOnce(new Error("cleanup failed"));
     await expect(
       executeIsolationPlan(
@@ -628,7 +843,7 @@ describe("scenario cleanup evidence", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-scenario-container");
     expect(fixture.calls).toContain(
       "remove-network:agentscope-int-0123456789abcdef-network",
     );
@@ -638,6 +853,63 @@ describe("scenario cleanup evidence", () => {
       removalFailureCount: 1,
       remaining: emptyCleanupInventory(),
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0}}\n',
+    );
+    diagnostic.mockRestore();
+  });
+
+  it("retains the fixed network cleanup removal subphase", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const causal = new Error("integration.images.deadline");
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: causal,
+      }),
+    );
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: causal,
+    });
+    diagnostic.mockRestore();
+  });
+
+  it("retains the work failure when cleanup also fails", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const workFailure = new Error("integration.isolation.pty-receipt");
+    fixture.runScenario.mockRejectedValueOnce(workFailure);
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: new Error("integration.images.docker-client"),
+      }),
+    );
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: workFailure,
+    });
+    diagnostic.mockRestore();
   });
 
   it("rejects a non-digest image result and still tears down", async () => {
@@ -752,6 +1024,7 @@ describe("scenario evidence validation", () => {
 
   it("records cleanup proof failure without inventing survivor counts", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.inspectCleanup.mockRejectedValueOnce(
       new Error("proof unavailable"),
     );
@@ -761,12 +1034,41 @@ describe("scenario evidence validation", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-inventory");
     expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
       outcome: "verification-failed",
       removalFailureCount: 0,
       remaining: null,
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
+    );
+    diagnostic.mockRestore();
+  });
+
+  it("classifies a proven cleanup survivor separately from inventory failure", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    fixture.inspectCleanup.mockResolvedValueOnce({
+      ...emptyCleanupInventory(),
+      containers: 1,
+    });
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.cleanup-remaining");
+    expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
+      outcome: "failed",
+      removalFailureCount: 0,
+      remaining: {
+        ...emptyCleanupInventory(),
+        containers: 1,
+      },
+    });
+    diagnostic.mockRestore();
   });
 });
 
@@ -795,6 +1097,7 @@ const compiledEvidenceFixture = () => {
       candidateBundleIdentity: `sha256-${"2".repeat(64)}`,
       candidateRevision: "3".repeat(40),
       executionMode: "headless",
+      terminalAction: "none",
       baseImage: `node@sha256:${"4".repeat(64)}`,
       mockServerImage: `mockserver@sha256:${"5".repeat(64)}`,
       baseImageIdentity: preparedIdentityFor(
@@ -913,6 +1216,7 @@ describe("selected PTY backend evidence", () => {
       ...evidence,
       scenarioId: "fixture-process-interactive",
       executionMode: "interactive",
+      terminalAction: "eof",
       executionPolicy: executionPolicyFor("fixture-process-interactive"),
       headlessTerminalReceipt: null,
       ptyTerminalReceipt: pty,
@@ -920,6 +1224,48 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          terminalAction: "post-completion-input",
+          ptyTerminalReceipt: ptyPostInputReceiptFor(),
+        },
+        evidence,
+      ),
+    ).toMatchObject({
+      terminalAction: "post-completion-input",
+      ptyTerminalReceipt: { eofByteWritten: false },
+    });
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, terminalAction: "post-completion-input" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    const controlled = {
+      ...interactive,
+      terminalAction: "post-completion-controls" as const,
+      ptyTerminalReceipt: ptyControlReceiptFor(),
+    };
+    expect(compileWithPreparedAuthority(controlled, evidence)).toEqual(
+      controlled,
+    );
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...controlled, ptyTerminalReceipt: pty },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...pty, eofByteWritten: false },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
     for (const ptyTerminalReceipt of [
       null,
       { ...pty, runId: "fedcba9876543210" },
