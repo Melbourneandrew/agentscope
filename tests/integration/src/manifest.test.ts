@@ -195,7 +195,7 @@ describe("integration capability manifest", () => {
       Buffer.from("\f"),
     );
     expect(scenario.postCompletionInputByteLength).toBe(0);
-    expect(scenario.postCompletionControl).toBe("interrupt-byte");
+    expect(scenario.postCompletionControl).toBe("foreground-interrupt-eot");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
       scenario,
@@ -205,11 +205,10 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "wait-for-semantic-completion",
-      "interrupt-byte",
+      "foreground-interrupt-eot",
     ]);
     expect(actions.at(-1)).toEqual({
-      action: "interrupt-byte",
-      byte: 3,
+      action: "foreground-interrupt-eot",
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
@@ -600,7 +599,7 @@ describe("integration capability execution modes", () => {
         scenarios: [
           {
             ...original.scenarios[0]!,
-            postCompletionControl: "interrupt-byte",
+            postCompletionControl: "foreground-interrupt-eot",
             waitForSemanticCompletionBeforeTerminalAction: true,
           },
         ],

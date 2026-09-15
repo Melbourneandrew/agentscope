@@ -242,6 +242,7 @@ describe("PTY runtime artifact tooling", () => {
       eofByteWritten: true,
       faultCleanup: true,
       finalizerSafe: true,
+      foregroundInterrupt: true,
       geometry: true,
       openRollback: true,
       processTerminal: true,
@@ -351,9 +352,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 47_812,
+      bytes: 48_663,
       mode: "0644",
-      patchedSourceBytes: 60_514,
+      patchedSourceBytes: 61_305,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -371,8 +372,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 47_812,
-      patchedSourceBytes: 60_514,
+      bytes: 48_663,
+      patchedSourceBytes: 61_305,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -708,7 +709,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b",
+      "69da18f7a91c189dc5c6af243ef4f5fdbaf62abedf89720a95149e930422c152",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -824,6 +825,12 @@ describe("PTY authenticated build-material tooling", () => {
       "+      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);",
     );
     expect(patch).toContain("+    if (pty_take_test_fault(18)) {");
+    expect(patch).toContain(
+      "+  if (pty_take_test_fault(0) || ioctl(handle->fd, TIOCSIG, signal) == -1)",
+    );
+    expect(patch).toContain(
+      '+  exports.Set("interruptForeground", Napi::Function::New(env, PtyInterruptForeground));',
+    );
     expect(patch).toContain("+    if (errno == ECHILD) {");
     expect(patch).toContain(
       "+      bool observed_after = pty_read_process_identity(",
@@ -981,10 +988,10 @@ describe("PTY authenticated build-material tooling", () => {
       "utf8",
     );
     expect(build).toContain(
-      '"00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"',
+      '"95e61f47b3db63276e503608340059a2d2125e2870fc29924219227bbe1f9eba"',
     );
     expect(build).toContain(
-      '"18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727"',
+      '"4c11e2948f4de9489a50ce41cb2b0f91c0a13bc96a1e3659a34c6bee1d06c1c6"',
     );
     expect(build).toContain('process.argv[2] !== "--glibc"');
   });

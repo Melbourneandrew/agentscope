@@ -470,6 +470,54 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("stdin");
   });
 
+  it("queues a foreground interrupt before writing the fixed EOT byte", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [{ action: "foreground-interrupt-eot" }],
+        },
+      },
+      "foreground-interrupt-eot",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      eofByteWritten: false,
+      actions: [
+        {
+          action: "foreground-interrupt-eot",
+          signal: "SIGINT",
+          eotByte: 4,
+        },
+      ],
+    });
+  });
+
+  it.each([
+    "foreground-interrupt-failure",
+    "foreground-interrupt-substitution",
+  ] as const)(
+    "rejects unproved foreground interrupt authority under %s",
+    async (seed) => {
+      const receipt = await executeSelectedPtyTransportForTest(
+        {
+          ...request({ stdin: new Uint8Array() }),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [{ action: "foreground-interrupt-eot" }],
+          },
+        },
+        seed,
+      );
+      expect(receipt).toMatchObject({
+        outcome: "transport-failed",
+        actions: [],
+        eofByteWritten: false,
+      });
+    },
+  );
+
   it("applies readiness-gated input before a fast completion burst", async () => {
     const input = new Uint8Array([12]);
     const receipt = await executeSelectedPtyTransportForTest(
