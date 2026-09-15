@@ -307,10 +307,13 @@ const stageEsmPackageBoundary = (context) => {
 // The exact staged inventory and Dockerfile are reviewed as one authority.
 // eslint-disable-next-line max-lines-per-function
 const stageBuildContext = (plan) => {
-  const context = resolve(artifactsRoot, "contexts", plan.runId);
-  rmSync(context, { force: true, recursive: true });
+  const runContexts = resolve(artifactsRoot, "contexts", plan.runId);
+  const context = resolve(runContexts, "scenario");
+  const mockServerContext = resolve(runContexts, "mockserver");
+  rmSync(runContexts, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
   mkdirSync(resolve(context, "runtime"), { recursive: true });
+  mkdirSync(mockServerContext, { recursive: true });
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
@@ -556,7 +559,7 @@ const stageBuildContext = (plan) => {
     ].join("\n"),
   );
   writeFileSync(
-    resolve(context, "mockserver-initialization.json"),
+    resolve(mockServerContext, "mockserver-initialization.json"),
     `${JSON.stringify(
       scenario.modelRoutes.map((routeId) => {
         const index = modelRoutes.routeIds.indexOf(routeId);
@@ -573,7 +576,7 @@ const stageBuildContext = (plan) => {
     )}\n`,
   );
   writeFileSync(
-    resolve(context, "MockServer.Dockerfile"),
+    resolve(mockServerContext, "MockServer.Dockerfile"),
     [
       "ARG MOCKSERVER_IMAGE",
       "FROM ${MOCKSERVER_IMAGE}",
@@ -1202,10 +1205,15 @@ const buildImage = async (plan, signal) => {
 };
 const buildMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
-  const context = resolve(artifactsRoot, "contexts", plan.runId);
+  const mockServerContext = resolve(
+    artifactsRoot,
+    "contexts",
+    plan.runId,
+    "mockserver",
+  );
   return buildPreparedDockerImage(preparedDockerClient, {
     buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
-    context,
+    context: mockServerContext,
     dockerfile: "MockServer.Dockerfile",
     labels: {
       "com.agentscope.integration": "true",
