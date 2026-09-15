@@ -1235,7 +1235,8 @@ export const createDockerOperations = (state) => {
     );
   };
   const buildPhaseFailure = (error, phase, retainedCodes) =>
-    retainedCodes.includes(error?.message)
+    retainedCodes.includes(error?.message) ||
+    /^integration\.images\.build\.context-[a-z-]+$/u.test(error?.message)
       ? error
       : fixedError(`integration.images.build.${phase}`);
   const recordPreparedDockerDiagnostic = (
