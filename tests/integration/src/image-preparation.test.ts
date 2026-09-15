@@ -430,6 +430,7 @@ const engineFixture = ({
   localValue = local,
   localInitiallyPresent = true,
   networkAttached = false,
+  networkAttachedAfterAdmissionUntilInspection = 0,
   networkDisappearsAfterAdmission = false,
   networkId = "a".repeat(64),
   networkInternal = true,
@@ -464,6 +465,7 @@ const engineFixture = ({
   localValue?: string;
   localInitiallyPresent?: boolean;
   networkAttached?: boolean;
+  networkAttachedAfterAdmissionUntilInspection?: number;
   networkDisappearsAfterAdmission?: boolean;
   networkId?: string;
   networkInternal?: boolean;
@@ -651,7 +653,13 @@ const engineFixture = ({
                 "com.agentscope.integration": "true",
                 "com.agentscope.integration.run": networkRunId,
               },
-              Containers: networkAttached ? { fixture: {} } : {},
+              Containers:
+                networkAttached ||
+                (state.networkInspectionCount > 1 &&
+                  state.networkInspectionCount <=
+                    networkAttachedAfterAdmissionUntilInspection)
+                  ? { fixture: {} }
+                  : {},
             }),
           }
         : { statusCode: 404, body: "{}" };
@@ -2091,6 +2099,69 @@ describe("authenticated buildx consumption", () => {
     } finally {
       closePreparedDockerClient(client);
     }
+  });
+
+  it("waits within the original deadline for exact network endpoint detachment", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkAttachedAfterAdmissionUntilInspection: 3,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
+      await expect(
+        retirePreparedDockerNetwork(client, {
+          deadline: performance.now() + 4_000,
+          name: networkName,
+          runId: networkRunId,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.filter(
+          ({ method, path }) =>
+            method === "GET" && path.endsWith(`/networks/${networkName}`),
+        ),
+      ).toHaveLength(5);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("retires daemon authority when an exact network endpoint never detaches", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkAttachedAfterAdmissionUntilInspection: Number.MAX_SAFE_INTEGER,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerNetwork(client, {
+      deadline: performance.now() + 4_000,
+      name: networkName,
+      runId: networkRunId,
+    });
+    await expect(
+      retirePreparedDockerNetwork(client, {
+        deadline: performance.now() + 100,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.deadline");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/networks/${networkName}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
   });
 
   it("retires daemon authority instead of deleting an attached network", async () => {
