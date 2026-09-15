@@ -73,6 +73,13 @@ const sameFileIdentity = (left, right) =>
   left.size === right.size &&
   left.mtimeNs === right.mtimeNs &&
   left.ctimeNs === right.ctimeNs;
+const buildContextPathClass = (path) => {
+  if (path.includes("/harness-material/")) return "harness-material";
+  if (path.includes("/prepared/candidates/")) return "candidate";
+  if (path.includes("/testkit/")) return "testkit";
+  if (path.includes("/runtime/")) return "runtime";
+  return "controller";
+};
 const assertBuildContextActive = (deadline, signal) => {
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
   if (performance.now() > deadline)
@@ -90,7 +97,9 @@ const readBuildContextFile = (path, expected, state) => {
     if (!sameFileIdentity(expected, current))
       throw fixedError("integration.images.build.context-file-identity");
     if (current.size > BigInt(state.maximumBytes()))
-      throw fixedError("integration.images.build.context-file-size");
+      throw fixedError(
+        `integration.images.build.context-file-size-${buildContextPathClass(path)}-${state.maximumBytes() === defaultMaximumBuildContextBytes ? "default" : "harness"}`,
+      );
     if (state.total() + 512 + size + padding + 1024 > state.maximumBytes())
       throw fixedError("integration.images.build.context-aggregate-size");
     const body = readFileSync(descriptor);
