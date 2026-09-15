@@ -858,26 +858,29 @@ describe("scenario cleanup evidence", () => {
     diagnostic.mockRestore();
   });
 
-  it.each(["attached", "detach", "inspect", "inspection", "remove"])(
-    "retains the fixed network cleanup %s subphase",
-    async (subphase) => {
-      const fixture = driver();
-      const diagnostic = vi
-        .spyOn(process.stderr, "write")
-        .mockReturnValue(true);
-      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
-        new Error(`integration.isolation.cleanup-network-${subphase}`),
-      );
-      await expect(
-        executeIsolationPlan(
-          planFor("0123456789abcdef"),
-          fixture.implementation,
-          new AbortController().signal,
-        ),
-      ).rejects.toThrow(`integration.isolation.cleanup-network-${subphase}`);
-      diagnostic.mockRestore();
-    },
-  );
+  it.each([
+    "attached",
+    "detach",
+    "inspect-authority",
+    "inspect-command",
+    "inspect-deadline",
+    "inspection",
+    "remove",
+  ])("retains the fixed network cleanup %s subphase", async (subphase) => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error(`integration.isolation.cleanup-network-${subphase}`),
+    );
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(`integration.isolation.cleanup-network-${subphase}`);
+    diagnostic.mockRestore();
+  });
 
   it("rejects a non-digest image result and still tears down", async () => {
     const fixture = driver();
