@@ -50,6 +50,7 @@ import {
   preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
+  registerPreparedDockerNetwork,
   revalidatePreparedImageAdmission,
   retirePreparedDockerNetwork,
 } from "./image-preparation.mjs";
@@ -1249,19 +1250,14 @@ const createNetwork = async (plan, signal) => {
     signal,
     { mutationCapable: true },
   );
-  const { stdout } = await dockerWithSignal(
-    ["network", "inspect", plan.networkName],
+  const internal = await registerPreparedDockerNetwork(preparedDockerClient, {
+    deadline:
+      performance.now() + remainingIntegrationOperationMilliseconds(30_000),
+    name: plan.networkName,
+    runId: plan.runId,
     signal,
-  );
-  let network;
-  try {
-    const records = JSON.parse(stdout);
-    if (!Array.isArray(records) || records.length !== 1) throw new Error();
-    [network] = records;
-  } catch {
-    throw new Error("integration.isolation.network");
-  }
-  if (network?.Internal !== true) {
+  });
+  if (!internal) {
     if (substrateCertificationCase === "public-egress") {
       observeSubstrateCertificationPredicate(
         plan.runId,
