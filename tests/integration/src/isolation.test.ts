@@ -805,6 +805,7 @@ describe("scenario isolation outcomes", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
   it("records unavailable runtime inspection and still tears down", async () => {
     const fixture = driver();
@@ -880,6 +881,33 @@ describe("scenario cleanup evidence", () => {
     expect(failure).toMatchObject({
       message: "integration.isolation.cleanup-network-remove",
       cause: causal,
+    });
+    diagnostic.mockRestore();
+  });
+
+  it("retains the work failure when cleanup also fails", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const workFailure = new Error("integration.isolation.pty-receipt");
+    fixture.runScenario.mockRejectedValueOnce(workFailure);
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: new Error("integration.images.docker-client"),
+      }),
+    );
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: workFailure,
     });
     diagnostic.mockRestore();
   });

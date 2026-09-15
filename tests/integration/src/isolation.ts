@@ -1050,6 +1050,7 @@ const cleanup = async (
 const failCleanup = (
   cleanup: IsolationEvidence["cleanup"],
   result: CleanupResult,
+  workFailure: unknown,
 ): never => {
   process.stderr.write(
     `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
@@ -1060,7 +1061,7 @@ const failCleanup = (
         ? "integration.isolation.cleanup-inventory"
         : "integration.isolation.cleanup-remaining"
       : `integration.isolation.cleanup-${result.firstFailure}`,
-    { cause: result.firstFailureCause },
+    { cause: workFailure ?? result.firstFailureCause },
   );
 };
 
@@ -1175,7 +1176,7 @@ export const executeIsolationPlan = async (
   );
   await driver.recordEvidence(evidence);
   if (cleanupOutcome !== "complete")
-    failCleanup(evidence.cleanup, cleanupResult);
+    failCleanup(evidence.cleanup, cleanupResult, failure);
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");
