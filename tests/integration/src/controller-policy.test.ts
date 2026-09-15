@@ -288,9 +288,10 @@ describe("integration workflow policy", () => {
       'dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    )',
     );
     expect(scenarios).toContain(
-      "terminalMutationProved = failedAttachSettled(error)",
+      "terminalMutationProved = await proveFailedAttachSettled(",
     );
-    expect(scenarios).toContain('error?.name !== "AbortError"');
+    expect(scenarios).toContain('["container", "wait", containerId]');
+    expect(scenarios).toContain('["container", "inspect", containerId]');
     expect(required).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeLessThan(required);
