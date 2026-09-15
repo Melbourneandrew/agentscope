@@ -718,6 +718,7 @@ describe("scenario cleanup evidence", () => {
 
   it("surfaces cleanup failures after attempting every teardown step", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.removeContainer.mockRejectedValueOnce(new Error("cleanup failed"));
     await expect(
       executeIsolationPlan(
@@ -735,6 +736,10 @@ describe("scenario cleanup evidence", () => {
       removalFailureCount: 1,
       remaining: emptyCleanupInventory(),
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0}}\n',
+    );
+    diagnostic.mockRestore();
   });
 
   it("rejects a non-digest image result and still tears down", async () => {
@@ -849,6 +854,7 @@ describe("scenario evidence validation", () => {
 
   it("records cleanup proof failure without inventing survivor counts", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.inspectCleanup.mockRejectedValueOnce(
       new Error("proof unavailable"),
     );
@@ -864,6 +870,10 @@ describe("scenario evidence validation", () => {
       removalFailureCount: 0,
       remaining: null,
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
+    );
+    diagnostic.mockRestore();
   });
 });
 
