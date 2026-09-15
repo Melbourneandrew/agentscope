@@ -2112,8 +2112,10 @@ const createDriver = (plan) => {
           runId: plan.runId,
           signal,
         });
-      } catch {
-        throw new Error("integration.isolation.cleanup-network-remove");
+      } catch (error) {
+        throw new Error("integration.isolation.cleanup-network-remove", {
+          cause: error,
+        });
       }
     },
     removeImage: (tag) =>
