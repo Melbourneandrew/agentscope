@@ -1525,6 +1525,51 @@ const interactiveReceiptFailurePredicate = (
   if (!fixtureCaptured) return "fixture-result";
   return undefined;
 };
+const recordInteractiveReceiptFailure = (
+  plan,
+  receipt,
+  installedPtyReceipt,
+  fixtureCaptured,
+  fallback = "receipt-rejected",
+) => {
+  if (plan.executionMode !== "interactive") return;
+  installedPtyFailures.set(plan.runId, {
+    receiptVersion: 1,
+    phase: "pty-receipt",
+    predicate:
+      (receipt === undefined
+        ? undefined
+        : interactiveReceiptFailurePredicate(
+            plan,
+            receipt,
+            installedPtyReceipt,
+            fixtureCaptured,
+          )) ?? fallback,
+  });
+};
+const captureFailedScenarioReceipt = (
+  output,
+  plan,
+  outerMonotonicDeadline,
+  fixtureCaptured,
+) => {
+  const receipt =
+    plan.executionMode === "interactive"
+      ? captureInteractivePtyReceipt(output, plan, { outerMonotonicDeadline })
+      : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  registerScenarioReceipt(plan, receipt);
+  const installedPtyReceipt = output.includes("AGENTSCOPE_PTY_RECEIPT=")
+    ? captureInstalledCliPtyReceipt(output, plan)
+    : { outcome: "missing" };
+  recordInteractiveReceiptFailure(
+    plan,
+    receipt,
+    installedPtyReceipt,
+    fixtureCaptured,
+  );
+  return receipt;
+};
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
@@ -1727,6 +1772,7 @@ const runScenario = async (plan, signal) => {
       const fixtureCaptured = captureFixtureResult(output, plan);
       if (output.includes("AGENTSCOPE_PTY_FAILURE="))
         captureInstalledPtyFailure(output, plan);
+      else recordInteractiveReceiptFailure(plan);
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({
@@ -1749,16 +1795,12 @@ const runScenario = async (plan, signal) => {
         output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
         output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
       ) {
-        const receipt =
-          plan.executionMode === "interactive"
-            ? captureInteractivePtyReceipt(output, plan, {
-                outerMonotonicDeadline,
-              })
-            : captureHeadlessReceipt(output, plan, {
-                outerMonotonicDeadline,
-              });
-        observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
-        registerScenarioReceipt(plan, receipt);
+        const receipt = captureFailedScenarioReceipt(
+          output,
+          plan,
+          outerMonotonicDeadline,
+          fixtureCaptured,
+        );
         return { receipt, succeeded: false };
       }
       throw error;
