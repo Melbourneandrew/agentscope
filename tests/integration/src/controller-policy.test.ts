@@ -142,6 +142,22 @@ describe("integration controller policy", () => {
   });
 });
 
+describe("integration cleanup authority", () => {
+  it("reserves the terminal controller window for Docker cleanup only", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(30_000, true)",
+    );
+    expect(source).toContain("terminal: true");
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(\n        scenarioTimeoutMilliseconds,\n        terminal,\n      )",
+    );
+  });
+});
+
 describe("integration controller supervision", () => {
   it("kills and proves absence of descendants after the leader exits", async () => {
     if (process.platform === "win32") return;
