@@ -48,6 +48,17 @@ const materialDiagnosticClasses = new Set([
   "material-npm-version",
   "material-npm-policy",
 ]);
+const rethrowMaterialDiagnostic = (error) => {
+  if (materialDiagnosticClasses.has(error?.stderrClass))
+    throw new Error(`integration.harness-material.${error.stderrClass}`, {
+      cause: error,
+    });
+  if (
+    error instanceof Error &&
+    error.message === "integration.harness-material.npm-verifier"
+  )
+    throw error;
+};
 
 const fail = () => {
   throw new Error("integration.harness-material.failed");
@@ -290,6 +301,16 @@ const runMaterialVerification = async ({
     imageManifestDigest: image.manifestDigest,
   };
 };
+const runNpmMaterialVerification = async (input) => {
+  try {
+    return await runMaterialVerification(input);
+  } catch (error) {
+    if (materialDiagnosticClasses.has(error?.stderrClass)) throw error;
+    throw new Error("integration.harness-material.npm-verifier", {
+      cause: error,
+    });
+  }
+};
 
 // One acquisition authority must span download, verification, publication,
 // and identity-checked cleanup without delegating a restartable sub-phase.
@@ -360,7 +381,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
     }
     const audit = compileNpmAttestationAudit(material, attestations);
     const policy = compileNpmVerifierPolicy(material, audit);
-    const verifier = await runMaterialVerification({
+    const verifier = await runNpmMaterialVerification({
       client: dockerClient,
       deadline,
       material,
@@ -402,10 +423,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
         // failure reconciliation when its identity can no longer be proved.
       }
     }
-    if (materialDiagnosticClasses.has(error?.stderrClass))
-      throw new Error(`integration.harness-material.${error.stderrClass}`, {
-        cause: error,
-      });
+    rethrowMaterialDiagnostic(error);
     if (
       error instanceof Error &&
       error.message === "integration.harness-material.failed"
