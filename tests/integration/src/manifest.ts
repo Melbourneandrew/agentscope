@@ -270,7 +270,7 @@ const scenarioSchema = z
       ),
     terminalInputBase64: z.string().regex(/^[A-Za-z0-9+/]{1,136}={0,2}$/u),
     postCompletionInputByteLength: z.number().int().min(0).max(32),
-    postCompletionControl: z.enum(["none", "foreground-interrupt-eot"]),
+    postCompletionControl: z.enum(["none", "interrupt-byte"]),
     waitForSemanticCompletionBeforeTerminalAction: z.boolean(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
@@ -343,10 +343,11 @@ export const compileInteractivePtyActions = (
                   scenario.postCompletionInputByteLength,
                 ),
               ]),
-          ...(scenario.postCompletionControl === "foreground-interrupt-eot"
+          ...(scenario.postCompletionControl === "interrupt-byte"
             ? [
                 {
-                  action: "foreground-interrupt-eot" as const,
+                  action: "interrupt-byte" as const,
+                  byte: 3 as const,
                 },
               ]
             : []),
