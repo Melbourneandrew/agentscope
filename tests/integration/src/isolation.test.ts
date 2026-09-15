@@ -160,6 +160,30 @@ describe("scenario attach terminal witness", () => {
     expect(witness({ attach: { code: 7, killed: true, signal: null } })).toBe(
       false,
     );
+    expect(witness({ attach: { code: 7, signal: null } })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: false, signal: null } })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        attach: { code: 7, killed: "false", name: "Error", signal: null },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: {
+          code: 7,
+          killed: false,
+          name: "UnexpectedError",
+          signal: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: { code: 7, killed: false, name: "Error", signal: "SIGTERM" },
+      }),
+    ).toBe(false);
   });
 
   it("rejects substituted, live, restarted, and mismatched containers", () => {
@@ -178,6 +202,26 @@ describe("scenario attach terminal witness", () => {
       witness({
         container: terminalContainer({
           State: { ...terminalContainer().State, ExitCode: 8 },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "not-a-timestamp",
+          },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "2026-02-31T01:00:00Z",
+          },
         }),
       }),
     ).toBe(false);
