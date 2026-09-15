@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-d67288e4b76428ec73c78c4ccc5abdebf442e0b570269470a99cecc7b79e5195",
+  "manifestIdentity": "sha256-bd661dc6623e2885f65f5865563de2f8ce36486b690be204de884c123fbb973a",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -182,7 +182,7 @@
       ],
       "terminalInputBase64": "DA==",
       "postCompletionInputByteLength": 0,
-      "postCompletionControl": "raw-control-sequence",
+      "postCompletionControl": "interrupt-byte",
       "waitForSemanticCompletionBeforeTerminalAction": true,
       "resourceClass": "medium",
       "shardWeight": 220

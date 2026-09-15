@@ -379,18 +379,6 @@ const boundedNonnegativeInteger = (
   numberIsSafeInteger(value) &&
   value >= 0 &&
   value <= maximumValue;
-const containsBytes = (haystack: Uint8Array, needle: Uint8Array): boolean => {
-  for (let start = 0; start + needle.length <= haystack.length; start += 1) {
-    let matches = true;
-    for (let index = 0; index < needle.length; index += 1)
-      if (haystack[start + index] !== needle[index]) {
-        matches = false;
-        break;
-      }
-    if (matches) return true;
-  }
-  return false;
-};
 const snapshotArguments = (
   value: unknown,
   expectedLength: number,
@@ -1935,22 +1923,6 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
-    } else if (actionKind === "raw-control-sequence") {
-      const reactionUtf8 = ownData(action, "reactionUtf8");
-      if (
-        actionKeys !== "action\0reactionUtf8" ||
-        typeof reactionUtf8 !== "string" ||
-        safeBufferByteLength(reactionUtf8, "utf8") === 0 ||
-        safeBufferByteLength(reactionUtf8, "utf8") > 128
-      )
-        return fail("testkit.pty.request");
-      defineArrayIndex(
-        stableActions,
-        index,
-        safeReflectApply(freeze, Object, [
-          { action: "raw-control-sequence", reactionUtf8 },
-        ]) as SelectedPtyExecutionAction,
-      );
     } else if (actionKind === "wait-for-semantic-completion") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
       defineArrayIndex(
@@ -2264,9 +2236,6 @@ const armSelectedPty = (
     let actionIndex = 0;
     let lastCompletedInputOutputBytes = -1;
     let semanticCompletionObservedAtOutputBytes = -1;
-    let rawControlInterruptWritten = false;
-    let rawControlReactionObserved = false;
-    let rawControlReactionTail = safeBufferFrom([]);
     const actionsApplied: PtyTransportAction[] = [];
     const recordAction = (action: PtyTransportAction): void => {
       defineArrayIndex(
@@ -2286,44 +2255,6 @@ const armSelectedPty = (
       maximumOutputBytes: outputLimitBytes,
     });
     const input = safeBufferFrom(processRequest.stdin);
-    const observeRawControlReaction = (captured: Buffer): void => {
-      const action = request.interaction.actions[actionIndex];
-      if (
-        !rawControlInterruptWritten ||
-        action?.action !== "raw-control-sequence"
-      )
-        return;
-      const expected = safeBufferFrom(action.reactionUtf8, "utf8");
-      const combined = safeBufferConcat(
-        [rawControlReactionTail, captured],
-        rawControlReactionTail.length + captured.length,
-      );
-      if (containsBytes(combined, expected)) rawControlReactionObserved = true;
-      const retained = minimum(expected.length - 1, combined.length);
-      rawControlReactionTail = safeBufferFrom(
-        combined.subarray(combined.length - retained),
-      );
-    };
-    const applyRawControlSequence = (): void => {
-      if (!rawControlInterruptWritten) {
-        const interrupt = exactPtyWrite(child.write(safeBufferFrom([3])), 1);
-        if (interrupt.bytesWritten !== 1) return fail("testkit.pty.transport");
-        rawControlInterruptWritten = true;
-        return;
-      }
-      if (!rawControlReactionObserved) return;
-      const eof = exactPtyWrite(child.write(safeBufferFrom([4])), 1);
-      if (eof.bytesWritten !== 1) return fail("testkit.pty.transport");
-      recordAction({
-        action: "raw-control-sequence",
-        bytes: safeReflectApply(freeze, Object, [[3, 4]]) as readonly [3, 4],
-        monotonicAtMs: safeReflectApply(performanceNow, performance, []),
-      });
-      rawControlInterruptWritten = false;
-      rawControlReactionObserved = false;
-      rawControlReactionTail = safeBufferFrom([]);
-      actionIndex += 1;
-    };
     // The PTY pump keeps read, semantic readiness, and the write-closed action
     // sequence adjacent so no action can escape the selected backend authority.
     // eslint-disable-next-line complexity,max-lines-per-function
@@ -2336,8 +2267,7 @@ const armSelectedPty = (
           pendingActionBeforeRead === undefined ||
           request.interaction.trigger === "immediate" ||
           !readinessObserved ||
-          pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
-          pendingActionBeforeRead.action === "raw-control-sequence";
+          pendingActionBeforeRead.action === "wait-for-semantic-completion";
         for (
           let index = 0;
           shouldReadBeforeAction && index < 64 && !outputTerminal;
@@ -2362,7 +2292,6 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
-            observeRawControlReaction(captured);
             const priorSemanticState = terminal.snapshot().semanticState;
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
@@ -2469,11 +2398,6 @@ const armSelectedPty = (
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
-          } else if (action?.action === "raw-control-sequence") {
-            // VINTR flushes the canonical input queue. Keep the fixed control
-            // sequence, but require a causal output reaction before VEOF so it
-            // cannot be flushed or race the application's interrupt handling.
-            applyRawControlSequence();
           } else if (action?.action === "wait-for-semantic-completion") {
             if (
               terminal.snapshot().semanticState === "completed" &&
@@ -3299,15 +3223,6 @@ const ptyTerminalControlActionMatches = (
     observed.action === "wait-for-semantic-completion"
   )
     return true;
-  if (
-    expected.action === "raw-control-sequence" &&
-    observed.action === "raw-control-sequence"
-  )
-    return (
-      observed.bytes.length === 2 &&
-      observed.bytes[0] === 3 &&
-      observed.bytes[1] === 4
-    );
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -4140,9 +4055,6 @@ type SelectedPtyTestSeed =
   | "clean"
   | "close-failure"
   | "control-eof-substitution"
-  | "control-reaction-missing"
-  | "control-reaction-substitution"
-  | "control-second-write-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
   | "descriptor-reuse"
@@ -4173,7 +4085,6 @@ type SelectedPtyTestSeed =
   | "partial-input-timeout"
   | "post-input-completion"
   | "readiness-burst"
-  | "raw-control-clean"
   | "residual"
   | "root-missing"
   | "signal-failure"
@@ -4181,16 +4092,6 @@ type SelectedPtyTestSeed =
   | "transport-failure"
   | "timeout"
   | "unsupported-signal";
-
-const rawControlExpectedForTest = (seed: SelectedPtyTestSeed): boolean =>
-  seed === "raw-control-clean" ||
-  seed === "readiness-burst" ||
-  seed === "control-write-substitution" ||
-  seed === "control-second-write-substitution" ||
-  seed === "control-reaction-missing" ||
-  seed === "control-reaction-substitution" ||
-  seed === "control-eof-substitution" ||
-  seed === "eof-failure";
 
 // eslint-disable-next-line max-lines-per-function
 const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
@@ -4346,26 +4247,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let inputCalls = 0;
       let transportReads = 0;
       let currentGeometry = geometry;
-      const rawControlExpected = rawControlExpectedForTest(seed);
-      let rawControlStarted = false;
-      const observeRawControlWrite = (bytes: Buffer): void => {
-        if (bytes.length === 1 && bytes[0] === 3 && rawControlExpected) {
-          rawControlStarted = true;
-          if (seed !== "control-reaction-missing")
-            chunks.push(
-              safeBufferFrom(
-                seed === "control-reaction-substitution"
-                  ? "unrelated-output"
-                  : "interrupt-observed",
-              ),
-            );
-        }
-        if (bytes.length === 1 && bytes[0] === 4 && rawControlStarted) {
-          processes.delete(root.pid);
-          terminal = true;
-          close({ code: 0, signal: 0 });
-        }
-      };
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -4381,7 +4262,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         )
           safeSetTimeout(
             () => {
-              if (rawControlExpected) return;
               processes.delete(root.pid);
               if (seed === "adopted-zombie")
                 processes.set(descendant.pid, {
@@ -4480,17 +4360,9 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           if (seed === "active-terminal" && transportReads === 0)
             throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
-          if (
-            (seed === "control-write-substitution" && inputCalls === 1) ||
-            (seed === "control-second-write-substitution" && inputCalls === 2)
-          )
+          if (seed === "control-write-substitution" && inputCalls === 1)
             return { status: "would-block" as const, bytesWritten: 0 };
-          observeRawControlWrite(bytes);
-          if (
-            seed === "readiness-burst" &&
-            inputCalls === 2 &&
-            !rawControlStarted
-          ) {
+          if (seed === "readiness-burst" && inputCalls === 2) {
             processes.delete(root.pid);
             terminal = true;
             close({ code: 0, signal: 0 });
