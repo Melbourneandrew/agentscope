@@ -1,6 +1,7 @@
 /* eslint import-x/no-cycle: "off" -- private in-process controller capability */
 /** Prepared image, Docker client, and uncertain-resource retirement. */
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   diagnosticDigest,
@@ -221,20 +222,27 @@ export const createRetirementOperations = (state, docker) => {
       const daemon = await inspectDaemon(engine, client.socket, policy, signal);
       if (!sameDaemon(client.evidence.dockerDaemon, daemon))
         throw fixedError("integration.images.containment");
-      const network = await inspectPreparedNetwork({
-        daemon,
-        engine,
-        name,
-        policy,
-        runId,
-        signal,
-      });
-      if (
-        network?.Id !== pending.networkId ||
-        (network.Containers !== null &&
-          Object.keys(network.Containers).length !== 0)
-      )
-        throw fixedError("integration.images.containment");
+      let network;
+      for (;;) {
+        network = await inspectPreparedNetwork({
+          daemon,
+          engine,
+          name,
+          policy,
+          runId,
+          signal,
+        });
+        if (network?.Id !== pending.networkId)
+          throw fixedError("integration.images.containment");
+        if (
+          network.Containers === null ||
+          Object.keys(network.Containers).length === 0
+        )
+          break;
+        if (performance.now() + 20 >= policy.workDeadline)
+          throw fixedError("integration.images.deadline");
+        await delay(20, undefined, { signal });
+      }
       await engineCall(
         { policy, signal, transport: engine },
         {
