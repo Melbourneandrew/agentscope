@@ -85,20 +85,20 @@ const readBuildContextFile = (path, expected, state) => {
     const current = fstatSync(descriptor, { bigint: true });
     const size = Number(current.size);
     const padding = (512 - (size % 512)) % 512;
-    if (
-      !current.isFile() ||
-      !sameFileIdentity(expected, current) ||
-      current.size > BigInt(state.maximumBytes()) ||
-      state.total() + 512 + size + padding + 1024 > state.maximumBytes()
-    )
-      throw fixedError("integration.images.build.context-file");
+    if (!current.isFile())
+      throw fixedError("integration.images.build.context-file-type");
+    if (!sameFileIdentity(expected, current))
+      throw fixedError("integration.images.build.context-file-identity");
+    if (current.size > BigInt(state.maximumBytes()))
+      throw fixedError("integration.images.build.context-file-size");
+    if (state.total() + 512 + size + padding + 1024 > state.maximumBytes())
+      throw fixedError("integration.images.build.context-aggregate-size");
     const body = readFileSync(descriptor);
     state.assertActive();
-    if (
-      body.byteLength !== size ||
-      !sameFileIdentity(current, fstatSync(descriptor, { bigint: true }))
-    )
-      throw fixedError("integration.images.build.context-file");
+    if (body.byteLength !== size)
+      throw fixedError("integration.images.build.context-file-length");
+    if (!sameFileIdentity(current, fstatSync(descriptor, { bigint: true })))
+      throw fixedError("integration.images.build.context-file-race");
     return body;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
