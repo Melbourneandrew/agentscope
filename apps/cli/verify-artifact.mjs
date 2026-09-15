@@ -816,7 +816,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
               },
       );
     let packedStopElapsedMilliseconds;
-    for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
+    const invokePackedHook = (hookEventName) => {
       const hookStartedAt = performance.now();
       const invokedHook = run(codexLauncher.launcherPath, [], {
         env: {
@@ -832,7 +832,9 @@ setTimeout(() => process.exit(3), 10_000).unref();
         );
       assert.equal(invokedHook.stdout, "");
       assert.equal(invokedHook.stderr, "");
-    }
+    };
+    for (const hookEventName of ["SessionStart", "Stop"])
+      invokePackedHook(hookEventName);
     const packedHookOperationalStatePath = join(
       localHome,
       "health",
@@ -920,6 +922,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
       stringAttribute(packedSpans[1].attributes, "llm.model_name"),
       "packed-model",
     );
+    invokePackedHook("SessionEnd");
     assert.equal(
       packedSpans
         .map(({ attributes }) => stringAttribute(attributes, "session.id"))
