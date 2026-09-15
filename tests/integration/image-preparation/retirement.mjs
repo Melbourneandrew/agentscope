@@ -20,6 +20,63 @@ export const createRetirementOperations = (state, docker) => {
     inspectDaemon,
     inspectEngineObject,
   } = docker;
+  const validateNetworkInput = (client, { deadline, name, runId }) => {
+    const retirementMilliseconds = Math.floor(deadline - performance.now());
+    if (
+      !state.hasClient(client) ||
+      state.clientIsClosing(client) ||
+      state.clientIsUncertain(client) ||
+      !/^agentscope-int-[a-f\d]{16}-network$/u.test(name ?? "") ||
+      !/^[a-f\d]{16}$/u.test(runId ?? "")
+    )
+      throw fixedError("integration.images.docker-client");
+    if (
+      !Number.isFinite(deadline) ||
+      retirementMilliseconds < 4 ||
+      retirementMilliseconds > 30_000
+    ) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw fixedError("integration.images.deadline");
+    }
+    return preparationPolicy([client.evidence.images[0].image], {
+      maximumPreparationMilliseconds: retirementMilliseconds,
+      teardownMilliseconds: Math.min(
+        preparationTeardownMilliseconds,
+        Math.max(1, Math.floor(retirementMilliseconds / 4)),
+      ),
+    });
+  };
+  const inspectPreparedNetwork = async ({
+    daemon,
+    engine,
+    name,
+    policy,
+    runId,
+    signal,
+  }) => {
+    const response = await engineCall(
+      { policy, signal, transport: engine },
+      {
+        expected: [200, 404],
+        method: "GET",
+        path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
+      },
+    );
+    if (response.statusCode === 404) return undefined;
+    const network = JSON.parse(response.body);
+    const containers = network?.Containers;
+    if (
+      !/^[a-f\d]{64}$/u.test(network?.Id ?? "") ||
+      network?.Name !== name ||
+      typeof network?.Internal !== "boolean" ||
+      network?.Labels?.["com.agentscope.integration"] !== "true" ||
+      network?.Labels?.["com.agentscope.integration.run"] !== runId ||
+      (containers !== null &&
+        (typeof containers !== "object" || Array.isArray(containers)))
+    )
+      throw fixedError("integration.images.containment");
+    return network;
+  };
   const retirePreparedDockerImage = async (
     client,
     { deadline, imageId, signal, tag },
@@ -108,81 +165,95 @@ export const createRetirementOperations = (state, docker) => {
     }
   };
 
-  const retirePreparedDockerNetwork = async (
+  const registerPreparedDockerNetwork = async (
     client,
     { deadline, name, runId, signal },
   ) => {
-    const retirementMilliseconds = Math.floor(deadline - performance.now());
-    if (
-      !state.hasClient(client) ||
-      state.clientIsClosing(client) ||
-      state.clientIsUncertain(client) ||
-      !/^agentscope-int-[a-f\d]{16}-network$/u.test(name ?? "") ||
-      !/^[a-f\d]{16}$/u.test(runId ?? "")
-    )
+    const policy = validateNetworkInput(client, { deadline, name, runId });
+    if (state.pendingNetwork(client, name) !== undefined)
       throw fixedError("integration.images.docker-client");
-    if (
-      !Number.isFinite(deadline) ||
-      retirementMilliseconds < 4 ||
-      retirementMilliseconds > 30_000
-    ) {
-      markPreparedDockerClientForOuterHostRetirement(client);
-      throw fixedError("integration.images.deadline");
-    }
-    const policy = preparationPolicy([client.evidence.images[0].image], {
-      maximumPreparationMilliseconds: retirementMilliseconds,
-      teardownMilliseconds: Math.min(
-        preparationTeardownMilliseconds,
-        Math.max(1, Math.floor(retirementMilliseconds / 4)),
-      ),
-    });
     const engine =
       client.engineRequestForTesting ?? engineTransport(client.socket);
-    const inspect = async (daemon, terminalPolicy = policy) => {
-      const response = await engineCall(
-        { policy: terminalPolicy, signal, transport: engine },
-        {
-          expected: [200, 404],
-          method: "GET",
-          path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
-        },
-      );
-      if (response.statusCode === 404) return undefined;
-      const network = JSON.parse(response.body);
-      const containers = network?.Containers;
-      if (
-        network?.Name !== name ||
-        typeof network?.Internal !== "boolean" ||
-        network?.Labels?.["com.agentscope.integration"] !== "true" ||
-        network?.Labels?.["com.agentscope.integration.run"] !== runId ||
-        (containers !== null &&
-          (typeof containers !== "object" || Array.isArray(containers)))
-      )
-        throw fixedError("integration.images.containment");
-      return network;
-    };
     try {
       const daemon = await inspectDaemon(engine, client.socket, policy, signal);
       if (!sameDaemon(client.evidence.dockerDaemon, daemon))
         throw fixedError("integration.images.containment");
-      const network = await inspect(daemon);
+      const network = await inspectPreparedNetwork({
+        daemon,
+        engine,
+        name,
+        policy,
+        runId,
+        signal,
+      });
       if (
-        network !== undefined &&
-        network.Containers !== null &&
-        Object.keys(network.Containers).length !== 0
+        network === undefined ||
+        (network.Containers !== null &&
+          Object.keys(network.Containers).length !== 0)
       )
         throw fixedError("integration.images.containment");
-      if (network !== undefined)
-        await engineCall(
-          { policy, signal, transport: engine },
-          {
-            expected: [204],
-            method: "DELETE",
-            path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
-          },
-        );
+      assertSocketCurrentFor(engine, client.socket);
+      state.recordPendingNetwork(client, name, {
+        networkId: network.Id,
+        runId,
+      });
+      return network.Internal;
+    } catch (error) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw error;
+    }
+  };
+
+  const retirePreparedDockerNetwork = async (
+    client,
+    { deadline, name, runId, signal },
+  ) => {
+    const policy = validateNetworkInput(client, { deadline, name, runId });
+    const pending = state.pendingNetwork(client, name);
+    if (
+      pending?.runId !== runId ||
+      !/^[a-f\d]{64}$/u.test(pending?.networkId ?? "")
+    )
+      throw fixedError("integration.images.docker-client");
+    const engine =
+      client.engineRequestForTesting ?? engineTransport(client.socket);
+    try {
+      const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+      if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+        throw fixedError("integration.images.containment");
+      const network = await inspectPreparedNetwork({
+        daemon,
+        engine,
+        name,
+        policy,
+        runId,
+        signal,
+      });
+      if (
+        network?.Id !== pending.networkId ||
+        (network.Containers !== null &&
+          Object.keys(network.Containers).length !== 0)
+      )
+        throw fixedError("integration.images.containment");
+      await engineCall(
+        { policy, signal, transport: engine },
+        {
+          expected: [204],
+          method: "DELETE",
+          path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
+        },
+      );
       const terminalPolicy = { ...policy, workDeadline: policy.deadline };
-      if ((await inspect(daemon, terminalPolicy)) !== undefined)
+      if (
+        (await inspectPreparedNetwork({
+          daemon,
+          engine,
+          name,
+          policy: terminalPolicy,
+          runId,
+          signal,
+        })) !== undefined
+      )
         throw fixedError("integration.images.containment");
       assertSocketCurrentFor(engine, client.socket);
       if (
@@ -192,6 +263,7 @@ export const createRetirementOperations = (state, docker) => {
         )
       )
         throw fixedError("integration.images.containment");
+      state.completePendingNetwork(client, name);
     } catch (error) {
       markPreparedDockerClientForOuterHostRetirement(client);
       throw error;
@@ -199,7 +271,10 @@ export const createRetirementOperations = (state, docker) => {
   };
 
   const closePreparedDockerClient = (client) => {
-    if (state.pendingCount(client) !== 0) {
+    if (
+      state.pendingCount(client) !== 0 ||
+      state.pendingNetworkCount(client) !== 0
+    ) {
       if (state.hasClient(client))
         markPreparedDockerClientForOuterHostRetirement(client);
       throw fixedError("integration.images.docker-client");
@@ -274,6 +349,7 @@ export const createRetirementOperations = (state, docker) => {
     handlePreparedDockerCleanupFailure,
     markPreparedDockerClientForOuterHostRetirement,
     preparedDockerClientRequiresOuterHostRetirement,
+    registerPreparedDockerNetwork,
     retirePreparedDockerImage,
     retirePreparedDockerNetwork,
   });

@@ -47,6 +47,7 @@ import {
   publishPreparedImageEvidence,
   probePinnedRegistryTlsForTesting,
   readPreparedImageEvidence,
+  registerPreparedDockerNetwork,
   revalidatePreparedImageAdmission,
   retirePreparedDockerImage,
   retirePreparedDockerNetwork,
@@ -429,7 +430,10 @@ const engineFixture = ({
   localValue = local,
   localInitiallyPresent = true,
   networkAttached = false,
+  networkDisappearsAfterAdmission = false,
+  networkId = "a".repeat(64),
   networkInternal = true,
+  networkInitiallyPresent = true,
   networkName,
   networkRunId,
   preexistingVolume = false,
@@ -460,7 +464,10 @@ const engineFixture = ({
   localValue?: string;
   localInitiallyPresent?: boolean;
   networkAttached?: boolean;
+  networkDisappearsAfterAdmission?: boolean;
+  networkId?: string;
   networkInternal?: boolean;
+  networkInitiallyPresent?: boolean;
   networkName?: string;
   networkRunId?: string;
   preexistingVolume?: boolean;
@@ -472,7 +479,7 @@ const engineFixture = ({
   wrongMount?: boolean;
   wrongVolume?: boolean;
   wrongVolumeLabels?: boolean;
-  // eslint-disable-next-line max-lines-per-function
+  // eslint-disable-next-line complexity, max-lines-per-function -- one stateful daemon lifecycle fixture
 } = {}) => {
   const requests: Request[] = [];
   let infoCount = 0;
@@ -490,6 +497,7 @@ const engineFixture = ({
     diagnosticObservations: boolean;
     imageDeleted: boolean;
     networkPresent: boolean;
+    networkInspectionCount: number;
     tagInspectionCount: number;
     unprovedContainment: boolean;
   } = {
@@ -503,7 +511,8 @@ const engineFixture = ({
     createTimeoutAfterResources,
     diagnosticObservations,
     imageDeleted: false,
-    networkPresent: networkName !== undefined,
+    networkPresent: networkName !== undefined && networkInitiallyPresent,
+    networkInspectionCount: 0,
     tagInspectionCount: 0,
     unprovedContainment,
   };
@@ -626,11 +635,16 @@ const engineFixture = ({
       networkName !== undefined &&
       entry.method === "GET" &&
       entry.path === `/v1.50/networks/${encodeURIComponent(networkName)}`
-    )
-      return state.networkPresent
+    ) {
+      state.networkInspectionCount += 1;
+      const present =
+        state.networkPresent &&
+        !(networkDisappearsAfterAdmission && state.networkInspectionCount > 1);
+      return present
         ? {
             statusCode: 200,
             body: JSON.stringify({
+              Id: networkId,
               Name: networkName,
               Internal: networkInternal,
               Labels: {
@@ -641,6 +655,7 @@ const engineFixture = ({
             }),
           }
         : { statusCode: 404, body: "{}" };
+    }
     if (entry.method === "DELETE") {
       if (entry.path.includes("/containers/"))
         state.builderContainer = undefined;
@@ -2022,6 +2037,11 @@ describe("authenticated buildx consumption", () => {
     const engine = engineFixture({ networkName, networkRunId });
     const client = buildClient(engine);
     try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
       await expect(
         retirePreparedDockerNetwork(client, {
           deadline: performance.now() + 4_000,
@@ -2050,6 +2070,11 @@ describe("authenticated buildx consumption", () => {
     });
     const client = buildClient(engine);
     try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
       await expect(
         retirePreparedDockerNetwork(client, {
           deadline: performance.now() + 4_000,
@@ -2078,7 +2103,51 @@ describe("authenticated buildx consumption", () => {
     });
     const client = buildClient(engine);
     await expect(
+      registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when a registered network becomes absent", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkDisappearsAfterAdmission: true,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerNetwork(client, {
+      deadline: performance.now() + 4_000,
+      name: networkName,
+      runId: networkRunId,
+    });
+    await expect(
       retirePreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects a missing network before recording retirement authority", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const client = buildClient(
+      engineFixture({
+        networkInitiallyPresent: false,
+        networkName,
+        networkRunId,
+      }),
+    );
+    await expect(
+      registerPreparedDockerNetwork(client, {
         deadline: performance.now() + 4_000,
         name: networkName,
         runId: networkRunId,

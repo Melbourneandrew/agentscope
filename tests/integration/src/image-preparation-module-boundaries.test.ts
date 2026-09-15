@@ -32,6 +32,7 @@ describe("image-preparation module boundaries", () => {
       "probePinnedRegistryTlsForTesting",
       "publishPreparedImageEvidence",
       "readPreparedImageEvidence",
+      "registerPreparedDockerNetwork",
       "retirePreparedDockerImage",
       "retirePreparedDockerNetwork",
       "retirePreparedImageEvidence",
