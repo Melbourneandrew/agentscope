@@ -49,4 +49,5 @@ export const {
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientRequiresOuterHostRetirement,
   retirePreparedDockerImage,
+  retirePreparedDockerNetwork,
 } = retirement;

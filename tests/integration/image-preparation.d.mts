@@ -153,6 +153,16 @@ export declare const prepareDockerInvocation: (
   }>
 >;
 
+export declare const retirePreparedDockerNetwork: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<void>;
+
 export declare const createBoundedBuildContext: (
   root: string,
   options?: Readonly<{
