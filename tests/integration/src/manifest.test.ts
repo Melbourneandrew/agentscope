@@ -195,7 +195,7 @@ describe("integration capability manifest", () => {
       Buffer.from("\f"),
     );
     expect(scenario.postCompletionInputByteLength).toBe(0);
-    expect(scenario.postCompletionControl).toBe("raw-control-sequence");
+    expect(scenario.postCompletionControl).toBe("interrupt-byte");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
       scenario,
@@ -205,11 +205,11 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "wait-for-semantic-completion",
-      "raw-control-sequence",
+      "interrupt-byte",
     ]);
     expect(actions.at(-1)).toEqual({
-      action: "raw-control-sequence",
-      reactionUtf8: "Shutting down...",
+      action: "interrupt-byte",
+      byte: 3,
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
@@ -583,7 +583,7 @@ describe("integration capability execution modes", () => {
     )!;
     for (const postCompletionControl of [
       "eof",
-      "interrupt-byte",
+      "raw-control-sequence",
       ["interrupt-byte", "eof"],
     ])
       expect(() =>
@@ -600,7 +600,7 @@ describe("integration capability execution modes", () => {
         scenarios: [
           {
             ...original.scenarios[0]!,
-            postCompletionControl: "raw-control-sequence",
+            postCompletionControl: "interrupt-byte",
             waitForSemanticCompletionBeforeTerminalAction: true,
           },
         ],

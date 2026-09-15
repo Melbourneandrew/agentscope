@@ -270,7 +270,7 @@ const scenarioSchema = z
       ),
     terminalInputBase64: z.string().regex(/^[A-Za-z0-9+/]{1,136}={0,2}$/u),
     postCompletionInputByteLength: z.number().int().min(0).max(32),
-    postCompletionControl: z.enum(["none", "raw-control-sequence"]),
+    postCompletionControl: z.enum(["none", "interrupt-byte"]),
     waitForSemanticCompletionBeforeTerminalAction: z.boolean(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
@@ -343,11 +343,11 @@ export const compileInteractivePtyActions = (
                   scenario.postCompletionInputByteLength,
                 ),
               ]),
-          ...(scenario.postCompletionControl === "raw-control-sequence"
+          ...(scenario.postCompletionControl === "interrupt-byte"
             ? [
                 {
-                  action: "raw-control-sequence" as const,
-                  reactionUtf8: "Shutting down...",
+                  action: "interrupt-byte" as const,
+                  byte: 3 as const,
                 },
               ]
             : []),
