@@ -2150,6 +2150,9 @@ try {
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
   ) {
     retirementRequired = true;
+    process.stderr.write(
+      `integration.controller.causal-diagnostic:${failureCode(error)}\n`,
+    );
     primaryError = new Error("integration.controller.unsettled-operation", {
       cause: error,
     });
