@@ -86,18 +86,6 @@ const classifyBuildxStderr = (value) => {
     "unknown"
   );
 };
-const observeMaterialDiagnostic = (prior, tail, chunk) => {
-  const nextTail = `${tail}${chunk.toString("utf8")}`.slice(-512);
-  const observed = classifyBuildxStderr(nextTail);
-  return {
-    diagnosticClass: observed.startsWith("material-") ? observed : prior,
-    tail: nextTail,
-  };
-};
-const classifiedBuildOutput = (materialClass, diagnosticStderr) =>
-  materialClass === "unknown"
-    ? classifyBuildxStderr(Buffer.concat(diagnosticStderr).toString("utf8"))
-    : materialClass;
 export const classifyBuildxStderrForTesting = classifyBuildxStderr;
 export const boundedText = (value, maximum = 256) =>
   typeof value === "string" &&
@@ -412,8 +400,6 @@ const runOwnedCommand = async (
   const output = [];
   const diagnosticStderr = [];
   let diagnosticStderrBytes = 0;
-  let diagnosticMarkerTail = "";
-  let materialDiagnosticClass = "unknown";
   let outputTruncated = false;
   let failure;
   const fail = (code, timedOut = false) => {
@@ -421,13 +407,6 @@ const runOwnedCommand = async (
     killProcessGroup(processGroup);
   };
   const consume = (chunk, retain) => {
-    const observation = observeMaterialDiagnostic(
-      materialDiagnosticClass,
-      diagnosticMarkerTail,
-      chunk,
-    );
-    diagnosticMarkerTail = observation.tail;
-    materialDiagnosticClass = observation.diagnosticClass;
     bytes += chunk.byteLength;
     if (bytes > maximumBuildOutputBytes) {
       outputTruncated = true;
@@ -504,9 +483,8 @@ const runOwnedCommand = async (
       joined: state === "absent",
       outputBytes: bytes,
       outputTruncated,
-      stderrClass: classifiedBuildOutput(
-        materialDiagnosticClass,
-        diagnosticStderr,
+      stderrClass: classifyBuildxStderr(
+        Buffer.concat(diagnosticStderr).toString("utf8"),
       ),
     });
     observeProcess?.(processDiagnostic);
