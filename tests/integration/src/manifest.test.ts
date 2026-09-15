@@ -356,6 +356,10 @@ describe("integration capability manifest", () => {
     )!.material;
     expect(material.kind).toBe("npm");
     if (material.kind !== "npm") throw new Error("test.material");
+    expect(material.verifierImage).toBe(
+      "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+    );
+    expect(material.verifierNpmVersion).toBe("11.19.1");
     expect(capabilityScenarioImages(manifest, [codex.scenarioId])).toEqual(
       [codex.image, codex.mockServerImage, material.verifierImage].sort(),
     );

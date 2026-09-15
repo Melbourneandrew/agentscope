@@ -23,7 +23,7 @@ import {
   compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
-import { compileInteractivePtyActions } from "./dist/index.js";
+import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";

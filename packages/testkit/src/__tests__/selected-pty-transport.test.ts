@@ -472,9 +472,19 @@ describe("selected PTY transport", () => {
 
   it("applies readiness-gated input before a fast completion burst", async () => {
     const input = new Uint8Array([12]);
+    const now = performance.now();
     const receipt = await executeSelectedPtyTransportForTest(
       {
-        ...request({ stdin: input }),
+        ...request({
+          stdin: input,
+          // This case proves ordering, not deadline expiry. Keep its absolute
+          // authority distinct from the deliberately short deadline cases so
+          // coverage instrumentation cannot turn scheduler delay into a
+          // different semantic test.
+          monotonicStartupDeadlineMs: now + 1_000,
+          monotonicExecutionDeadlineMs: now + 2_000,
+          monotonicShutdownDeadlineMs: now + 4_000,
+        }),
         interaction: {
           trigger: "semantic-ready",
           actions: [
