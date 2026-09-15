@@ -225,7 +225,7 @@ export declare const retirePreparedDockerImage: (
     signal?: AbortSignal;
     tag: string;
   }>,
-) => Promise<boolean>;
+) => Promise<void>;
 
 export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
