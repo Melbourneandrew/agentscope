@@ -6,7 +6,6 @@ import {
   constants,
   existsSync,
   cpSync,
-  fchmodSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -61,6 +60,7 @@ import {
   stagePreparedHarnessMaterial,
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+import { writeExactRegularFile } from "./exact-file.mjs";
 import {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
@@ -301,35 +301,7 @@ const sidecarResourceArguments = (limits) => [
 const stageEsmPackageBoundary = (context) => {
   const packageBoundaryPath = resolve(context, "dist/package.json");
   const packageBoundaryBytes = Buffer.from('{"type":"module"}\n');
-  const packageBoundaryDescriptor = openSync(
-    packageBoundaryPath,
-    constants.O_WRONLY |
-      constants.O_CREAT |
-      constants.O_EXCL |
-      constants.O_NOFOLLOW,
-    0o600,
-  );
-  try {
-    writeFileSync(packageBoundaryDescriptor, packageBoundaryBytes);
-    fchmodSync(packageBoundaryDescriptor, 0o644);
-    fsyncSync(packageBoundaryDescriptor);
-    const descriptorStatus = fstatSync(packageBoundaryDescriptor);
-    const pathStatus = lstatSync(packageBoundaryPath);
-    if (
-      !descriptorStatus.isFile() ||
-      !pathStatus.isFile() ||
-      pathStatus.isSymbolicLink() ||
-      descriptorStatus.dev !== pathStatus.dev ||
-      descriptorStatus.ino !== pathStatus.ino ||
-      descriptorStatus.size !== packageBoundaryBytes.byteLength ||
-      pathStatus.size !== packageBoundaryBytes.byteLength ||
-      (descriptorStatus.mode & 0o777) !== 0o644 ||
-      (pathStatus.mode & 0o777) !== 0o644
-    )
-      throw new Error("integration.isolation.context");
-  } finally {
-    closeSync(packageBoundaryDescriptor);
-  }
+  writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644);
 };
 
 // The exact staged inventory and Dockerfile are reviewed as one authority.
@@ -536,14 +508,16 @@ const stageBuildContext = (plan) => {
         resolve(context, "harness/package.json"),
         `${JSON.stringify({ name: "agentscope-harness-runtime", version: "1.0.0", private: true, dependencies })}\n`,
       );
-      writeFileSync(resolve(context, "harness/npm-globalconfig"), "", {
-        flag: "wx",
-        mode: 0o600,
-      });
-      writeFileSync(resolve(context, "harness/npm-userconfig"), "", {
-        flag: "wx",
-        mode: 0o600,
-      });
+      writeExactRegularFile(
+        resolve(context, "harness/npm-globalconfig"),
+        Buffer.alloc(0),
+        0o600,
+      );
+      writeExactRegularFile(
+        resolve(context, "harness/npm-userconfig"),
+        Buffer.alloc(0),
+        0o600,
+      );
     }
   }
   const harnessAuthority =
