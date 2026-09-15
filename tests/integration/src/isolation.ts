@@ -807,13 +807,56 @@ export const scenarioContainerTerminalWitness = (input: {
   const labels = config?.Labels as Record<string, unknown> | undefined;
   const state = record?.State as Record<string, unknown> | undefined;
   const exitCode = typeof attach.code === "number" ? attach.code : NaN;
+  const finishedAt = state?.FinishedAt;
+  const timestampMatch =
+    typeof finishedAt === "string"
+      ? /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/u.exec(
+          finishedAt,
+        )
+      : null;
+  const canonicalFinishedAt = (() => {
+    if (timestampMatch === null) return false;
+    const [, year, month, day, hour, minute, second] = timestampMatch;
+    const yearNumber = Number(year);
+    const monthNumber = Number(month);
+    const dayNumber = Number(day);
+    const hourNumber = Number(hour);
+    const minuteNumber = Number(minute);
+    const secondNumber = Number(second);
+    const leapYear =
+      yearNumber % 4 === 0 &&
+      (yearNumber % 100 !== 0 || yearNumber % 400 === 0);
+    const daysInMonth = [
+      31,
+      leapYear ? 29 : 28,
+      31,
+      30,
+      31,
+      30,
+      31,
+      31,
+      30,
+      31,
+      30,
+      31,
+    ][monthNumber - 1];
+    return (
+      yearNumber > 1 &&
+      daysInMonth !== undefined &&
+      dayNumber >= 1 &&
+      dayNumber <= daysInMonth &&
+      hourNumber <= 23 &&
+      minuteNumber <= 59 &&
+      secondNumber <= 59
+    );
+  })();
   return (
     Number.isSafeInteger(exitCode) &&
     exitCode > 0 &&
     exitCode <= 255 &&
-    attach.signal == null &&
-    attach.killed !== true &&
-    attach.name !== "AbortError" &&
+    attach.signal === null &&
+    attach.killed === false &&
+    attach.name === "Error" &&
     /^[a-f0-9]{64}$/u.test(containerId) &&
     waitOutput === `${exitCode}\n` &&
     record?.Id === containerId &&
@@ -830,8 +873,7 @@ export const scenarioContainerTerminalWitness = (input: {
     state?.Pid === 0 &&
     state?.ExitCode === exitCode &&
     state?.Error === "" &&
-    typeof state?.FinishedAt === "string" &&
-    state.FinishedAt !== "0001-01-01T00:00:00Z"
+    canonicalFinishedAt
   );
 };
 /* eslint-enable complexity */
