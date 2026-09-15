@@ -156,6 +156,25 @@ describe("integration cleanup authority", () => {
       "remainingIntegrationOperationMilliseconds(\n        scenarioTimeoutMilliseconds,\n        terminal,\n      )",
     );
   });
+
+  it("uses distinct closed npm configuration files for offline harness installation", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      '"--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig"',
+    );
+    expect(source).toContain(
+      'writeFileSync(resolve(context, "harness/npm-userconfig"), ""',
+    );
+    expect(source).toContain(
+      'writeFileSync(resolve(context, "harness/npm-globalconfig"), ""',
+    );
+    expect(source).not.toContain(
+      '"--userconfig=/dev/null", "--globalconfig=/dev/null"',
+    );
+  });
 });
 
 describe("integration controller supervision", () => {
