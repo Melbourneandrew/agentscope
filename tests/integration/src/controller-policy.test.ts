@@ -324,6 +324,7 @@ describe("integration workflow policy", () => {
     ).toBe(false);
     expect(scenarios).toContain('["container", "wait", containerId]');
     expect(scenarios).toContain('["container", "inspect", containerId]');
+    expect(scenarios).toContain('"COPY dist ./dist"');
     expect(required).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
     expect(causalDiagnostic).toBeLessThan(required);
