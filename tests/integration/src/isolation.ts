@@ -1028,9 +1028,7 @@ const cleanup = async (
       const classified =
         name === "network" &&
         error instanceof Error &&
-        /^integration\.isolation\.cleanup-network-(?:attached|detach|inspect-(?:authority|command|deadline)|inspection|remove)$/u.test(
-          error.message,
-        )
+        /^integration\.isolation\.cleanup-network-remove$/u.test(error.message)
           ? error.message.slice("integration.isolation.cleanup-".length)
           : name;
       firstFailure ??= classified;

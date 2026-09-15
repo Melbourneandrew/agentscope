@@ -34,6 +34,7 @@ describe("image-preparation module boundaries", () => {
       "readImageTimeoutSourceForTesting",
       "readPreparedImageEvidence",
       "retirePreparedDockerImage",
+      "retirePreparedDockerNetwork",
       "retirePreparedImageEvidence",
       "revalidatePreparedImageAdmission",
       "runOwnedImageCommandForTesting",

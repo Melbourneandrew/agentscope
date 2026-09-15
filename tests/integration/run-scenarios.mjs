@@ -19,7 +19,6 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import {
@@ -52,6 +51,7 @@ import {
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
+  retirePreparedDockerNetwork,
 } from "./image-preparation.mjs";
 import {
   inspectPreparedHarnessMaterial,
@@ -258,65 +258,6 @@ const ignoreMissing = async (arguments_, signal) => {
     });
   } catch (error) {
     handlePreparedDockerCleanupFailure(preparedDockerClient, error);
-  }
-};
-const disconnectContainer = async (networkName, containerName, signal) => {
-  try {
-    await docker(
-      ["network", "disconnect", "--force", networkName, containerName],
-      {
-        mutationCapable: true,
-        signal,
-        timeout: remainingIntegrationOperationMilliseconds(30_000),
-      },
-    );
-  } catch (error) {
-    handlePreparedDockerCleanupFailure(preparedDockerClient, error);
-  }
-};
-const waitForNetworkDetach = async (name, signal) => {
-  while (true) {
-    let stdout;
-    try {
-      ({ stdout } = await docker(
-        ["network", "inspect", "--format", "{{len .Containers}}", name],
-        {
-          signal,
-          timeout: remainingIntegrationOperationMilliseconds(30_000),
-        },
-      ));
-    } catch (error) {
-      try {
-        handlePreparedDockerCleanupFailure(preparedDockerClient, error);
-      } catch {
-        const failure =
-          signal.aborted || error?.name === "AbortError"
-            ? "deadline"
-            : error instanceof Error &&
-                error.message === "integration.images.docker-client"
-              ? "authority"
-              : "command";
-        throw new Error(
-          `integration.isolation.cleanup-network-inspect-${failure}`,
-          { cause: error },
-        );
-      }
-      return;
-    }
-    const attachmentCountText = stdout.trim();
-    if (!/^\d{1,6}$/u.test(attachmentCountText)) {
-      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
-      throw new Error("integration.isolation.cleanup-network-inspection");
-    }
-    if (Number(attachmentCountText) === 0) return;
-    try {
-      await delay(20, undefined, { signal });
-    } catch (error) {
-      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
-      throw new Error("integration.isolation.cleanup-network-attached", {
-        cause: error,
-      });
-    }
   }
 };
 const labelArguments = (plan) => [
@@ -2166,11 +2107,8 @@ const createDriver = (plan) => {
     startMockServer,
     runScenario,
     recordEvidence,
-    removeContainer: async (name) => {
-      const signal = boundedRemovalSignal();
-      await disconnectContainer(plan.networkName, name, signal);
-      await ignoreMissing(["rm", "--force", name], signal);
-    },
+    removeContainer: (name) =>
+      ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
     removeNetwork: async (name) => {
       if (substrateCertificationCase === "cleanup-failure") {
         observeSubstrateCertificationPredicate(
@@ -2183,21 +2121,15 @@ const createDriver = (plan) => {
       }
       const signal = boundedRemovalSignal();
       try {
-        await waitForNetworkDetach(name, signal);
-      } catch (error) {
-        if (
-          error instanceof Error &&
-          /^integration\.isolation\.cleanup-network-(?:attached|inspect-(?:authority|command|deadline)|inspection)$/u.test(
-            error.message,
-          )
-        )
-          throw error;
-        throw new Error("integration.isolation.cleanup-network-detach", {
-          cause: error,
+        await retirePreparedDockerNetwork(preparedDockerClient, {
+          deadline: Math.min(
+            capability.binding.cleanupStartMonotonicMilliseconds,
+            performance.now() + 30_000,
+          ),
+          name,
+          runId: plan.runId,
+          signal,
         });
-      }
-      try {
-        await ignoreMissing(["network", "rm", name], signal);
       } catch {
         throw new Error("integration.isolation.cleanup-network-remove");
       }
