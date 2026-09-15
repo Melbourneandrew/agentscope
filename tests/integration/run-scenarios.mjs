@@ -2145,8 +2145,16 @@ const createDriver = (plan) => {
         );
       }
       const signal = boundedRemovalSignal();
-      await waitForNetworkDetach(name, signal);
-      await ignoreMissing(["network", "rm", name], signal);
+      try {
+        await waitForNetworkDetach(name, signal);
+      } catch {
+        throw new Error("integration.isolation.cleanup-network-detach");
+      }
+      try {
+        await ignoreMissing(["network", "rm", name], signal);
+      } catch {
+        throw new Error("integration.isolation.cleanup-network-remove");
+      }
     },
     removeImage: (tag) =>
       ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),

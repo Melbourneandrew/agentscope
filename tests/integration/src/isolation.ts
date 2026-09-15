@@ -1023,9 +1023,17 @@ const cleanup = async (
   for (const [name, operation] of operations) {
     try {
       await operation();
-    } catch {
+    } catch (error) {
       failureCount += 1;
-      firstFailure ??= name;
+      const classified =
+        name === "network" &&
+        error instanceof Error &&
+        /^integration\.isolation\.cleanup-network-(?:detach|remove)$/u.test(
+          error.message,
+        )
+          ? error.message.slice("integration.isolation.cleanup-".length)
+          : name;
+      firstFailure ??= classified;
     }
   }
   return { failureCount, firstFailure };
