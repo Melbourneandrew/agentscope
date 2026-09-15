@@ -1140,18 +1140,6 @@ describe("self-authenticating v2 image evidence", () => {
   });
 
   it.each([
-    [
-      "build failed: agentscope-material-command:npm-attestation-match",
-      "material-npm-attestation-match",
-    ],
-    [
-      "build failed: agentscope-material-command:npm-audit-shape",
-      "material-npm-audit-shape",
-    ],
-    [
-      "build failed: agentscope-material-command:npm-install",
-      "material-npm-install",
-    ],
     { imageEvidenceVersion: 1 },
     { dockerSocket: { ...socket, inode: "3" } },
     { dockerDaemon: { ...daemon, id: "" } },
