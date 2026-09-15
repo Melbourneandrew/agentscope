@@ -263,20 +263,17 @@ const ignoreMissing = async (arguments_, signal) => {
 const waitForNetworkDetach = async (name, signal) => {
   while (true) {
     try {
-      const { stdout } = await docker(["network", "inspect", name], {
-        signal,
-        timeout: remainingIntegrationOperationMilliseconds(30_000),
-      });
-      const records = JSON.parse(stdout);
-      const attachments = records?.[0]?.Containers;
-      if (
-        !Array.isArray(records) ||
-        records.length !== 1 ||
-        (attachments !== null &&
-          (typeof attachments !== "object" || Array.isArray(attachments)))
-      )
+      const { stdout } = await docker(
+        ["network", "inspect", "--format", "{{len .Containers}}", name],
+        {
+          signal,
+          timeout: remainingIntegrationOperationMilliseconds(30_000),
+        },
+      );
+      const attachmentCountText = stdout.trim();
+      if (!/^\d{1,6}$/u.test(attachmentCountText))
         throw new Error("integration.isolation.cleanup-network-inspection");
-      if (attachments === null || Object.keys(attachments).length === 0) return;
+      if (Number(attachmentCountText) === 0) return;
       await delay(20, undefined, { signal });
     } catch (error) {
       handlePreparedDockerCleanupFailure(preparedDockerClient, error);
