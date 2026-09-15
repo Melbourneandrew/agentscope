@@ -272,12 +272,11 @@ const waitForNetworkDetach = async (name, signal) => {
       if (
         !Array.isArray(records) ||
         records.length !== 1 ||
-        typeof attachments !== "object" ||
-        attachments === null ||
-        Array.isArray(attachments)
+        (attachments !== null &&
+          (typeof attachments !== "object" || Array.isArray(attachments)))
       )
         throw new Error("integration.isolation.cleanup-network-inspection");
-      if (Object.keys(attachments).length === 0) return;
+      if (attachments === null || Object.keys(attachments).length === 0) return;
       await delay(20, undefined, { signal });
     } catch (error) {
       handlePreparedDockerCleanupFailure(preparedDockerClient, error);
