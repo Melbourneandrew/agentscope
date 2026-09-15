@@ -1004,33 +1004,47 @@ const unavailableExecutionPolicyFor = (
 const cleanup = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
-): Promise<number> => {
-  const operations = [
-    () => driver.removeContainer(plan.scenarioName),
-    () => driver.removeContainer(plan.collectorName),
-    () => driver.removeContainer(plan.retrievalName),
-    () => driver.removeContainer(plan.mockServerName),
-    () => driver.removeNetwork(plan.networkName),
-    () => driver.removeImage(plan.imageTag),
-    () => driver.removeImage(plan.mockServerImageTag),
-    () => driver.removeContext(plan.runId),
+): Promise<Readonly<{ failureCount: number; firstFailure: string | null }>> => {
+  const operations: ReadonlyArray<readonly [string, () => Promise<void>]> = [
+    ["scenario-container", () => driver.removeContainer(plan.scenarioName)],
+    ["collector-container", () => driver.removeContainer(plan.collectorName)],
+    ["retrieval-container", () => driver.removeContainer(plan.retrievalName)],
+    [
+      "mock-server-container",
+      () => driver.removeContainer(plan.mockServerName),
+    ],
+    ["network", () => driver.removeNetwork(plan.networkName)],
+    ["scenario-image", () => driver.removeImage(plan.imageTag)],
+    ["mock-server-image", () => driver.removeImage(plan.mockServerImageTag)],
+    ["context", () => driver.removeContext(plan.runId)],
   ];
   let failureCount = 0;
-  for (const operation of operations) {
+  let firstFailure: string | null = null;
+  for (const [name, operation] of operations) {
     try {
       await operation();
     } catch {
       failureCount += 1;
+      firstFailure ??= name;
     }
   }
-  return failureCount;
+  return { failureCount, firstFailure };
 };
 
-const failCleanup = (cleanup: IsolationEvidence["cleanup"]): never => {
+const failCleanup = (
+  cleanup: IsolationEvidence["cleanup"],
+  firstFailure: string | null,
+): never => {
   process.stderr.write(
     `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
   );
-  throw new Error("integration.isolation.cleanup");
+  throw new Error(
+    firstFailure === null
+      ? cleanup.remaining === null
+        ? "integration.isolation.cleanup-inventory"
+        : "integration.isolation.cleanup-remaining"
+      : `integration.isolation.cleanup-${firstFailure}`,
+  );
 };
 
 export const executeIsolationPlan = async (
@@ -1082,7 +1096,8 @@ export const executeIsolationPlan = async (
     failure = error;
     workOutcome = signal.aborted ? "interrupted" : "failed";
   }
-  const removalFailureCount = await cleanup(plan, driver);
+  const cleanupResult = await cleanup(plan, driver);
+  const removalFailureCount = cleanupResult.failureCount;
   let cleanupInventory: IsolationCleanupInventory | null = null;
   let cleanupInspectionFailed = false;
   try {
@@ -1142,7 +1157,8 @@ export const executeIsolationPlan = async (
     },
   );
   await driver.recordEvidence(evidence);
-  if (cleanupOutcome !== "complete") failCleanup(evidence.cleanup);
+  if (cleanupOutcome !== "complete")
+    failCleanup(evidence.cleanup, cleanupResult.firstFailure);
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");
