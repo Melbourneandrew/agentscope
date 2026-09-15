@@ -18,7 +18,6 @@ export type SelectedPtyExecutionAction =
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
   | Readonly<{ action: "wait-for-semantic-completion" }>
-  | Readonly<{ action: "foreground-interrupt-eot" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{
@@ -109,12 +108,6 @@ export type PtyTransportAction =
     }>
   | Readonly<{
       action: "wait-for-semantic-completion";
-      monotonicAtMs: number;
-    }>
-  | Readonly<{
-      action: "foreground-interrupt-eot";
-      eotByte: 4;
-      signal: "SIGINT";
       monotonicAtMs: number;
     }>
   | Readonly<{ action: "eof"; monotonicAtMs: number }>

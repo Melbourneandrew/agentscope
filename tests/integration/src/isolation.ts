@@ -349,7 +349,6 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({ action: z.literal("eof") }),
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
-  z.strictObject({ action: z.literal("foreground-interrupt-eot") }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
     action: z.literal("signal"),
@@ -374,12 +373,6 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("wait-for-semantic-completion"),
-    monotonicAtMs: z.number().finite().nonnegative(),
-  }),
-  z.strictObject({
-    action: z.literal("foreground-interrupt-eot"),
-    eotByte: z.literal(4),
-    signal: z.literal("SIGINT"),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({
@@ -558,11 +551,6 @@ const ptyTerminalReceiptSchema = z
           observed.action === "interrupt-byte"
         )
           return requested.byte !== observed.byte;
-        if (
-          requested.action === "foreground-interrupt-eot" &&
-          observed.action === "foreground-interrupt-eot"
-        )
-          return observed.signal !== "SIGINT" || observed.eotByte !== 4;
         return (
           requested.action === "signal" &&
           observed.action === "signal" &&
@@ -663,10 +651,7 @@ const ptyReceiptPasses = (
       !actions.includes("interrupt-byte")) ||
     (terminalAction === "post-completion-controls" &&
       JSON.stringify(actions.slice(-2)) ===
-        JSON.stringify([
-          "wait-for-semantic-completion",
-          "foreground-interrupt-eot",
-        ]));
+        JSON.stringify(["wait-for-semantic-completion", "interrupt-byte"]));
   return (
     terminalActionMatches &&
     receipt.outcome === "completed" &&

@@ -37,7 +37,7 @@ const maximumPatchLines = 2_048;
 const maximumPatchLineBytes = 2_048;
 const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "69da18f7a91c189dc5c6af243ef4f5fdbaf62abedf89720a95149e930422c152";
+  "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -137,7 +137,7 @@ export const applyExactPtyPatch = (source, patch) => {
       throw new Error("PTY patch hunk is incomplete.");
     hunkCount += 1;
   }
-  if (hunkCount !== 63 || patchIndex !== patchLines.length)
+  if (hunkCount !== 61 || patchIndex !== patchLines.length)
     throw new Error("PTY patch hunk inventory is not exact.");
   output.push(...sourceLines.slice(sourceIndex));
   const result = `${output.join("\n")}\n`;
@@ -394,7 +394,7 @@ export const buildPtyRuntime = ({
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "89e8e793678eec14a7497fc93ff4a2cfbdfdbb5c2dc6400df4ae6a2e296ced5f",
+    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
     0o644,
     maximumPatchBytes,
   );
@@ -420,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "69da18f7a91c189dc5c6af243ef4f5fdbaf62abedf89720a95149e930422c152",
+    "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
@@ -517,7 +517,7 @@ export const buildGlibcPtyRuntime = ({ output, sourceRoot }) => {
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "89e8e793678eec14a7497fc93ff4a2cfbdfdbb5c2dc6400df4ae6a2e296ced5f",
+    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
     0o644,
     maximumPatchBytes,
   );
@@ -573,8 +573,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (
     digest !==
     (glibc
-      ? "4c11e2948f4de9489a50ce41cb2b0f91c0a13bc96a1e3659a34c6bee1d06c1c6"
-      : "95e61f47b3db63276e503608340059a2d2125e2870fc29924219227bbe1f9eba")
+      ? "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727"
+      : "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff")
   )
     throw new Error("PTY runtime build is not reproducible.");
 }

@@ -1244,10 +1244,6 @@ type PtyProcess = Readonly<{
     status: "eof-byte-written";
   }>;
   inspect: () => PtyTerminalObservation;
-  interruptForeground: () => Readonly<{
-    signal: "SIGINT";
-    status: "foreground-interrupt-queued";
-  }>;
   read: (maximumBytes: number) => PtyReadObservation;
   resize: (columns: number, rows: number) => void;
   write: (bytes: Buffer) => PtyWriteObservation;
@@ -1298,10 +1294,6 @@ type NativePtyBinding = Readonly<{
     status: "eof-byte-written";
   }>;
   inspect: (handle: PtyTerminalHandle) => PtyTerminalObservation;
-  interruptForeground: (handle: PtyTerminalHandle) => Readonly<{
-    signal: "SIGINT";
-    status: "foreground-interrupt-queued";
-  }>;
   read: (handle: PtyTerminalHandle, maximumBytes: number) => PtyReadObservation;
   reapAdoptedZombie: (
     pid: number,
@@ -1320,11 +1312,11 @@ type NativePtyBinding = Readonly<{
 }>;
 const ptyRuntimeArtifacts = Object.freeze({
   glibc: Object.freeze({
-    digest: "4c11e2948f4de9489a50ce41cb2b0f91c0a13bc96a1e3659a34c6bee1d06c1c6",
+    digest: "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727",
     tuple: "node127-linux-x64-glibc",
   }),
   musl: Object.freeze({
-    digest: "95e61f47b3db63276e503608340059a2d2125e2870fc29924219227bbe1f9eba",
+    digest: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
     tuple: "node127-linux-x64-musl",
   }),
 });
@@ -1473,7 +1465,6 @@ const loadNativePtyBinding = (
     typeof ownData(candidate, "fork") !== "function" ||
     typeof ownData(candidate, "resize") !== "function" ||
     typeof ownData(candidate, "inspect") !== "function" ||
-    typeof ownData(candidate, "interruptForeground") !== "function" ||
     typeof ownData(candidate, "read") !== "function" ||
     typeof ownData(candidate, "write") !== "function" ||
     typeof ownData(candidate, "reapAdoptedZombie") !== "function" ||
@@ -1737,7 +1728,6 @@ const productionPtyRuntime = (
       },
       eof: () => binding.eof(result.handle),
       inspect: () => binding.inspect(result.handle),
-      interruptForeground: () => binding.interruptForeground(result.handle),
       read: (maximumBytes) => binding.read(result.handle, maximumBytes),
       resize: (columns, rows) => {
         binding.resize(result.handle, columns, rows, 0, 0);
@@ -1940,15 +1930,6 @@ const snapshotPtyRequest = (
         index,
         safeReflectApply(freeze, Object, [
           { action: "wait-for-semantic-completion" },
-        ]) as SelectedPtyExecutionAction,
-      );
-    } else if (actionKind === "foreground-interrupt-eot") {
-      if (actionKeys !== "action") return fail("testkit.pty.request");
-      defineArrayIndex(
-        stableActions,
-        index,
-        safeReflectApply(freeze, Object, [
-          { action: "foreground-interrupt-eot" },
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "interrupt-byte") {
@@ -2444,26 +2425,6 @@ const armSelectedPty = (
             recordAction({
               action: "interrupt-byte",
               byte: 3,
-              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
-            });
-            actionIndex += 1;
-          } else if (action?.action === "foreground-interrupt-eot") {
-            const interrupt = child.interruptForeground();
-            if (
-              !plainRecord(interrupt) ||
-              safeReflectApply(objectKeys, Object, [interrupt])
-                .sort()
-                .join("\0") !== "signal\0status" ||
-              interrupt.status !== "foreground-interrupt-queued" ||
-              interrupt.signal !== "SIGINT"
-            )
-              return fail("testkit.pty.transport");
-            const eot = exactPtyWrite(child.write(safeBufferFrom([4])), 1);
-            if (eot.bytesWritten !== 1) return fail("testkit.pty.transport");
-            recordAction({
-              action: "foreground-interrupt-eot",
-              eotByte: 4,
-              signal: "SIGINT",
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
@@ -3262,11 +3223,6 @@ const ptyTerminalControlActionMatches = (
     observed.action === "wait-for-semantic-completion"
   )
     return true;
-  if (
-    expected.action === "foreground-interrupt-eot" &&
-    observed.action === "foreground-interrupt-eot"
-  )
-    return observed.signal === "SIGINT" && observed.eotByte === 4;
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -4104,9 +4060,6 @@ type SelectedPtyTestSeed =
   | "descriptor-reuse"
   | "descriptor-substitution"
   | "eof-failure"
-  | "foreground-interrupt-eot"
-  | "foreground-interrupt-failure"
-  | "foreground-interrupt-substitution"
   | "fragmented-output"
   | "geometry-substitution"
   | "identity-substitution"
@@ -4294,7 +4247,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let inputCalls = 0;
       let transportReads = 0;
       let currentGeometry = geometry;
-      let foregroundInterrupted = false;
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -4305,9 +4257,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           seed !== "partial-input-output-limit" &&
           seed !== "partial-input-timeout" &&
           seed !== "readiness-burst" &&
-          seed !== "foreground-interrupt-eot" &&
-          seed !== "foreground-interrupt-failure" &&
-          seed !== "foreground-interrupt-substitution" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure"
         )
@@ -4365,18 +4314,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        interruptForeground: () => {
-          if (seed === "foreground-interrupt-failure")
-            return fail("testkit.pty.transport");
-          foregroundInterrupted = true;
-          return {
-            status:
-              seed === "foreground-interrupt-substitution"
-                ? ("substituted" as "foreground-interrupt-queued")
-                : ("foreground-interrupt-queued" as const),
-            signal: "SIGINT" as const,
-          };
-        },
         read: (maximumBytes) => {
           transportReads += 1;
           if (seed === "action-deadline-crossing" && transportReads === 1) {
@@ -4426,11 +4363,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           if (seed === "control-write-substitution" && inputCalls === 1)
             return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "readiness-burst" && inputCalls === 2) {
-            processes.delete(root.pid);
-            terminal = true;
-            close({ code: 0, signal: 0 });
-          }
-          if (foregroundInterrupted && bytes.length === 1 && bytes[0] === 4) {
             processes.delete(root.pid);
             terminal = true;
             close({ code: 0, signal: 0 });
