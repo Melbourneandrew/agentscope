@@ -43,7 +43,7 @@ export const SUBSTRATE_CERTIFICATION_PREDICATES = Object.freeze({
 } satisfies Readonly<Record<SubstrateCertificationCase, string>>);
 
 export const SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES = Object.freeze({
-  "wrong-argv": "integration.controller.unsettled-operation",
+  "wrong-argv": "integration.certification.wrong-argv",
   "wrong-environment": "integration.certification.wrong-environment",
   "wrong-cwd": "integration.certification.wrong-cwd",
   "missing-hook": "integration.certification.missing-hook",

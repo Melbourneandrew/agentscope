@@ -304,9 +304,19 @@ describe("integration workflow policy", () => {
       '  const receipt =\n    plan.executionMode === "interactive"',
       attachCatch,
     );
+    const rejectedAttachProof = scenarios.indexOf(
+      "terminalMutationProved = await proveFailedAttachSettled(",
+      attachCatch,
+    );
+    const rejectedAttachOutput = scenarios.indexOf(
+      'const output = `${error?.stdout ?? ""}`;',
+      attachCatch,
+    );
     expect(attachStart).toBeGreaterThan(-1);
     expect(attachCatch).toBeGreaterThan(attachStart);
     expect(successfulReceipt).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachProof).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachOutput).toBeGreaterThan(rejectedAttachProof);
     expect(
       scenarios
         .slice(attachStart, attachCatch)
