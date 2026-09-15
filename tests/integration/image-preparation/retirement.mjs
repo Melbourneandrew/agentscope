@@ -108,6 +108,96 @@ export const createRetirementOperations = (state, docker) => {
     }
   };
 
+  const retirePreparedDockerNetwork = async (
+    client,
+    { deadline, name, runId, signal },
+  ) => {
+    const retirementMilliseconds = Math.floor(deadline - performance.now());
+    if (
+      !state.hasClient(client) ||
+      state.clientIsClosing(client) ||
+      state.clientIsUncertain(client) ||
+      !/^agentscope-int-[a-f\d]{16}-network$/u.test(name ?? "") ||
+      !/^[a-f\d]{16}$/u.test(runId ?? "")
+    )
+      throw fixedError("integration.images.docker-client");
+    if (
+      !Number.isFinite(deadline) ||
+      retirementMilliseconds < 4 ||
+      retirementMilliseconds > 30_000
+    ) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw fixedError("integration.images.deadline");
+    }
+    const policy = preparationPolicy([client.evidence.images[0].image], {
+      maximumPreparationMilliseconds: retirementMilliseconds,
+      teardownMilliseconds: Math.min(
+        preparationTeardownMilliseconds,
+        Math.max(1, Math.floor(retirementMilliseconds / 4)),
+      ),
+    });
+    const engine =
+      client.engineRequestForTesting ?? engineTransport(client.socket);
+    const inspect = async (daemon, terminalPolicy = policy) => {
+      const response = await engineCall(
+        { policy: terminalPolicy, signal, transport: engine },
+        {
+          expected: [200, 404],
+          method: "GET",
+          path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
+        },
+      );
+      if (response.statusCode === 404) return undefined;
+      const network = JSON.parse(response.body);
+      const containers = network?.Containers;
+      if (
+        network?.Name !== name ||
+        network?.Internal !== true ||
+        network?.Labels?.["com.agentscope.integration"] !== "true" ||
+        network?.Labels?.["com.agentscope.integration.run"] !== runId ||
+        (containers !== null &&
+          (typeof containers !== "object" || Array.isArray(containers)))
+      )
+        throw fixedError("integration.images.containment");
+      return network;
+    };
+    try {
+      const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+      if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+        throw fixedError("integration.images.containment");
+      const network = await inspect(daemon);
+      if (
+        network !== undefined &&
+        network.Containers !== null &&
+        Object.keys(network.Containers).length !== 0
+      )
+        throw fixedError("integration.images.containment");
+      if (network !== undefined)
+        await engineCall(
+          { policy, signal, transport: engine },
+          {
+            expected: [204],
+            method: "DELETE",
+            path: `/v${daemon.apiVersion}/networks/${encodeURIComponent(name)}`,
+          },
+        );
+      const terminalPolicy = { ...policy, workDeadline: policy.deadline };
+      if ((await inspect(daemon, terminalPolicy)) !== undefined)
+        throw fixedError("integration.images.containment");
+      assertSocketCurrentFor(engine, client.socket);
+      if (
+        !sameDaemon(
+          daemon,
+          await inspectDaemon(engine, client.socket, terminalPolicy),
+        )
+      )
+        throw fixedError("integration.images.containment");
+    } catch (error) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw error;
+    }
+  };
+
   const closePreparedDockerClient = (client) => {
     if (state.pendingCount(client) !== 0) {
       if (state.hasClient(client))
@@ -185,5 +275,6 @@ export const createRetirementOperations = (state, docker) => {
     markPreparedDockerClientForOuterHostRetirement,
     preparedDockerClientRequiresOuterHostRetirement,
     retirePreparedDockerImage,
+    retirePreparedDockerNetwork,
   });
 };

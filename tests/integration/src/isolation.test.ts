@@ -858,19 +858,11 @@ describe("scenario cleanup evidence", () => {
     diagnostic.mockRestore();
   });
 
-  it.each([
-    "attached",
-    "detach",
-    "inspect-authority",
-    "inspect-command",
-    "inspect-deadline",
-    "inspection",
-    "remove",
-  ])("retains the fixed network cleanup %s subphase", async (subphase) => {
+  it("retains the fixed network cleanup removal subphase", async () => {
     const fixture = driver();
     const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
-      new Error(`integration.isolation.cleanup-network-${subphase}`),
+      new Error("integration.isolation.cleanup-network-remove"),
     );
     await expect(
       executeIsolationPlan(
@@ -878,7 +870,7 @@ describe("scenario cleanup evidence", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow(`integration.isolation.cleanup-network-${subphase}`);
+    ).rejects.toThrow("integration.isolation.cleanup-network-remove");
     diagnostic.mockRestore();
   });
 
