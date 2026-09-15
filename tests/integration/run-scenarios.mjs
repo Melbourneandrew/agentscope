@@ -262,22 +262,38 @@ const ignoreMissing = async (arguments_, signal) => {
 };
 const waitForNetworkDetach = async (name, signal) => {
   while (true) {
+    let stdout;
     try {
-      const { stdout } = await docker(
+      ({ stdout } = await docker(
         ["network", "inspect", "--format", "{{len .Containers}}", name],
         {
           signal,
           timeout: remainingIntegrationOperationMilliseconds(30_000),
         },
-      );
-      const attachmentCountText = stdout.trim();
-      if (!/^\d{1,6}$/u.test(attachmentCountText))
-        throw new Error("integration.isolation.cleanup-network-inspection");
-      if (Number(attachmentCountText) === 0) return;
+      ));
+    } catch (error) {
+      try {
+        handlePreparedDockerCleanupFailure(preparedDockerClient, error);
+      } catch {
+        throw new Error("integration.isolation.cleanup-network-inspect", {
+          cause: error,
+        });
+      }
+      return;
+    }
+    const attachmentCountText = stdout.trim();
+    if (!/^\d{1,6}$/u.test(attachmentCountText)) {
+      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+      throw new Error("integration.isolation.cleanup-network-inspection");
+    }
+    if (Number(attachmentCountText) === 0) return;
+    try {
       await delay(20, undefined, { signal });
     } catch (error) {
-      handlePreparedDockerCleanupFailure(preparedDockerClient, error);
-      return;
+      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+      throw new Error("integration.isolation.cleanup-network-attached", {
+        cause: error,
+      });
     }
   }
 };
@@ -2143,8 +2159,17 @@ const createDriver = (plan) => {
       const signal = boundedRemovalSignal();
       try {
         await waitForNetworkDetach(name, signal);
-      } catch {
-        throw new Error("integration.isolation.cleanup-network-detach");
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          /^integration\.isolation\.cleanup-network-(?:attached|inspect|inspection)$/u.test(
+            error.message,
+          )
+        )
+          throw error;
+        throw new Error("integration.isolation.cleanup-network-detach", {
+          cause: error,
+        });
       }
       try {
         await ignoreMissing(["network", "rm", name], signal);
