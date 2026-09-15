@@ -152,7 +152,7 @@ export const createRetirementOperations = (state, docker) => {
       const containers = network?.Containers;
       if (
         network?.Name !== name ||
-        network?.Internal !== true ||
+        typeof network?.Internal !== "boolean" ||
         network?.Labels?.["com.agentscope.integration"] !== "true" ||
         network?.Labels?.["com.agentscope.integration.run"] !== runId ||
         (containers !== null &&

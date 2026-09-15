@@ -2122,10 +2122,9 @@ const createDriver = (plan) => {
       const signal = boundedRemovalSignal();
       try {
         await retirePreparedDockerNetwork(preparedDockerClient, {
-          deadline: Math.min(
-            capability.binding.cleanupStartMonotonicMilliseconds,
-            performance.now() + 30_000,
-          ),
+          deadline:
+            performance.now() +
+            remainingIntegrationOperationMilliseconds(30_000, true),
           name,
           runId: plan.runId,
           signal,
