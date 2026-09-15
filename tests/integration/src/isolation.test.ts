@@ -858,6 +858,22 @@ describe("scenario cleanup evidence", () => {
     diagnostic.mockRestore();
   });
 
+  it("retains a fixed network cleanup subphase", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove"),
+    );
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.cleanup-network-remove");
+    diagnostic.mockRestore();
+  });
+
   it("rejects a non-digest image result and still tears down", async () => {
     const fixture = driver();
     fixture.buildImage.mockResolvedValueOnce("latest");
