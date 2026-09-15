@@ -1511,6 +1511,13 @@ const contentFreeChildFailureCode = (error) => {
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
+const failedAttachSettled = (error) =>
+  Number.isSafeInteger(error?.code) &&
+  error.code > 0 &&
+  error.code <= 255 &&
+  error?.signal == null &&
+  error?.killed !== true &&
+  error?.name !== "AbortError";
 const runScenario = async (plan, signal) => {
   const remainingOuterMilliseconds = Math.min(
     scenarioTimeoutMilliseconds,
@@ -1534,7 +1541,6 @@ const runScenario = async (plan, signal) => {
     const { stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
-      { mutationCapable: true },
     );
     const receipt =
       plan.executionMode === "interactive"
@@ -1554,49 +1560,66 @@ const runScenario = async (plan, signal) => {
         scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
     };
   } catch (error) {
-    if (plan.executionMode === "interactive")
-      process.stderr.write(
-        `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
-      );
-    const output = `${error?.stdout ?? ""}`;
-    const fixtureCaptured = captureFixtureResult(output, plan);
-    if (output.includes("AGENTSCOPE_PTY_FAILURE="))
-      captureInstalledPtyFailure(output, plan);
-    if (
-      substrateCertificationCase === "leaked-child" &&
-      leakedChildReadinessWasObserved({
-        certificationReadiness: fixtureResults.get(plan.runId)
-          ?.certificationReadiness,
-        fixtureCaptured,
-        fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
-      })
-    ) {
-      observeSubstrateCertificationPredicate(
-        plan.runId,
-        SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
-      );
-      throw new Error(
-        `integration.certification.${substrateCertificationCase}`,
-        { cause: error },
-      );
+    let terminalMutationProved = false;
+    try {
+      if (plan.executionMode === "interactive")
+        process.stderr.write(
+          `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+        );
+      const output = `${error?.stdout ?? ""}`;
+      const fixtureCaptured = captureFixtureResult(output, plan);
+      if (output.includes("AGENTSCOPE_PTY_FAILURE="))
+        captureInstalledPtyFailure(output, plan);
+      if (
+        substrateCertificationCase === "leaked-child" &&
+        leakedChildReadinessWasObserved({
+          certificationReadiness: fixtureResults.get(plan.runId)
+            ?.certificationReadiness,
+          fixtureCaptured,
+          fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
+        })
+      ) {
+        terminalMutationProved = failedAttachSettled(error);
+        if (!terminalMutationProved)
+          throw new Error("integration.isolation.child-failure", {
+            cause: error,
+          });
+        observeSubstrateCertificationPredicate(
+          plan.runId,
+          SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+        );
+        throw new Error(
+          `integration.certification.${substrateCertificationCase}`,
+          { cause: error },
+        );
+      }
+      if (
+        output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
+        output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
+      ) {
+        const receipt =
+          plan.executionMode === "interactive"
+            ? captureInteractivePtyReceipt(output, plan, {
+                outerMonotonicDeadline,
+              })
+            : captureHeadlessReceipt(output, plan, {
+                outerMonotonicDeadline,
+              });
+        terminalMutationProved = failedAttachSettled(error);
+        if (!terminalMutationProved)
+          throw new Error("integration.isolation.child-failure", {
+            cause: error,
+          });
+        observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+        registerScenarioReceipt(plan, receipt);
+        return { receipt, succeeded: false };
+      }
+      throw error;
+    } catch (handledError) {
+      if (!terminalMutationProved)
+        markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+      throw handledError;
     }
-    if (
-      output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
-      output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
-    ) {
-      const receipt =
-        plan.executionMode === "interactive"
-          ? captureInteractivePtyReceipt(output, plan, {
-              outerMonotonicDeadline,
-            })
-          : captureHeadlessReceipt(output, plan, {
-              outerMonotonicDeadline,
-            });
-      observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
-      registerScenarioReceipt(plan, receipt);
-      return { receipt, succeeded: false };
-    }
-    throw error;
   }
 };
 // eslint-disable-next-line max-lines-per-function -- one atomic retained evidence settlement
