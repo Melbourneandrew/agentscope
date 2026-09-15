@@ -94,7 +94,7 @@ describe("substrate certification request", () => {
       Object.keys(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES).sort(),
     ).toEqual([...SUBSTRATE_CERTIFICATION_CASES].sort());
     expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["wrong-argv"]).toBe(
-      "integration.controller.unsettled-operation",
+      "integration.certification.wrong-argv",
     );
     expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["leaked-child"]).toBe(
       "integration.certification.leaked-child",
