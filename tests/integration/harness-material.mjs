@@ -55,9 +55,7 @@ const rethrowMaterialDiagnostic = (error) => {
     });
   if (
     error instanceof Error &&
-    /^integration\.harness-material\.npm-verifier(?:-[a-z-]{1,48})?$/u.test(
-      error.message,
-    )
+    error.message === "integration.harness-material.npm-verifier"
   )
     throw error;
 };
