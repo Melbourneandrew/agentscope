@@ -581,7 +581,10 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
-  return context;
+  return Object.freeze({
+    context,
+    requiresHarnessBuildContextBound: harnessMaterial !== undefined,
+  });
 };
 
 const assertContainer = async (
@@ -1177,7 +1180,7 @@ const inspectDockerRuntimeIdentity = async (signal) => {
 };
 const buildImage = async (plan, signal) => {
   await preparedImageFor(plan.baseImage, signal);
-  const context = stageBuildContext(plan);
+  const { context, requiresHarnessBuildContextBound } = stageBuildContext(plan);
   return buildPreparedDockerImage(preparedDockerClient, {
     buildArguments: { BASE_IMAGE: plan.baseImage },
     context,
@@ -1190,11 +1193,7 @@ const buildImage = async (plan, signal) => {
       scenarioTimeoutMilliseconds,
       IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
     ),
-    maximumBuildContextBytes: preparedHarnessMaterials.has(
-      manifest.scenarios.find(
-        ({ scenarioId }) => scenarioId === plan.scenarioId,
-      )?.harnessEvidenceId,
-    )
+    maximumBuildContextBytes: requiresHarnessBuildContextBound
       ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
       : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
     signal,
