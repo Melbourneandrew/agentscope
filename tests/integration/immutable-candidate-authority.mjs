@@ -27,7 +27,21 @@ export const installedPtyFailurePredicates = Object.freeze({
     "package-manifest",
     "receipt-rejected",
   ]),
-  "pty-receipt": Object.freeze(["receipt-rejected"]),
+  "pty-receipt": Object.freeze([
+    "cleanup",
+    "completion-state",
+    "eof-action",
+    "exit-code",
+    "fixture-result",
+    "installed-cli-outcome",
+    "process-join",
+    "receipt-rejected",
+    "residual-process",
+    "signal",
+    "terminal-input-join",
+    "terminal-output-join",
+    "transport-close",
+  ]),
   "runner-bootstrap": Object.freeze(["runner-rejected"]),
 });
 const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];

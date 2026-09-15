@@ -1501,6 +1501,30 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
     installedPtyReceipt.outcome === "completed"
   );
 };
+const interactiveReceiptFailurePredicate = (
+  plan,
+  receipt,
+  installedPtyReceipt,
+  fixtureCaptured,
+) => {
+  if (receipt.outcome !== "completed") return "completion-state";
+  if (receipt.finalSnapshot?.semanticState !== "completed")
+    return "completion-state";
+  if (receipt.exitCode !== 0) return "exit-code";
+  if (receipt.signal !== null) return "signal";
+  if (receipt.cleanup !== "clean") return "cleanup";
+  if (receipt.residualProcessCount !== 0) return "residual-process";
+  if (receipt.processJoined !== true) return "process-join";
+  if (receipt.eofByteWritten !== (plan.terminalAction === "eof"))
+    return "eof-action";
+  if (receipt.terminalInputJoined !== true) return "terminal-input-join";
+  if (receipt.terminalOutputJoined !== true) return "terminal-output-join";
+  if (receipt.terminalTransportClosed !== true) return "transport-close";
+  if (installedPtyReceipt.outcome !== "completed")
+    return "installed-cli-outcome";
+  if (!fixtureCaptured) return "fixture-result";
+  return undefined;
+};
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
@@ -1756,6 +1780,20 @@ const runScenario = async (plan, signal) => {
   const fixtureCaptured = captureFixtureResult(stdout, plan);
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
+  if (plan.executionMode === "interactive") {
+    const predicate = interactiveReceiptFailurePredicate(
+      plan,
+      receipt,
+      ptyReceipt,
+      fixtureCaptured,
+    );
+    if (predicate !== undefined)
+      installedPtyFailures.set(plan.runId, {
+        receiptVersion: 1,
+        phase: "pty-receipt",
+        predicate,
+      });
+  }
   return {
     receipt,
     succeeded:
