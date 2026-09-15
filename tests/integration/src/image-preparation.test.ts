@@ -1908,6 +1908,11 @@ describe("content-free buildx failure classification", () => {
     ["failed to solve build graph", "build-failed"],
     ["connection refused during bootstrap", "bootstrap-failed"],
     ["operation not permitted", "permission-denied"],
+    [
+      'process "node /verify/material-command.mjs npm-verify /verify" did not complete successfully: exit code: 46',
+      "material-npm-audit-shape",
+    ],
+    ["unrelated process failed with exit code: 46", "unknown"],
     ["provider detail that has no admitted class", "unknown"],
     ["x".repeat(16_385), "unknown"],
     [{ malformed: true }, "unknown"],

@@ -63,14 +63,32 @@ export const diagnosticDigest = (value) =>
 const buildxStderrClassifiers = Object.freeze([
   [
     "material-npm-attestation-match",
-    /agentscope-material-command:npm-attestation-match/u,
+    /(?:agentscope-material-command:npm-attestation-match|material-command\.mjs[^\r\n]{0,256}exit code: 47)/u,
   ],
-  ["material-npm-audit-shape", /agentscope-material-command:npm-audit-shape/u],
-  ["material-npm-audit", /agentscope-material-command:npm-audit/u],
-  ["material-npm-lock", /agentscope-material-command:npm-lock/u],
-  ["material-npm-install", /agentscope-material-command:npm-install/u],
-  ["material-npm-version", /agentscope-material-command:npm-version/u],
-  ["material-npm-policy", /agentscope-material-command:npm-policy/u],
+  [
+    "material-npm-audit-shape",
+    /(?:agentscope-material-command:npm-audit-shape|material-command\.mjs[^\r\n]{0,256}exit code: 46)/u,
+  ],
+  [
+    "material-npm-audit",
+    /(?:agentscope-material-command:npm-audit|material-command\.mjs[^\r\n]{0,256}exit code: 45)/u,
+  ],
+  [
+    "material-npm-lock",
+    /(?:agentscope-material-command:npm-lock|material-command\.mjs[^\r\n]{0,256}exit code: 44)/u,
+  ],
+  [
+    "material-npm-install",
+    /(?:agentscope-material-command:npm-install|material-command\.mjs[^\r\n]{0,256}exit code: 43)/u,
+  ],
+  [
+    "material-npm-version",
+    /(?:agentscope-material-command:npm-version|material-command\.mjs[^\r\n]{0,256}exit code: 42)/u,
+  ],
+  [
+    "material-npm-policy",
+    /(?:agentscope-material-command:npm-policy|material-command\.mjs[^\r\n]{0,256}exit code: 41)/u,
+  ],
   ["resource-conflict", /(?:already exists|existing instance)/iu],
   ["build-failed", /(?:failed to solve|failed to build)/iu],
   [
