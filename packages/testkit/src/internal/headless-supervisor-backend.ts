@@ -3367,18 +3367,18 @@ const assertPtyReceiptBinding = (
       receipt.signal !== "SIGKILL") ||
     receipt.residualProcessCount !== 0
   )
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-shape");
   let finalSnapshot;
   try {
     finalSnapshot = validatePtyTerminalSemanticSnapshot(receipt.finalSnapshot);
   } catch {
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-snapshot");
   }
   if (
     (outcome === "output-limit") !==
     (finalSnapshot.semanticState === "output-limit")
   )
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-output-state");
   if (
     outcome === "completed" &&
     finalSnapshot.semanticState !== "completed" &&
@@ -3386,7 +3386,7 @@ const assertPtyReceiptBinding = (
       request.completion.outputBytes !== receipt.outputBytes ||
       request.completion.outputSha256 !== receipt.outputSha256)
   )
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-completion-state");
   if (
     terminalActionOutcome &&
     (receipt.actions.length !== request.interaction.actions.length ||
@@ -3394,14 +3394,14 @@ const assertPtyReceiptBinding = (
       receipt.inputBytesWritten !== request.process.stdin.byteLength ||
       !receipt.terminalInputJoined)
   )
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-terminal-action");
   for (let index = 0; index < receipt.actions.length; index += 1) {
     const action = receipt.actions[index];
     if (
       action?.action === "signal" &&
       action.targetStartIdentity !== receipt.processStartIdentity
     )
-      return fail("testkit.pty.receipt");
+      return fail("testkit.pty.receipt-signal-identity");
   }
   if (
     (receipt.outcome === "completed" &&
@@ -3415,7 +3415,7 @@ const assertPtyReceiptBinding = (
       receipt.outcome !== "exited-nonzero" &&
       receipt.exitCode !== null)
   )
-    return fail("testkit.pty.receipt");
+    return fail("testkit.pty.receipt-terminal-status");
 };
 
 export const executeSelectedPtyProcessWithCapability = async (
