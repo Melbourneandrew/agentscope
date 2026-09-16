@@ -228,6 +228,7 @@ describe("Codex Local SQLite reporter settlement", () => {
 
   it.runIf(process.platform === "linux")(
     "holds the health directory and rejects path and logical-history substitution",
+    // eslint-disable-next-line max-lines-per-function -- one descriptor-bound replacement matrix
     () => {
       const root = mkdtempSync(join(tmpdir(), "agentscope-codex-health-"));
       const health = join(root, ".agentscope", "health");
@@ -296,6 +297,28 @@ describe("Codex Local SQLite reporter settlement", () => {
             ...initial,
             nextSequence: 2,
             health: [initialHealth, connection],
+          })}\n`,
+        );
+        expect(
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
+        ).toBe(true);
+        writeFileSync(
+          join(moved, "operational-state-v1.json"),
+          `${JSON.stringify({
+            ...initial,
+            nextSequence: 3,
+            health: [
+              {
+                ...initialHealth,
+                stage: "delivery",
+                sequence: 1,
+                observedAtUnixMilliseconds: 2,
+              },
+              { ...connection, sequence: 2, observedAtUnixMilliseconds: 2 },
+            ],
           })}\n`,
         );
         expect(

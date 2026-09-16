@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-5bb9a6358eabb1cd7fd1618984e165eb7a9201de12828750cf9849f942dc60c6",
+  "manifestIdentity": "sha256-ea1259f7f7b383f684ba7dbb44bc9290bc203c5e1520daafa691f0a42cbfe265",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -172,7 +172,7 @@
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "91e350d8e3ee6e0f7f4af26e5d249c8c6e168ca2b2c2d671ba6c8a424f30a023"
+          "sha256": "50145762f94c99c5d0e59cdc349cc7b437d4502711d6704c56ecb7a7e0196d73"
         },
         {
           "source": {

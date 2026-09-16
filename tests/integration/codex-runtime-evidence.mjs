@@ -564,11 +564,6 @@ const validHistory = (document) => {
   return (
     new Set(entries.map(({ sequence }) => sequence)).size === entries.length &&
     entries.every(({ sequence }) => sequence < document.nextSequence) &&
-    document.losses.diagnostics +
-      document.losses.health +
-      document.losses.checkpoints +
-      entries.length ===
-      document.nextSequence &&
     ordered(document.diagnostics) &&
     ordered(document.health) &&
     ordered(document.checkpoints)
@@ -707,7 +702,18 @@ export const localSqliteAcceptanceBaseline = (healthDescriptor) => {
   });
 };
 
-const preservesHistory = (document, baseline, field) => {
+const healthKey = (entry) =>
+  entry.scope === "hook" ? "hook" : `connection:${entry.connectionId}`;
+const checkpointKey = (entry) =>
+  [
+    entry.adapterId,
+    entry.sourceIdentityDigest,
+    entry.nativeIdentityKind,
+    entry.sourceGeneration,
+    entry.positionKind,
+    entry.connectionId,
+  ].join("\0");
+const preservesHistory = (document, baseline, field, keyOf) => {
   const before = baseline[field];
   const after = document[field];
   if (
@@ -719,11 +725,41 @@ const preservesHistory = (document, baseline, field) => {
   const retained = after.filter(
     ({ sequence }) => sequence < baseline.nextSequence,
   );
-  const omitted = before.length - retained.length;
+  const beforeBySequence = new Map(
+    before.map((entry) => [entry.sequence, entry]),
+  );
+  if (
+    retained.some(
+      (entry) =>
+        JSON.stringify(beforeBySequence.get(entry.sequence)) !==
+        JSON.stringify(entry),
+    )
+  )
+    return false;
+  const replacements =
+    keyOf === undefined
+      ? new Set()
+      : new Set(
+          after
+            .filter(({ sequence }) => sequence >= baseline.nextSequence)
+            .map(keyOf),
+        );
+  if (
+    keyOf !== undefined &&
+    (new Set(before.map(keyOf)).size !== before.length ||
+      new Set(after.map(keyOf)).size !== after.length)
+  )
+    return false;
+  const baselineWithoutReplacements = before.filter(
+    (entry) => keyOf === undefined || !replacements.has(keyOf(entry)),
+  );
+  const omittedAsLoss = baselineWithoutReplacements.length - retained.length;
   return (
-    omitted >= 0 &&
-    JSON.stringify(retained) === JSON.stringify(before.slice(omitted)) &&
-    document.losses[field] === baseline.losses[field] + omitted
+    omittedAsLoss >= 0 &&
+    retained.length <= before.length &&
+    JSON.stringify(retained) ===
+      JSON.stringify(baselineWithoutReplacements.slice(omittedAsLoss)) &&
+    document.losses[field] === baseline.losses[field] + omittedAsLoss
   );
 };
 
@@ -758,8 +794,8 @@ export const localSqliteAcceptanceObservedAfterBaseline = (
   if (
     document.nextSequence < baseline.nextSequence ||
     !preservesHistory(document, baseline, "diagnostics") ||
-    !preservesHistory(document, baseline, "health") ||
-    !preservesHistory(document, baseline, "checkpoints")
+    !preservesHistory(document, baseline, "health", healthKey) ||
+    !preservesHistory(document, baseline, "checkpoints", checkpointKey)
   )
     throw operationalStateError();
   const entries = document.health;
