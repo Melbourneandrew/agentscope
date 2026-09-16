@@ -340,7 +340,7 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("applies a readiness-gated resize before segmented input and EOF", async () => {
+  it("waits for terminal output between readiness-gated input segments", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request(),
@@ -364,7 +364,7 @@ describe("selected PTY transport", () => {
           ],
         },
       },
-      "clean",
+      "paced-input",
     );
     expect(receipt).toMatchObject({
       observedGeometry: { columns: 80, rows: 24 },
