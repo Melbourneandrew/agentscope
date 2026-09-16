@@ -381,22 +381,27 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
   });
 
   it("processes the exact advertised byte ceiling and rejects overflow", async () => {
-    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
-    const payload = bytes(
-      "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes),
+    expect(defaultPtyTerminalEmulatorLimits.maximumOutputBytes).toBe(1_048_576);
+    const exactBoundaryLimits = {
+      ...defaultPtyTerminalEmulatorLimits,
+      maximumOutputBytes: 32_768,
+    };
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 80, rows: 24 },
+      exactBoundaryLimits,
     );
+    const payload = bytes("x".repeat(exactBoundaryLimits.maximumOutputBytes));
     terminal.write(payload);
     const snapshot = terminal.end();
-    expect(snapshot.outputBytes).toBe(
-      defaultPtyTerminalEmulatorLimits.maximumOutputBytes,
-    );
+    expect(snapshot.outputBytes).toBe(exactBoundaryLimits.maximumOutputBytes);
 
-    const overflow = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const overflow = new BoundedTerminalEmulator(
+      { columns: 80, rows: 24 },
+      exactBoundaryLimits,
+    );
     expect(() => {
       overflow.write(
-        bytes(
-          "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes + 1),
-        ),
+        bytes("x".repeat(exactBoundaryLimits.maximumOutputBytes + 1)),
       );
     }).toThrowError(
       new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
