@@ -189,6 +189,22 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-owned-sidecar",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
     for (const seed of [
       "checkpoint-observer-delay",
       "checkpoint-observer-delay-mismatch",

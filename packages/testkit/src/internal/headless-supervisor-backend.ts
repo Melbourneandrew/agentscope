@@ -2662,13 +2662,24 @@ const armSelectedPty = (
                       candidate.state !== "Z",
                   )
                 : [];
+            const deeperDescendants =
+              directGrandchildren.length === 1
+                ? processSet.filter(
+                    (candidate) =>
+                      candidate.parentPid === directGrandchildren[0]!.pid &&
+                      candidate.state !== "Z",
+                  )
+                : [];
             const topologyMatches =
-              processSet.length === 3 &&
               rootMatches.length === 1 &&
               directChildren.length === 1 &&
               directGrandchildren.length === 1 &&
-              new Set(processSet.map(({ startIdentity }) => startIdentity))
-                .size === 3;
+              deeperDescendants.length === 0 &&
+              new Set([
+                rootMatches[0]?.startIdentity,
+                directChildren[0]?.startIdentity,
+                directGrandchildren[0]?.startIdentity,
+              ]).size === 3;
             if (
               safeReflectApply(performanceNow, performance, []) >=
               processRequest.monotonicExecutionDeadlineMs
@@ -4414,6 +4425,7 @@ type SelectedPtyTestSeed =
   | "checkpoint-observer-delay-mismatch"
   | "checkpoint-missing-process"
   | "checkpoint-observer-delay"
+  | "checkpoint-owned-sidecar"
   | "checkpoint-process-churn"
   | "checkpoint-transient-extra-process"
   | "control-eof-substitution"
@@ -4624,6 +4636,8 @@ const selectedPtyRuntimeForTest = (
         processes.set(checkpointChild.pid, checkpointChild);
         if (seed !== "checkpoint-missing-process")
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
+        if (seed === "checkpoint-owned-sidecar")
+          processes.set(descendant.pid, descendant);
         if (
           seed === "checkpoint-extra-process" ||
           seed === "checkpoint-observer-delay-mismatch" ||
