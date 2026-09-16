@@ -197,7 +197,7 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(1);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
-    expect(scenario.nativeReadiness).toEqual({ kind: "semantic-marker" });
+    expect(scenario.nativeReadiness).toEqual({ kind: "challenge-marker" });
     expect(
       manifestFixture()
         .scenarios.filter(
@@ -208,15 +208,27 @@ describe("integration capability manifest", () => {
             nativeReadiness?.kind === "codex-idle-prompt",
         ),
     ).toBe(false);
+    const challenge = "a".repeat(64);
     const actions = compileInteractivePtyActions(
       scenario,
-      Buffer.from(scenario.terminalInputBase64, "base64"),
+      Buffer.concat([
+        Buffer.from(`${challenge}\n`),
+        Buffer.from(scenario.terminalInputBase64, "base64"),
+      ]),
     );
     expect(actions.map(({ action }) => action)).toEqual([
       "resize",
+      "input",
       "wait-for-semantic-completion",
       "input",
     ]);
+    expect(actions[1]).toEqual({
+      action: "input",
+      byteLength: 65,
+      inputSha256: createHash("sha256")
+        .update(Buffer.from(`${challenge}\n`))
+        .digest("hex"),
+    });
     expect(actions.at(-1)).toEqual({
       action: "input",
       byteLength: 1,
@@ -227,6 +239,9 @@ describe("integration capability manifest", () => {
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
+    );
+    const challengeRead = source.indexOf(
+      "const readinessChallenge = await readReadinessChallenge();\n",
     );
     const startupPrompt = source.indexOf("      prompt,\n");
     const explicitHookEnablement = source.indexOf(
@@ -249,11 +264,13 @@ describe("integration capability manifest", () => {
       terminalWait,
     );
     const readinessRelease = source.indexOf(
-      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
+      "AGENTSCOPE_PTY_READY:${readinessChallenge}",
       traceQueryBeforeJoin,
     );
     const codexJoin = source.indexOf("  await codexRun;\n", readinessRelease);
     expect(startupPrompt).toBeGreaterThan(-1);
+    expect(challengeRead).toBeGreaterThan(-1);
+    expect(challengeRead).toBeLessThan(startupPrompt);
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
@@ -343,6 +360,7 @@ describe("integration capability manifest", () => {
     expect(readinessRelease).toBeGreaterThan(traceQueryBeforeJoin);
     expect(codexJoin).toBeGreaterThan(readinessRelease);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
+    expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
@@ -360,6 +378,22 @@ describe("integration capability manifest", () => {
       bold: true,
       dim: false,
     };
+    expect(() =>
+      compileCapabilityManifest(
+        withIdentity({
+          manifestVersion: 1,
+          requiredRepresentativeIds: original.requiredRepresentativeIds,
+          evidence: original.evidence,
+          scenarios,
+        }),
+      ),
+    ).toThrow("integration.manifest.invalid");
+  });
+
+  it("rejects challenge readiness on a non-Codex harness row", () => {
+    const original = manifestFixture();
+    const scenarios = structuredClone(original.scenarios);
+    scenarios[1]!.nativeReadiness = { kind: "challenge-marker" };
     expect(() =>
       compileCapabilityManifest(
         withIdentity({

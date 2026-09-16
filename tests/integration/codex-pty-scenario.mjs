@@ -57,6 +57,46 @@ const remaining = () => {
     throw new Error("integration.codex.deadline");
   return value;
 };
+const readReadinessChallenge = () =>
+  new Promise((resolve, reject) => {
+    let bytes = Buffer.alloc(0);
+    let timer;
+    const settle = (error, value) => {
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onError);
+      process.stdin.pause();
+      if (timer !== undefined) clearTimeout(timer);
+      if (error === undefined) resolve(value);
+      else reject(error);
+    };
+    const onEnd = () => settle(new Error("integration.codex.readiness"));
+    const onError = () => settle(new Error("integration.codex.readiness"));
+    const onData = (chunk) => {
+      bytes = Buffer.concat([bytes, chunk]);
+      if (bytes.length > 65)
+        return settle(new Error("integration.codex.readiness"));
+      const newline = bytes.indexOf(0x0a);
+      if (newline < 0) return;
+      const challenge = bytes.subarray(0, newline).toString("utf8");
+      if (
+        newline !== 64 ||
+        bytes.length !== 65 ||
+        !/^[a-f0-9]{64}$/u.test(challenge)
+      )
+        return settle(new Error("integration.codex.readiness"));
+      settle(undefined, challenge);
+    };
+    process.stdin.on("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.once("error", onError);
+    process.stdin.resume();
+    timer = setTimeout(
+      () => settle(new Error("integration.codex.readiness")),
+      Math.min(10_000, remaining()),
+    );
+  });
+const readinessChallenge = await readReadinessChallenge();
 
 const maximumOutput = 1024 * 1024;
 const run = (executable, arguments_, options = {}) =>
@@ -488,7 +528,9 @@ try {
   await waitForCodexTurnTerminal(traceDeadline);
   interactiveFailurePhase = "trace-settlement";
   const summary = await waitForTraceSummary(traceDeadline);
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  process.stdout.write(
+    `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
+  );
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   interactiveFailurePhase = "verify";

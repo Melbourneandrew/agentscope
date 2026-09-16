@@ -1836,11 +1836,23 @@ const snapshotPtyRequest = (
     .join("\0");
   const readinessKind = ownData(readiness, "kind");
   let stableReadiness;
+  let readinessChallenge: string | undefined;
   if (readinessKind === "semantic-marker" && readinessKeys === "kind")
     stableReadiness = safeReflectApply(freeze, Object, [
       { kind: "semantic-marker" as const },
     ]);
   else if (
+    readinessKind === "challenge-marker" &&
+    readinessKeys === "challenge\0kind"
+  ) {
+    const challenge = ownData(readiness, "challenge");
+    if (typeof challenge !== "string" || !/^[a-f0-9]{64}$/u.test(challenge))
+      return fail("testkit.pty.request");
+    readinessChallenge = challenge;
+    stableReadiness = safeReflectApply(freeze, Object, [
+      { kind: "challenge-marker" as const, challenge },
+    ]);
+  } else if (
     readinessKind === "styled-text-after-completion" &&
     readinessKeys === "bold\0dim\0kind\0text"
   ) {
@@ -1883,7 +1895,9 @@ const snapshotPtyRequest = (
     actions.length < 1 ||
     actions.length > 64 ||
     actionOwnKeys.length !== actions.length + 1 ||
-    (completionKind === "semantic-marker" && trigger !== "semantic-ready") ||
+    (completionKind === "semantic-marker" &&
+      trigger !== "semantic-ready" &&
+      !(readinessKind === "challenge-marker" && trigger === "immediate")) ||
     (completionKind === "exact-output" && trigger !== "immediate")
   )
     return fail("testkit.pty.request");
@@ -1892,6 +1906,10 @@ const snapshotPtyRequest = (
   );
   let describedInputBytes = 0;
   let eofCount = 0;
+  let semanticWaitCount = 0;
+  let semanticWaitIndex = -1;
+  let describedInputBytesAtSemanticWait = -1;
+  let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
     if (!plainRecord(action)) return fail("testkit.pty.request");
@@ -1969,6 +1987,7 @@ const snapshotPtyRequest = (
       );
     } else if (actionKind === "eof") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
+      if (semanticWaitCount === 0) controlBeforeSemanticWait = true;
       eofCount += 1;
       defineArrayIndex(
         stableActions,
@@ -1979,6 +1998,9 @@ const snapshotPtyRequest = (
       );
     } else if (actionKind === "wait-for-semantic-completion") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
+      semanticWaitCount += 1;
+      semanticWaitIndex = index;
+      describedInputBytesAtSemanticWait = describedInputBytes;
       defineArrayIndex(
         stableActions,
         index,
@@ -1989,6 +2011,7 @@ const snapshotPtyRequest = (
     } else if (actionKind === "interrupt-byte") {
       if (actionKeys !== "action\0byte" || ownData(action, "byte") !== 3)
         return fail("testkit.pty.request");
+      if (semanticWaitCount === 0) controlBeforeSemanticWait = true;
       defineArrayIndex(
         stableActions,
         index,
@@ -2003,6 +2026,7 @@ const snapshotPtyRequest = (
         (signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL")
       )
         return fail("testkit.pty.request");
+      if (semanticWaitCount === 0) controlBeforeSemanticWait = true;
       defineArrayIndex(
         stableActions,
         index,
@@ -2015,7 +2039,15 @@ const snapshotPtyRequest = (
   if (
     describedInputBytes !==
       safeReflectApply(typedArrayByteLength, process_.stdin, []) ||
-    eofCount > 1
+    eofCount > 1 ||
+    (readinessKind === "challenge-marker" &&
+      (trigger !== "immediate" ||
+        semanticWaitCount !== 1 ||
+        semanticWaitIndex < 1 ||
+        controlBeforeSemanticWait ||
+        describedInputBytesAtSemanticWait !== 65 ||
+        safeBufferFrom(process_.stdin).subarray(0, 65).toString("utf8") !==
+          `${readinessChallenge}\n`))
   )
     return fail("testkit.pty.request");
   return safeReflectApply(freeze, Object, [
@@ -2488,6 +2520,7 @@ const armSelectedPty = (
             actionIndex += 1;
           } else if (action?.action === "wait-for-semantic-completion") {
             if (
+              readinessObserved &&
               safeReflectApply(emulatorSnapshot, terminal, []).semanticState ===
                 "completed" &&
               semanticCompletionObservedAtOutputBytes >
@@ -4178,6 +4211,7 @@ type SelectedPtyTestSeed =
   | "descriptor-substitution"
   | "eof-failure"
   | "fragmented-output"
+  | "fixed-readiness-spoof"
   | "geometry-substitution"
   | "identity-substitution"
   | "immediate-output"
@@ -4214,8 +4248,13 @@ type SelectedPtyTestSeed =
   | "unsupported-control"
   | "unsupported-signal";
 
-// eslint-disable-next-line max-lines-per-function
-const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
+const selectedPtyRuntimeForTest = (
+  seed: SelectedPtyTestSeed,
+  readiness: SelectedPtyExecutionRequest["readiness"] = {
+    kind: "semantic-marker",
+  },
+  // eslint-disable-next-line max-lines-per-function
+): PtyRuntime => {
   const root: ProcessSnapshot = {
     parentPid: 1,
     pid: 42_001,
@@ -4345,7 +4384,12 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
                   : seed === "unsupported-control"
                     ? safeBufferFrom("\u001b[?9999h")
                     : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
-      const ready = safeBufferFrom("AGENTSCOPE_PTY_READY");
+      const ready = safeBufferFrom(
+        readiness.kind === "challenge-marker" &&
+          seed !== "fixed-readiness-spoof"
+          ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
+          : "AGENTSCOPE_PTY_READY",
+      );
       const chunks =
         seed === "completion-before-readiness"
           ? [output, ready]
@@ -4541,7 +4585,7 @@ export const executeSelectedPtyTransportForTest = async (
     maximumShutdownDeadlineMs: stable.process.monotonicShutdownDeadlineMs,
     namespaceIdentity: "pid:[synthetic-selected-pty]",
   };
-  const runtime = selectedPtyRuntimeForTest(seed);
+  const runtime = selectedPtyRuntimeForTest(seed, stable.readiness);
   const genericRuntime: SelectedContainerRuntime = {
     assertNamespaceIdentity: runtime.assertNamespaceIdentity,
     listProcesses: runtime.listProcesses,

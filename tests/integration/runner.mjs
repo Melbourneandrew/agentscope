@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -88,8 +88,17 @@ const fingerprintSelectedPtyAuthority = (authority) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(authority))
     .digest("hex")}`;
-const compileNativeReadiness = (scenario) => {
+const compileNativeReadiness = (scenario, challenge) => {
   const readiness = scenario.nativeReadiness;
+  if (
+    readiness?.kind === "challenge-marker" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify(["kind"]) &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge)
+  )
+    return Object.freeze({ kind: "challenge-marker", challenge });
   if (
     readiness?.kind === "semantic-marker" &&
     JSON.stringify(Object.keys(readiness).sort()) === JSON.stringify(["kind"])
@@ -316,6 +325,12 @@ try {
     "--artifact",
     join(directory, "files", selectedArtifact.fileName),
   ];
+  const readinessChallenge =
+    scenario.executionMode === "interactive" &&
+    scenario.nativeReadiness?.kind === "challenge-marker"
+      ? randomBytes(32).toString("hex")
+      : undefined;
+  const terminalInput = Buffer.from(scenario.terminalInputBase64, "base64");
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
     executable:
@@ -334,7 +349,14 @@ try {
         : childEnvironment,
     stdin:
       scenario.executionMode === "interactive"
-        ? new Uint8Array(Buffer.from(scenario.terminalInputBase64, "base64"))
+        ? new Uint8Array(
+            readinessChallenge === undefined
+              ? terminalInput
+              : Buffer.concat([
+                  Buffer.from(`${readinessChallenge}\n`),
+                  terminalInput,
+                ]),
+          )
         : new Uint8Array(),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
@@ -373,10 +395,11 @@ try {
     const scriptSha256 = scenarioProcessSha256;
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
-    const readiness = compileNativeReadiness(scenario);
+    const readiness = compileNativeReadiness(scenario, readinessChallenge);
     const interaction = {
       actions: compileInteractivePtyActions(scenario, request.stdin),
-      trigger: "semantic-ready",
+      trigger:
+        readiness.kind === "challenge-marker" ? "immediate" : "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
       completion,

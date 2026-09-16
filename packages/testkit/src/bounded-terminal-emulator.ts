@@ -8,6 +8,7 @@ export type PtyTerminalGeometry = Readonly<{
 
 export type PtyTerminalReadinessMatcher =
   | Readonly<{ kind: "semantic-marker" }>
+  | Readonly<{ kind: "challenge-marker"; challenge: string }>
   | Readonly<{
       kind: "styled-text-after-completion";
       text: string;
@@ -91,6 +92,7 @@ const credentialPromptPattern =
   /(?:password|passphrase|user[ _-]?name|e[ -]?mail|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
 const maximumCredentialTailCodePoints = 128;
 const readyMarker = "AGENTSCOPE_PTY_READY";
+const readinessChallengePattern = /^[a-f0-9]{64}$/u;
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
 const getPrototypeOf = Reflect.getPrototypeOf;
@@ -308,6 +310,23 @@ const validateReadinessMatcher = (
   if (value.kind === "semantic-marker") {
     strictRecord(value, ["kind"], "testkit.pty.emulator.readiness");
     return freezeAuthority({ kind: "semantic-marker" as const });
+  }
+  if (value.kind === "challenge-marker") {
+    const record = strictRecord(
+      value,
+      ["challenge", "kind"],
+      "testkit.pty.emulator.readiness",
+    );
+    if (
+      record.kind !== "challenge-marker" ||
+      typeof record.challenge !== "string" ||
+      !readinessChallengePattern.test(record.challenge)
+    )
+      return fail("testkit.pty.emulator.readiness");
+    return freezeAuthority({
+      kind: "challenge-marker" as const,
+      challenge: record.challenge,
+    });
   }
   const record = strictRecord(
     value,
@@ -637,11 +656,19 @@ export class BoundedTerminalEmulator {
     }
     this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
     this.#appendRecent(character);
+    const expectedReadinessMarker =
+      this.#readinessMatcher.kind === "challenge-marker"
+        ? `${readyMarker}:${this.#readinessMatcher.challenge}`
+        : readyMarker;
     this.#readinessTail = `${this.#readinessTail}${character}`.slice(
-      -readyMarker.length,
+      -expectedReadinessMarker.length,
     );
-    if (this.#readinessMatcher.kind === "semantic-marker")
-      this.#readinessObserved ||= this.#readinessTail === readyMarker;
+    if (
+      this.#readinessMatcher.kind === "semantic-marker" ||
+      this.#readinessMatcher.kind === "challenge-marker"
+    )
+      this.#readinessObserved ||=
+        this.#readinessTail === expectedReadinessMarker;
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
     );
