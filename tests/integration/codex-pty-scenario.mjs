@@ -9,7 +9,9 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -22,8 +24,9 @@ import {
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
-  readCodexSessionLedgers,
+  readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
+  sessionStartProcessSetDrained,
   terminalObservationBeforeDeadline,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
@@ -102,8 +105,9 @@ const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
 
 const maximumOutput = 1024 * 1024;
-const run = (executable, arguments_, options = {}) =>
-  new Promise((resolve, reject) => {
+const run = (executable, arguments_, options = {}) => {
+  let childPid;
+  const completion = new Promise((resolve, reject) => {
     remaining();
     const timeoutMilliseconds =
       options.monotonicDeadline === undefined
@@ -118,6 +122,7 @@ const run = (executable, arguments_, options = {}) =>
       env: options.env ?? process.env,
       stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
     });
+    childPid = child.pid;
     let deadlineExpired = false;
     const timer =
       timeoutMilliseconds === undefined
@@ -157,6 +162,56 @@ const run = (executable, arguments_, options = {}) =>
       }
     });
   });
+  Object.defineProperty(completion, "childPid", {
+    configurable: false,
+    enumerable: false,
+    value: childPid,
+    writable: false,
+  });
+  return completion;
+};
+const readProcessIdentity = (pid) => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    if (stat.length > 4_096) throw new Error("integration.codex.process-set");
+    const close = stat.lastIndexOf(")");
+    if (close < 2) throw new Error("integration.codex.process-set");
+    const fields = stat
+      .slice(close + 2)
+      .trim()
+      .split(/\s/u);
+    const startIdentity = fields[19];
+    const executable = readlinkSync(`/proc/${pid}/exe`);
+    if (
+      !/^\d+$/u.test(startIdentity ?? "") ||
+      typeof executable !== "string" ||
+      executable.length < 1 ||
+      executable.length > 4_096
+    )
+      throw new Error("integration.codex.process-set");
+    return Object.freeze({ executable, pid, startIdentity });
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+};
+const snapshotProcessSet = () => {
+  const pids = readdirSync("/proc", { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^[1-9]\d*$/u.test(entry.name))
+    .map(({ name }) => Number(name));
+  if (pids.length > 64) throw new Error("integration.codex.process-set");
+  return Object.freeze(
+    pids
+      .map(readProcessIdentity)
+      .filter((identity) => identity !== null)
+      .sort((left, right) => left.pid - right.pid),
+  );
+};
+const assertSessionStartProcessSetDrained = (baseline, codexIdentity) => {
+  const current = snapshotProcessSet();
+  if (!sessionStartProcessSetDrained({ baseline, current, codexIdentity }))
+    throw new Error("integration.codex.process-set");
+};
 
 const parseMachine = (bytes, command) => {
   const value = JSON.parse(
@@ -342,7 +397,12 @@ const openChallengedModelGateway = async () => {
         body.includes(expectedAssistantMessage)
       )
         throw new Error("integration.codex.model-gateway");
-      codexLedgerBaseline = readCodexSessionLedgers(homeDescriptor);
+      if (processBaseline === undefined || codexIdentity === undefined)
+        throw new Error("integration.codex.process-set");
+      assertSessionStartProcessSetDrained(processBaseline, codexIdentity);
+      codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
+      if (codexLedgerBaseline.length !== 1)
+        throw new Error("integration.codex.session-ledger");
       if (
         codexTurnTerminalObservedAfterBaseline(
           codexLedgerBaseline,
@@ -541,7 +601,7 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
   while (
     !terminalObservationBeforeDeadline({
       observed: codexTurnTerminalObservedAfterBaseline(
-        readCodexSessionLedgers(homeDescriptor),
+        readCodexSessionLedgerRecords(homeDescriptor),
         codexLedgerBaseline,
         expectedAssistantMessage,
       ),
@@ -597,6 +657,8 @@ const waitForTraceSummary = async (traceDeadline) => {
 let completed = false;
 let modelGateway;
 let codexLedgerBaseline;
+let processBaseline;
+let codexIdentity;
 try {
   interactiveFailurePhase = "install";
   await cli(["init", "--yes"], "agentscope init");
@@ -635,6 +697,7 @@ try {
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
   interactiveFailurePhase = "tui-start";
+  processBaseline = snapshotProcessSet();
   const codexRun = run(
     codex,
     [
@@ -654,6 +717,8 @@ try {
       inherit: true,
     },
   );
+  codexIdentity = readProcessIdentity(codexRun.childPid);
+  if (codexIdentity === null) throw new Error("integration.codex.process-set");
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   const traceDeadline = deadline - 3_000;

@@ -20,7 +20,9 @@ import {
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   readCodexSessionLedgers,
+  readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
+  sessionStartProcessSetDrained,
   settledCodexLedgerSnapshot,
   settledLocalSqliteLifecycleSnapshot,
   terminalObservationBeforeDeadline,
@@ -49,6 +51,15 @@ describe("Codex bounded native ledgers", () => {
       );
       try {
         expect(readCodexSessionLedgers(descriptor)).toEqual([terminal]);
+        const records = readCodexSessionLedgerRecords(descriptor);
+        expect(records).toEqual([
+          expect.objectContaining({
+            relativePath: ".codex/sessions/2026/09/14/rollout-exact.jsonl",
+            content: terminal,
+          }),
+        ]);
+        expect(typeof records[0]?.dev).toBe("bigint");
+        expect(typeof records[0]?.ino).toBe("bigint");
         renameSync(root, moved);
         mkdirSync(root);
         symlinkSync(external, join(root, ".codex"));
@@ -264,6 +275,40 @@ describe("Codex Local SQLite settlement snapshots", () => {
 
 // eslint-disable-next-line max-lines-per-function -- closed native-record adversarial matrix
 describe("Codex bounded native records", () => {
+  it("admits only the exact baseline process set plus Codex", () => {
+    const wrapper = {
+      executable: "/usr/local/bin/node",
+      pid: 10,
+      startIdentity: "100",
+    };
+    const codex = {
+      executable: "/opt/codex/codex",
+      pid: 11,
+      startIdentity: "200",
+    };
+    expect(
+      sessionStartProcessSetDrained({
+        baseline: [wrapper],
+        current: [wrapper, codex],
+        codexIdentity: codex,
+      }),
+    ).toBe(true);
+    expect(
+      sessionStartProcessSetDrained({
+        baseline: [wrapper],
+        current: [wrapper, codex, { ...codex, pid: 12 }],
+        codexIdentity: codex,
+      }),
+    ).toBe(false);
+    expect(
+      sessionStartProcessSetDrained({
+        baseline: [wrapper],
+        current: [wrapper, { ...codex, startIdentity: "201" }],
+        codexIdentity: codex,
+      }),
+    ).toBe(false);
+  });
+
   it("rejects a terminal observation at the exact deadline cutoff", () => {
     let observedAt = 99;
     const now = () => observedAt;
@@ -318,28 +363,53 @@ describe("Codex bounded native records", () => {
     expect(() => codexTurnTerminalObserved(["{\n"], message)).toThrow(
       "integration.codex.session-ledger",
     );
-    const baseline = [`${JSON.stringify({ type: "session_meta" })}\n`];
+    const record = (content: string, overrides = {}) => ({
+      relativePath:
+        ".codex/sessions/2026/09/16/rollout-2026-09-16T00:00:00-test.jsonl",
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100600n,
+      uid: 1000n,
+      gid: 1000n,
+      content,
+      ...overrides,
+    });
+    const baseline = [record(`${JSON.stringify({ type: "session_meta" })}\n`)];
     expect(
       codexTurnTerminalObservedAfterBaseline(baseline, baseline, message),
     ).toBe(false);
     expect(
       codexTurnTerminalObservedAfterBaseline(
-        [`${baseline[0]}${terminal}\n`],
+        [record(`${baseline[0]!.content}${terminal}\n`)],
         baseline,
         message,
       ),
     ).toBe(true);
     expect(() =>
       codexTurnTerminalObservedAfterBaseline(
-        [`${JSON.stringify({ type: "substituted" })}\n${terminal}\n`],
+        [record(`${baseline[0]!.content}${terminal}\n`, { ino: 3n })],
         baseline,
         message,
       ),
     ).toThrow("integration.codex.session-ledger");
     expect(() =>
       codexTurnTerminalObservedAfterBaseline(
-        [`${terminal}\n`],
-        [`${terminal}\n`],
+        [record(`${terminal}\n`)],
+        [record(`${terminal}\n`)],
+        message,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexTurnTerminalObservedAfterBaseline(
+        [
+          record(`${baseline[0]!.content}${terminal}\n`),
+          record("unrelated\n", {
+            relativePath:
+              ".codex/sessions/2026/09/16/rollout-2026-09-16T00:00:01-extra.jsonl",
+            ino: 4n,
+          }),
+        ],
+        baseline,
         message,
       ),
     ).toThrow("integration.codex.session-ledger");

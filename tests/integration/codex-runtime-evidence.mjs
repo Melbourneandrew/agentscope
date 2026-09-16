@@ -113,38 +113,66 @@ export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
 };
 
 export const codexTurnTerminalObservedAfterBaseline = (
-  ledgers,
+  records,
   baseline,
   expectedMessage,
 ) => {
+  const validRecord = (record) =>
+    plainRecord(record) &&
+    Object.keys(record).sort().join("\0") ===
+      "content\0dev\0gid\0ino\0mode\0relativePath\0uid" &&
+    typeof record.relativePath === "string" &&
+    /^\.codex\/sessions\/\d{4}\/(?:0[1-9]|1[0-2])\/(?:0[1-9]|[12]\d|3[01])\/rollout-[0-9A-Za-z:.+-]{1,128}\.jsonl$/u.test(
+      record.relativePath,
+    ) &&
+    typeof record.content === "string" &&
+    record.content.length <= 2 * 1024 * 1024 &&
+    [record.dev, record.ino, record.mode, record.uid, record.gid].every(
+      (value) => typeof value === "bigint" && value >= 0n,
+    );
   if (
     !Array.isArray(baseline) ||
     baseline.length > 8 ||
-    baseline.some(
-      (ledger) => typeof ledger !== "string" || ledger.length > 2 * 1024 * 1024,
-    ) ||
-    !Array.isArray(ledgers) ||
-    ledgers.length < baseline.length ||
-    ledgers.length > baseline.length + 1
+    baseline.some((record) => !validRecord(record)) ||
+    !Array.isArray(records) ||
+    records.length !== baseline.length ||
+    records.some((record) => !validRecord(record)) ||
+    new Set(baseline.map(({ relativePath }) => relativePath)).size !==
+      baseline.length ||
+    new Set(records.map(({ relativePath }) => relativePath)).size !==
+      records.length
   )
     throw new Error("integration.codex.session-ledger");
-  if (codexTurnTerminalObserved(baseline, expectedMessage))
+  if (
+    codexTurnTerminalObserved(
+      baseline.map(({ content }) => content),
+      expectedMessage,
+    )
+  )
     throw new Error("integration.codex.session-ledger");
-  const unmatched = [...ledgers];
-  let changed = false;
+  let changedCount = 0;
   for (const prior of baseline) {
-    const matches = unmatched
-      .map((current, index) => ({ current, index }))
-      .filter(({ current }) => current.startsWith(prior));
-    if (matches.length !== 1)
+    const current = records.find(
+      ({ relativePath }) => relativePath === prior.relativePath,
+    );
+    if (
+      current === undefined ||
+      current.dev !== prior.dev ||
+      current.ino !== prior.ino ||
+      current.mode !== prior.mode ||
+      current.uid !== prior.uid ||
+      current.gid !== prior.gid ||
+      !current.content.startsWith(prior.content)
+    )
       throw new Error("integration.codex.session-ledger");
-    const [{ current, index }] = matches;
-    changed ||= current.length > prior.length;
-    unmatched.splice(index, 1);
+    if (current.content.length > prior.content.length) changedCount += 1;
   }
-  changed ||= unmatched.length === 1;
-  if (!changed) return false;
-  return codexTurnTerminalObserved(ledgers, expectedMessage);
+  if (changedCount === 0) return false;
+  if (changedCount !== 1) throw new Error("integration.codex.session-ledger");
+  return codexTurnTerminalObserved(
+    records.map(({ content }) => content),
+    expectedMessage,
+  );
 };
 
 export const terminalObservationBeforeDeadline = ({
@@ -162,6 +190,47 @@ export const terminalObservationBeforeDeadline = ({
   if (!Number.isFinite(observedAt))
     throw new Error("integration.codex.trace-deadline");
   return observed && observedAt < deadline;
+};
+
+export const sessionStartProcessSetDrained = ({
+  baseline,
+  current,
+  codexIdentity,
+}) => {
+  const validIdentity = (identity) =>
+    plainRecord(identity) &&
+    Object.keys(identity).sort().join("\0") ===
+      "executable\0pid\0startIdentity" &&
+    Number.isSafeInteger(identity.pid) &&
+    identity.pid > 0 &&
+    typeof identity.startIdentity === "string" &&
+    /^\d+$/u.test(identity.startIdentity) &&
+    typeof identity.executable === "string" &&
+    identity.executable.length > 0 &&
+    identity.executable.length <= 4_096;
+  if (
+    !Array.isArray(baseline) ||
+    baseline.length > 64 ||
+    baseline.some((identity) => !validIdentity(identity)) ||
+    !Array.isArray(current) ||
+    current.length > 64 ||
+    current.some((identity) => !validIdentity(identity)) ||
+    !validIdentity(codexIdentity)
+  )
+    throw new Error("integration.codex.process-set");
+  const sameIdentity = (left, right) =>
+    left.pid === right.pid &&
+    left.startIdentity === right.startIdentity &&
+    left.executable === right.executable;
+  return (
+    current.filter((identity) => sameIdentity(identity, codexIdentity))
+      .length === 1 &&
+    current.every(
+      (identity) =>
+        sameIdentity(identity, codexIdentity) ||
+        baseline.some((prior) => sameIdentity(identity, prior)),
+    )
+  );
 };
 
 const ledgerLimit = 2 * 1024 * 1024;
@@ -381,7 +450,7 @@ export const settledCodexLedgerSnapshot = ({
     throw new Error("integration.codex.session-ledger");
   }
 };
-const readStableLedger = (parent, name) => {
+const readStableLedger = (parent, relativePath, name) => {
   const descriptor = openChild(
     parent,
     name,
@@ -398,19 +467,30 @@ const readStableLedger = (parent, name) => {
     const middle = fstatSync(descriptor, { bigint: true });
     const second = readCapped(descriptor);
     const after = fstatSync(descriptor, { bigint: true });
-    return settledCodexLedgerSnapshot({
+    const content = settledCodexLedgerSnapshot({
       before,
       first,
       middle,
       second,
       after,
     });
+    return content === null
+      ? null
+      : Object.freeze({
+          relativePath: `${relativePath}/${name}`,
+          dev: after.dev,
+          ino: after.ino,
+          mode: after.mode,
+          uid: after.uid,
+          gid: after.gid,
+          content,
+        });
   } finally {
     closeSync(descriptor);
   }
 };
 
-export const readCodexSessionLedgers = (homeDescriptor) => {
+export const readCodexSessionLedgerRecords = (homeDescriptor) => {
   if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
     throw new Error("integration.codex.session-ledger");
   const homeStatus = fstatSync(homeDescriptor, { bigint: true });
@@ -422,16 +502,20 @@ export const readCodexSessionLedgers = (homeDescriptor) => {
     const children = [];
     for (const parent of parents) {
       for (const name of authenticatedEntries(
-        parent,
+        parent.descriptor,
         pattern,
         "directory",
         budget,
       )) {
-        const descriptor = openChild(parent, name, directoryFlags);
-        if (descriptor !== null) children.push(descriptor);
+        const descriptor = openChild(parent.descriptor, name, directoryFlags);
+        if (descriptor !== null)
+          children.push({
+            descriptor,
+            relativePath: `${parent.relativePath}/${name}`,
+          });
       }
     }
-    opened.push(...children);
+    opened.push(...children.map(({ descriptor }) => descriptor));
     return children;
   };
   try {
@@ -441,20 +525,27 @@ export const readCodexSessionLedgers = (homeDescriptor) => {
     const sessions = openChild(codex, "sessions", directoryFlags);
     if (sessions === null) return [];
     opened.push(sessions);
-    let directories = openDirectories([sessions], /^\d{4}$/u);
+    let directories = openDirectories(
+      [{ descriptor: sessions, relativePath: ".codex/sessions" }],
+      /^\d{4}$/u,
+    );
     directories = openDirectories(directories, /^(?:0[1-9]|1[0-2])$/u);
     directories = openDirectories(directories, /^(?:0[1-9]|[12]\d|3[01])$/u);
     const ledgers = [];
     for (const directory of directories) {
       const names = authenticatedEntries(
-        directory,
+        directory.descriptor,
         /^rollout-[0-9A-Za-z:.+-]{1,128}\.jsonl$/u,
         "file",
         budget,
       );
       for (const name of names) {
-        const content = readStableLedger(directory, name);
-        if (content !== null) ledgers.push(content);
+        const record = readStableLedger(
+          directory.descriptor,
+          directory.relativePath,
+          name,
+        );
+        if (record !== null) ledgers.push(record);
       }
     }
     if (ledgers.length > 8) throw new Error("integration.codex.session-ledger");
@@ -463,6 +554,9 @@ export const readCodexSessionLedgers = (homeDescriptor) => {
     for (const descriptor of opened.reverse()) closeSync(descriptor);
   }
 };
+
+export const readCodexSessionLedgers = (homeDescriptor) =>
+  readCodexSessionLedgerRecords(homeDescriptor).map(({ content }) => content);
 
 export const waitWithinObservationDeadline = async ({
   deadline,
