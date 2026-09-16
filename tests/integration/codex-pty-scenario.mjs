@@ -348,19 +348,11 @@ const projectTraceGraph = (graph, traceId) => {
 };
 const readTraceSummary = async (monotonicDeadline) => {
   const records = await cli(
-    [
-      "traces",
-      "search",
-      "--destination",
-      "local",
-      "--harness",
-      "codex",
-      "--limit",
-      "50",
-    ],
+    ["traces", "search", "--destination", "local", "--limit", "50"],
     "agentscope traces search",
     monotonicDeadline === undefined ? undefined : { monotonicDeadline },
   );
+  interactiveFailurePhase = "trace-search-result";
   if (
     records.length !== 1 ||
     !Array.isArray(records[0]?.summaries) ||
@@ -412,7 +404,10 @@ const waitForTraceSummary = async (traceDeadline) => {
   const summary = await readTraceSummary(traceDeadline);
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
-  if (summary === null) throw new Error("integration.codex.trace-search");
+  if (summary === null) {
+    interactiveFailurePhase = "trace-search-empty";
+    throw new Error("integration.codex.trace-search");
+  }
   return summary;
 };
 
