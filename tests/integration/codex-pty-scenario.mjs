@@ -172,7 +172,7 @@ const cli = async (arguments_, command, options) =>
   );
 
 const prompt = "Reply with one short confirmation and do not use tools.";
-const expectedAssistantMessage = "Codex PTY fixture turn finished.";
+const expectedAssistantMessage = "AGENTSCOPE_PTY_COMPLETE";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
@@ -476,11 +476,13 @@ try {
   );
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   interactiveFailurePhase = "trace";
   await waitForCodexTurnTerminal(traceDeadline);
-  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
+  // Release the PTY action gate only after the installed hook's exact terminal
+  // record exists. The separate completion marker must be rendered by Codex's
+  // real TUI from the authenticated model response before Ctrl-D is admitted.
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   interactiveFailurePhase = "trace";

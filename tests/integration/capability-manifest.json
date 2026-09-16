@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-e271e8a0b52eda060241c6e392e33fb99fbe70e78275d6ab61e314d5dbad17c0",
+  "manifestIdentity": "sha256-5943d83141673ce5a164d17e08acb0739ed60f1935b2e9b8c33acad198c72cf1",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -161,7 +161,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "2ddf6b0d08a3fba5c48b24252a265e4020f437e159b3f3695162bbb07ead6f7c"
+        "sha256": "5249f3ea5fc9e7068d6ef7565adba7a58a943087f751a465e37bc34fdd709818"
       },
       "runtimeArtifacts": [
         {
@@ -181,8 +181,8 @@
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
         }
       ],
-      "terminalInputBase64": "DC9xdWl0DQ==",
-      "postCompletionInputByteLength": 6,
+      "terminalInputBase64": "BA==",
+      "postCompletionInputByteLength": 1,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,
       "resourceClass": "medium",

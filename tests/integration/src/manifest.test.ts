@@ -187,14 +187,14 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("starts the Codex turn before typing its authenticated quit command", () => {
+  it("waits for the traced Codex TUI turn before sending authenticated Ctrl-D", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from([12, 47, 113, 117, 105, 116, 13]),
+      Buffer.from([4]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(6);
+    expect(scenario.postCompletionInputByteLength).toBe(1);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
@@ -203,28 +203,16 @@ describe("integration capability manifest", () => {
     );
     expect(actions.map(({ action }) => action)).toEqual([
       "resize",
-      "input",
       "wait-for-semantic-completion",
       "input",
-      "input",
-      "input",
-      "input",
-      "input",
-      "input",
     ]);
-    expect(
-      actions
-        .slice(-6)
-        .map((action) =>
-          action.action === "input" ? action.inputSha256 : null,
-        ),
-    ).toEqual(
-      [...Buffer.from("/quit\r")].map((byte) =>
-        createHash("sha256")
-          .update(Buffer.from([byte]))
-          .digest("hex"),
-      ),
-    );
+    expect(actions.at(-1)).toEqual({
+      action: "input",
+      byteLength: 1,
+      inputSha256: createHash("sha256")
+        .update(Buffer.from([4]))
+        .digest("hex"),
+    });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
@@ -237,22 +225,19 @@ describe("integration capability manifest", () => {
       '      "--dangerously-bypass-hook-trust",\n',
     );
     const modelRequest = source.indexOf("  await waitForModelRequest();\n");
-    const semanticReady = source.indexOf(
-      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
-    );
     const traceDeadline = source.indexOf(
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
-      semanticReady,
+      modelRequest,
     );
     const terminalWait = source.indexOf(
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
       traceDeadline,
     );
-    const semanticComplete = source.indexOf(
-      '  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n");\n',
+    const semanticReady = source.indexOf(
+      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
       terminalWait,
     );
-    const codexJoin = source.indexOf("  await codexRun;\n", semanticComplete);
+    const codexJoin = source.indexOf("  await codexRun;\n", semanticReady);
     const traceQueryAfterJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       codexJoin,
@@ -317,12 +302,14 @@ describe("integration capability manifest", () => {
       "      if (timer !== undefined) clearTimeout(timer);\n",
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
-    expect(semanticReady).toBeGreaterThan(modelRequest);
-    expect(traceDeadline).toBeGreaterThan(semanticReady);
+    expect(traceDeadline).toBeGreaterThan(modelRequest);
     expect(terminalWait).toBeGreaterThan(traceDeadline);
-    expect(semanticComplete).toBeGreaterThan(terminalWait);
-    expect(codexJoin).toBeGreaterThan(semanticComplete);
+    expect(semanticReady).toBeGreaterThan(terminalWait);
+    expect(codexJoin).toBeGreaterThan(semanticReady);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
+    expect(source).not.toContain(
+      'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
+    );
   });
 
   it("selects mutually isolated MockServer expectations per scenario", () => {

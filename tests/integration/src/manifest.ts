@@ -292,7 +292,7 @@ const scenarioSchema = z
               value.postCompletionControl !== "none") ||
           (value.postCompletionControl !== "none" &&
             value.postCompletionInputByteLength !== 0) ||
-          value.postCompletionInputByteLength >=
+          value.postCompletionInputByteLength >
             Buffer.from(value.terminalInputBase64, "base64").byteLength))
     )
       context.addIssue({ code: "custom", message: "scenario mode drift" });

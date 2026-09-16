@@ -40,9 +40,7 @@ export const MODEL_PROTOCOL_ROUTES = deepFreeze([
             type: "message",
             role: "assistant",
             id: "msg_agentscope_pty_0001",
-            content: [
-              { type: "output_text", text: "Codex PTY fixture turn finished." },
-            ],
+            content: [{ type: "output_text", text: "AGENTSCOPE_PTY_COMPLETE" }],
           },
         },
         {
