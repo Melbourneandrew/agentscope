@@ -411,10 +411,14 @@ export class BoundedTerminalEmulator {
       this.#control = "";
       this.#ended = true;
     }
-    return this.snapshot();
+    return this.#snapshot();
   }
 
   public snapshot(): PtyTerminalSemanticSnapshot {
+    return this.#snapshot();
+  }
+
+  #snapshot(): PtyTerminalSemanticSnapshot {
     let printableCellCount = 0;
     let nonEmptyLineCount = 0;
     for (let row = 0; row < this.#geometry.rows; row += 1) {
