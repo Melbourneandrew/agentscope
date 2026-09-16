@@ -86,6 +86,7 @@ describe("selected PTY transport", () => {
     ].join("\n"),
   });
 
+  // eslint-disable-next-line max-lines-per-function -- one challenge-gated checkpoint lifecycle
   it("rejects a fixed readiness marker before the per-run challenge", async () => {
     const challenge = "a".repeat(64);
     const challengeInput = new TextEncoder().encode(`${challenge}\n\u0004`);
@@ -154,15 +155,40 @@ describe("selected PTY transport", () => {
     for (const seed of [
       "checkpoint-missing-process",
       "checkpoint-extra-process",
-      "checkpoint-process-churn",
     ] as const)
       await expect(
         executeSelectedPtyTransportForTest(challengeRequest, seed),
       ).resolves.toMatchObject({
         actions: [{ action: "input", byteLength: 65 }],
         inputBytesWritten: 65,
-        outcome: "transport-failed",
+        outcome: "input-incomplete",
       });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-process-churn",
+      ),
+    ).resolves.toMatchObject({
+      actions: [{ action: "input", byteLength: 65 }],
+      inputBytesWritten: 65,
+      outcome: "transport-failed",
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-transient-extra-process",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
     const delayedAt = performance.now();
     await expect(
       executeSelectedPtyTransportForTest(
