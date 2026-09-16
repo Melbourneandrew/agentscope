@@ -17,6 +17,8 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+// eslint-disable-next-line @typescript-eslint/unbound-method -- hostile-prototype test invokes this exact method with Reflect.apply
+const originalTerminalSnapshot = BoundedTerminalEmulator.prototype.snapshot;
 const request = (
   overrides: Partial<HeadlessExecutionRequest> = {},
 ): SelectedPtyExecutionRequest => {
@@ -445,6 +447,7 @@ describe("selected PTY transport", () => {
   it.each([
     ["readinessObserved", "missing-ready"],
     ["completionObserved", "missing-completion"],
+    ["snapshot", "missing-completion"],
   ] as const)(
     "does not trust caller-substituted emulator %s marker authority",
     async (method, seed) => {
@@ -452,9 +455,20 @@ describe("selected PTY transport", () => {
         BoundedTerminalEmulator.prototype,
         method,
       )!;
+      const replacement =
+        method === "snapshot"
+          ? function (this: BoundedTerminalEmulator) {
+              const observed = Reflect.apply(
+                originalTerminalSnapshot,
+                this,
+                [],
+              );
+              return { ...observed, semanticState: "completed" };
+            }
+          : () => true;
       Object.defineProperty(BoundedTerminalEmulator.prototype, method, {
         ...descriptor,
-        value: () => true,
+        value: replacement,
       });
       try {
         const selected =
