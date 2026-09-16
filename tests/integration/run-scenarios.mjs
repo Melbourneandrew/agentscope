@@ -1523,7 +1523,11 @@ const recordInteractiveReceiptFailure = (
   fixtureCaptured,
   fallback = "receipt-rejected",
 ) => {
-  if (plan.executionMode !== "interactive") return;
+  if (
+    plan.executionMode !== "interactive" ||
+    installedPtyFailures.has(plan.runId)
+  )
+    return;
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-receipt",
