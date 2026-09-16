@@ -93,6 +93,23 @@ const SafeArray = Array;
 const SafeTextEncoder = TextEncoder;
 const SafeUint8Array = Uint8Array;
 const safeReflectApply = Reflect.apply;
+// The emulator is public API, but its mutable prototype is not execution
+// authority. Capture the exact implementation selected with this kernel so a
+// caller cannot synthesize marker or semantic observations after import.
+/* eslint-disable @typescript-eslint/unbound-method -- these unbound methods are intentionally invoked through captured Reflect.apply */
+const emulatorWrite = BoundedTerminalEmulator.prototype.write;
+const emulatorResize = BoundedTerminalEmulator.prototype.resize;
+const emulatorEnd = BoundedTerminalEmulator.prototype.end;
+const emulatorSnapshot = BoundedTerminalEmulator.prototype.snapshot;
+const emulatorMalformedControlReason =
+  BoundedTerminalEmulator.prototype.malformedControlReason;
+const emulatorUnsupportedControlReason =
+  BoundedTerminalEmulator.prototype.unsupportedControlReason;
+const emulatorReadinessObserved =
+  BoundedTerminalEmulator.prototype.readinessObserved;
+const emulatorCompletionObserved =
+  BoundedTerminalEmulator.prototype.completionObserved;
+/* eslint-enable @typescript-eslint/unbound-method */
 const safeSetTimeout = setTimeout;
 const safeClearTimeout = clearTimeout;
 const safeSetInterval = setInterval;
@@ -2304,19 +2321,34 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
-            const completionWasObserved = terminal.completionObserved();
+            const completionWasObserved = safeReflectApply(
+              emulatorCompletionObserved,
+              terminal,
+              [],
+            );
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
-            terminal.write(new SafeUint8Array(captured));
-            const semanticState = terminal.snapshot().semanticState;
-            if (!completionWasObserved && terminal.completionObserved())
+            safeReflectApply(emulatorWrite, terminal, [
+              new SafeUint8Array(captured),
+            ]);
+            const semanticState = safeReflectApply(
+              emulatorSnapshot,
+              terminal,
+              [],
+            ).semanticState;
+            if (
+              !completionWasObserved &&
+              safeReflectApply(emulatorCompletionObserved, terminal, [])
+            )
               semanticCompletionObservedAtOutputBytes = outputBytes;
             if (
               semanticState === "credential-prompt" ||
               semanticState === "malformed-control"
             )
               transportError = true;
-            else if (terminal.readinessObserved()) {
+            else if (
+              safeReflectApply(emulatorReadinessObserved, terminal, [])
+            ) {
               readinessObserved = true;
               break;
             }
@@ -2324,14 +2356,14 @@ const armSelectedPty = (
           if (observation.bytes.length > captured.length) {
             outputLimited = true;
             try {
-              terminal.write(
+              safeReflectApply(emulatorWrite, terminal, [
                 new SafeUint8Array(
                   observation.bytes.subarray(
                     captured.length,
                     captured.length + 1,
                   ),
                 ),
-              );
+              ]);
             } catch {
               // The canonical emulator records the output-limit state first.
             }
@@ -2358,7 +2390,7 @@ const armSelectedPty = (
               action.geometry,
               requestRequiresCanonicalEof,
             );
-            terminal.resize(action.geometry);
+            safeReflectApply(emulatorResize, terminal, [action.geometry]);
             recordAction({
               action: "resize",
               geometry: action.geometry,
@@ -2413,7 +2445,8 @@ const armSelectedPty = (
             actionIndex += 1;
           } else if (action?.action === "wait-for-semantic-completion") {
             if (
-              terminal.snapshot().semanticState === "completed" &&
+              safeReflectApply(emulatorSnapshot, terminal, []).semanticState ===
+                "completed" &&
               semanticCompletionObservedAtOutputBytes >
                 lastCompletedInputOutputBytes
             ) {
@@ -2693,7 +2726,7 @@ const armSelectedPty = (
     const clean = residual.length === 0 && outputTerminal && transportClosed;
     const output = safeBufferConcat(chunks, outputBytes);
     const outputSha256 = createHash("sha256").update(output).digest("hex");
-    const finalSnapshot = terminal.end();
+    const finalSnapshot = safeReflectApply(emulatorEnd, terminal, []);
     const exactOutputCompleted =
       request.completion.kind === "exact-output" &&
       request.completion.outputBytes === outputBytes &&
@@ -2704,8 +2737,8 @@ const armSelectedPty = (
       if (finalSnapshot.semanticState === "malformed-control")
         return fail(
           finalSnapshot.malformedControlCount > 0
-            ? `testkit.pty.transport.semantic-malformed-${terminal.malformedControlReason() ?? "unknown"}`
-            : `testkit.pty.transport.semantic-unsupported-${terminal.unsupportedControlReason() ?? "unknown"}`,
+            ? `testkit.pty.transport.semantic-malformed-${safeReflectApply(emulatorMalformedControlReason, terminal, []) ?? "unknown"}`
+            : `testkit.pty.transport.semantic-unsupported-${safeReflectApply(emulatorUnsupportedControlReason, terminal, []) ?? "unknown"}`,
         );
       if (
         request.interaction.trigger === "semantic-ready" &&
@@ -4117,6 +4150,7 @@ type SelectedPtyTestSeed =
   | "credential-prompt"
   | "malformed-control"
   | "malformed-exit"
+  | "missing-completion"
   | "missing-ready"
   | "mode-substitution"
   | "nonzero-exit"
@@ -4224,7 +4258,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         });
       }
     },
-    // eslint-disable-next-line max-lines-per-function
+    // eslint-disable-next-line max-lines-per-function, complexity -- closed adversarial fixture matrix
     spawnPty: (request, geometry, interpreter, scriptSha256) => {
       if (
         seed === "immutable-mount-id" ||
@@ -4259,13 +4293,15 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           ? safeBufferFrom("x".repeat(request.stdoutLimitBytes + 1))
           : seed === "active-terminal" || seed === "immediate-output"
             ? safeBufferFrom("ready")
-            : seed === "credential-prompt"
-              ? safeBufferFrom("Password:")
-              : seed === "malformed-control"
-                ? safeBufferFrom("\u001b[")
-                : seed === "unsupported-control"
-                  ? safeBufferFrom("\u001b[?9999h")
-                  : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+            : seed === "missing-completion"
+              ? safeBufferFrom("active")
+              : seed === "credential-prompt"
+                ? safeBufferFrom("Password:")
+                : seed === "malformed-control"
+                  ? safeBufferFrom("\u001b[")
+                  : seed === "unsupported-control"
+                    ? safeBufferFrom("\u001b[?9999h")
+                    : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom("AGENTSCOPE_PTY_READY");
       const chunks =
         seed === "completion-before-readiness"
