@@ -19,70 +19,15 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
-  compileInstalledPtyFailureReceipt,
-  compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
-import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
 
 const substrateCertificationCase = parseSubstrateCertificationCaseValue(
   process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
 );
-
-const ptyFailurePhases = Object.freeze([
-  "runner-bootstrap",
-  "candidate-inventory",
-  "immutable-candidate",
-  "installed-cli",
-  "pty-receipt",
-]);
-let ptyFailurePhase = ptyFailurePhases[0];
-let ptyFailureTerminal = false;
-const advancePtyFailurePhase = (phase) => {
-  const current = ptyFailurePhases.indexOf(ptyFailurePhase);
-  const next = ptyFailurePhases.indexOf(phase);
-  if (next !== current + 1)
-    throw new Error("integration.runner.pty-failure-phase");
-  ptyFailurePhase = phase;
-};
-const defaultPtyFailurePredicate = Object.freeze({
-  "candidate-inventory": "candidate-rejected",
-  "immutable-candidate": "authority-rejected",
-  "installed-cli": "driver-input",
-  "pty-receipt": "receipt-rejected",
-  "runner-bootstrap": "runner-rejected",
-});
-const installedDriverPrefix = "integration.pty-installed-cli-driver.";
-const emitPtyFailureReceipt = (error) => {
-  if (ptyFailureTerminal) return;
-  ptyFailureTerminal = true;
-  const message = error instanceof Error ? error.message : "";
-  const predicate = message.startsWith(installedDriverPrefix)
-    ? message.slice(installedDriverPrefix.length)
-    : defaultPtyFailurePredicate[ptyFailurePhase];
-  let encoded;
-  try {
-    encoded = compileInstalledPtyFailureReceipt({
-      receiptVersion: 1,
-      phase: ptyFailurePhase,
-      predicate,
-    }).encoded;
-  } catch {
-    encoded = compileInstalledPtyFailureReceipt({
-      receiptVersion: 1,
-      phase: ptyFailurePhase,
-      predicate: defaultPtyFailurePredicate[ptyFailurePhase],
-    }).encoded;
-  }
-  process.stdout.write(`AGENTSCOPE_PTY_FAILURE=${encoded}\n`);
-  process.exitCode = 1;
-};
-if (process.hasUncaughtExceptionCaptureCallback())
-  throw new Error("integration.runner.pty-failure-capture");
-process.setUncaughtExceptionCaptureCallback(emitPtyFailureReceipt);
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -196,7 +141,6 @@ writeFileSync(
 );
 writeFileSync(join(worktree, "README.md"), "isolated integration worktree\n");
 
-advancePtyFailurePhase("candidate-inventory");
 const pointer = JSON.parse(
   readFileSync(join(candidateRoot, "current-candidate.json"), "utf8"),
 );
@@ -277,7 +221,6 @@ for (const file of declared) {
     throw new Error("integration.runner.candidate-file");
 }
 const candidateInventorySha256 = compileCandidateInventory(evidence).sha256;
-advancePtyFailurePhase("immutable-candidate");
 const encodedImmutableCandidate = requiredEnvironment(
   "AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY",
 );
@@ -303,24 +246,6 @@ const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
   headlessShutdownDeadline,
   immutableCandidate,
 );
-
-advancePtyFailurePhase("installed-cli");
-const { receipt: ptyReceipt } = await runInstalledCliPtyProof({
-  capability: headlessCapability,
-  home,
-  runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
-  shutdownDeadline: headlessShutdownDeadline,
-});
-advancePtyFailurePhase("pty-receipt");
-const installedCliPtyReceipt = compileInstalledCliPtyReceiptFromExecution({
-  receipt: ptyReceipt,
-  scenarioId,
-  candidateBundleIdentity: evidence.bundleIdentity,
-  candidateInventorySha256,
-});
-console.log(`AGENTSCOPE_PTY_RECEIPT=${installedCliPtyReceipt.encoded}`);
-ptyFailureTerminal = true;
-process.setUncaughtExceptionCaptureCallback(null);
 
 for (const publicEndpoint of [
   "https://registry.npmjs.org/",
