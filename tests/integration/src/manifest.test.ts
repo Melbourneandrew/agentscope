@@ -235,7 +235,7 @@ describe("integration capability manifest", () => {
     );
     const semanticReady = source.indexOf(
       '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
-      terminalWait,
+      modelRequest,
     );
     const codexJoin = source.indexOf("  await codexRun;\n", semanticReady);
     const traceQueryAfterJoin = source.indexOf(
@@ -302,10 +302,10 @@ describe("integration capability manifest", () => {
       "      if (timer !== undefined) clearTimeout(timer);\n",
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
-    expect(traceDeadline).toBeGreaterThan(modelRequest);
+    expect(semanticReady).toBeGreaterThan(modelRequest);
+    expect(traceDeadline).toBeGreaterThan(semanticReady);
     expect(terminalWait).toBeGreaterThan(traceDeadline);
-    expect(semanticReady).toBeGreaterThan(terminalWait);
-    expect(codexJoin).toBeGreaterThan(semanticReady);
+    expect(codexJoin).toBeGreaterThan(terminalWait);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
