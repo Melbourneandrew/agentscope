@@ -13,10 +13,20 @@ export function codexTurnTerminalObserved(
 ): boolean;
 
 export function codexTurnTerminalObservedAfterBaseline(
-  ledgers: readonly string[],
-  baseline: readonly string[],
+  ledgers: readonly CodexSessionLedgerRecord[],
+  baseline: readonly CodexSessionLedgerRecord[],
   expectedMessage: string,
 ): boolean;
+
+export interface CodexSessionLedgerRecord {
+  readonly relativePath: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly mode: bigint;
+  readonly uid: bigint;
+  readonly gid: bigint;
+  readonly content: string;
+}
 
 export function terminalObservationBeforeDeadline(input: {
   observed: boolean;
@@ -24,7 +34,23 @@ export function terminalObservationBeforeDeadline(input: {
   now: () => number;
 }): boolean;
 
+export interface CodexProcessIdentity {
+  readonly executable: string;
+  readonly pid: number;
+  readonly startIdentity: string;
+}
+
+export function sessionStartProcessSetDrained(input: {
+  readonly baseline: readonly CodexProcessIdentity[];
+  readonly current: readonly CodexProcessIdentity[];
+  readonly codexIdentity: CodexProcessIdentity;
+}): boolean;
+
 export function readCodexSessionLedgers(homeDescriptor: number): string[];
+
+export function readCodexSessionLedgerRecords(
+  homeDescriptor: number,
+): CodexSessionLedgerRecord[];
 
 export function openLocalSqliteLifecycle(homeDescriptor: number): number;
 

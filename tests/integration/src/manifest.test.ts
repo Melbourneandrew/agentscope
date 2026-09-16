@@ -279,7 +279,10 @@ describe("integration capability manifest", () => {
     );
     expect(source).toContain("baseUrl: `${modelGateway.endpoint}/v1`,");
     expect(source).toContain(
-      "codexLedgerBaseline = readCodexSessionLedgers(homeDescriptor);",
+      "codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);",
+    );
+    expect(source).toContain(
+      "assertSessionStartProcessSetDrained(processBaseline, codexIdentity);",
     );
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
