@@ -213,7 +213,6 @@ describe("integration capability manifest", () => {
       scenario,
       Buffer.concat([
         Buffer.from(`${challenge}\n`),
-        Buffer.from([0x0a]),
         Buffer.from(scenario.terminalInputBase64, "base64"),
       ]),
     );
@@ -241,10 +240,6 @@ describe("integration capability manifest", () => {
     expect(actions[2]).toEqual({
       action: "checkpoint-process-topology",
       topology: "root-direct-child-direct-grandchild",
-      byteLength: 1,
-      inputSha256: createHash("sha256")
-        .update(Buffer.from([0x0a]))
-        .digest("hex"),
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
@@ -273,7 +268,7 @@ describe("integration capability manifest", () => {
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
     const checkpointAcknowledgement = source.indexOf(
-      "      await readCheckpointAcknowledgement();\n",
+      "      await checkpointSignal;\n",
       readinessRelease,
     );
     const modelResponse = source.indexOf(
@@ -300,7 +295,10 @@ describe("integration capability manifest", () => {
     );
     expect(source).not.toContain("readFileSync(`/proc/${pid}/stat`");
     expect(source).not.toContain('readdirSync("/proc"');
-    expect(source).toContain("await readCheckpointAcknowledgement();");
+    expect(source).toContain(
+      "const checkpointSignal = waitForCheckpointSignal();",
+    );
+    expect(source).toContain('process.once("SIGUSR2", onSignal);');
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
