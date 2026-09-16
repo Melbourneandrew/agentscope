@@ -22,6 +22,7 @@ import {
   type SanitizedDiagnosticInput,
 } from "../configuration/operational-state.js";
 import { configurationStoreHomeForCore } from "../configuration/transaction.js";
+import { readHookEntryAuthorityForCore } from "./hook-authority.js";
 import {
   runFailOpenTraceLifecycle,
   type CaptureAdapter,
@@ -43,6 +44,7 @@ import {
 import {
   commitOperationalEvidenceForCore,
   preloadOperationalStateForCore,
+  type OperationalCoordinatorPreloadResult,
 } from "./operational-coordinator.js";
 
 const reporterReasonDiagnosticMapping = Object.freeze({
@@ -654,7 +656,9 @@ const executeCaptureStage = (
 const executePreparedLifecycle = async (
   input: ResolvedTraceLifecycleInput,
   preparation: Preparation,
+  operationalPreload: Promise<OperationalCoordinatorPreloadResult>,
 ): Promise<ResolvedTraceLifecycleResult> => {
+  const preload = await operationalPreload;
   if (preparation.snapshot.configuration.selectedConnectionIds.length === 0) {
     const routing = Object.freeze({
       outcome: "routing-unselected" as const,
@@ -669,23 +673,6 @@ const executePreparedLifecycle = async (
     );
     return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
   }
-  const preloadRemaining = reporterDeadlineRemainingMilliseconds(
-    preparation.snapshot.deadline,
-  );
-  /* v8 ignore next -- an exact final-reserve race is defensive; deadline
-   * consumption after preload is covered at the persistence boundary. */
-  const preload =
-    preloadRemaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
-      ? Object.freeze({ ok: false as const })
-      : await preloadOperationalStateForCore(
-          configurationStoreHomeForCore(input.configurationStore),
-          input.operationalStateStore,
-          Math.floor(
-            preloadRemaining -
-              OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
-          ),
-          input.signal,
-        );
   const { lifecycle, redacted, boundary, checkpointResolution } =
     executeCaptureStage(
       input,
@@ -751,6 +738,8 @@ const runResolvedTraceLifecycleWithResolver = async (
   ) => ReturnType<typeof resolveCaptureInvocationSnapshot>,
 ): Promise<ResolvedTraceLifecycleResult> => {
   let completedPreparation: Preparation | undefined;
+  let operationalPreload:
+    Promise<OperationalCoordinatorPreloadResult> | undefined;
   try {
     const home = configurationStoreHomeForCore(input.configurationStore);
     if (
@@ -762,12 +751,37 @@ const runResolvedTraceLifecycleWithResolver = async (
       const failed = configurationFailure();
       return withEvidence(failed, preparationEvidence(failed));
     }
+    // Configuration inspection and Operational State preload are independent
+    // isolated reads. Admit both against the same launcher deadline so capture
+    // never spends one child-startup window waiting for the other.
+    const preloadRemaining = reporterDeadlineRemainingMilliseconds(
+      readHookEntryAuthorityForCore(input.hookEntryAuthority).deadline,
+    );
+    operationalPreload =
+      preloadRemaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
+        ? Promise.resolve(Object.freeze({ ok: false as const }))
+        : preloadOperationalStateForCore(
+            home,
+            input.operationalStateStore,
+            Math.floor(
+              preloadRemaining -
+                OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
+            ),
+            input.signal,
+          );
     const preparation = await resolvePreparation(input);
-    if (!preparation.ok)
+    if (!preparation.ok) {
+      await operationalPreload;
       return withEvidence(preparation, preparationEvidence(preparation));
+    }
     completedPreparation = preparation;
-    return await executePreparedLifecycle(input, preparation);
+    return await executePreparedLifecycle(
+      input,
+      preparation,
+      operationalPreload,
+    );
   } catch {
+    if (operationalPreload !== undefined) await operationalPreload;
     if (completedPreparation) {
       const failed = Object.freeze({
         outcome: "failed-open" as const,
