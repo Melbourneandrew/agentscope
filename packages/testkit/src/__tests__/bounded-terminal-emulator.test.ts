@@ -47,6 +47,22 @@ describe("bounded semantic terminal emulator", () => {
     expect(snapshot.nonEmptyLineCount).toBeGreaterThan(0);
   });
 
+  it("retains an observed completion after later output leaves the recent window", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumRecentCodePoints: 32,
+      },
+    );
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
+    expect(terminal.snapshot().semanticState).toBe("completed");
+    terminal.write(bytes("x".repeat(64)));
+
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
   it("accepts the exact bounded terminal controls emitted by the pinned Codex TUI", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     terminal.write(
