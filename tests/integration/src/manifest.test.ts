@@ -239,7 +239,7 @@ describe("integration capability manifest", () => {
     });
     expect(actions[2]).toEqual({
       action: "checkpoint-process-topology",
-      topology: "root-direct-child-direct-grandchild",
+      topology: "root-with-contained-process-set",
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),

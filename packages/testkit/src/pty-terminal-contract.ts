@@ -20,7 +20,7 @@ export type SelectedPtyExecutionAction =
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
   | Readonly<{
       action: "checkpoint-process-topology";
-      topology: "root-direct-child-direct-grandchild";
+      topology: "root-with-contained-process-set";
     }>
   | Readonly<{ action: "wait-for-semantic-completion" }>
   | Readonly<{ action: "eof" }>
@@ -114,7 +114,7 @@ export type PtyTransportAction =
     }>
   | Readonly<{
       action: "checkpoint-process-topology";
-      topology: "root-direct-child-direct-grandchild";
+      topology: "root-with-contained-process-set";
       monotonicAtMs: number;
     }>
   | Readonly<{

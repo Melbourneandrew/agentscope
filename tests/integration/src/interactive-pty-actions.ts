@@ -51,7 +51,7 @@ export const compileInteractivePtyActions = (
       ? [
           {
             action: "checkpoint-process-topology" as const,
-            topology: "root-direct-child-direct-grandchild" as const,
+            topology: "root-with-contained-process-set" as const,
           },
         ]
       : []),

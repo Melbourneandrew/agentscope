@@ -351,7 +351,7 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
   z.strictObject({
     action: z.literal("checkpoint-process-topology"),
-    topology: z.literal("root-direct-child-direct-grandchild"),
+    topology: z.literal("root-with-contained-process-set"),
   }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
@@ -381,7 +381,7 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("checkpoint-process-topology"),
-    topology: z.literal("root-direct-child-direct-grandchild"),
+    topology: z.literal("root-with-contained-process-set"),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({

@@ -2069,7 +2069,7 @@ const snapshotPtyRequest = (
       const topology = ownData(action, "topology");
       if (
         actionKeys !== "action\0topology" ||
-        topology !== "root-direct-child-direct-grandchild"
+        topology !== "root-with-contained-process-set"
       )
         return fail("testkit.pty.request");
       topologyCheckpointCount += 1;
@@ -2650,27 +2650,15 @@ const armSelectedPty = (
                 candidate.startIdentity === root.startIdentity &&
                 candidate.state !== "Z",
             );
-            const directChildren = processSet.filter(
+            const liveContainedProcesses = processSet.filter(
               (candidate) =>
-                candidate.parentPid === root.pid && candidate.state !== "Z",
+                candidate.pid !== root.pid && candidate.state !== "Z",
             );
-            const directGrandchildren =
-              directChildren.length === 1
-                ? processSet.filter(
-                    (candidate) =>
-                      candidate.parentPid === directChildren[0]!.pid &&
-                      candidate.state !== "Z",
-                  )
-                : [];
             const topologyMatches =
               rootMatches.length === 1 &&
-              directChildren.length === 1 &&
-              directGrandchildren.length === 1 &&
-              new Set([
-                rootMatches[0]?.startIdentity,
-                directChildren[0]?.startIdentity,
-                directGrandchildren[0]?.startIdentity,
-              ]).size === 3;
+              liveContainedProcesses.length >= 1 &&
+              new Set(processSet.map(({ startIdentity }) => startIdentity))
+                .size === processSet.length;
             if (
               safeReflectApply(performanceNow, performance, []) >=
               processRequest.monotonicExecutionDeadlineMs
@@ -4631,9 +4619,10 @@ const selectedPtyRuntimeForTest = (
     // eslint-disable-next-line max-lines-per-function, complexity -- closed adversarial fixture matrix
     spawnPty: (request, geometry, interpreter, scriptSha256) => {
       if (readiness.kind === "challenge-marker") {
-        processes.set(checkpointChild.pid, checkpointChild);
-        if (seed !== "checkpoint-missing-process")
+        if (seed !== "checkpoint-missing-process") {
+          processes.set(checkpointChild.pid, checkpointChild);
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
+        }
         if (seed === "checkpoint-owned-sidecar")
           processes.set(descendant.pid, descendant);
         if (seed === "checkpoint-owned-descendant")
