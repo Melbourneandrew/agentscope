@@ -2662,19 +2662,10 @@ const armSelectedPty = (
                       candidate.state !== "Z",
                   )
                 : [];
-            const deeperDescendants =
-              directGrandchildren.length === 1
-                ? processSet.filter(
-                    (candidate) =>
-                      candidate.parentPid === directGrandchildren[0]!.pid &&
-                      candidate.state !== "Z",
-                  )
-                : [];
             const topologyMatches =
               rootMatches.length === 1 &&
               directChildren.length === 1 &&
               directGrandchildren.length === 1 &&
-              deeperDescendants.length === 0 &&
               new Set([
                 rootMatches[0]?.startIdentity,
                 directChildren[0]?.startIdentity,
@@ -4425,6 +4416,7 @@ type SelectedPtyTestSeed =
   | "checkpoint-observer-delay-mismatch"
   | "checkpoint-missing-process"
   | "checkpoint-observer-delay"
+  | "checkpoint-owned-descendant"
   | "checkpoint-owned-sidecar"
   | "checkpoint-process-churn"
   | "checkpoint-transient-extra-process"
@@ -4504,9 +4496,15 @@ const selectedPtyRuntimeForTest = (
     state: "R",
   };
   const checkpointExtra: ProcessSnapshot = {
-    parentPid: checkpointGrandchild.pid,
+    parentPid: root.pid,
     pid: 42_005,
     startIdentity: "42005:1",
+    state: "R",
+  };
+  const checkpointOwnedDescendant: ProcessSnapshot = {
+    parentPid: checkpointGrandchild.pid,
+    pid: 42_006,
+    startIdentity: "42006:1",
     state: "R",
   };
   const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
@@ -4638,6 +4636,11 @@ const selectedPtyRuntimeForTest = (
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
         if (seed === "checkpoint-owned-sidecar")
           processes.set(descendant.pid, descendant);
+        if (seed === "checkpoint-owned-descendant")
+          processes.set(
+            checkpointOwnedDescendant.pid,
+            checkpointOwnedDescendant,
+          );
         if (
           seed === "checkpoint-extra-process" ||
           seed === "checkpoint-observer-delay-mismatch" ||
