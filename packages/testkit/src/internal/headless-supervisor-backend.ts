@@ -2689,7 +2689,11 @@ const armSelectedPty = (
       if (finalSnapshot.semanticState === "credential-prompt")
         return fail("testkit.pty.transport.semantic-credential-prompt");
       if (finalSnapshot.semanticState === "malformed-control")
-        return fail("testkit.pty.transport.semantic-malformed-control");
+        return fail(
+          finalSnapshot.malformedControlCount > 0
+            ? "testkit.pty.transport.semantic-malformed-control"
+            : "testkit.pty.transport.semantic-unsupported-control",
+        );
       if (
         request.interaction.trigger === "semantic-ready" &&
         !readinessObserved
@@ -4091,6 +4095,7 @@ type SelectedPtyTestSeed =
   | "startup-delay"
   | "transport-failure"
   | "timeout"
+  | "unsupported-control"
   | "unsupported-signal";
 
 // eslint-disable-next-line max-lines-per-function
@@ -4219,7 +4224,9 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               ? safeBufferFrom("Password:")
               : seed === "malformed-control"
                 ? safeBufferFrom("\u001b[")
-                : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+                : seed === "unsupported-control"
+                  ? safeBufferFrom("\u001b[?9999h")
+                  : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom("AGENTSCOPE_PTY_READY");
       const chunks =
         seed === "fragmented-output"
@@ -4239,7 +4246,8 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               : seed === "active-terminal" ||
                   seed === "missing-ready" ||
                   seed === "credential-prompt" ||
-                  seed === "malformed-control"
+                  seed === "malformed-control" ||
+                  seed === "unsupported-control"
                 ? [output]
                 : [ready, output];
       let chunkIndex = 0;
