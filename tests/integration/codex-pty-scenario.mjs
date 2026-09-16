@@ -305,6 +305,9 @@ const openChallengedModelGateway = async () => {
   };
   const server = createServer(async (request, response) => {
     requestCount += 1;
+    request.setTimeout(Math.min(5_000, remaining()), () =>
+      request.destroy(new Error("integration.codex.model-gateway")),
+    );
     try {
       if (
         requestCount !== 1 ||
@@ -367,6 +370,9 @@ const openChallengedModelGateway = async () => {
     socket.destroy();
     server.close(finishClose);
   });
+  server.headersTimeout = Math.min(5_000, remaining());
+  server.requestTimeout = Math.min(5_000, remaining());
+  server.keepAliveTimeout = 1_000;
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
