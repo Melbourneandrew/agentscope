@@ -451,6 +451,10 @@ const ptyTerminalReceiptSchema = z
       readiness: z.discriminatedUnion("kind", [
         z.strictObject({ kind: z.literal("semantic-marker") }),
         z.strictObject({
+          kind: z.literal("challenge-marker"),
+          challenge: z.string().regex(/^[a-f\d]{64}$/u),
+        }),
+        z.strictObject({
           kind: z.literal("styled-text-after-completion"),
           text: z.string().min(1).max(4),
           bold: z.boolean(),
@@ -459,7 +463,7 @@ const ptyTerminalReceiptSchema = z
       ]),
       initialGeometry: ptyGeometrySchema,
       interaction: z.strictObject({
-        trigger: z.literal("semantic-ready"),
+        trigger: z.enum(["semantic-ready", "immediate"]),
         actions: z.array(ptyRequestedActionSchema).min(1).max(64),
       }),
       interpreter: z.strictObject({
@@ -499,6 +503,8 @@ const ptyTerminalReceiptSchema = z
   })
   .superRefine((value, context) => {
     const request = value.request.process;
+    const challengeReadiness =
+      value.request.readiness.kind === "challenge-marker";
     const finalGeometry = value.request.interaction.actions.reduce(
       (geometry, action) =>
         action.action === "resize" ? action.geometry : geometry,
@@ -533,6 +539,9 @@ const ptyTerminalReceiptSchema = z
       value.inputBytes !== request.inputBytes ||
       value.inputSha256 !== request.inputSha256 ||
       !value.readinessObserved ||
+      (challengeReadiness
+        ? value.request.interaction.trigger !== "immediate"
+        : value.request.interaction.trigger !== "semantic-ready") ||
       request.monotonicStartupDeadlineMs !==
         Math.min(
           value.requestConstructedAtMs + 10_000,

@@ -420,6 +420,129 @@ const ptyReceiptFor = (
   };
 };
 
+const ptyChallengeReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const challenge = "b".repeat(64);
+  const initialInput = Buffer.from(`${challenge}\n`);
+  const finalInput = Buffer.from([4]);
+  const input = Buffer.concat([initialInput, finalInput]);
+  const inputSha256 = createHash("sha256").update(input).digest("hex");
+  const process = {
+    ...receipt.request.process,
+    inputBytes: input.length,
+    inputSha256,
+  };
+  const rawProcessRequest = {
+    runId: process.runId,
+    executable: process.executable,
+    arguments: process.arguments,
+    cwd: process.cwd,
+    environment: process.environment,
+    stdinBase64: input.toString("base64"),
+    stdoutLimitBytes: process.stdoutLimitBytes,
+    stderrLimitBytes: process.stderrLimitBytes,
+    monotonicStartupDeadlineMs: process.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs: process.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: process.monotonicShutdownDeadlineMs,
+    terminationGraceMs: process.terminationGraceMs,
+  };
+  const processRequestFingerprint = `sha256:${createHash("sha256")
+    .update(JSON.stringify(rawProcessRequest))
+    .digest("hex")}` as const;
+  const readiness = { kind: "challenge-marker" as const, challenge };
+  const initialInputAction = {
+    action: "input" as const,
+    byteLength: initialInput.length,
+    inputSha256: createHash("sha256").update(initialInput).digest("hex"),
+  };
+  const finalInputAction = {
+    action: "input" as const,
+    byteLength: finalInput.length,
+    inputSha256: createHash("sha256").update(finalInput).digest("hex"),
+  };
+  const interaction = {
+    trigger: "immediate" as const,
+    actions: [
+      receipt.request.interaction.actions[0]!,
+      initialInputAction,
+      {
+        action: "checkpoint-process-topology" as const,
+        topology: "root-direct-child-direct-grandchild" as const,
+      },
+      { action: "wait-for-semantic-completion" as const },
+      finalInputAction,
+    ],
+  };
+  const request = {
+    ...receipt.request,
+    process: { ...process, requestFingerprint: processRequestFingerprint },
+    readiness,
+    interaction,
+  };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint,
+        completion: request.completion,
+        readiness,
+        initialGeometry: request.initialGeometry,
+        interaction: {
+          actions: interaction.actions,
+          trigger: interaction.trigger,
+        },
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: input.length,
+        inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    scenarioId: "codex-tui-trace-smoke",
+    request,
+    requestFingerprint,
+    processRequestFingerprint,
+    inputBytes: input.length,
+    inputSha256,
+    actions: interaction.actions.map((action, index) => ({
+      ...action,
+      monotonicAtMs: 2_000 + index,
+    })),
+    eofByteWritten: false,
+    inputBytesWritten: input.length,
+    observedCanonicalMode: false,
+  };
+};
+
+const refingerprintPtyEnvelope = (
+  receipt: ReturnType<typeof ptyChallengeReceiptFor>,
+  readiness: typeof receipt.request.readiness | { kind: "semantic-marker" },
+  trigger: "immediate" | "semantic-ready",
+) => {
+  const interaction = { ...receipt.request.interaction, trigger };
+  const request = { ...receipt.request, readiness, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness,
+        initialGeometry: request.initialGeometry,
+        interaction: {
+          actions: interaction.actions,
+          trigger: interaction.trigger,
+        },
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return { ...receipt, request, requestFingerprint };
+};
+
 const ptyControlReceiptFor = () => {
   const receipt = ptyReceiptFor();
   const interaction = {
@@ -1326,6 +1449,48 @@ describe("selected PTY backend evidence", () => {
         evidence,
       ),
     ).toThrow("integration.isolation.evidence");
+  });
+
+  it("admits only immediate challenge readiness and rejects trigger substitution", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
+      interactive,
+    );
+    for (const ptyTerminalReceipt of [
+      refingerprintPtyEnvelope(
+        receipt,
+        receipt.request.readiness,
+        "semantic-ready",
+      ),
+      refingerprintPtyEnvelope(
+        receipt,
+        { kind: "semantic-marker" },
+        "immediate",
+      ),
+      {
+        ...receipt,
+        request: {
+          ...receipt.request,
+          readiness: { kind: "challenge-marker", challenge: "b".repeat(63) },
+        },
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
   });
 
   it.each([
