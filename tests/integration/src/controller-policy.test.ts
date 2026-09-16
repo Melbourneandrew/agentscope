@@ -144,6 +144,21 @@ describe("integration controller policy", () => {
 });
 
 describe("integration cleanup authority", () => {
+  it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const recorder = source.slice(
+      source.indexOf("const recordInteractiveReceiptFailure ="),
+      source.indexOf("const recordInteractiveExecutionFailure ="),
+    );
+    expect(recorder).toContain("installedPtyFailures.has(plan.runId)");
+    expect(
+      recorder.indexOf("installedPtyFailures.has(plan.runId)"),
+    ).toBeLessThan(recorder.indexOf("installedPtyFailures.set(plan.runId"));
+  });
+
   it("reserves the terminal controller window for Docker cleanup only", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
