@@ -189,25 +189,32 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
-    const delayedAt = performance.now();
-    await expect(
-      executeSelectedPtyTransportForTest(
-        {
-          ...challengeRequest,
-          process: {
-            ...challengeRequest.process,
-            monotonicStartupDeadlineMs: delayedAt + 50,
-            monotonicExecutionDeadlineMs: delayedAt + 100,
-            monotonicShutdownDeadlineMs: delayedAt + 500,
+    for (const seed of [
+      "checkpoint-observer-delay",
+      "checkpoint-observer-delay-mismatch",
+    ] as const) {
+      const delayedAt = performance.now();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...challengeRequest,
+            process: {
+              ...challengeRequest.process,
+              monotonicStartupDeadlineMs: delayedAt + 50,
+              monotonicExecutionDeadlineMs: delayedAt + 100,
+              monotonicShutdownDeadlineMs: delayedAt + 500,
+            },
           },
-        },
-        "checkpoint-observer-delay",
-      ),
-    ).resolves.toMatchObject({
-      actions: [{ action: "input", byteLength: 65 }],
-      inputBytesWritten: 65,
-      outcome: "transport-failed",
-    });
+          seed,
+        ),
+      ).resolves.toMatchObject({
+        actions: [{ action: "input", byteLength: 65 }],
+        cleanup: "clean",
+        inputBytesWritten: 65,
+        outcome: "transport-failed",
+        residualProcessCount: 0,
+      });
+    }
   });
 
   it("causally validates the selected immutable principal record", () => {

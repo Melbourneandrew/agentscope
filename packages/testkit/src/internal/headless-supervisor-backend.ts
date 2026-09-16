@@ -2669,6 +2669,11 @@ const armSelectedPty = (
               directGrandchildren.length === 1 &&
               new Set(processSet.map(({ startIdentity }) => startIdentity))
                 .size === 3;
+            if (
+              safeReflectApply(performanceNow, performance, []) >=
+              processRequest.monotonicExecutionDeadlineMs
+            )
+              return fail("testkit.headless.execution.deadline");
             if (!topologyMatches) {
               runtime.releaseFrozenProcessSet(
                 composition.namespaceIdentity,
@@ -2678,11 +2683,6 @@ const armSelectedPty = (
               );
               return;
             }
-            if (
-              safeReflectApply(performanceNow, performance, []) >=
-              processRequest.monotonicExecutionDeadlineMs
-            )
-              return fail("testkit.headless.execution.deadline");
             runtime.releaseFrozenProcessSet(
               composition.namespaceIdentity,
               processSet,
@@ -4411,6 +4411,7 @@ type SelectedPtyTestSeed =
   | "close-failure"
   | "completion-before-readiness"
   | "checkpoint-extra-process"
+  | "checkpoint-observer-delay-mismatch"
   | "checkpoint-missing-process"
   | "checkpoint-observer-delay"
   | "checkpoint-process-churn"
@@ -4498,6 +4499,7 @@ const selectedPtyRuntimeForTest = (
   };
   const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
   let reads = 0;
+  let releasedAfterDelayedMismatch = false;
   let resolveClose: ((value: PtyExit) => void) | undefined;
   let terminal = false;
   let tailReadyAt = 0;
@@ -4519,7 +4521,10 @@ const selectedPtyRuntimeForTest = (
         return fail("testkit.headless.observer.identity");
     },
     freezeProcessSet: (_namespaceIdentity, monotonicDeadlineMs) => {
-      if (seed === "checkpoint-observer-delay") {
+      if (
+        seed === "checkpoint-observer-delay" ||
+        seed === "checkpoint-observer-delay-mismatch"
+      ) {
         while (
           safeReflectApply(performanceNow, performance, []) <
           monotonicDeadlineMs + 1
@@ -4540,6 +4545,8 @@ const selectedPtyRuntimeForTest = (
     },
     readProcess: (pid) => {
       if (seed === "root-missing") return undefined;
+      if (releasedAfterDelayedMismatch)
+        return fail("testkit.headless.observer.identity");
       const value = processes.get(pid);
       if (value === undefined) return undefined;
       reads += pid === root.pid ? 1 : 0;
@@ -4567,6 +4574,8 @@ const selectedPtyRuntimeForTest = (
       rootPid,
       notifyRoot,
     ) => {
+      if (seed === "checkpoint-observer-delay-mismatch")
+        releasedAfterDelayedMismatch = true;
       const ordered = [...expectedProcesses].sort((left, right) => {
         if (left.pid === rootPid) return 1;
         if (right.pid === rootPid) return -1;
@@ -4617,6 +4626,7 @@ const selectedPtyRuntimeForTest = (
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
         if (
           seed === "checkpoint-extra-process" ||
+          seed === "checkpoint-observer-delay-mismatch" ||
           seed === "checkpoint-transient-extra-process"
         )
           processes.set(checkpointExtra.pid, checkpointExtra);
