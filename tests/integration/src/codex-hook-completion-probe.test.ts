@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -17,7 +19,14 @@ const fixture = resolve(
   "../fixtures/codex-hook-completion-probe.mjs",
 );
 const nonce = "a".repeat(64);
-const invoke = (launcher: string, receipt: string, selectedNonce = nonce) =>
+const sha256 = (path: string) =>
+  createHash("sha256").update(readFileSync(path)).digest("hex");
+const invoke = (
+  launcher: string,
+  receipt: string,
+  selectedNonce = nonce,
+  launcherSha256 = sha256(launcher),
+) =>
   spawnSync(
     process.execPath,
     [
@@ -28,6 +37,8 @@ const invoke = (launcher: string, receipt: string, selectedNonce = nonce) =>
       receipt,
       "--nonce",
       selectedNonce,
+      "--launcher-sha256",
+      launcherSha256,
     ],
     { encoding: "utf8" },
   );
@@ -77,6 +88,29 @@ describe("Codex Stop-hook completion probe", () => {
       chmodSync(target, 0o600);
       rmSync(receipt);
       expect(invoke(target, receipt).status).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects aliases and a launcher replaced during execution", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-hook-probe-"));
+    try {
+      const launcher = join(root, "launcher");
+      const alias = join(root, "alias");
+      const receipt = join(root, "receipt");
+      writeFileSync(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      const digest = sha256(launcher);
+      linkSync(launcher, alias);
+      expect(invoke(launcher, receipt, nonce, digest).status).toBe(1);
+      rmSync(alias);
+      writeFileSync(
+        launcher,
+        '#!/bin/sh\nprintf "#!/bin/sh\\nexit 0\\n" > "$0.next"\nchmod 700 "$0.next"\nmv "$0.next" "$0"\nexit 0\n',
+        { mode: 0o700 },
+      );
+      expect(invoke(launcher, receipt).status).toBe(1);
+      expect(existsSync(receipt)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
