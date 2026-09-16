@@ -214,7 +214,7 @@ describe("selected PTY transport", () => {
     },
   );
 
-  it("admits exact output as completion without a fabricated marker", async () => {
+  it("applies the immediate action before reading fast exact output", async () => {
     const output = Buffer.from("ready");
     const receipt = await executeSelectedPtyTransportForTest(
       {
@@ -227,7 +227,7 @@ describe("selected PTY transport", () => {
         interaction: { trigger: "immediate", actions: [{ action: "eof" }] },
         process: { ...request().process, stdin: new Uint8Array() },
       },
-      "active-terminal",
+      "immediate-output",
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
