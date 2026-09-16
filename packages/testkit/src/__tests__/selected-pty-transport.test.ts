@@ -25,6 +25,7 @@ const request = (
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" },
+    readiness: { kind: "semantic-marker" },
     interaction: {
       trigger: "semantic-ready",
       actions: [
@@ -870,6 +871,20 @@ describe("selected PTY transport", () => {
         "clean",
       ),
     ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...valid,
+          readiness: {
+            kind: "styled-text-after-completion",
+            text: "two",
+            bold: true,
+            dim: false,
+          },
+        },
+        "clean",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.request" });
     await expect(
       executeSelectedPtyTransportForTest(
         {

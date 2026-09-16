@@ -1762,13 +1762,14 @@ const snapshotPtyRequest = (
   if (!plainRecord(candidate)) return fail("testkit.pty.request");
   const keys = safeReflectApply(objectKeys, Object, [candidate]).sort();
   if (
-    keys.length !== 6 ||
+    keys.length !== 7 ||
     keys[0] !== "completion" ||
     keys[1] !== "initialGeometry" ||
     keys[2] !== "interaction" ||
     keys[3] !== "interpreter" ||
     keys[4] !== "process" ||
-    keys[5] !== "scriptSha256"
+    keys[5] !== "readiness" ||
+    keys[6] !== "scriptSha256"
   )
     return fail("testkit.pty.request");
   const process_ = snapshotSelectedRequest(
@@ -1791,6 +1792,7 @@ const snapshotPtyRequest = (
   const interpreter = ownData(candidate, "interpreter");
   const interaction = ownData(candidate, "interaction");
   const completion = ownData(candidate, "completion");
+  const readiness = ownData(candidate, "readiness");
   const scriptSha256 = ownData(candidate, "scriptSha256");
   if (!plainRecord(interpreter)) return fail("testkit.pty.runtime.identity");
   const interpreterKeys = safeReflectApply(objectKeys, Object, [
@@ -1828,6 +1830,41 @@ const snapshotPtyRequest = (
     (completionKind !== "semantic-marker" && completionKind !== "exact-output")
   )
     return fail("testkit.pty.request");
+  if (!plainRecord(readiness)) return fail("testkit.pty.request");
+  const readinessKeys = safeReflectApply(objectKeys, Object, [readiness])
+    .sort()
+    .join("\0");
+  const readinessKind = ownData(readiness, "kind");
+  let stableReadiness;
+  if (readinessKind === "semantic-marker" && readinessKeys === "kind")
+    stableReadiness = safeReflectApply(freeze, Object, [
+      { kind: "semantic-marker" as const },
+    ]);
+  else if (
+    readinessKind === "styled-text-after-completion" &&
+    readinessKeys === "bold\0dim\0kind\0text"
+  ) {
+    const readinessText = ownData(readiness, "text");
+    const readinessBold = ownData(readiness, "bold");
+    const readinessDim = ownData(readiness, "dim");
+    if (
+      typeof readinessText !== "string" ||
+      [...readinessText].length !== 1 ||
+      (readinessText.codePointAt(0) ?? 0) < 0x20 ||
+      readinessText.codePointAt(0) === 0x7f ||
+      typeof readinessBold !== "boolean" ||
+      typeof readinessDim !== "boolean"
+    )
+      return fail("testkit.pty.request");
+    stableReadiness = safeReflectApply(freeze, Object, [
+      {
+        kind: "styled-text-after-completion" as const,
+        text: readinessText,
+        bold: readinessBold,
+        dim: readinessDim,
+      },
+    ]);
+  } else return fail("testkit.pty.request");
   if (!plainRecord(interaction)) return fail("testkit.pty.request");
   const interactionKeys = safeReflectApply(objectKeys, Object, [
     interaction,
@@ -1995,6 +2032,7 @@ const snapshotPtyRequest = (
       interpreter: safeReflectApply(freeze, Object, [
         { path: interpreterPath, sha256: interpreterSha256 },
       ]),
+      readiness: stableReadiness,
       scriptSha256,
     },
   ]) as SelectedPtyExecutionRequest;
@@ -2012,6 +2050,7 @@ const selectedPtyRequestFingerprint = (
   const authority = {
     processRequestFingerprint: request.process.requestFingerprint,
     completion: request.completion,
+    readiness: request.readiness,
     initialGeometry: request.initialGeometry,
     interaction: request.interaction,
     interpreter: request.interpreter,
@@ -2273,10 +2312,14 @@ const armSelectedPty = (
     let outputTerminal = false;
     let transportClosed: boolean;
     let aborted = false;
-    const terminal = new BoundedTerminalEmulator(request.initialGeometry, {
-      ...defaultPtyTerminalEmulatorLimits,
-      maximumOutputBytes: outputLimitBytes,
-    });
+    const terminal = new BoundedTerminalEmulator(
+      request.initialGeometry,
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumOutputBytes: outputLimitBytes,
+      },
+      request.readiness,
+    );
     const input = safeBufferFrom(processRequest.stdin);
     // The PTY pump keeps read, semantic readiness, and the write-closed action
     // sequence adjacent so no action can escape the selected backend authority.

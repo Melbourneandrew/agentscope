@@ -272,6 +272,19 @@ const scenarioSchema = z
     postCompletionInputByteLength: z.number().int().min(0).max(32),
     postCompletionControl: z.enum(["none", "interrupt-byte"]),
     waitForSemanticCompletionBeforeTerminalAction: z.boolean(),
+    nativeReadiness: z
+      .discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("semantic-marker") }),
+        z.strictObject({
+          kind: z.literal("codex-idle-prompt"),
+          harness: z.literal("codex"),
+          exactHarnessVersion: z.literal("0.149.1"),
+          text: z.literal("›"),
+          bold: z.literal(true),
+          dim: z.literal(false),
+        }),
+      ])
+      .nullable(),
     resourceClass: z.enum(["small", "medium", "large"]),
     shardWeight: z.number().int().min(1).max(100_000),
   })
@@ -279,12 +292,14 @@ const scenarioSchema = z
     if (
       (value.executionMode === "headless" &&
         (value.outputContract !== "jsonl" ||
+          value.nativeReadiness !== null ||
           value.terminalInputBase64 !== "AA==" ||
           value.postCompletionInputByteLength !== 0 ||
           value.postCompletionControl !== "none" ||
           value.waitForSemanticCompletionBeforeTerminalAction)) ||
       (value.executionMode === "interactive" &&
         (value.outputContract !== "semantic-pty" ||
+          value.nativeReadiness === null ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength < 1 ||
           Buffer.from(value.terminalInputBase64, "base64").byteLength > 100 ||
           value.waitForSemanticCompletionBeforeTerminalAction !==
@@ -296,6 +311,14 @@ const scenarioSchema = z
             Buffer.from(value.terminalInputBase64, "base64").byteLength))
     )
       context.addIssue({ code: "custom", message: "scenario mode drift" });
+    if (
+      value.nativeReadiness?.kind === "codex-idle-prompt" &&
+      value.harnessEvidenceId !== "codex-0-149-1"
+    )
+      context.addIssue({
+        code: "custom",
+        message: "native readiness harness drift",
+      });
   });
 
 const manifestSchema = z.strictObject({

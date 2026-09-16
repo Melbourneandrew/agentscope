@@ -439,6 +439,15 @@ const ptyTerminalReceiptSchema = z
     request: z.strictObject({
       process: ptyProcessAuthoritySchema,
       completion: z.strictObject({ kind: z.literal("semantic-marker") }),
+      readiness: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("semantic-marker") }),
+        z.strictObject({
+          kind: z.literal("styled-text-after-completion"),
+          text: z.string().min(1).max(4),
+          bold: z.boolean(),
+          dim: z.boolean(),
+        }),
+      ]),
       initialGeometry: ptyGeometrySchema,
       interaction: z.strictObject({
         trigger: z.literal("semantic-ready"),
@@ -495,6 +504,7 @@ const ptyTerminalReceiptSchema = z
         JSON.stringify({
           processRequestFingerprint: value.processRequestFingerprint,
           completion: value.request.completion,
+          readiness: value.request.readiness,
           initialGeometry: value.request.initialGeometry,
           interaction: {
             actions: value.request.interaction.actions,

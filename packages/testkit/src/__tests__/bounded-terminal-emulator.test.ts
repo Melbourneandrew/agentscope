@@ -93,8 +93,17 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.end().semanticState).toBe("completed");
   });
 
-  it("derives post-completion readiness from Codex's native bold idle prompt", () => {
-    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+  it("derives selected post-completion readiness from styled text", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "styled-text-after-completion",
+        text: "›",
+        bold: true,
+        dim: false,
+      },
+    );
 
     terminal.write(bytes("\u001b[1m›\u001b[0m "));
     expect(terminal.readinessObserved()).toBe(false);
@@ -108,8 +117,17 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(true);
   });
 
-  it("does not mistake dim or reset Codex prompts for post-turn readiness", () => {
-    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+  it("does not mistake mismatched styled text for post-completion readiness", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "styled-text-after-completion",
+        text: "›",
+        bold: true,
+        dim: false,
+      },
+    );
 
     terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
     terminal.write(
