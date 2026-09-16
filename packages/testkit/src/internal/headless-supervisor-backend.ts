@@ -3302,7 +3302,7 @@ const finalRequestedPtyGeometry = (
 const assertPtyReceiptBinding = (
   receipt: SelectedPtyExecutionReceipt,
   request: SelectedPtyExecutionRequest,
-  // eslint-disable-next-line complexity
+  // eslint-disable-next-line complexity,max-lines-per-function
 ): void => {
   const outcome = receipt.outcome;
   const authority = selectedPtyRequestFingerprint(request);
@@ -3323,32 +3323,48 @@ const assertPtyReceiptBinding = (
       receipt.processStartIdentity,
     ) ||
     receipt.inputBytes !== authority.inputBytes ||
-    receipt.inputSha256 !== authority.inputSha256 ||
+    receipt.inputSha256 !== authority.inputSha256
+  )
+    return fail("testkit.pty.receipt-identity");
+  if (
     typeof receipt.readinessObserved !== "boolean" ||
     (outcome === "completed" &&
       request.interaction.trigger === "semantic-ready" &&
-      !receipt.readinessObserved) ||
-    !ptyReceiptActionsMatch(receipt, request) ||
+      !receipt.readinessObserved)
+  )
+    return fail("testkit.pty.receipt-readiness");
+  if (!ptyReceiptActionsMatch(receipt, request))
+    return fail("testkit.pty.receipt-actions");
+  if (
     receipt.initialGeometry.columns !== request.initialGeometry.columns ||
     receipt.initialGeometry.rows !== request.initialGeometry.rows ||
     receipt.observedGeometry.columns !== expectedGeometry.columns ||
     receipt.observedGeometry.rows !== expectedGeometry.rows ||
     receipt.isTTY !== true ||
     receipt.observedCanonicalMode !== true ||
-    !boundedNonnegativeInteger(receipt.eofByte, 255) ||
+    !boundedNonnegativeInteger(receipt.eofByte, 255)
+  )
+    return fail("testkit.pty.receipt-terminal");
+  if (
     typeof receipt.eofByteWritten !== "boolean" ||
     !boundedNonnegativeInteger(
       receipt.inputBytesWritten,
       request.process.stdin.byteLength,
-    ) ||
-    (outcome !== "completed" &&
-      outcome !== "signaled" &&
-      outcome !== "exited-nonzero" &&
-      outcome !== "aborted" &&
-      outcome !== "timeout" &&
-      outcome !== "output-limit" &&
-      outcome !== "transport-failed" &&
-      outcome !== "input-incomplete") ||
+    )
+  )
+    return fail("testkit.pty.receipt-input");
+  if (
+    outcome !== "completed" &&
+    outcome !== "signaled" &&
+    outcome !== "exited-nonzero" &&
+    outcome !== "aborted" &&
+    outcome !== "timeout" &&
+    outcome !== "output-limit" &&
+    outcome !== "transport-failed" &&
+    outcome !== "input-incomplete"
+  )
+    return fail("testkit.pty.receipt-outcome");
+  if (
     !boundedNonnegativeInteger(
       receipt.outputBytes,
       minimum(
@@ -3356,18 +3372,24 @@ const assertPtyReceiptBinding = (
         request.process.stderrLimitBytes,
       ),
     ) ||
-    !/^[a-f0-9]{64}$/u.test(receipt.outputSha256) ||
+    !/^[a-f0-9]{64}$/u.test(receipt.outputSha256)
+  )
+    return fail("testkit.pty.receipt-output");
+  if (
     receipt.cleanup !== "clean" ||
     !receipt.processJoined ||
     !receipt.terminalOutputJoined ||
     !receipt.terminalTransportClosed ||
-    (receipt.signal !== null &&
-      receipt.signal !== "SIGINT" &&
-      receipt.signal !== "SIGTERM" &&
-      receipt.signal !== "SIGKILL") ||
     receipt.residualProcessCount !== 0
   )
-    return fail("testkit.pty.receipt-shape");
+    return fail("testkit.pty.receipt-cleanup");
+  if (
+    receipt.signal !== null &&
+    receipt.signal !== "SIGINT" &&
+    receipt.signal !== "SIGTERM" &&
+    receipt.signal !== "SIGKILL"
+  )
+    return fail("testkit.pty.receipt-signal");
   let finalSnapshot;
   try {
     finalSnapshot = validatePtyTerminalSemanticSnapshot(receipt.finalSnapshot);
