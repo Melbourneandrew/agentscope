@@ -112,6 +112,58 @@ export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
   return matches.length === 1;
 };
 
+export const codexTurnTerminalObservedAfterBaseline = (
+  ledgers,
+  baseline,
+  expectedMessage,
+) => {
+  if (
+    !Array.isArray(baseline) ||
+    baseline.length > 8 ||
+    baseline.some(
+      (ledger) => typeof ledger !== "string" || ledger.length > 2 * 1024 * 1024,
+    ) ||
+    !Array.isArray(ledgers) ||
+    ledgers.length < baseline.length ||
+    ledgers.length > baseline.length + 1
+  )
+    throw new Error("integration.codex.session-ledger");
+  if (codexTurnTerminalObserved(baseline, expectedMessage))
+    throw new Error("integration.codex.session-ledger");
+  const unmatched = [...ledgers];
+  let changed = false;
+  for (const prior of baseline) {
+    const matches = unmatched
+      .map((current, index) => ({ current, index }))
+      .filter(({ current }) => current.startsWith(prior));
+    if (matches.length !== 1)
+      throw new Error("integration.codex.session-ledger");
+    const [{ current, index }] = matches;
+    changed ||= current.length > prior.length;
+    unmatched.splice(index, 1);
+  }
+  changed ||= unmatched.length === 1;
+  if (!changed) return false;
+  return codexTurnTerminalObserved(ledgers, expectedMessage);
+};
+
+export const terminalObservationBeforeDeadline = ({
+  observed,
+  deadline,
+  now,
+}) => {
+  if (
+    typeof observed !== "boolean" ||
+    !Number.isFinite(deadline) ||
+    typeof now !== "function"
+  )
+    throw new Error("integration.codex.trace-deadline");
+  const observedAt = now();
+  if (!Number.isFinite(observedAt))
+    throw new Error("integration.codex.trace-deadline");
+  return observed && observedAt < deadline;
+};
+
 const ledgerLimit = 2 * 1024 * 1024;
 const descriptorRoot =
   process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";

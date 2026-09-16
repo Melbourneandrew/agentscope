@@ -271,6 +271,16 @@ describe("integration capability manifest", () => {
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(startupPrompt);
+    expect(source).toContain(
+      "const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;",
+    );
+    expect(source).toContain(
+      'body.replace(\n        "AGENTSCOPE_PTY_COMPLETE",\n        expectedAssistantMessage,\n      )',
+    );
+    expect(source).toContain("baseUrl: `${modelGateway.endpoint}/v1`,");
+    expect(source).toContain(
+      "codexLedgerBaseline = readCodexSessionLedgers(homeDescriptor);",
+    );
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
@@ -359,6 +369,9 @@ describe("integration capability manifest", () => {
     expect(readinessRelease).toBeGreaterThan(terminalWait);
     expect(codexJoin).toBeGreaterThan(readinessRelease);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
+    expect(
+      source.indexOf("  await modelGateway.settle();\n", codexJoin),
+    ).toBeLessThan(traceQueryAfterJoin);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
