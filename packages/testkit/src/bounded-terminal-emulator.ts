@@ -316,6 +316,7 @@ export class BoundedTerminalEmulator {
   #titleSha256: string | null = null;
   #ended = false;
   #outputLimitReached = false;
+  #completionObserved = false;
 
   public constructor(
     geometry: PtyTerminalGeometry,
@@ -369,6 +370,10 @@ export class BoundedTerminalEmulator {
       return fail("testkit.pty.emulator.utf8");
     }
     for (const character of decoded) this.#consume(character);
+    this.#completionObserved ||= containsText(
+      this.#recentText(),
+      completedMarker,
+    );
   }
 
   public resize(geometry: PtyTerminalGeometry): void {
@@ -395,6 +400,10 @@ export class BoundedTerminalEmulator {
       try {
         const final = applyFunction(textDecoderDecode, this.#decoder, []);
         for (const character of final) this.#consume(character);
+        this.#completionObserved ||= containsText(
+          this.#recentText(),
+          completedMarker,
+        );
       } catch {
         this.#recordMalformedControl("utf8");
       }
@@ -427,7 +436,7 @@ export class BoundedTerminalEmulator {
         ? "malformed-control"
         : credentialPromptPattern.test(recent)
           ? "credential-prompt"
-          : containsText(recent, completedMarker)
+          : this.#completionObserved || containsText(recent, completedMarker)
             ? "completed"
             : containsText(recent, readyMarker)
               ? "ready"
