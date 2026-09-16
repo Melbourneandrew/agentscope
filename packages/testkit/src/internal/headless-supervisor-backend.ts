@@ -1218,6 +1218,7 @@ const releaseFrozenContainerProcessSet = (
   namespaceIdentity: string,
   processes: readonly ProcessSnapshot[],
   rootPid: number,
+  notifyRoot: boolean,
 ): void => {
   assertNamespaceIdentity(namespaceIdentity);
   const ordered = [...processes].sort((left, right) => {
@@ -1236,7 +1237,7 @@ const releaseFrozenContainerProcessSet = (
   }
   for (const expected of ordered) {
     if (expected.pid === rootPid) {
-      process.kill(expected.pid, "SIGUSR2");
+      if (notifyRoot) process.kill(expected.pid, "SIGUSR2");
       process.kill(expected.pid, "SIGCONT");
     } else process.kill(expected.pid, "SIGCONT");
   }
@@ -1387,6 +1388,7 @@ type PtyRuntime = Readonly<{
     namespaceIdentity: string,
     processes: readonly ProcessSnapshot[],
     rootPid: number,
+    notifyRoot: boolean,
   ) => void;
   sendSignal: (pid: number, signal: "SIGINT" | "SIGTERM" | "SIGKILL") => void;
   spawnPty: (
@@ -2660,15 +2662,22 @@ const armSelectedPty = (
                       candidate.state !== "Z",
                   )
                 : [];
-            if (
-              processSet.length !== 3 ||
-              rootMatches.length !== 1 ||
-              directChildren.length !== 1 ||
-              directGrandchildren.length !== 1 ||
+            const topologyMatches =
+              processSet.length === 3 &&
+              rootMatches.length === 1 &&
+              directChildren.length === 1 &&
+              directGrandchildren.length === 1 &&
               new Set(processSet.map(({ startIdentity }) => startIdentity))
-                .size !== 3
-            )
-              return fail("testkit.headless.observer.process-set");
+                .size === 3;
+            if (!topologyMatches) {
+              runtime.releaseFrozenProcessSet(
+                composition.namespaceIdentity,
+                processSet,
+                root.pid,
+                false,
+              );
+              return;
+            }
             if (
               safeReflectApply(performanceNow, performance, []) >=
               processRequest.monotonicExecutionDeadlineMs
@@ -2678,6 +2687,7 @@ const armSelectedPty = (
               composition.namespaceIdentity,
               processSet,
               root.pid,
+              true,
             );
             recordAction({
               action: "checkpoint-process-topology",
@@ -4404,6 +4414,7 @@ type SelectedPtyTestSeed =
   | "checkpoint-missing-process"
   | "checkpoint-observer-delay"
   | "checkpoint-process-churn"
+  | "checkpoint-transient-extra-process"
   | "control-eof-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
@@ -4554,6 +4565,7 @@ const selectedPtyRuntimeForTest = (
       _namespaceIdentity,
       expectedProcesses,
       rootPid,
+      notifyRoot,
     ) => {
       const ordered = [...expectedProcesses].sort((left, right) => {
         if (left.pid === rootPid) return 1;
@@ -4571,6 +4583,8 @@ const selectedPtyRuntimeForTest = (
       }
       for (const expected of ordered)
         processes.set(expected.pid, { ...expected, state: "R" });
+      if (seed === "checkpoint-transient-extra-process" && !notifyRoot)
+        processes.delete(checkpointExtra.pid);
     },
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")
@@ -4601,7 +4615,10 @@ const selectedPtyRuntimeForTest = (
         processes.set(checkpointChild.pid, checkpointChild);
         if (seed !== "checkpoint-missing-process")
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
-        if (seed === "checkpoint-extra-process")
+        if (
+          seed === "checkpoint-extra-process" ||
+          seed === "checkpoint-transient-extra-process"
+        )
           processes.set(checkpointExtra.pid, checkpointExtra);
       }
       if (
