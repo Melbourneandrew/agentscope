@@ -924,7 +924,8 @@ describe("routing-disabled trace lifecycle", () => {
       false,
     );
     let captureCalls = 0;
-    const result = await runResolvedTraceLifecycle({
+    let preloadCalls = 0;
+    const result = await runResolvedTraceLifecycleForTesting({
       configurationStore: value.store,
       operationalStateStore: value.operationalStateStore,
       credentialBackendRegistry: value.credentialBackendRegistry,
@@ -941,11 +942,17 @@ describe("routing-disabled trace lifecycle", () => {
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
       hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
+      contextResolver: () => Promise.resolve(context),
+      operationalPreloadForTesting: () => {
+        preloadCalls += 1;
+        return Promise.resolve(Object.freeze({ ok: false as const }));
+      },
       capture(factory) {
         captureCalls += 1;
         return factory.capture(candidate());
       },
     });
+    expect(preloadCalls).toBe(0);
     expect(result).toMatchObject({
       outcome: "routing-unselected",
       stage: "routing",
@@ -1044,6 +1051,97 @@ describe("resolved operational-store authority", () => {
         health: [{ scope: "hook", outcome: "deadline-exceeded" }],
         persistence: { recorded: false, code: "not-attempted" },
       },
+    });
+  });
+});
+
+describe("selected-route preload concurrency", () => {
+  it("overlaps selected-route preload with context inspection", async () => {
+    const value = await fixture(
+      BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+      true,
+    );
+    let markPreloadStarted!: () => void;
+    const preloadStarted = new Promise<void>((resolveStarted) => {
+      markPreloadStarted = resolveStarted;
+    });
+    const overlapped = await runResolvedTraceLifecycleForTesting({
+      configurationStore: value.store,
+      operationalStateStore: value.operationalStateStore,
+      credentialBackendRegistry: value.credentialBackendRegistry,
+      transportExecutor: value.transportExecutor,
+      policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+      harnessRegistryId: "codex",
+      harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+      hookObservedUnixNano: "100",
+      operationIdScope: "session-global",
+      workspaceCandidates: [],
+      gitExecutable: "/usr/bin/git",
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
+      operationalPreloadForTesting: () => {
+        markPreloadStarted();
+        return Promise.resolve(Object.freeze({ ok: false as const }));
+      },
+      contextResolver: async () => {
+        await preloadStarted;
+        return context;
+      },
+      capture: captureCandidate,
+    });
+    expect(overlapped).toMatchObject({
+      outcome: "completed",
+      connections: [{ outcome: "accepted" }],
+    });
+  });
+
+  it("joins an overlapping preload before returning context failure", async () => {
+    const value = await fixture(
+      BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+      true,
+    );
+    let releasePreload!: () => void;
+    const blockedPreload = new Promise<void>((resolvePreload) => {
+      releasePreload = resolvePreload;
+    });
+    let markContextStarted!: () => void;
+    const contextStarted = new Promise<void>((resolveStarted) => {
+      markContextStarted = resolveStarted;
+    });
+    let settled = false;
+    const failed = runResolvedTraceLifecycleForTesting({
+      configurationStore: value.store,
+      operationalStateStore: value.operationalStateStore,
+      credentialBackendRegistry: value.credentialBackendRegistry,
+      transportExecutor: value.transportExecutor,
+      policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+      harnessRegistryId: "codex",
+      harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+      hookObservedUnixNano: "100",
+      operationIdScope: "session-global",
+      workspaceCandidates: [],
+      gitExecutable: "/usr/bin/git",
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
+      operationalPreloadForTesting: async () => {
+        await blockedPreload;
+        return Object.freeze({ ok: false as const });
+      },
+      contextResolver: () => {
+        markContextStarted();
+        return Promise.reject(new Error("CANARY_SECRET"));
+      },
+      capture: captureCandidate,
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+    await contextStarted;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releasePreload();
+    await expect(failed).resolves.toMatchObject({
+      outcome: "failed-open",
+      stage: "context",
+      code: "context-unavailable",
     });
   });
 });
