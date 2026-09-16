@@ -467,7 +467,7 @@ const ptyChallengeReceiptFor = () => {
       initialInputAction,
       {
         action: "checkpoint-process-topology" as const,
-        topology: "root-direct-child-direct-grandchild" as const,
+        topology: "root-with-contained-process-set" as const,
       },
       { action: "wait-for-semantic-completion" as const },
       finalInputAction,

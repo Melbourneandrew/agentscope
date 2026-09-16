@@ -111,7 +111,7 @@ describe("selected PTY transport", () => {
           },
           {
             action: "checkpoint-process-topology",
-            topology: "root-direct-child-direct-grandchild",
+            topology: "root-with-contained-process-set",
           },
           { action: "wait-for-semantic-completion" },
           {
@@ -152,10 +152,7 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
-    for (const seed of [
-      "checkpoint-missing-process",
-      "checkpoint-extra-process",
-    ] as const)
+    for (const seed of ["checkpoint-missing-process"] as const)
       await expect(
         executeSelectedPtyTransportForTest(challengeRequest, seed),
       ).resolves.toMatchObject({
@@ -177,6 +174,22 @@ describe("selected PTY transport", () => {
       executeSelectedPtyTransportForTest(
         challengeRequest,
         "checkpoint-transient-extra-process",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-extra-process",
       ),
     ).resolves.toMatchObject({
       actions: [
