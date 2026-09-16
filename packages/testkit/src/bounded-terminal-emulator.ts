@@ -80,6 +80,7 @@ const defaultLimits: PtyTerminalEmulatorLimits = freezeAuthority({
 });
 const credentialPromptPattern =
   /(?:password|passphrase|user[ _-]?name|e[ -]?mail|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
+const maximumCredentialTailCodePoints = 128;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
@@ -317,6 +318,9 @@ export class BoundedTerminalEmulator {
   #ended = false;
   #outputLimitReached = false;
   #completionObserved = false;
+  #completionTail = "";
+  #credentialPromptObserved = false;
+  #credentialTail = "";
 
   public constructor(
     geometry: PtyTerminalGeometry,
@@ -370,10 +374,6 @@ export class BoundedTerminalEmulator {
       return fail("testkit.pty.emulator.utf8");
     }
     for (const character of decoded) this.#consume(character);
-    this.#completionObserved ||= containsText(
-      this.#recentText(),
-      completedMarker,
-    );
   }
 
   public resize(geometry: PtyTerminalGeometry): void {
@@ -400,10 +400,6 @@ export class BoundedTerminalEmulator {
       try {
         const final = applyFunction(textDecoderDecode, this.#decoder, []);
         for (const character of final) this.#consume(character);
-        this.#completionObserved ||= containsText(
-          this.#recentText(),
-          completedMarker,
-        );
       } catch {
         this.#recordMalformedControl("utf8");
       }
@@ -434,7 +430,7 @@ export class BoundedTerminalEmulator {
       ? "output-limit"
       : this.#malformedControlCount > 0 || this.#unsupportedControlCount > 0
         ? "malformed-control"
-        : credentialPromptPattern.test(recent)
+        : this.#credentialPromptObserved || credentialPromptPattern.test(recent)
           ? "credential-prompt"
           : this.#completionObserved || containsText(recent, completedMarker)
             ? "completed"
@@ -580,6 +576,16 @@ export class BoundedTerminalEmulator {
     }
     this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
     this.#appendRecent(character);
+    this.#completionTail = `${this.#completionTail}${character}`.slice(
+      -completedMarker.length,
+    );
+    this.#completionObserved ||= this.#completionTail === completedMarker;
+    this.#credentialTail = `${this.#credentialTail}${character}`.slice(
+      -maximumCredentialTailCodePoints,
+    );
+    this.#credentialPromptObserved ||= credentialPromptPattern.test(
+      this.#credentialTail,
+    );
     if (this.#column === this.#geometry.columns - 1) {
       this.#column = 0;
       this.#lineFeed();

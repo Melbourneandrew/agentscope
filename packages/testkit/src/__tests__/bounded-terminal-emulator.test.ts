@@ -10,6 +10,8 @@ import {
 const encoder = new TextEncoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+// These cases share one bounded emulator fixture surface across semantic states.
+// eslint-disable-next-line max-lines-per-function
 describe("bounded semantic terminal emulator", () => {
   it("derives readiness across fragmented ANSI and resize operations", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
@@ -47,7 +49,33 @@ describe("bounded semantic terminal emulator", () => {
     expect(snapshot.nonEmptyLineCount).toBeGreaterThan(0);
   });
 
-  it("retains an observed completion after later output leaves the recent window", () => {
+  it("retains same-write completion after later output leaves the recent window", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumRecentCodePoints: 32,
+      },
+    );
+
+    terminal.write(bytes(`AGENTSCOPE_PTY_COMPLETE\r\n${"x".repeat(64)}`));
+
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
+  it("recognizes fragmented completion without accepting a near marker", () => {
+    const near = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    near.write(bytes("AGENTSCOPE_PTY_COMPLET"));
+    near.write(bytes("X"));
+    expect(near.end().semanticState).toBe("active");
+
+    const fragmented = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    fragmented.write(bytes("AGENTSCOPE_PTY_COM"));
+    fragmented.write(bytes("PLETE"));
+    expect(fragmented.end().semanticState).toBe("completed");
+  });
+
+  it("retains a later credential prompt after it leaves the recent window", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
       {
@@ -57,10 +85,9 @@ describe("bounded semantic terminal emulator", () => {
     );
 
     terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
-    expect(terminal.snapshot().semanticState).toBe("completed");
-    terminal.write(bytes("x".repeat(64)));
+    terminal.write(bytes(`Password: ${"x".repeat(64)}`));
 
-    expect(terminal.end().semanticState).toBe("completed");
+    expect(terminal.end().semanticState).toBe("credential-prompt");
   });
 
   it("accepts the exact bounded terminal controls emitted by the pinned Codex TUI", () => {
