@@ -187,14 +187,14 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("starts the Codex turn before sending its authenticated quit shortcut", () => {
+  it("starts the Codex turn before sending its authenticated quit command", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from([12, 4]),
+      Buffer.concat([Buffer.from([12]), Buffer.from("/quit\r")]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(1);
+    expect(scenario.postCompletionInputByteLength).toBe(6);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
@@ -209,9 +209,9 @@ describe("integration capability manifest", () => {
     ]);
     expect(actions.at(-1)).toEqual({
       action: "input",
-      byteLength: 1,
+      byteLength: 6,
       inputSha256:
-        "e52d9c508c502347344d8c07ad91cbd6068afc75ff6292f062a09ca381c89e71",
+        "af550994bb9dd00047c7fc76bedd48c7e5ffb38d5d9934d2be6c451f1aee6d2f",
     });
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
