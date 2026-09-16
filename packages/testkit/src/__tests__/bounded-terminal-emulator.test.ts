@@ -75,6 +75,24 @@ describe("bounded semantic terminal emulator", () => {
     expect(fragmented.end().semanticState).toBe("completed");
   });
 
+  it.each([
+    [
+      "readiness then completion",
+      "AGENTSCOPE_PTY_READY\r\nAGENTSCOPE_PTY_COMPLETE",
+    ],
+    [
+      "completion then readiness",
+      "AGENTSCOPE_PTY_COMPLETE\r\nAGENTSCOPE_PTY_READY",
+    ],
+  ])("latches independent semantic markers for %s", (_label, output) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(output));
+
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
   it("retains a later credential prompt after it leaves the recent window", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },

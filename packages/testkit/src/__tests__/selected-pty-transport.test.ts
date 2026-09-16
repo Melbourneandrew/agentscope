@@ -409,6 +409,38 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("admits one Ctrl-D after independently observing completion then readiness", async () => {
+    const ctrlD = new Uint8Array([4]);
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: ctrlD }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            { action: "wait-for-semantic-completion" },
+            {
+              action: "input",
+              byteLength: 1,
+              inputSha256: createHash("sha256").update(ctrlD).digest("hex"),
+            },
+          ],
+        },
+      },
+      "completion-before-readiness",
+    );
+
+    expect(receipt).toMatchObject({
+      actions: [
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 1,
+      outcome: "completed",
+      readinessObserved: true,
+      terminalInputJoined: true,
+    });
+  });
+
   it("does not dispatch the validated action plan through ambient array hooks", async () => {
     const now = performance.now();
     const selected = {

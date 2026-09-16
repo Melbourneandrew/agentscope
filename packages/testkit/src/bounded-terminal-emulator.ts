@@ -317,6 +317,8 @@ export class BoundedTerminalEmulator {
   #titleSha256: string | null = null;
   #ended = false;
   #outputLimitReached = false;
+  #readinessObserved = false;
+  #readinessTail = "";
   #completionObserved = false;
   #completionTail = "";
   #credentialPromptObserved = false;
@@ -470,6 +472,14 @@ export class BoundedTerminalEmulator {
     return this.#unsupportedControlReason;
   }
 
+  public readinessObserved(): boolean {
+    return this.#readinessObserved;
+  }
+
+  public completionObserved(): boolean {
+    return this.#completionObserved;
+  }
+
   #consume(character: string): void {
     if (this.#state === "ground") {
       if (character === "\u001b") {
@@ -576,6 +586,10 @@ export class BoundedTerminalEmulator {
     }
     this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
     this.#appendRecent(character);
+    this.#readinessTail = `${this.#readinessTail}${character}`.slice(
+      -readyMarker.length,
+    );
+    this.#readinessObserved ||= this.#readinessTail === readyMarker;
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
     );

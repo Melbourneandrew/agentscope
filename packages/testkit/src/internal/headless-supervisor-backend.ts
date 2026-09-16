@@ -2304,24 +2304,22 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
-            const priorSemanticState = terminal.snapshot().semanticState;
+            const completionWasObserved = terminal.completionObserved();
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
             terminal.write(new SafeUint8Array(captured));
             const semanticState = terminal.snapshot().semanticState;
-            if (
-              priorSemanticState !== "completed" &&
-              semanticState === "completed"
-            )
+            if (!completionWasObserved && terminal.completionObserved())
               semanticCompletionObservedAtOutputBytes = outputBytes;
-            if (semanticState === "ready") {
-              readinessObserved = true;
-              break;
-            } else if (
+            if (
               semanticState === "credential-prompt" ||
               semanticState === "malformed-control"
             )
               transportError = true;
+            else if (terminal.readinessObserved()) {
+              readinessObserved = true;
+              break;
+            }
           }
           if (observation.bytes.length > captured.length) {
             outputLimited = true;
@@ -4096,6 +4094,7 @@ type SelectedPtyTestSeed =
   | "adopted-zombie"
   | "clean"
   | "close-failure"
+  | "completion-before-readiness"
   | "control-eof-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
@@ -4269,28 +4268,30 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
                   : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom("AGENTSCOPE_PTY_READY");
       const chunks =
-        seed === "fragmented-output"
-          ? [
-              ready.subarray(0, 2),
-              ready.subarray(2),
-              output.subarray(0, 2),
-              output.subarray(2),
-            ]
-          : seed === "readiness-burst"
+        seed === "completion-before-readiness"
+          ? [output, ready]
+          : seed === "fragmented-output"
             ? [
-                safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
-                output,
+                ready.subarray(0, 2),
+                ready.subarray(2),
+                output.subarray(0, 2),
+                output.subarray(2),
               ]
-            : seed === "output-limit" || seed === "partial-input-output-limit"
-              ? [output.subarray(0, 4_096), output.subarray(4_096)]
-              : seed === "active-terminal" ||
-                  seed === "immediate-output" ||
-                  seed === "missing-ready" ||
-                  seed === "credential-prompt" ||
-                  seed === "malformed-control" ||
-                  seed === "unsupported-control"
-                ? [output]
-                : [ready, output];
+            : seed === "readiness-burst"
+              ? [
+                  safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
+                  output,
+                ]
+              : seed === "output-limit" || seed === "partial-input-output-limit"
+                ? [output.subarray(0, 4_096), output.subarray(4_096)]
+                : seed === "active-terminal" ||
+                    seed === "immediate-output" ||
+                    seed === "missing-ready" ||
+                    seed === "credential-prompt" ||
+                    seed === "malformed-control" ||
+                    seed === "unsupported-control"
+                  ? [output]
+                  : [ready, output];
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
