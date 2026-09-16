@@ -302,9 +302,9 @@ describe("integration capability manifest", () => {
       "      if (timer !== undefined) clearTimeout(timer);\n",
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
-    expect(semanticReady).toBeGreaterThan(modelRequest);
-    expect(traceDeadline).toBeGreaterThan(semanticReady);
+    expect(traceDeadline).toBeGreaterThan(modelRequest);
     expect(terminalWait).toBeGreaterThan(traceDeadline);
+    expect(semanticReady).toBeGreaterThan(terminalWait);
     expect(codexJoin).toBeGreaterThan(terminalWait);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(source).not.toContain(
