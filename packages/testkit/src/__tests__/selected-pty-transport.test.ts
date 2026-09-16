@@ -264,6 +264,10 @@ describe("selected PTY transport", () => {
     ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
     ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
     ["malformed-control", "testkit.pty.transport.semantic-malformed-control"],
+    [
+      "unsupported-control",
+      "testkit.pty.transport.semantic-unsupported-control",
+    ],
   ] as const)(
     "rejects terminal semantic state %s as completion",
     async (seed, code) => {

@@ -580,9 +580,9 @@ export class BoundedTerminalEmulator {
       this.#column = Math.min(this.#geometry.columns - 1, amount - 1);
     else if (final === "d")
       this.#row = Math.min(this.#geometry.rows - 1, amount - 1);
-    else if (final === "J" && (first === 0 || first === 2)) this.#clearScreen();
-    else if (final === "K" && (first === 0 || first === 2))
-      this.#clearLine(first === 2);
+    else if (final === "J" && first >= 0 && first <= 3)
+      this.#clearDisplay(first);
+    else if (final === "K" && first >= 0 && first <= 2) this.#clearLine(first);
     else if (final === "m") return;
     else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
     else if (final === "c" && first === 0) return;
@@ -615,7 +615,7 @@ export class BoundedTerminalEmulator {
       for (const mode of values) {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
-        else if (![1004, 1007, 2004, 2026].includes(mode)) {
+        else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
           this.#unsupportedControlCount += 1;
           return;
         }
@@ -707,19 +707,20 @@ export class BoundedTerminalEmulator {
       this.#cells[index] = " ";
   }
 
-  #clearScreen(): void {
-    for (let index = 0; index < this.#cells.length; index += 1)
-      this.#cells[index] = " ";
-    this.#row = 0;
-    this.#column = 0;
+  #clearDisplay(mode: number): void {
+    if (mode === 3) return;
+    const cursor = this.#row * this.#geometry.columns + this.#column;
+    const start = mode === 0 ? cursor : 0;
+    const end = mode === 1 ? cursor + 1 : this.#cells.length;
+    for (let index = start; index < end; index += 1) this.#cells[index] = " ";
   }
 
-  #clearLine(entire: boolean): void {
-    const start =
-      this.#row * this.#geometry.columns + (entire ? 0 : this.#column);
-    const end = (this.#row + 1) * this.#geometry.columns;
+  #clearLine(mode: number): void {
+    const rowStart = this.#row * this.#geometry.columns;
+    const cursor = rowStart + this.#column;
+    const start = mode === 0 ? cursor : rowStart;
+    const end = mode === 1 ? cursor + 1 : rowStart + this.#geometry.columns;
     for (let index = start; index < end; index += 1) this.#cells[index] = " ";
-    if (entire) this.#column = 0;
   }
 }
 
