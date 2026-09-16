@@ -519,20 +519,22 @@ try {
   );
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
-  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  // Codex may render its idle prompt while the Stop hook is still running.
-  // Keep the PTY open until the installed hook's exact trace is durably
-  // searchable, then emit the authenticated semantic readiness marker that
-  // releases the sole Ctrl-D owned by the outer PTY transport.
+  const traceDeadline = deadline - 3_000;
+  // The challenged marker proves that this wrapper observed the real Codex
+  // turn reach its terminal TUI state. It releases the sole Ctrl-D owned by
+  // the outer PTY transport; a fixed marker printed by the child cannot do so.
+  // Codex can admit its Stop hook only while leaving that terminal state, so
+  // durable trace proof follows the joined TUI exit under the same original
+  // outer deadline. No fresh observation window is created here.
   interactiveFailurePhase = "trace-terminal";
   await waitForCodexTurnTerminal(traceDeadline);
-  interactiveFailurePhase = "trace-settlement";
-  const summary = await waitForTraceSummary(traceDeadline);
   process.stdout.write(
     `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
   );
   interactiveFailurePhase = "tui-exit";
   await codexRun;
+  interactiveFailurePhase = "trace-settlement";
+  const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");

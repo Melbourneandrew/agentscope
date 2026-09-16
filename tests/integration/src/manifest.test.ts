@@ -252,22 +252,22 @@ describe("integration capability manifest", () => {
     );
     const modelRequest = source.indexOf("  await waitForModelRequest();\n");
     const traceDeadline = source.indexOf(
-      "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
+      "  const traceDeadline = deadline - 3_000;\n",
       modelRequest,
     );
     const terminalWait = source.indexOf(
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
       traceDeadline,
     );
-    const traceQueryBeforeJoin = source.indexOf(
-      "  const summary = await waitForTraceSummary(traceDeadline);\n",
-      terminalWait,
-    );
     const readinessRelease = source.indexOf(
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
-      traceQueryBeforeJoin,
+      terminalWait,
     );
     const codexJoin = source.indexOf("  await codexRun;\n", readinessRelease);
+    const traceQueryAfterJoin = source.indexOf(
+      "  const summary = await waitForTraceSummary(traceDeadline);\n",
+      codexJoin,
+    );
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(startupPrompt);
@@ -306,8 +306,8 @@ describe("integration capability manifest", () => {
     );
     expect(traceTerminalPhase).toBeGreaterThan(traceDeadline);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
-    expect(traceSettlementPhase).toBeLessThan(traceQueryBeforeJoin);
+    expect(traceSettlementPhase).toBeGreaterThan(codexJoin);
+    expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(traceSearchEmptyPhase).toBeGreaterThan(traceSearchResultPhase);
@@ -356,9 +356,9 @@ describe("integration capability manifest", () => {
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(traceDeadline).toBeGreaterThan(modelRequest);
     expect(terminalWait).toBeGreaterThan(traceDeadline);
-    expect(traceQueryBeforeJoin).toBeGreaterThan(terminalWait);
-    expect(readinessRelease).toBeGreaterThan(traceQueryBeforeJoin);
+    expect(readinessRelease).toBeGreaterThan(terminalWait);
     expect(codexJoin).toBeGreaterThan(readinessRelease);
+    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
