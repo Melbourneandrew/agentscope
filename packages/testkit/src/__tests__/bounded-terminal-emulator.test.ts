@@ -73,6 +73,7 @@ describe("bounded semantic terminal emulator", () => {
           "\u001b[1J",
           "\u001b[3J",
           "\u001b[1K",
+          "\u001b[r",
           "\u001b8",
           "\u001b[0 q",
           "\u001b[?2026l",

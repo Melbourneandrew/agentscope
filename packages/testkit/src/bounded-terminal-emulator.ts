@@ -281,6 +281,17 @@ const parseCsiParameters = (
   return { intermediate, prefix, values };
 };
 
+const passiveCsiIsSupported = (
+  final: string,
+  values: readonly number[],
+  rows: number,
+): boolean =>
+  (final === "c" && values.length === 1 && values[0] === 0) ||
+  (final === "r" &&
+    values.length <= 2 &&
+    values.every((value) => value <= rows)) ||
+  (["@", "L", "M", "P", "S", "T", "X"].includes(final) && values.length === 1);
+
 export class BoundedTerminalEmulator {
   readonly #decoder = new TextDecoderAuthority("utf-8", { fatal: true });
   readonly #limits: PtyTerminalEmulatorLimits;
@@ -634,19 +645,14 @@ export class BoundedTerminalEmulator {
     else if (final === "K" && first >= 0 && first <= 2) this.#clearLine(first);
     else if (final === "m") return;
     else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
-    else if (final === "c" && first === 0) return;
+    else if (passiveCsiIsSupported(final, values, this.#geometry.rows)) return;
     else if (final === "s") {
       this.#savedRow = this.#row;
       this.#savedColumn = this.#column;
     } else if (final === "u") {
       this.#row = this.#savedRow;
       this.#column = this.#savedColumn;
-    } else if (
-      ["@", "L", "M", "P", "S", "T", "X"].includes(final) &&
-      values.length === 1
-    )
-      return;
-    else this.#recordUnsupportedControl("csi");
+    } else this.#recordUnsupportedControl("csi");
   }
 
   #applyExtendedCsi(
