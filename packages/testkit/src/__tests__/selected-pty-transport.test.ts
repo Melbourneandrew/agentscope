@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it } from "vitest";
 
+import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
 import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.js";
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
@@ -440,6 +441,51 @@ describe("selected PTY transport", () => {
       terminalInputJoined: true,
     });
   });
+
+  it.each([
+    ["readinessObserved", "missing-ready"],
+    ["completionObserved", "missing-completion"],
+  ] as const)(
+    "does not trust caller-substituted emulator %s marker authority",
+    async (method, seed) => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        BoundedTerminalEmulator.prototype,
+        method,
+      )!;
+      Object.defineProperty(BoundedTerminalEmulator.prototype, method, {
+        ...descriptor,
+        value: () => true,
+      });
+      try {
+        const selected =
+          method === "readinessObserved"
+            ? request()
+            : {
+                ...request({ stdin: new Uint8Array() }),
+                interaction: {
+                  trigger: "semantic-ready" as const,
+                  actions: [
+                    { action: "wait-for-semantic-completion" as const },
+                  ],
+                },
+              };
+        await expect(
+          executeSelectedPtyTransportForTest(selected, seed),
+        ).rejects.toMatchObject({
+          code:
+            method === "readinessObserved"
+              ? "testkit.pty.transport.semantic-missing-readiness"
+              : "testkit.pty.transport.semantic-incomplete",
+        });
+      } finally {
+        Object.defineProperty(
+          BoundedTerminalEmulator.prototype,
+          method,
+          descriptor,
+        );
+      }
+    },
+  );
 
   it("does not dispatch the validated action plan through ambient array hooks", async () => {
     const now = performance.now();
