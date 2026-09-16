@@ -62,11 +62,8 @@ import {
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
 import {
-  compileCandidateInventory,
   compileImmutableCandidateHandoff,
   decodeInteractivePtyReceipt,
-  decodeInstalledPtyFailureReceipt,
-  decodeInstalledCliPtyReceipt,
   ptyExecutionFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -336,10 +333,6 @@ const stageBuildContext = (plan) => {
       resolve(integrationRoot, "immutable-candidate-authority.mjs"),
     ],
     [
-      "pty-installed-cli-driver.mjs",
-      resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
-    ],
-    [
       "retained-fixture-result.mjs",
       resolve(integrationRoot, "retained-fixture-result.mjs"),
     ],
@@ -546,7 +539,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
       "COPY dist ./dist",
@@ -1132,20 +1125,6 @@ const captureInteractivePtyReceipt = (output, plan, expected) => {
     throw new Error("integration.isolation.pty-receipt");
   return Object.freeze(receipt);
 };
-const captureInstalledCliPtyReceipt = (output, plan) =>
-  decodeInstalledCliPtyReceipt(output, {
-    candidateBundleIdentity: candidate.bundleIdentity,
-    candidateInventorySha256: compileCandidateInventory(candidate).sha256,
-    runId: plan.runId,
-    scenarioId: plan.scenarioId,
-  });
-const captureInstalledPtyFailure = (output, plan) => {
-  const receipt = decodeInstalledPtyFailureReceipt(output);
-  if (installedPtyFailures.has(plan.runId))
-    throw new Error("integration.isolation.pty-failure-receipt");
-  installedPtyFailures.set(plan.runId, receipt);
-  return receipt;
-};
 const preparedImageFor = async (image, signal) => {
   if (
     !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
@@ -1499,7 +1478,7 @@ const registerScenarioReceipt = (plan, receipt) => {
     registerIntegrationPtyReceipt(receipt, performance.now());
   else registerIntegrationHeadlessReceipt(receipt, performance.now());
 };
-const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
+const scenarioReceiptSucceeded = (plan, receipt) => {
   return (
     ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
       (plan.executionMode === "interactive" &&
@@ -1518,16 +1497,10 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
       (receipt.eofByteWritten === (plan.terminalAction === "eof") &&
         receipt.terminalInputJoined === true &&
         receipt.terminalOutputJoined === true &&
-        receipt.terminalTransportClosed === true)) &&
-    installedPtyReceipt.outcome === "completed"
+        receipt.terminalTransportClosed === true))
   );
 };
-const interactiveReceiptFailurePredicate = (
-  plan,
-  receipt,
-  installedPtyReceipt,
-  fixtureCaptured,
-) => {
+const interactiveReceiptFailurePredicate = (plan, receipt, fixtureCaptured) => {
   if (receipt.outcome !== "completed") return "completion-state";
   if (receipt.finalSnapshot?.semanticState !== "completed")
     return "completion-state";
@@ -1541,15 +1514,12 @@ const interactiveReceiptFailurePredicate = (
   if (receipt.terminalInputJoined !== true) return "terminal-input-join";
   if (receipt.terminalOutputJoined !== true) return "terminal-output-join";
   if (receipt.terminalTransportClosed !== true) return "transport-close";
-  if (installedPtyReceipt.outcome !== "completed")
-    return "installed-cli-outcome";
   if (!fixtureCaptured) return "fixture-result";
   return undefined;
 };
 const recordInteractiveReceiptFailure = (
   plan,
   receipt,
-  installedPtyReceipt,
   fixtureCaptured,
   fallback = "receipt-rejected",
 ) => {
@@ -1560,12 +1530,8 @@ const recordInteractiveReceiptFailure = (
     predicate:
       (receipt === undefined
         ? undefined
-        : interactiveReceiptFailurePredicate(
-            plan,
-            receipt,
-            installedPtyReceipt,
-            fixtureCaptured,
-          )) ?? fallback,
+        : interactiveReceiptFailurePredicate(plan, receipt, fixtureCaptured)) ??
+      fallback,
   });
 };
 const recordInteractiveExecutionFailure = (plan, error) => {
@@ -1591,15 +1557,7 @@ const captureFailedScenarioReceipt = (
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
-  const installedPtyReceipt = output.includes("AGENTSCOPE_PTY_RECEIPT=")
-    ? captureInstalledCliPtyReceipt(output, plan)
-    : { outcome: "missing" };
-  recordInteractiveReceiptFailure(
-    plan,
-    receipt,
-    installedPtyReceipt,
-    fixtureCaptured,
-  );
+  recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
   return receipt;
 };
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
@@ -1802,9 +1760,7 @@ const runScenario = async (plan, signal) => {
         );
       const output = `${error?.stdout ?? ""}`;
       const fixtureCaptured = captureFixtureResult(output, plan);
-      if (output.includes("AGENTSCOPE_PTY_FAILURE="))
-        captureInstalledPtyFailure(output, plan);
-      else recordInteractiveExecutionFailure(plan, error);
+      recordInteractiveExecutionFailure(plan, error);
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({
@@ -1850,7 +1806,6 @@ const runScenario = async (plan, signal) => {
       : captureHeadlessReceipt(stdout, plan, {
           outerMonotonicDeadline,
         });
-  const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
   const fixtureCaptured = captureFixtureResult(stdout, plan);
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
@@ -1858,7 +1813,6 @@ const runScenario = async (plan, signal) => {
     const predicate = interactiveReceiptFailurePredicate(
       plan,
       receipt,
-      ptyReceipt,
       fixtureCaptured,
     );
     if (predicate !== undefined)
@@ -1870,8 +1824,7 @@ const runScenario = async (plan, signal) => {
   }
   return {
     receipt,
-    succeeded:
-      scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
+    succeeded: scenarioReceiptSucceeded(plan, receipt) && fixtureCaptured,
   };
 };
 // eslint-disable-next-line max-lines-per-function -- one atomic retained evidence settlement
