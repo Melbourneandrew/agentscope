@@ -284,11 +284,20 @@ describe("integration capability manifest", () => {
     const traceSearchPhase = source.indexOf(
       '  interactiveFailurePhase = "trace-search";\n',
     );
+    const traceSearchResultPhase = source.indexOf(
+      '  interactiveFailurePhase = "trace-search-result";\n',
+    );
+    const traceSearchEmptyPhase = source.indexOf(
+      '    interactiveFailurePhase = "trace-search-empty";\n',
+    );
     expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
     expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
+    expect(traceSearchResultPhase).toBeGreaterThan(-1);
+    expect(traceSearchEmptyPhase).toBeGreaterThan(traceSearchResultPhase);
+    expect(source).not.toContain('      "--harness",\n      "codex",\n');
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
@@ -312,7 +321,7 @@ describe("integration capability manifest", () => {
       boundedQuery,
     );
     const acceptSummary = source.indexOf(
-      '  if (summary === null) throw new Error("integration.codex.trace-search");\n  return summary;\n',
+      '  if (summary === null) {\n    interactiveFailurePhase = "trace-search-empty";\n    throw new Error("integration.codex.trace-search");\n  }\n  return summary;\n',
       postQueryDeadline,
     );
     expect(lifecycleSettlement).toBeGreaterThan(terminalObservation);

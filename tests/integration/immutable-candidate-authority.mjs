@@ -9,6 +9,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-install",
   "integration.fixture.codex-model-request",
   "integration.fixture.codex-trace-search",
+  "integration.fixture.codex-trace-search-empty",
+  "integration.fixture.codex-trace-search-result",
   "integration.fixture.codex-trace-settlement",
   "integration.fixture.codex-trace-terminal",
   "integration.fixture.codex-tui-exit",
