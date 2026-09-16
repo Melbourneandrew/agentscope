@@ -164,6 +164,25 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("ready");
   });
 
+  it("admits a raw-mode TUI when no canonical EOF action is requested", async () => {
+    const base = request();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...base,
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [base.interaction.actions[0]!],
+        },
+      },
+      "mode-substitution",
+    );
+    expect(receipt).toMatchObject({
+      observedCanonicalMode: false,
+      outcome: "completed",
+      terminalInputJoined: true,
+    });
+  });
+
   it.each([
     ["geometry-substitution", "testkit.pty.geometry"],
     ["mode-substitution", "testkit.pty.geometry"],
