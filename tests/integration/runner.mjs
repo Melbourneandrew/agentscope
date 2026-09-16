@@ -354,6 +354,7 @@ try {
               ? terminalInput
               : Buffer.concat([
                   Buffer.from(`${readinessChallenge}\n`),
+                  Buffer.from([0x0a]),
                   terminalInput,
                 ]),
           )

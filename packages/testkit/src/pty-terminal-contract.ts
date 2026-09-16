@@ -18,6 +18,12 @@ export type SelectedPtyExecutionAction =
       geometry: PtyTerminalGeometry;
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-direct-child-direct-grandchild";
+      byteLength: 1;
+      inputSha256: string;
+    }>
   | Readonly<{ action: "wait-for-semantic-completion" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
@@ -105,6 +111,13 @@ export type PtyTransportAction =
   | Readonly<{
       action: "input";
       byteLength: number;
+      inputSha256: string;
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-direct-child-direct-grandchild";
+      byteLength: 1;
       inputSha256: string;
       monotonicAtMs: number;
     }>

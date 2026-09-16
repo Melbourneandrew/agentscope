@@ -192,47 +192,6 @@ export const terminalObservationBeforeDeadline = ({
   return observed && observedAt < deadline;
 };
 
-export const sessionStartProcessSetDrained = ({
-  baseline,
-  current,
-  codexIdentity,
-}) => {
-  const validIdentity = (identity) =>
-    plainRecord(identity) &&
-    Object.keys(identity).sort().join("\0") ===
-      "executable\0pid\0startIdentity" &&
-    Number.isSafeInteger(identity.pid) &&
-    identity.pid > 0 &&
-    typeof identity.startIdentity === "string" &&
-    /^\d+$/u.test(identity.startIdentity) &&
-    typeof identity.executable === "string" &&
-    identity.executable.length > 0 &&
-    identity.executable.length <= 4_096;
-  if (
-    !Array.isArray(baseline) ||
-    baseline.length > 64 ||
-    baseline.some((identity) => !validIdentity(identity)) ||
-    !Array.isArray(current) ||
-    current.length > 64 ||
-    current.some((identity) => !validIdentity(identity)) ||
-    !validIdentity(codexIdentity)
-  )
-    throw new Error("integration.codex.process-set");
-  const sameIdentity = (left, right) =>
-    left.pid === right.pid &&
-    left.startIdentity === right.startIdentity &&
-    left.executable === right.executable;
-  return (
-    current.filter((identity) => sameIdentity(identity, codexIdentity))
-      .length === 1 &&
-    current.every(
-      (identity) =>
-        sameIdentity(identity, codexIdentity) ||
-        baseline.some((prior) => sameIdentity(identity, prior)),
-    )
-  );
-};
-
 const ledgerLimit = 2 * 1024 * 1024;
 const descriptorRoot =
   process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";

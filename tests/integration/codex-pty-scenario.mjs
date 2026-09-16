@@ -9,9 +9,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
-  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -26,7 +24,6 @@ import {
   openLocalSqliteLifecycle,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
-  sessionStartProcessSetDrained,
   terminalObservationBeforeDeadline,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
@@ -103,6 +100,42 @@ const readReadinessChallenge = () =>
   });
 const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
+const readCheckpointAcknowledgement = () =>
+  new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onError);
+      process.stdin.pause();
+      if (timer !== undefined) clearTimeout(timer);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onEnd = () =>
+      settle(new Error("integration.codex.process-checkpoint"));
+    const onError = () =>
+      settle(new Error("integration.codex.process-checkpoint"));
+    const onData = (chunk) => {
+      const bytes = Buffer.from(chunk);
+      settle(
+        bytes.length === 1 && bytes[0] === 0x0a
+          ? undefined
+          : new Error("integration.codex.process-checkpoint"),
+      );
+    };
+    process.stdin.once("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.once("error", onError);
+    process.stdin.resume();
+    timer = setTimeout(
+      () => settle(new Error("integration.codex.process-checkpoint")),
+      Math.min(5_000, remaining()),
+    );
+  });
 
 const maximumOutput = 1024 * 1024;
 const run = (executable, arguments_, options = {}) => {
@@ -170,49 +203,6 @@ const run = (executable, arguments_, options = {}) => {
   });
   return completion;
 };
-const readProcessIdentity = (pid) => {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    if (stat.length > 4_096) throw new Error("integration.codex.process-set");
-    const close = stat.lastIndexOf(")");
-    if (close < 2) throw new Error("integration.codex.process-set");
-    const fields = stat
-      .slice(close + 2)
-      .trim()
-      .split(/\s/u);
-    const startIdentity = fields[19];
-    const executable = readlinkSync(`/proc/${pid}/exe`);
-    if (
-      !/^\d+$/u.test(startIdentity ?? "") ||
-      typeof executable !== "string" ||
-      executable.length < 1 ||
-      executable.length > 4_096
-    )
-      throw new Error("integration.codex.process-set");
-    return Object.freeze({ executable, pid, startIdentity });
-  } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw error;
-  }
-};
-const snapshotProcessSet = () => {
-  const pids = readdirSync("/proc", { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && /^[1-9]\d*$/u.test(entry.name))
-    .map(({ name }) => Number(name));
-  if (pids.length > 64) throw new Error("integration.codex.process-set");
-  return Object.freeze(
-    pids
-      .map(readProcessIdentity)
-      .filter((identity) => identity !== null)
-      .sort((left, right) => left.pid - right.pid),
-  );
-};
-const assertSessionStartProcessSetDrained = (baseline, codexIdentity) => {
-  const current = snapshotProcessSet();
-  if (!sessionStartProcessSetDrained({ baseline, current, codexIdentity }))
-    throw new Error("integration.codex.process-set");
-};
-
 const parseMachine = (bytes, command) => {
   const value = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(bytes),
@@ -397,9 +387,6 @@ const openChallengedModelGateway = async () => {
         body.includes(expectedAssistantMessage)
       )
         throw new Error("integration.codex.model-gateway");
-      if (processBaseline === undefined || codexIdentity === undefined)
-        throw new Error("integration.codex.process-set");
-      assertSessionStartProcessSetDrained(processBaseline, codexIdentity);
       codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
       if (codexLedgerBaseline.length !== 1)
         throw new Error("integration.codex.session-ledger");
@@ -415,6 +402,10 @@ const openChallengedModelGateway = async () => {
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
       );
+      process.stdout.write(
+        `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
+      );
+      await readCheckpointAcknowledgement();
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end(challenged);
     } catch (error) {
@@ -657,8 +648,6 @@ const waitForTraceSummary = async (traceDeadline) => {
 let completed = false;
 let modelGateway;
 let codexLedgerBaseline;
-let processBaseline;
-let codexIdentity;
 try {
   interactiveFailurePhase = "install";
   await cli(["init", "--yes"], "agentscope init");
@@ -697,7 +686,6 @@ try {
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
   interactiveFailurePhase = "tui-start";
-  processBaseline = snapshotProcessSet();
   const codexRun = run(
     codex,
     [
@@ -717,25 +705,14 @@ try {
       inherit: true,
     },
   );
-  codexIdentity = readProcessIdentity(codexRun.childPid);
-  if (codexIdentity === null) throw new Error("integration.codex.process-set");
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   const traceDeadline = deadline - 3_000;
-  // The challenged marker proves that this wrapper observed the real Codex
-  // turn reach its terminal TUI state. It releases the sole Ctrl-D owned by
-  // the outer PTY transport; a fixed marker printed by the child cannot do so.
-  // Codex can admit its Stop hook only while leaving that terminal state, so
-  // durable trace proof follows the joined TUI exit under the same original
-  // outer deadline. No fresh observation window is created here.
-  interactiveFailurePhase = "trace-terminal";
-  await waitForCodexTurnTerminal(traceDeadline);
-  process.stdout.write(
-    `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
-  );
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   await modelGateway.settle();
+  interactiveFailurePhase = "trace-terminal";
+  await waitForCodexTurnTerminal(traceDeadline);
   interactiveFailurePhase = "trace-settlement";
   const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";

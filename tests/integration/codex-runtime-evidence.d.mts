@@ -34,18 +34,6 @@ export function terminalObservationBeforeDeadline(input: {
   now: () => number;
 }): boolean;
 
-export interface CodexProcessIdentity {
-  readonly executable: string;
-  readonly pid: number;
-  readonly startIdentity: string;
-}
-
-export function sessionStartProcessSetDrained(input: {
-  readonly baseline: readonly CodexProcessIdentity[];
-  readonly current: readonly CodexProcessIdentity[];
-  readonly codexIdentity: CodexProcessIdentity;
-}): boolean;
-
 export function readCodexSessionLedgers(homeDescriptor: number): string[];
 
 export function readCodexSessionLedgerRecords(
