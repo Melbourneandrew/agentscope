@@ -24,9 +24,11 @@ import {
   localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
+  openOperationalStateHealth,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
   terminalObservationBeforeDeadline,
+  traceSummaryBeforeDeadline,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
@@ -222,6 +224,7 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
+let localSqliteHealthDescriptor;
 let localSqliteOperationalBaseline;
 let interactiveFailurePhase = "bootstrap";
 if (process.hasUncaughtExceptionCaptureCallback())
@@ -603,7 +606,7 @@ const waitForTraceSummary = async (traceDeadline) => {
   // lifecycle to settle before issuing the sole retrieval search.
   while (
     !localSqliteAcceptanceObservedAfterBaseline(
-      homeDescriptor,
+      localSqliteHealthDescriptor,
       localSqliteOperationalBaseline,
     ) ||
     !localSqliteReporterSettled(localSqliteLifecycleDescriptor)
@@ -620,7 +623,11 @@ const waitForTraceSummary = async (traceDeadline) => {
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
   interactiveFailurePhase = "trace-search";
-  const summary = await readTraceSummary(traceDeadline);
+  const summary = traceSummaryBeforeDeadline({
+    summary: await readTraceSummary(traceDeadline),
+    deadline: traceDeadline,
+    now: bootNow,
+  });
   if (summary === null) throw new Error("integration.codex.trace-search");
   return summary;
 };
@@ -638,8 +645,10 @@ try {
   await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  localSqliteOperationalBaseline =
-    localSqliteAcceptanceBaseline(homeDescriptor);
+  localSqliteHealthDescriptor = openOperationalStateHealth(homeDescriptor);
+  localSqliteOperationalBaseline = localSqliteAcceptanceBaseline(
+    localSqliteHealthDescriptor,
+  );
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "unchanged",
@@ -772,6 +781,8 @@ try {
   modelGateway?.abort();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
+  if (localSqliteHealthDescriptor !== undefined)
+    closeSync(localSqliteHealthDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {

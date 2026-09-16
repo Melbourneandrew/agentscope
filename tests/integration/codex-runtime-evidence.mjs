@@ -192,6 +192,15 @@ export const terminalObservationBeforeDeadline = ({
   return observed && observedAt < deadline;
 };
 
+export const traceSummaryBeforeDeadline = ({ summary, deadline, now }) => {
+  if (!Number.isFinite(deadline) || typeof now !== "function")
+    throw new Error("integration.codex.trace-deadline");
+  const observedAt = now();
+  if (!Number.isFinite(observedAt) || observedAt >= deadline)
+    throw new Error("integration.codex.trace-deadline");
+  return summary;
+};
+
 const ledgerLimit = 2 * 1024 * 1024;
 const descriptorRoot =
   process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
@@ -364,8 +373,10 @@ export const settledLocalSqliteLifecycleSnapshot = ({
     return false;
   return firstNames.length === 0;
 };
-const readCapped = (descriptor) => {
-  const buffer = Buffer.allocUnsafe(ledgerLimit + 1);
+const readCapped = (descriptor, maximumBytes = ledgerLimit) => {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1)
+    throw new Error("integration.codex.session-ledger");
+  const buffer = Buffer.allocUnsafe(maximumBytes + 1);
   let offset = 0;
   while (offset < buffer.length) {
     const count = readSync(
@@ -378,25 +389,22 @@ const readCapped = (descriptor) => {
     if (count === 0) break;
     offset += count;
   }
-  if (offset > ledgerLimit) throw new Error("integration.codex.session-ledger");
+  if (offset > maximumBytes)
+    throw new Error("integration.codex.session-ledger");
   return buffer.subarray(0, offset);
 };
 
 const operationalStateError = () =>
   new Error("integration.codex.operational-state");
-const operationalStatePath = (homeDescriptor) => {
+export const openOperationalStateHealth = (homeDescriptor) => {
+  if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
+    throw operationalStateError();
   const opened = [];
   try {
     const agentscope = requireDirectory(homeDescriptor, ".agentscope");
     opened.push(agentscope);
     const health = requireDirectory(agentscope, "health");
-    opened.push(health);
-    const state = openChild(
-      health,
-      "operational-state-v1.json",
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    return state;
+    return health;
   } catch (error) {
     if (error?.message === "integration.codex.local-sqlite-settlement")
       throw operationalStateError();
@@ -405,14 +413,258 @@ const operationalStatePath = (homeDescriptor) => {
     for (const descriptor of opened.reverse()) closeSync(descriptor);
   }
 };
-const readOperationalState = (homeDescriptor, unstable) => {
-  if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
+const exactKeys = (value, expected) =>
+  plainRecord(value) && Object.keys(value).sort().join("\0") === expected;
+const nonnegative = (value) => Number.isSafeInteger(value) && value >= 0;
+const digest = (value) =>
+  typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+const connectionId = (value) =>
+  typeof value === "string" &&
+  /^destination-connection-v1-[a-f0-9]{64}$/u.test(value);
+const destinationType = (value) =>
+  typeof value === "string" &&
+  /^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(value);
+const optionalConnectionFields = (entry) =>
+  (entry.destinationType === undefined ||
+    destinationType(entry.destinationType)) &&
+  (entry.connectionId === undefined || connectionId(entry.connectionId));
+const sequenceFields = (entry) =>
+  nonnegative(entry.sequence) && nonnegative(entry.observedAtUnixMilliseconds);
+const diagnosticCodes = new Set([
+  "configuration-invalid",
+  "configuration-recovery-needed",
+  "credential-unavailable",
+  "credential-locked",
+  "credential-denied",
+  "credential-missing",
+  "credential-malformed",
+  "policy-unavailable",
+  "capture-failed",
+  "checkpoint-unavailable",
+  "native-source-loss",
+  "redaction-suppressed",
+  "no-route",
+  "reporter-rejected",
+  "reporter-unavailable",
+  "reporter-deadline-exceeded",
+  "reporter-outcome-unknown",
+  "destination-busy",
+  "destination-full",
+  "destination-corrupt",
+  "destination-migrating",
+  "destination-retention",
+  "destination-capacity",
+]);
+const validDiagnostic = (entry) =>
+  exactKeys(
+    entry,
+    [
+      "code",
+      "configurationGeneration",
+      ...(entry?.connectionId === undefined ? [] : ["connectionId"]),
+      ...(entry?.destinationType === undefined ? [] : ["destinationType"]),
+      "observedAtUnixMilliseconds",
+      "sequence",
+      "severity",
+    ]
+      .sort()
+      .join("\0"),
+  ) &&
+  diagnosticCodes.has(entry.code) &&
+  ["info", "warning", "error"].includes(entry.severity) &&
+  (entry.configurationGeneration === null ||
+    nonnegative(entry.configurationGeneration)) &&
+  optionalConnectionFields(entry) &&
+  sequenceFields(entry);
+const validHealth = (entry) =>
+  exactKeys(
+    entry,
+    [
+      "configurationGeneration",
+      ...(entry?.connectionId === undefined ? [] : ["connectionId"]),
+      ...(entry?.destinationType === undefined ? [] : ["destinationType"]),
+      "observedAtUnixMilliseconds",
+      "outcome",
+      "policyMode",
+      "receipt",
+      "scope",
+      "sequence",
+      "stage",
+    ]
+      .sort()
+      .join("\0"),
+  ) &&
+  ["hook", "connection"].includes(entry.scope) &&
+  [
+    "hook-started",
+    "capture",
+    "redaction",
+    "routing",
+    "delivery",
+    "remote-acceptance",
+  ].includes(entry.stage) &&
+  [
+    "completed",
+    "suppressed",
+    "no-route",
+    "accepted",
+    "rejected",
+    "unavailable",
+    "deadline-exceeded",
+    "outcome-unknown",
+  ].includes(entry.outcome) &&
+  [
+    null,
+    "accepted",
+    "rejected",
+    "unavailable",
+    "deadline-exceeded",
+    "outcome-unknown",
+  ].includes(entry.receipt) &&
+  (entry.configurationGeneration === null ||
+    nonnegative(entry.configurationGeneration)) &&
+  [null, "baseline", "strict"].includes(entry.policyMode) &&
+  optionalConnectionFields(entry) &&
+  sequenceFields(entry);
+const validCheckpoint = (entry) =>
+  exactKeys(
+    entry,
+    "acknowledgedExclusivePosition\0adapterId\0configurationGeneration\0connectionId\0nativeIdentityKind\0observedAtUnixMilliseconds\0positionKind\0sequence\0sourceGeneration\0sourceIdentityDigest",
+  ) &&
+  typeof entry.adapterId === "string" &&
+  /^@agentscope\/harness-[a-z0-9-]{1,64}$/u.test(entry.adapterId) &&
+  digest(entry.sourceIdentityDigest) &&
+  ["conversation", "run", "session", "thread"].includes(
+    entry.nativeIdentityKind,
+  ) &&
+  nonnegative(entry.sourceGeneration) &&
+  ["byte-offset", "event-index", "line", "sequence"].includes(
+    entry.positionKind,
+  ) &&
+  nonnegative(entry.acknowledgedExclusivePosition) &&
+  nonnegative(entry.configurationGeneration) &&
+  connectionId(entry.connectionId) &&
+  sequenceFields(entry);
+const validHistory = (document) => {
+  const entries = [
+    ...document.diagnostics,
+    ...document.health,
+    ...document.checkpoints,
+  ];
+  const ordered = (values) =>
+    values.every(
+      (entry, index) =>
+        index === 0 ||
+        values[index - 1].observedAtUnixMilliseconds <
+          entry.observedAtUnixMilliseconds ||
+        (values[index - 1].observedAtUnixMilliseconds ===
+          entry.observedAtUnixMilliseconds &&
+          values[index - 1].sequence < entry.sequence),
+    );
+  return (
+    new Set(entries.map(({ sequence }) => sequence)).size === entries.length &&
+    entries.every(({ sequence }) => sequence < document.nextSequence) &&
+    document.losses.diagnostics +
+      document.losses.health +
+      document.losses.checkpoints +
+      entries.length ===
+      document.nextSequence &&
+    ordered(document.diagnostics) &&
+    ordered(document.health) &&
+    ordered(document.checkpoints)
+  );
+};
+const decodeOperationalState = (bytes) => {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const document = JSON.parse(text);
+  if (
+    !exactKeys(
+      document,
+      "checkpoints\0diagnostics\0health\0losses\0nextSequence\0version",
+    ) ||
+    document.version !== 1 ||
+    !nonnegative(document.nextSequence) ||
+    !exactKeys(document.losses, "checkpoints\0diagnostics\0health") ||
+    !nonnegative(document.losses.diagnostics) ||
+    !nonnegative(document.losses.health) ||
+    !nonnegative(document.losses.checkpoints) ||
+    !Array.isArray(document.diagnostics) ||
+    document.diagnostics.length > 128 ||
+    document.diagnostics.some((entry) => !validDiagnostic(entry)) ||
+    !Array.isArray(document.health) ||
+    document.health.length > 64 ||
+    document.health.some((entry) => !validHealth(entry)) ||
+    !Array.isArray(document.checkpoints) ||
+    document.checkpoints.length > 128 ||
+    document.checkpoints.some((entry) => !validCheckpoint(entry)) ||
+    !validHistory(document)
+  )
     throw operationalStateError();
-  const descriptor = operationalStatePath(homeDescriptor);
+  const normalized = {
+    version: document.version,
+    nextSequence: document.nextSequence,
+    losses: {
+      diagnostics: document.losses.diagnostics,
+      health: document.losses.health,
+      checkpoints: document.losses.checkpoints,
+    },
+    diagnostics: document.diagnostics.map((entry) => ({
+      code: entry.code,
+      severity: entry.severity,
+      configurationGeneration: entry.configurationGeneration,
+      ...(entry.destinationType === undefined
+        ? {}
+        : { destinationType: entry.destinationType }),
+      ...(entry.connectionId === undefined
+        ? {}
+        : { connectionId: entry.connectionId }),
+      sequence: entry.sequence,
+      observedAtUnixMilliseconds: entry.observedAtUnixMilliseconds,
+    })),
+    health: document.health.map((entry) => ({
+      scope: entry.scope,
+      stage: entry.stage,
+      outcome: entry.outcome,
+      configurationGeneration: entry.configurationGeneration,
+      policyMode: entry.policyMode,
+      ...(entry.destinationType === undefined
+        ? {}
+        : { destinationType: entry.destinationType }),
+      ...(entry.connectionId === undefined
+        ? {}
+        : { connectionId: entry.connectionId }),
+      receipt: entry.receipt,
+      sequence: entry.sequence,
+      observedAtUnixMilliseconds: entry.observedAtUnixMilliseconds,
+    })),
+    checkpoints: document.checkpoints.map((entry) => ({
+      adapterId: entry.adapterId,
+      sourceIdentityDigest: entry.sourceIdentityDigest,
+      nativeIdentityKind: entry.nativeIdentityKind,
+      sourceGeneration: entry.sourceGeneration,
+      positionKind: entry.positionKind,
+      acknowledgedExclusivePosition: entry.acknowledgedExclusivePosition,
+      configurationGeneration: entry.configurationGeneration,
+      connectionId: entry.connectionId,
+      sequence: entry.sequence,
+      observedAtUnixMilliseconds: entry.observedAtUnixMilliseconds,
+    })),
+  };
+  if (`${JSON.stringify(normalized)}\n` !== text) throw operationalStateError();
+  return normalized;
+};
+const readOperationalState = (healthDescriptor, unstable) => {
+  if (!Number.isSafeInteger(healthDescriptor) || healthDescriptor < 0)
+    throw operationalStateError();
+  const descriptor = openChild(
+    healthDescriptor,
+    "operational-state-v1.json",
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
   if (descriptor === null) return null;
   try {
     const before = fstatSync(descriptor, { bigint: true });
-    const bytes = readCapped(descriptor);
+    const bytes = readCapped(descriptor, 262_144);
     const after = fstatSync(descriptor, { bigint: true });
     if (
       !before.isFile() ||
@@ -422,21 +674,7 @@ const readOperationalState = (homeDescriptor, unstable) => {
       if (unstable === "retry") return undefined;
       throw operationalStateError();
     }
-    const document = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-    );
-    if (
-      !plainRecord(document) ||
-      Object.keys(document).sort().join("\0") !==
-        "checkpoints\0diagnostics\0health\0losses\0nextSequence\0version" ||
-      document.version !== 1 ||
-      !Number.isSafeInteger(document.nextSequence) ||
-      document.nextSequence < 0 ||
-      !Array.isArray(document.health) ||
-      document.health.length > 64
-    )
-      throw operationalStateError();
-    return document;
+    return decodeOperationalState(bytes);
   } catch (error) {
     if (error?.message === "integration.codex.operational-state") throw error;
     throw operationalStateError();
@@ -445,81 +683,89 @@ const readOperationalState = (homeDescriptor, unstable) => {
   }
 };
 
-export const localSqliteAcceptanceBaseline = (homeDescriptor) => {
-  const document = readOperationalState(homeDescriptor, "reject");
-  return document === null ? 0 : document.nextSequence;
+export const localSqliteAcceptanceBaseline = (healthDescriptor) => {
+  const document = readOperationalState(healthDescriptor, "reject") ?? {
+    version: 1,
+    nextSequence: 0,
+    losses: { diagnostics: 0, health: 0, checkpoints: 0 },
+    diagnostics: [],
+    health: [],
+    checkpoints: [],
+  };
+  return Object.freeze({
+    nextSequence: document.nextSequence,
+    losses: Object.freeze({ ...document.losses }),
+    diagnostics: Object.freeze(
+      document.diagnostics.map((entry) => Object.freeze({ ...entry })),
+    ),
+    health: Object.freeze(
+      document.health.map((entry) => Object.freeze({ ...entry })),
+    ),
+    checkpoints: Object.freeze(
+      document.checkpoints.map((entry) => Object.freeze({ ...entry })),
+    ),
+  });
+};
+
+const preservesHistory = (document, baseline, field) => {
+  const before = baseline[field];
+  const after = document[field];
+  if (
+    new Set(before.map(({ sequence }) => sequence)).size !== before.length ||
+    new Set(after.map(({ sequence }) => sequence)).size !== after.length ||
+    after.some(({ sequence }) => sequence >= document.nextSequence)
+  )
+    return false;
+  const retained = after.filter(
+    ({ sequence }) => sequence < baseline.nextSequence,
+  );
+  const omitted = before.length - retained.length;
+  return (
+    omitted >= 0 &&
+    JSON.stringify(retained) === JSON.stringify(before.slice(omitted)) &&
+    document.losses[field] === baseline.losses[field] + omitted
+  );
 };
 
 export const localSqliteAcceptanceObservedAfterBaseline = (
-  homeDescriptor,
+  healthDescriptor,
   baseline,
 ) => {
-  if (!Number.isSafeInteger(baseline) || baseline < 0)
+  if (
+    !exactKeys(
+      baseline,
+      "checkpoints\0diagnostics\0health\0losses\0nextSequence",
+    ) ||
+    !nonnegative(baseline.nextSequence) ||
+    !exactKeys(baseline.losses, "checkpoints\0diagnostics\0health") ||
+    !nonnegative(baseline.losses.diagnostics) ||
+    !nonnegative(baseline.losses.health) ||
+    !nonnegative(baseline.losses.checkpoints) ||
+    !Array.isArray(baseline.diagnostics) ||
+    baseline.diagnostics.length > 128 ||
+    baseline.diagnostics.some((entry) => !validDiagnostic(entry)) ||
+    !Array.isArray(baseline.health) ||
+    baseline.health.length > 64 ||
+    baseline.health.some((entry) => !validHealth(entry)) ||
+    !Array.isArray(baseline.checkpoints) ||
+    baseline.checkpoints.length > 128 ||
+    baseline.checkpoints.some((entry) => !validCheckpoint(entry)) ||
+    !validHistory(baseline)
+  )
     throw operationalStateError();
-  const document = readOperationalState(homeDescriptor, "retry");
+  const document = readOperationalState(healthDescriptor, "retry");
   if (document === null || document === undefined) return false;
-  const healthEntry = (entry) => {
-    if (
-      !plainRecord(entry) ||
-      ![
-        "configurationGeneration\0observedAtUnixMilliseconds\0outcome\0policyMode\0receipt\0scope\0sequence\0stage",
-        "configurationGeneration\0connectionId\0destinationType\0observedAtUnixMilliseconds\0outcome\0policyMode\0receipt\0scope\0sequence\0stage",
-      ].includes(Object.keys(entry).sort().join("\0")) ||
-      !Number.isSafeInteger(entry.sequence) ||
-      entry.sequence < 0 ||
-      !Number.isSafeInteger(entry.observedAtUnixMilliseconds) ||
-      entry.observedAtUnixMilliseconds < 0 ||
-      !["hook", "connection"].includes(entry.scope) ||
-      ![
-        "hook-started",
-        "capture",
-        "redaction",
-        "routing",
-        "delivery",
-        "remote-acceptance",
-      ].includes(entry.stage) ||
-      ![
-        "completed",
-        "suppressed",
-        "no-route",
-        "accepted",
-        "rejected",
-        "unavailable",
-        "deadline-exceeded",
-        "outcome-unknown",
-      ].includes(entry.outcome) ||
-      ![
-        null,
-        "accepted",
-        "rejected",
-        "unavailable",
-        "deadline-exceeded",
-        "outcome-unknown",
-      ].includes(entry.receipt) ||
-      !(
-        entry.configurationGeneration === null ||
-        (Number.isSafeInteger(entry.configurationGeneration) &&
-          entry.configurationGeneration >= 0)
-      ) ||
-      ![null, "baseline", "strict"].includes(entry.policyMode) ||
-      (entry.destinationType !== undefined &&
-        (typeof entry.destinationType !== "string" ||
-          !/^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(
-            entry.destinationType,
-          ))) ||
-      (entry.connectionId !== undefined &&
-        (typeof entry.connectionId !== "string" ||
-          !/^destination-connection-v1-[a-f0-9]{64}$/u.test(
-            entry.connectionId,
-          )))
-    )
-      throw operationalStateError();
-    return entry;
-  };
-  const entries = document.health.map(healthEntry);
+  if (
+    document.nextSequence < baseline.nextSequence ||
+    !preservesHistory(document, baseline, "diagnostics") ||
+    !preservesHistory(document, baseline, "health") ||
+    !preservesHistory(document, baseline, "checkpoints")
+  )
+    throw operationalStateError();
+  const entries = document.health;
   const matches = entries.filter((entry) => {
     return (
-      entry.sequence >= baseline &&
+      entry.sequence >= baseline.nextSequence &&
       entry.sequence < document.nextSequence &&
       entry.scope === "connection" &&
       entry.stage === "remote-acceptance" &&

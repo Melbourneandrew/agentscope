@@ -21,12 +21,14 @@ import {
   localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
+  openOperationalStateHealth,
   readCodexSessionLedgers,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
   settledCodexLedgerSnapshot,
   settledLocalSqliteLifecycleSnapshot,
   terminalObservationBeforeDeadline,
+  traceSummaryBeforeDeadline,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
@@ -139,7 +141,7 @@ describe("Codex Local SQLite reporter settlement", () => {
       const statePath = join(health, "operational-state-v1.json");
       const accepted = {
         version: 1,
-        nextSequence: 2,
+        nextSequence: 1,
         losses: { diagnostics: 0, health: 0, checkpoints: 0 },
         diagnostics: [],
         health: [
@@ -152,20 +154,35 @@ describe("Codex Local SQLite reporter settlement", () => {
             destinationType: "@agentscope/destination-local-sqlite",
             connectionId: `destination-connection-v1-${"a".repeat(64)}`,
             receipt: "accepted",
-            sequence: 1,
+            sequence: 0,
             observedAtUnixMilliseconds: 1,
           },
         ],
         checkpoints: [],
       };
+      const healthDescriptor = openOperationalStateHealth(homeDescriptor);
       try {
-        expect(localSqliteAcceptanceBaseline(homeDescriptor)).toBe(0);
+        const baseline = localSqliteAcceptanceBaseline(healthDescriptor);
+        expect(baseline).toEqual({
+          nextSequence: 0,
+          losses: { diagnostics: 0, health: 0, checkpoints: 0 },
+          diagnostics: [],
+          health: [],
+          checkpoints: [],
+        });
         writeFileSync(statePath, `${JSON.stringify(accepted)}\n`);
         expect(
-          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 0),
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
         ).toBe(true);
+        const afterAcceptance = localSqliteAcceptanceBaseline(healthDescriptor);
         expect(
-          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 2),
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            afterAcceptance,
+          ),
         ).toBe(false);
         writeFileSync(
           statePath,
@@ -175,9 +192,137 @@ describe("Codex Local SQLite reporter settlement", () => {
           })}\n`,
         );
         expect(() =>
-          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 0),
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
+        ).toThrow("integration.codex.operational-state");
+        writeFileSync(statePath, ` ${JSON.stringify(accepted)}\n`);
+        expect(() => localSqliteAcceptanceBaseline(healthDescriptor)).toThrow(
+          "integration.codex.operational-state",
+        );
+        writeFileSync(
+          statePath,
+          `${JSON.stringify({
+            ...accepted,
+            losses: { diagnostics: 0, health: 0 },
+          })}\n`,
+        );
+        expect(() => localSqliteAcceptanceBaseline(healthDescriptor)).toThrow(
+          "integration.codex.operational-state",
+        );
+        writeFileSync(
+          statePath,
+          `${JSON.stringify({ ...accepted, diagnostics: [{}] })}\n`,
+        );
+        expect(() => localSqliteAcceptanceBaseline(healthDescriptor)).toThrow(
+          "integration.codex.operational-state",
+        );
+      } finally {
+        closeSync(healthDescriptor);
+        closeSync(homeDescriptor);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "holds the health directory and rejects path and logical-history substitution",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-health-"));
+      const health = join(root, ".agentscope", "health");
+      const moved = `${health}-moved`;
+      mkdirSync(health, { recursive: true });
+      const homeDescriptor = openSync(
+        root,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+      const healthDescriptor = openOperationalStateHealth(homeDescriptor);
+      const connection = {
+        scope: "connection",
+        stage: "remote-acceptance",
+        outcome: "accepted",
+        configurationGeneration: 1,
+        policyMode: "baseline",
+        destinationType: "@agentscope/destination-local-sqlite",
+        connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+        receipt: "accepted",
+        sequence: 1,
+        observedAtUnixMilliseconds: 2,
+      };
+      const initialHealth = {
+        scope: "hook",
+        stage: "hook-started",
+        outcome: "completed",
+        configurationGeneration: 1,
+        policyMode: "baseline",
+        receipt: null,
+        sequence: 0,
+        observedAtUnixMilliseconds: 1,
+      };
+      const initial = {
+        version: 1,
+        nextSequence: 1,
+        losses: { diagnostics: 0, health: 0, checkpoints: 0 },
+        diagnostics: [],
+        health: [initialHealth],
+        checkpoints: [],
+      };
+      try {
+        writeFileSync(
+          join(health, "operational-state-v1.json"),
+          `${JSON.stringify(initial)}\n`,
+        );
+        const baseline = localSqliteAcceptanceBaseline(healthDescriptor);
+        renameSync(health, moved);
+        mkdirSync(health);
+        writeFileSync(
+          join(health, "operational-state-v1.json"),
+          `${JSON.stringify({
+            ...initial,
+            nextSequence: 2,
+            health: [initialHealth, connection],
+          })}\n`,
+        );
+        expect(
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
+        ).toBe(false);
+        writeFileSync(
+          join(moved, "operational-state-v1.json"),
+          `${JSON.stringify({
+            ...initial,
+            nextSequence: 2,
+            health: [initialHealth, connection],
+          })}\n`,
+        );
+        expect(
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
+        ).toBe(true);
+        writeFileSync(
+          join(moved, "operational-state-v1.json"),
+          `${JSON.stringify({
+            ...initial,
+            nextSequence: 2,
+            health: [
+              { ...initialHealth, observedAtUnixMilliseconds: 9 },
+              connection,
+            ],
+          })}\n`,
+        );
+        expect(() =>
+          localSqliteAcceptanceObservedAfterBaseline(
+            healthDescriptor,
+            baseline,
+          ),
         ).toThrow("integration.codex.operational-state");
       } finally {
+        closeSync(healthDescriptor);
         closeSync(homeDescriptor);
         rmSync(root, { recursive: true, force: true });
       }
@@ -355,6 +500,18 @@ describe("Codex bounded native records", () => {
         now,
       }),
     ).toBe(false);
+  });
+
+  it("rejects a completed trace search at the exact deadline cutoff", () => {
+    let observedAt = 99;
+    const now = () => observedAt;
+    expect(
+      traceSummaryBeforeDeadline({ summary: "trace", deadline: 100, now }),
+    ).toBe("trace");
+    observedAt = 100;
+    expect(() =>
+      traceSummaryBeforeDeadline({ summary: "trace", deadline: 100, now }),
+    ).toThrow("integration.codex.trace-deadline");
   });
 
   it("accepts exactly one complete native task-terminal witness", () => {
