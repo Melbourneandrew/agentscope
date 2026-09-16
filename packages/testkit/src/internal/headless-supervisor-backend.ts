@@ -2692,7 +2692,7 @@ const armSelectedPty = (
         return fail(
           finalSnapshot.malformedControlCount > 0
             ? `testkit.pty.transport.semantic-malformed-${terminal.malformedControlReason() ?? "unknown"}`
-            : "testkit.pty.transport.semantic-unsupported-control",
+            : `testkit.pty.transport.semantic-unsupported-${terminal.unsupportedControlReason() ?? "unknown"}`,
         );
       if (
         request.interaction.trigger === "semantic-ready" &&

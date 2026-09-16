@@ -33,6 +33,8 @@ export type PtyMalformedControlReason =
   | "trailing-control"
   | "utf8";
 
+export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
+
 export type PtyTerminalSemanticSnapshot = Readonly<{
   snapshotVersion: 1;
   geometry: PtyTerminalGeometry;
@@ -296,6 +298,7 @@ export class BoundedTerminalEmulator {
   #malformedControlCount = 0;
   #malformedControlReason: PtyMalformedControlReason | null = null;
   #unsupportedControlCount = 0;
+  #unsupportedControlReason: PtyUnsupportedControlReason | null = null;
   #sawCursorPositionQuery = false;
   readonly #recentCodePoints: string[] = [];
   #recentStart = 0;
@@ -445,6 +448,10 @@ export class BoundedTerminalEmulator {
 
   public malformedControlReason(): PtyMalformedControlReason | null {
     return this.#malformedControlReason;
+  }
+
+  public unsupportedControlReason(): PtyUnsupportedControlReason | null {
+    return this.#unsupportedControlReason;
   }
 
   #consume(character: string): void {
@@ -639,7 +646,7 @@ export class BoundedTerminalEmulator {
       values.length === 1
     )
       return;
-    else this.#unsupportedControlCount += 1;
+    else this.#recordUnsupportedControl("csi");
   }
 
   #applyExtendedCsi(
@@ -650,7 +657,7 @@ export class BoundedTerminalEmulator {
   ): void {
     if (intermediate === " " && prefix === "" && final === "q") return;
     if (intermediate !== "") {
-      this.#unsupportedControlCount += 1;
+      this.#recordUnsupportedControl("extended-csi");
       return;
     }
     if (prefix === "?" && (final === "h" || final === "l")) {
@@ -658,7 +665,7 @@ export class BoundedTerminalEmulator {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
         else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
-          this.#unsupportedControlCount += 1;
+          this.#recordUnsupportedControl("extended-csi");
           return;
         }
       }
@@ -680,7 +687,7 @@ export class BoundedTerminalEmulator {
         (values[1] === 0 || values[1] === 2))
     )
       return;
-    this.#unsupportedControlCount += 1;
+    this.#recordUnsupportedControl("extended-csi");
   }
 
   #appendControl(character: string): void {
@@ -700,6 +707,11 @@ export class BoundedTerminalEmulator {
     this.#malformedControlReason ??= reason;
   }
 
+  #recordUnsupportedControl(reason: PtyUnsupportedControlReason): void {
+    this.#unsupportedControlCount += 1;
+    this.#unsupportedControlReason ??= reason;
+  }
+
   #finishOsc(): void {
     const separator = this.#control.indexOf(";");
     const selector = separator < 0 ? "" : this.#control.slice(0, separator);
@@ -711,7 +723,7 @@ export class BoundedTerminalEmulator {
         selector !== "8") ||
       Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
     )
-      this.#unsupportedControlCount += 1;
+      this.#recordUnsupportedControl("osc");
     else if (selector === "0" || selector === "2")
       this.#titleSha256 = hash(title);
     this.#control = "";

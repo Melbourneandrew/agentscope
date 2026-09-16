@@ -36,7 +36,10 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-malformed-utf8",
   "testkit.pty.transport.semantic-missing-readiness",
   "testkit.pty.transport.semantic-nonzero",
-  "testkit.pty.transport.semantic-unsupported-control",
+  "testkit.pty.transport.semantic-unsupported-csi",
+  "testkit.pty.transport.semantic-unsupported-extended-csi",
+  "testkit.pty.transport.semantic-unsupported-osc",
+  "testkit.pty.transport.semantic-unsupported-unknown",
 ]);
 const plainRecord = (value) =>
   typeof value === "object" &&
