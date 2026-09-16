@@ -1909,6 +1909,7 @@ const snapshotPtyRequest = (
   let semanticWaitCount = 0;
   let semanticWaitIndex = -1;
   let describedInputBytesAtSemanticWait = -1;
+  let topologyCheckpointCount = 0;
   let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
@@ -1947,6 +1948,40 @@ const snapshotPtyRequest = (
         index,
         safeReflectApply(freeze, Object, [
           { action: "input", byteLength, inputSha256 },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else if (actionKind === "checkpoint-process-topology") {
+      const byteLength = ownData(action, "byteLength");
+      const inputSha256 = ownData(action, "inputSha256");
+      const topology = ownData(action, "topology");
+      if (
+        actionKeys !== "action\0byteLength\0inputSha256\0topology" ||
+        byteLength !== 1 ||
+        topology !== "root-direct-child-direct-grandchild" ||
+        typeof inputSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(inputSha256) ||
+        createHash("sha256")
+          .update(
+            safeBufferFrom(process_.stdin).subarray(
+              describedInputBytes,
+              describedInputBytes + 1,
+            ),
+          )
+          .digest("hex") !== inputSha256
+      )
+        return fail("testkit.pty.request");
+      topologyCheckpointCount += 1;
+      describedInputBytes += 1;
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          {
+            action: "checkpoint-process-topology",
+            topology,
+            byteLength: 1,
+            inputSha256,
+          },
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "resize") {
@@ -2044,10 +2079,12 @@ const snapshotPtyRequest = (
       (trigger !== "immediate" ||
         semanticWaitCount !== 1 ||
         semanticWaitIndex < 1 ||
+        topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
-        describedInputBytesAtSemanticWait !== 65 ||
+        describedInputBytesAtSemanticWait !== 66 ||
         safeBufferFrom(process_.stdin).subarray(0, 65).toString("utf8") !==
-          `${readinessChallenge}\n`))
+          `${readinessChallenge}\n` ||
+        safeBufferFrom(process_.stdin)[65] !== 0x0a))
   )
     return fail("testkit.pty.request");
   return safeReflectApply(freeze, Object, [
@@ -2371,6 +2408,7 @@ const armSelectedPty = (
           (request.interaction.trigger === "semantic-ready" &&
             !readinessObserved) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
+          pendingActionBeforeRead.action === "checkpoint-process-topology" ||
           waitingForPriorInputOutput;
         for (
           let index = 0;
@@ -2499,6 +2537,52 @@ const armSelectedPty = (
               actionInputOffset = 0;
               actionIndex += 1;
             }
+          } else if (action?.action === "checkpoint-process-topology") {
+            if (!readinessObserved) return;
+            if (root === undefined)
+              return fail("testkit.headless.observer.root");
+            runtime.assertNamespaceIdentity(composition.namespaceIdentity);
+            const processSet = currentProcessSet();
+            const rootMatches = processSet.filter(
+              (candidate) =>
+                candidate.pid === root.pid &&
+                candidate.startIdentity === root.startIdentity &&
+                candidate.state !== "Z",
+            );
+            const directChildren = processSet.filter(
+              (candidate) =>
+                candidate.parentPid === root.pid && candidate.state !== "Z",
+            );
+            const directGrandchildren =
+              directChildren.length === 1
+                ? processSet.filter(
+                    (candidate) =>
+                      candidate.parentPid === directChildren[0]!.pid &&
+                      candidate.state !== "Z",
+                  )
+                : [];
+            if (
+              processSet.length !== 3 ||
+              rootMatches.length !== 1 ||
+              directChildren.length !== 1 ||
+              directGrandchildren.length !== 1 ||
+              new Set(processSet.map(({ startIdentity }) => startIdentity))
+                .size !== 3
+            )
+              return fail("testkit.headless.observer.process-set");
+            const pending = input.subarray(inputOffset, inputOffset + 1);
+            const written = exactPtyWrite(child.write(pending), 1);
+            if (written.bytesWritten !== 1)
+              return fail("testkit.pty.transport");
+            inputOffset += 1;
+            recordAction({
+              action: "checkpoint-process-topology",
+              topology: action.topology,
+              byteLength: 1,
+              inputSha256: createHash("sha256").update(pending).digest("hex"),
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+            });
+            actionIndex += 1;
           } else if (action?.action === "eof") {
             eofAttempted = true;
             const eof = child.eof();
@@ -3349,6 +3433,15 @@ const ptyTerminalControlActionMatches = (
     observed.action === "wait-for-semantic-completion"
   )
     return true;
+  if (
+    expected.action === "checkpoint-process-topology" &&
+    observed.action === "checkpoint-process-topology"
+  )
+    return (
+      expected.topology === observed.topology &&
+      expected.byteLength === observed.byteLength &&
+      expected.inputSha256 === observed.inputSha256
+    );
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -3406,6 +3499,20 @@ const ptyReceiptActionsMatch = (
       )
         return false;
       inputOffset += expected.byteLength;
+    } else if (
+      expected.action === "checkpoint-process-topology" &&
+      observed.action === "checkpoint-process-topology"
+    ) {
+      const bytes = input.subarray(inputOffset, inputOffset + 1);
+      if (
+        expected.topology !== observed.topology ||
+        expected.byteLength !== observed.byteLength ||
+        expected.inputSha256 !== observed.inputSha256 ||
+        createHash("sha256").update(bytes).digest("hex") !==
+          observed.inputSha256
+      )
+        return false;
+      inputOffset += 1;
     } else if (!ptyTerminalControlActionMatches(expected, observed))
       return false;
   }
@@ -4204,6 +4311,8 @@ type SelectedPtyTestSeed =
   | "clean"
   | "close-failure"
   | "completion-before-readiness"
+  | "checkpoint-extra-process"
+  | "checkpoint-missing-process"
   | "control-eof-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
@@ -4265,6 +4374,24 @@ const selectedPtyRuntimeForTest = (
     parentPid: 1,
     pid: 42_002,
     startIdentity: "42002:1",
+    state: "R",
+  };
+  const checkpointChild: ProcessSnapshot = {
+    parentPid: root.pid,
+    pid: 42_003,
+    startIdentity: "42003:1",
+    state: "R",
+  };
+  const checkpointGrandchild: ProcessSnapshot = {
+    parentPid: checkpointChild.pid,
+    pid: 42_004,
+    startIdentity: "42004:1",
+    state: "R",
+  };
+  const checkpointExtra: ProcessSnapshot = {
+    parentPid: checkpointGrandchild.pid,
+    pid: 42_005,
+    startIdentity: "42005:1",
     state: "R",
   };
   const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
@@ -4342,6 +4469,13 @@ const selectedPtyRuntimeForTest = (
     },
     // eslint-disable-next-line max-lines-per-function, complexity -- closed adversarial fixture matrix
     spawnPty: (request, geometry, interpreter, scriptSha256) => {
+      if (readiness.kind === "challenge-marker") {
+        processes.set(checkpointChild.pid, checkpointChild);
+        if (seed !== "checkpoint-missing-process")
+          processes.set(checkpointGrandchild.pid, checkpointGrandchild);
+        if (seed === "checkpoint-extra-process")
+          processes.set(checkpointExtra.pid, checkpointExtra);
+      }
       if (
         seed === "immutable-mount-id" ||
         seed === "immutable-mount-rw" ||
@@ -4437,7 +4571,8 @@ const selectedPtyRuntimeForTest = (
         )
           safeSetTimeout(
             () => {
-              processes.delete(root.pid);
+              if (readiness.kind === "challenge-marker") processes.clear();
+              else processes.delete(root.pid);
               if (seed === "adopted-zombie")
                 processes.set(descendant.pid, {
                   ...descendant,
@@ -4456,7 +4591,11 @@ const selectedPtyRuntimeForTest = (
                       },
               );
             },
-            seed === "partial-input" ? 25 : 5,
+            readiness.kind === "challenge-marker"
+              ? 50
+              : seed === "partial-input"
+                ? 25
+                : 5,
           );
       });
       return {

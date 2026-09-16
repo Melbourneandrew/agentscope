@@ -22,7 +22,6 @@ import {
   readCodexSessionLedgers,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
-  sessionStartProcessSetDrained,
   settledCodexLedgerSnapshot,
   settledLocalSqliteLifecycleSnapshot,
   terminalObservationBeforeDeadline,
@@ -275,40 +274,6 @@ describe("Codex Local SQLite settlement snapshots", () => {
 
 // eslint-disable-next-line max-lines-per-function -- closed native-record adversarial matrix
 describe("Codex bounded native records", () => {
-  it("admits only the exact baseline process set plus Codex", () => {
-    const wrapper = {
-      executable: "/usr/local/bin/node",
-      pid: 10,
-      startIdentity: "100",
-    };
-    const codex = {
-      executable: "/opt/codex/codex",
-      pid: 11,
-      startIdentity: "200",
-    };
-    expect(
-      sessionStartProcessSetDrained({
-        baseline: [wrapper],
-        current: [wrapper, codex],
-        codexIdentity: codex,
-      }),
-    ).toBe(true);
-    expect(
-      sessionStartProcessSetDrained({
-        baseline: [wrapper],
-        current: [wrapper, codex, { ...codex, pid: 12 }],
-        codexIdentity: codex,
-      }),
-    ).toBe(false);
-    expect(
-      sessionStartProcessSetDrained({
-        baseline: [wrapper],
-        current: [wrapper, { ...codex, startIdentity: "201" }],
-        codexIdentity: codex,
-      }),
-    ).toBe(false);
-  });
-
   it("rejects a terminal observation at the exact deadline cutoff", () => {
     let observedAt = 99;
     const now = () => observedAt;

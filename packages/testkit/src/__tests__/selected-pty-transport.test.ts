@@ -88,9 +88,15 @@ describe("selected PTY transport", () => {
 
   it("rejects a fixed readiness marker before the per-run challenge", async () => {
     const challenge = "a".repeat(64);
-    const challengeInput = new TextEncoder().encode(`${challenge}\n\u0004`);
+    const challengeInput = new TextEncoder().encode(`${challenge}\n\n\u0004`);
+    const now = performance.now();
     const challengeRequest: SelectedPtyExecutionRequest = {
-      ...request({ stdin: challengeInput }),
+      ...request({
+        stdin: challengeInput,
+        monotonicStartupDeadlineMs: now + 500,
+        monotonicExecutionDeadlineMs: now + 1_000,
+        monotonicShutdownDeadlineMs: now + 2_000,
+      }),
       readiness: { kind: "challenge-marker", challenge },
       interaction: {
         trigger: "immediate",
@@ -102,12 +108,20 @@ describe("selected PTY transport", () => {
               .update(challengeInput.subarray(0, 65))
               .digest("hex"),
           },
+          {
+            action: "checkpoint-process-topology",
+            topology: "root-direct-child-direct-grandchild",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(challengeInput.subarray(65, 66))
+              .digest("hex"),
+          },
           { action: "wait-for-semantic-completion" },
           {
             action: "input",
             byteLength: 1,
             inputSha256: createHash("sha256")
-              .update(challengeInput.subarray(65))
+              .update(challengeInput.subarray(66))
               .digest("hex"),
           },
         ],
@@ -134,6 +148,17 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    for (const seed of [
+      "checkpoint-missing-process",
+      "checkpoint-extra-process",
+    ] as const)
+      await expect(
+        executeSelectedPtyTransportForTest(challengeRequest, seed),
+      ).resolves.toMatchObject({
+        actions: [{ action: "input", byteLength: 65 }],
+        inputBytesWritten: 65,
+        outcome: "transport-failed",
+      });
   });
 
   it("causally validates the selected immutable principal record", () => {

@@ -973,6 +973,7 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
     return false;
   const input = Buffer.concat([
     ...(challenge === undefined ? [] : [Buffer.from(`${challenge}\n`)]),
+    ...(challenge === undefined ? [] : [Buffer.from([0x0a])]),
     Buffer.from(selectedScenario.terminalInputBase64, "base64"),
   ]);
   const expectedRequest = {
@@ -1036,7 +1037,7 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
     const input = Buffer.concat([
       ...(selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
       typeof challenge === "string"
-        ? [Buffer.from(`${challenge}\n`)]
+        ? [Buffer.from(`${challenge}\n`), Buffer.from([0x0a])]
         : []),
       Buffer.from(selectedScenario.terminalInputBase64, "base64"),
     ]);

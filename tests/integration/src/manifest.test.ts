@@ -213,12 +213,14 @@ describe("integration capability manifest", () => {
       scenario,
       Buffer.concat([
         Buffer.from(`${challenge}\n`),
+        Buffer.from([0x0a]),
         Buffer.from(scenario.terminalInputBase64, "base64"),
       ]),
     );
     expect(actions.map(({ action }) => action)).toEqual([
       "resize",
       "input",
+      "checkpoint-process-topology",
       "wait-for-semantic-completion",
       "input",
     ]);
@@ -234,6 +236,14 @@ describe("integration capability manifest", () => {
       byteLength: 1,
       inputSha256: createHash("sha256")
         .update(Buffer.from([4]))
+        .digest("hex"),
+    });
+    expect(actions[2]).toEqual({
+      action: "checkpoint-process-topology",
+      topology: "root-direct-child-direct-grandchild",
+      byteLength: 1,
+      inputSha256: createHash("sha256")
+        .update(Buffer.from([0x0a]))
         .digest("hex"),
     });
     const source = readFileSync(
@@ -261,9 +271,16 @@ describe("integration capability manifest", () => {
     );
     const readinessRelease = source.indexOf(
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
-      terminalWait,
     );
-    const codexJoin = source.indexOf("  await codexRun;\n", readinessRelease);
+    const checkpointAcknowledgement = source.indexOf(
+      "      await readCheckpointAcknowledgement();\n",
+      readinessRelease,
+    );
+    const modelResponse = source.indexOf(
+      '      response.writeHead(200, { "content-type": "text/event-stream" });\n',
+      checkpointAcknowledgement,
+    );
+    const codexJoin = source.indexOf("  await codexRun;\n", modelRequest);
     const traceQueryAfterJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       codexJoin,
@@ -281,9 +298,9 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);",
     );
-    expect(source).toContain(
-      "assertSessionStartProcessSetDrained(processBaseline, codexIdentity);",
-    );
+    expect(source).not.toContain("readFileSync(`/proc/${pid}/stat`");
+    expect(source).not.toContain('readdirSync("/proc"');
+    expect(source).toContain("await readCheckpointAcknowledgement();");
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
@@ -317,9 +334,9 @@ describe("integration capability manifest", () => {
     const traceSearchEmptyPhase = source.indexOf(
       '    interactiveFailurePhase = "trace-search-empty";\n',
     );
-    expect(traceTerminalPhase).toBeGreaterThan(traceDeadline);
+    expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(traceSettlementPhase).toBeGreaterThan(codexJoin);
+    expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
@@ -329,7 +346,7 @@ describe("integration capability manifest", () => {
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
     const terminalObservation = source.indexOf(
-      "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(homeDescriptor),\n      expectedAssistantMessage,\n    )\n",
+      "      observed: codexTurnTerminalObservedAfterBaseline(\n",
     );
     const lifecycleSettlement = source.indexOf(
       "    while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
@@ -368,9 +385,11 @@ describe("integration capability manifest", () => {
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(traceDeadline).toBeGreaterThan(modelRequest);
-    expect(terminalWait).toBeGreaterThan(traceDeadline);
-    expect(readinessRelease).toBeGreaterThan(terminalWait);
-    expect(codexJoin).toBeGreaterThan(readinessRelease);
+    expect(readinessRelease).toBeGreaterThan(-1);
+    expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
+    expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
+    expect(codexJoin).toBeGreaterThan(modelRequest);
+    expect(terminalWait).toBeGreaterThan(codexJoin);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(
       source.indexOf("  await modelGateway.settle();\n", codexJoin),
