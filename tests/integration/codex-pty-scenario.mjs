@@ -476,13 +476,15 @@ try {
   );
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
-  // The transport may accept input now, but the manifest's independent
-  // semantic-completion action still prevents Ctrl-D until Codex's real TUI
-  // has rendered the exact authenticated model response.
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   interactiveFailurePhase = "trace";
   await waitForCodexTurnTerminal(traceDeadline);
+  // Codex's real TUI renders AGENTSCOPE_PTY_COMPLETE before its Stop hook and
+  // native task-terminal ledger settle. Advertise input readiness only after
+  // that durable boundary so the controller cannot race Ctrl-D against the
+  // hook. The selected PTY kernel independently latches completion that was
+  // rendered before this readiness marker.
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   interactiveFailurePhase = "trace";
