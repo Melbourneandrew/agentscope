@@ -197,14 +197,7 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(1);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
-    expect(scenario.nativeReadiness).toEqual({
-      kind: "codex-idle-prompt",
-      harness: "codex",
-      exactHarnessVersion: "0.149.1",
-      text: "›",
-      bold: true,
-      dim: false,
-    });
+    expect(scenario.nativeReadiness).toEqual({ kind: "semantic-marker" });
     expect(
       manifestFixture()
         .scenarios.filter(
@@ -247,15 +240,19 @@ describe("integration capability manifest", () => {
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
       modelRequest,
     );
-    const codexJoin = source.indexOf("  await codexRun;\n", traceDeadline);
     const terminalWait = source.indexOf(
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
-      codexJoin,
+      traceDeadline,
     );
-    const traceQueryAfterJoin = source.indexOf(
+    const traceQueryBeforeJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
-      codexJoin,
+      terminalWait,
     );
+    const readinessRelease = source.indexOf(
+      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
+      traceQueryBeforeJoin,
+    );
+    const codexJoin = source.indexOf("  await codexRun;\n", readinessRelease);
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
@@ -275,7 +272,7 @@ describe("integration capability manifest", () => {
     );
     const traceTerminalPhase = source.indexOf(
       '  interactiveFailurePhase = "trace-terminal";\n',
-      codexJoin,
+      traceDeadline,
     );
     const traceSettlementPhase = source.indexOf(
       '  interactiveFailurePhase = "trace-settlement";\n',
@@ -290,10 +287,10 @@ describe("integration capability manifest", () => {
     const traceSearchEmptyPhase = source.indexOf(
       '    interactiveFailurePhase = "trace-search-empty";\n',
     );
-    expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
+    expect(traceTerminalPhase).toBeGreaterThan(traceDeadline);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
     expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
-    expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
+    expect(traceSettlementPhase).toBeLessThan(traceQueryBeforeJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(traceSearchEmptyPhase).toBeGreaterThan(traceSearchResultPhase);
@@ -305,23 +302,23 @@ describe("integration capability manifest", () => {
       "    !codexTurnTerminalObserved(\n      readCodexSessionLedgers(homeDescriptor),\n      expectedAssistantMessage,\n    )\n",
     );
     const lifecycleSettlement = source.indexOf(
-      "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
+      "    while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
       terminalObservation,
     );
     const preQueryDeadline = source.indexOf(
-      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
       lifecycleSettlement,
     );
     const boundedQuery = source.indexOf(
-      "  const summary = await readTraceSummary(traceDeadline);\n",
+      "    const summary = await readTraceSummary(traceDeadline);\n",
       preQueryDeadline,
     );
     const postQueryDeadline = source.indexOf(
-      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
       boundedQuery,
     );
     const acceptSummary = source.indexOf(
-      '  if (summary === null) {\n    interactiveFailurePhase = "trace-search-empty";\n    throw new Error("integration.codex.trace-search");\n  }\n  return summary;\n',
+      "    if (summary !== null) return summary;\n",
       postQueryDeadline,
     );
     expect(lifecycleSettlement).toBeGreaterThan(terminalObservation);
@@ -329,7 +326,7 @@ describe("integration capability manifest", () => {
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
     const boundedBackoff = source.indexOf(
-      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
+      "      await waitWithinObservationDeadline({\n        deadline: traceDeadline,\n        maximumWaitMilliseconds: 100,\n",
       lifecycleSettlement,
     );
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
@@ -341,10 +338,11 @@ describe("integration capability manifest", () => {
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(traceDeadline).toBeGreaterThan(modelRequest);
-    expect(codexJoin).toBeGreaterThan(traceDeadline);
-    expect(terminalWait).toBeGreaterThan(codexJoin);
-    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
-    expect(source).not.toContain("AGENTSCOPE_PTY_READY");
+    expect(terminalWait).toBeGreaterThan(traceDeadline);
+    expect(traceQueryBeforeJoin).toBeGreaterThan(terminalWait);
+    expect(readinessRelease).toBeGreaterThan(traceQueryBeforeJoin);
+    expect(codexJoin).toBeGreaterThan(readinessRelease);
+    expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("codex-hook-completion-probe");
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
