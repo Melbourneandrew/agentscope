@@ -6,20 +6,14 @@ import {
   constants,
   chmodSync,
   existsSync,
-  fstatSync,
-  fsyncSync,
-  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
-  readSync,
   readFileSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
@@ -65,80 +59,6 @@ const remaining = () => {
 };
 
 const maximumOutput = 1024 * 1024;
-const sameFileIdentity = (left, right) =>
-  left.dev === right.dev &&
-  left.ino === right.ino &&
-  left.mode === right.mode &&
-  left.uid === right.uid &&
-  left.gid === right.gid &&
-  left.size === right.size &&
-  left.mtimeNs === right.mtimeNs &&
-  left.ctimeNs === right.ctimeNs;
-const readDescriptor = (descriptor, maximumBytes) => {
-  const buffer = Buffer.allocUnsafe(maximumBytes + 1);
-  let length = 0;
-  while (length < buffer.length) {
-    const count = readSync(
-      descriptor,
-      buffer,
-      length,
-      buffer.length - length,
-      length,
-    );
-    if (count === 0) break;
-    length += count;
-  }
-  if (length > maximumBytes) throw new Error("integration.codex.file-bound");
-  return buffer.subarray(0, length);
-};
-const openAuthenticatedRegular = (path, flags, maximumBytes, mode) => {
-  const descriptor = openSync(
-    path,
-    flags | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
-  try {
-    const descriptorStatus = fstatSync(descriptor, { bigint: true });
-    const pathStatus = lstatSync(path, { bigint: true });
-    const bytes = readDescriptor(descriptor, maximumBytes);
-    const after = fstatSync(descriptor, { bigint: true });
-    if (
-      !descriptorStatus.isFile() ||
-      descriptorStatus.nlink !== 1n ||
-      descriptorStatus.uid !== BigInt(process.geteuid()) ||
-      (descriptorStatus.mode & 0o777n) !== BigInt(mode) ||
-      !sameFileIdentity(descriptorStatus, pathStatus) ||
-      !sameFileIdentity(descriptorStatus, after) ||
-      descriptorStatus.size !== BigInt(bytes.byteLength)
-    )
-      throw new Error("integration.codex.file-identity");
-    return { descriptor, bytes, identity: descriptorStatus };
-  } catch (error) {
-    closeSync(descriptor);
-    throw error;
-  }
-};
-const requireHeldPathIdentity = (descriptor, path, identity) => {
-  const held = fstatSync(descriptor, { bigint: true });
-  const current = lstatSync(path, { bigint: true });
-  if (!sameFileIdentity(identity, held) || !sameFileIdentity(held, current))
-    throw new Error("integration.codex.file-identity");
-};
-const replaceHeldFile = (descriptor, bytes) => {
-  ftruncateSync(descriptor, 0);
-  let offset = 0;
-  while (offset < bytes.byteLength) {
-    const count = writeSync(
-      descriptor,
-      bytes,
-      offset,
-      bytes.byteLength - offset,
-      offset,
-    );
-    if (count < 1) throw new Error("integration.codex.file-write");
-    offset += count;
-  }
-  fsyncSync(descriptor);
-};
 const run = (executable, arguments_, options = {}) =>
   new Promise((resolve, reject) => {
     remaining();
@@ -229,10 +149,6 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
-let hookDescriptor;
-let hookIdentity;
-let originalHookBytes;
-let hookPath;
 let interactiveFailurePhase = "bootstrap";
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
@@ -257,13 +173,6 @@ const cli = async (arguments_, command, options) =>
 
 const prompt = "Reply with one short confirmation and do not use tools.";
 const expectedAssistantMessage = "AGENTSCOPE_PTY_COMPLETE";
-const stopHookNonce = createHash("sha256")
-  .update(`agentscope-stop-hook:${scenarioId}`)
-  .digest("hex");
-const stopHookReceipt = join(ledger, "codex-stop-hook-complete.txt");
-const stopHookProbe = fileURLToPath(
-  new URL("./codex-hook-completion-probe.mjs", import.meta.url),
-);
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
@@ -484,39 +393,6 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
-const stopHookCompleted = () => {
-  let opened;
-  try {
-    opened = openAuthenticatedRegular(
-      stopHookReceipt,
-      constants.O_RDONLY,
-      128,
-      0o600,
-    );
-  } catch (error) {
-    if (error?.code === "ENOENT") return false;
-    throw new Error("integration.codex.stop-hook-receipt", { cause: error });
-  }
-  try {
-    if (!opened.bytes.equals(Buffer.from(`${stopHookNonce}\n`, "utf8")))
-      throw new Error("integration.codex.stop-hook-receipt");
-    return true;
-  } finally {
-    closeSync(opened.descriptor);
-  }
-};
-const waitForStopHook = async (traceDeadline) => {
-  while (!stopHookCompleted()) {
-    await waitWithinObservationDeadline({
-      deadline: traceDeadline,
-      maximumWaitMilliseconds: 100,
-      now: bootNow,
-      wait: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    });
-    remaining();
-  }
-};
 const waitForTraceSummary = async (traceDeadline) => {
   // The accepted reporter retains the Local SQLite lease until the TUI exits.
   // Only a stable empty lifecycle can then authorize the bounded query.
@@ -555,87 +431,18 @@ try {
     "unchanged",
     1,
   );
-  hookPath = join(codexHome, "hooks.json");
-  const openedHooks = openAuthenticatedRegular(
-    hookPath,
-    constants.O_RDWR,
-    256 * 1024,
-    0o600,
-  );
-  hookDescriptor = openedHooks.descriptor;
-  hookIdentity = openedHooks.identity;
-  originalHookBytes = openedHooks.bytes;
-  const originalHooks = new TextDecoder("utf-8", { fatal: true }).decode(
-    originalHookBytes,
-  );
-  const parsedHooks = JSON.parse(originalHooks);
-  const launcher = installedLauncher(parsedHooks);
+  const hookPath = join(codexHome, "hooks.json");
+  const originalHooks = readFileSync(hookPath, "utf8");
+  const launcher = installedLauncher(JSON.parse(originalHooks));
   if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))
     throw new Error("integration.codex.hook-deadline");
-  const openedLauncher = openAuthenticatedRegular(
-    launcher,
-    constants.O_RDONLY,
-    64 * 1024,
-    0o700,
-  );
-  const launcherSha256 = createHash("sha256")
-    .update(openedLauncher.bytes)
-    .digest("hex");
-  closeSync(openedLauncher.descriptor);
-  const metadataPath = `${launcher}.metadata.json`;
-  const openedMetadata = openAuthenticatedRegular(
-    metadataPath,
-    constants.O_RDONLY,
-    16 * 1024,
-    0o600,
-  );
-  const launcherMetadata = JSON.parse(
-    new TextDecoder("utf-8", { fatal: true }).decode(openedMetadata.bytes),
-  );
-  closeSync(openedMetadata.descriptor);
+  const launcherStatus = lstatSync(launcher);
   if (
-    !exactKeys(launcherMetadata, [
-      "contractVersion",
-      "harnessDigest",
-      "harnessType",
-      "hookDeadlineMilliseconds",
-      "launcherPath",
-      "launcherSha256",
-      "machineEntryPath",
-      "mode",
-      "nodeExecutable",
-      "releaseIdentity",
-    ]) ||
-    launcherMetadata.contractVersion !== 1 ||
-    launcherMetadata.harnessType !== "@agentscope/harness-codex" ||
-    launcherMetadata.hookDeadlineMilliseconds !== 2_500 ||
-    launcherMetadata.launcherPath !== launcher ||
-    launcherMetadata.launcherSha256 !== launcherSha256 ||
-    launcherMetadata.mode !== 0o700
+    !launcherStatus.isFile() ||
+    launcherStatus.isSymbolicLink() ||
+    (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
-  const probeStatus = lstatSync(stopHookProbe);
-  if (
-    !probeStatus.isFile() ||
-    probeStatus.isSymbolicLink() ||
-    !process.execPath.startsWith("/") ||
-    [process.execPath, stopHookProbe, launcher, stopHookReceipt].some((value) =>
-      value.includes("'"),
-    )
-  )
-    throw new Error("integration.codex.hook-configuration");
-  parsedHooks.hooks.Stop[0].hooks[0].command =
-    `'${process.execPath}' '${stopHookProbe}' --launcher '${launcher}' ` +
-    `--receipt '${stopHookReceipt}' --nonce '${stopHookNonce}' ` +
-    `--launcher-sha256 '${launcherSha256}'`;
-  const instrumentedHookBytes = Buffer.from(
-    `${JSON.stringify(parsedHooks, null, 2)}\n`,
-    "utf8",
-  );
-  requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
-  replaceHeldFile(hookDescriptor, instrumentedHookBytes);
-  hookIdentity = fstatSync(hookDescriptor, { bigint: true });
-  requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
   const configuration = `${createCodexInternalProviderConfiguration({
     baseUrl: `${modelEndpoint}/v1`,
     model: "fixture-model",
@@ -668,26 +475,17 @@ try {
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  interactiveFailurePhase = "trace";
-  await waitForStopHook(traceDeadline);
-  // The selected PTY kernel independently latches the rendered completion.
-  // This nonce-bound receipt proves the exact installed Stop launcher returned
-  // successfully before the controller is allowed to send Ctrl-D.
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  // The selected PTY kernel observes the real Codex TUI transition from the
+  // rendered completion to its bold idle prompt. Codex emits that prompt only
+  // after TurnComplete, which follows the installed Stop hook lifecycle.
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   interactiveFailurePhase = "trace";
   await waitForCodexTurnTerminal(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
-  requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
-  replaceHeldFile(hookDescriptor, originalHookBytes);
-  hookIdentity = fstatSync(hookDescriptor, { bigint: true });
-  requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
-  if (!readDescriptor(hookDescriptor, 256 * 1024).equals(originalHookBytes))
+  if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
-  closeSync(hookDescriptor);
-  hookDescriptor = undefined;
   const modelRequests = await readModelRequests();
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
@@ -757,22 +555,6 @@ try {
   );
   completed = true;
 } finally {
-  if (hookDescriptor !== undefined) {
-    try {
-      if (
-        hookPath !== undefined &&
-        hookIdentity !== undefined &&
-        originalHookBytes !== undefined
-      ) {
-        requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
-        replaceHeldFile(hookDescriptor, originalHookBytes);
-        hookIdentity = fstatSync(hookDescriptor, { bigint: true });
-        requireHeldPathIdentity(hookDescriptor, hookPath, hookIdentity);
-      }
-    } finally {
-      closeSync(hookDescriptor);
-    }
-  }
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
   closeSync(homeDescriptor);

@@ -175,7 +175,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(3);
+    expect(scenario?.runtimeArtifacts).toHaveLength(2);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -229,15 +229,7 @@ describe("integration capability manifest", () => {
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
       modelRequest,
     );
-    const hookWait = source.indexOf(
-      "  await waitForStopHook(traceDeadline);\n",
-      traceDeadline,
-    );
-    const semanticReady = source.indexOf(
-      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
-      modelRequest,
-    );
-    const codexJoin = source.indexOf("  await codexRun;\n", semanticReady);
+    const codexJoin = source.indexOf("  await codexRun;\n", traceDeadline);
     const terminalWait = source.indexOf(
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
       codexJoin,
@@ -307,11 +299,11 @@ describe("integration capability manifest", () => {
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(traceDeadline).toBeGreaterThan(modelRequest);
-    expect(hookWait).toBeGreaterThan(traceDeadline);
-    expect(semanticReady).toBeGreaterThan(hookWait);
-    expect(codexJoin).toBeGreaterThan(semanticReady);
+    expect(codexJoin).toBeGreaterThan(traceDeadline);
     expect(terminalWait).toBeGreaterThan(codexJoin);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
+    expect(source).not.toContain("AGENTSCOPE_PTY_READY");
+    expect(source).not.toContain("codex-hook-completion-probe");
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
     );

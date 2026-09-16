@@ -93,6 +93,31 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.end().semanticState).toBe("completed");
   });
 
+  it("derives post-completion readiness from Codex's native bold idle prompt", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+
+    terminal.write(bytes("\u001b[1m›\u001b[0m "));
+    expect(terminal.readinessObserved()).toBe(false);
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n\u001b[2m›\u001b[0m "));
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.readinessObserved()).toBe(false);
+
+    terminal.write(bytes("\u001b[1"));
+    terminal.write(bytes("m›\u001b[22m "));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+
+  it("does not mistake dim or reset Codex prompts for post-turn readiness", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
+    terminal.write(bytes("\u001b[2m›\u001b[22m \u001b[1mtext\u001b[0m›"));
+
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+
   it("retains a later credential prompt after it leaves the recent window", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
