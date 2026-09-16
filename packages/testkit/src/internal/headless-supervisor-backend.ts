@@ -2691,7 +2691,7 @@ const armSelectedPty = (
       if (finalSnapshot.semanticState === "malformed-control")
         return fail(
           finalSnapshot.malformedControlCount > 0
-            ? "testkit.pty.transport.semantic-malformed-control"
+            ? `testkit.pty.transport.semantic-malformed-${terminal.malformedControlReason() ?? "unknown"}`
             : "testkit.pty.transport.semantic-unsupported-control",
         );
       if (

@@ -24,6 +24,15 @@ export type PtySemanticState =
   | "malformed-control"
   | "output-limit";
 
+export type PtyMalformedControlReason =
+  | "control-limit"
+  | "csi-byte"
+  | "csi-parameters"
+  | "escape"
+  | "ground-control"
+  | "trailing-control"
+  | "utf8";
+
 export type PtyTerminalSemanticSnapshot = Readonly<{
   snapshotVersion: 1;
   geometry: PtyTerminalGeometry;
@@ -284,6 +293,7 @@ export class BoundedTerminalEmulator {
   #control = "";
   #outputBytes = 0;
   #malformedControlCount = 0;
+  #malformedControlReason: PtyMalformedControlReason | null = null;
   #unsupportedControlCount = 0;
   #sawCursorPositionQuery = false;
   readonly #recentCodePoints: string[] = [];
@@ -340,7 +350,7 @@ export class BoundedTerminalEmulator {
         },
       ]);
     } catch {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("utf8");
       return fail("testkit.pty.emulator.utf8");
     }
     for (const character of decoded) this.#consume(character);
@@ -371,9 +381,10 @@ export class BoundedTerminalEmulator {
         const final = applyFunction(textDecoderDecode, this.#decoder, []);
         for (const character of final) this.#consume(character);
       } catch {
-        this.#malformedControlCount += 1;
+        this.#recordMalformedControl("utf8");
       }
-      if (this.#state !== "ground") this.#malformedControlCount += 1;
+      if (this.#state !== "ground")
+        this.#recordMalformedControl("trailing-control");
       this.#state = "ground";
       this.#control = "";
       this.#ended = true;
@@ -431,6 +442,10 @@ export class BoundedTerminalEmulator {
     });
   }
 
+  public malformedControlReason(): PtyMalformedControlReason | null {
+    return this.#malformedControlReason;
+  }
+
   #consume(character: string): void {
     if (this.#state === "ground") {
       if (character === "\u001b") {
@@ -456,7 +471,7 @@ export class BoundedTerminalEmulator {
         this.#column = this.#savedColumn;
         this.#state = "ground";
       } else {
-        this.#malformedControlCount += 1;
+        this.#recordMalformedControl("escape");
         this.#state = "ground";
         this.#consumeGround(character);
       }
@@ -507,7 +522,7 @@ export class BoundedTerminalEmulator {
     if (character === "\u0007") return;
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("ground-control");
       return;
     }
     this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
@@ -522,7 +537,8 @@ export class BoundedTerminalEmulator {
     const code = character.codePointAt(0)!;
     if (code >= 0x40 && code <= 0x7e) {
       const parameters = parseCsiParameters(this.#control);
-      if (parameters === undefined) this.#malformedControlCount += 1;
+      if (parameters === undefined)
+        this.#recordMalformedControl("csi-parameters");
       else
         this.#applyCsi(
           character,
@@ -535,7 +551,7 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (code < 0x20 || code > 0x3f) {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("csi-byte");
       this.#control = "";
       this.#state = "ground";
       return;
@@ -647,10 +663,15 @@ export class BoundedTerminalEmulator {
       Buffer.byteLength(this.#control, "utf8") >
       this.#limits.maximumControlBytes
     ) {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("control-limit");
       this.#control = "";
       this.#state = "ground";
     }
+  }
+
+  #recordMalformedControl(reason: PtyMalformedControlReason): void {
+    this.#malformedControlCount += 1;
+    this.#malformedControlReason ??= reason;
   }
 
   #finishOsc(): void {
