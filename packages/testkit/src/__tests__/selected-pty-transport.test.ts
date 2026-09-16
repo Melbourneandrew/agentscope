@@ -269,7 +269,7 @@ describe("selected PTY transport", () => {
     ],
     [
       "unsupported-control",
-      "testkit.pty.transport.semantic-unsupported-control",
+      "testkit.pty.transport.semantic-unsupported-extended-csi",
     ],
   ] as const)(
     "rejects terminal semantic state %s as completion",
