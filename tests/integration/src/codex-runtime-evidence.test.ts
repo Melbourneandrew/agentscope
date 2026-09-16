@@ -262,7 +262,7 @@ describe("Codex Local SQLite settlement snapshots", () => {
 
 describe("Codex bounded native records", () => {
   it("accepts exactly one complete native task-terminal witness", () => {
-    const message = "Codex PTY fixture turn finished.";
+    const message = "AGENTSCOPE_PTY_COMPLETE";
     const terminal = JSON.stringify({
       type: "event_msg",
       payload: {

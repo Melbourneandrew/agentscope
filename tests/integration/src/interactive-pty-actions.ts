@@ -37,7 +37,7 @@ export const compileInteractivePtyActions = (
   );
   return deepFreeze([
     { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
-    inputAction(0, initialInputBytes),
+    ...(initialInputBytes > 0 ? [inputAction(0, initialInputBytes)] : []),
     ...(scenario.waitForSemanticCompletionBeforeTerminalAction
       ? [
           { action: "wait-for-semantic-completion" as const },
