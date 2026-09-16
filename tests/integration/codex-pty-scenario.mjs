@@ -386,9 +386,29 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
   }
 };
 const waitForTraceSummary = async (traceDeadline) => {
-  // The accepted reporter retains the Local SQLite lease until the TUI exits.
-  // Only a stable empty lifecycle can then authorize the bounded query.
-  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
+  // Turn completion can precede Stop-hook admission. A stable empty lifecycle
+  // therefore authorizes one bounded observation, not an empty terminal
+  // conclusion. Keep observing until the installed hook publishes the exact
+  // trace or the one outer observation deadline expires.
+  while (true) {
+    while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
+      await waitWithinObservationDeadline({
+        deadline: traceDeadline,
+        maximumWaitMilliseconds: 100,
+        now: bootNow,
+        wait: (milliseconds) =>
+          new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      });
+      remaining();
+    }
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
+    interactiveFailurePhase = "trace-search";
+    const summary = await readTraceSummary(traceDeadline);
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
+    if (summary !== null) return summary;
+    interactiveFailurePhase = "trace-search-empty";
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -398,17 +418,6 @@ const waitForTraceSummary = async (traceDeadline) => {
     });
     remaining();
   }
-  if (bootNow() >= traceDeadline)
-    throw new Error("integration.codex.trace-deadline");
-  interactiveFailurePhase = "trace-search";
-  const summary = await readTraceSummary(traceDeadline);
-  if (bootNow() >= traceDeadline)
-    throw new Error("integration.codex.trace-deadline");
-  if (summary === null) {
-    interactiveFailurePhase = "trace-search-empty";
-    throw new Error("integration.codex.trace-search");
-  }
-  return summary;
 };
 
 let completed = false;
@@ -471,15 +480,17 @@ try {
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
-  // The selected PTY kernel observes the real Codex TUI transition from the
-  // rendered completion to its bold idle prompt. Codex emits that prompt only
-  // after TurnComplete, which follows the installed Stop hook lifecycle.
-  interactiveFailurePhase = "tui-exit";
-  await codexRun;
+  // Codex may render its idle prompt while the Stop hook is still running.
+  // Keep the PTY open until the installed hook's exact trace is durably
+  // searchable, then emit the authenticated semantic readiness marker that
+  // releases the sole Ctrl-D owned by the outer PTY transport.
   interactiveFailurePhase = "trace-terminal";
   await waitForCodexTurnTerminal(traceDeadline);
   interactiveFailurePhase = "trace-settlement";
   const summary = await waitForTraceSummary(traceDeadline);
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  interactiveFailurePhase = "tui-exit";
+  await codexRun;
   interactiveFailurePhase = "verify";
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
