@@ -1030,6 +1030,9 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       selectedScenario,
       input,
     );
+    const requiresCanonicalEof = expectedActions.some(
+      ({ action }) => action === "eof",
+    );
     return (
       receipt?.receiptVersion === 1 &&
       receipt?.transport === "pty" &&
@@ -1046,7 +1049,8 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       receipt?.eofByteWritten ===
         !selectedScenario.waitForSemanticCompletionBeforeTerminalAction &&
       receipt?.isTTY === true &&
-      receipt?.observedCanonicalMode === true
+      typeof receipt?.observedCanonicalMode === "boolean" &&
+      (!requiresCanonicalEof || receipt.observedCanonicalMode === true)
     );
   })();
 const interactivePtyGeometryMatches = (receipt) =>

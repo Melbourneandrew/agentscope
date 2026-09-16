@@ -509,6 +509,7 @@ const ptyPostInputReceiptFor = () => {
       { ...finalInput, monotonicAtMs: 2_003 },
     ],
     eofByteWritten: false,
+    observedCanonicalMode: false,
   };
 };
 
@@ -1208,6 +1209,7 @@ describe("selected headless backend evidence", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function
 describe("selected PTY backend evidence", () => {
   it("rejects cross-mode, missing, substituted, and raw terminal evidence", () => {
     const { evidence } = compiledEvidenceFixture();
@@ -1224,6 +1226,15 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...pty, observedCanonicalMode: false },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
     expect(
       compileWithPreparedAuthority(
         {
@@ -1235,7 +1246,10 @@ describe("selected PTY backend evidence", () => {
       ),
     ).toMatchObject({
       terminalAction: "post-completion-input",
-      ptyTerminalReceipt: { eofByteWritten: false },
+      ptyTerminalReceipt: {
+        eofByteWritten: false,
+        observedCanonicalMode: false,
+      },
     });
     expect(() =>
       compileWithPreparedAuthority(

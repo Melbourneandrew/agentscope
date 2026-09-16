@@ -453,7 +453,7 @@ const ptyTerminalReceiptSchema = z
     returnedAtMs: z.number().finite().nonnegative(),
     isTTY: z.literal(true),
     observedGeometry: ptyGeometrySchema,
-    observedCanonicalMode: z.literal(true),
+    observedCanonicalMode: z.boolean(),
     eofByte: z.number().int().min(0).max(255),
     eofByteWritten: z.boolean(),
     inputBytesWritten: z.number().int().min(0).max(1_048_576),
@@ -661,6 +661,7 @@ const ptyReceiptPasses = (
     receipt.residualProcessCount === 0 &&
     receipt.finalSnapshot.semanticState === "completed" &&
     receipt.eofByteWritten === (terminalAction === "eof") &&
+    (terminalAction !== "eof" || receipt.observedCanonicalMode) &&
     receipt.processJoined &&
     receipt.terminalInputJoined &&
     receipt.terminalOutputJoined &&
