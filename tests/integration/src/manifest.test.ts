@@ -273,7 +273,22 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
     );
-    expect(source).toContain('  interactiveFailurePhase = "trace";\n');
+    const traceTerminalPhase = source.indexOf(
+      '  interactiveFailurePhase = "trace-terminal";\n',
+      codexJoin,
+    );
+    const traceSettlementPhase = source.indexOf(
+      '  interactiveFailurePhase = "trace-settlement";\n',
+      traceTerminalPhase,
+    );
+    const traceSearchPhase = source.indexOf(
+      '  interactiveFailurePhase = "trace-search";\n',
+    );
+    expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
+    expect(traceTerminalPhase).toBeLessThan(terminalWait);
+    expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
+    expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
+    expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
