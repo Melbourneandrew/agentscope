@@ -263,7 +263,10 @@ describe("selected PTY transport", () => {
     ["active-terminal", "testkit.pty.transport.semantic-missing-readiness"],
     ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
     ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
-    ["malformed-control", "testkit.pty.transport.semantic-malformed-control"],
+    [
+      "malformed-control",
+      "testkit.pty.transport.semantic-malformed-trailing-control",
+    ],
     [
       "unsupported-control",
       "testkit.pty.transport.semantic-unsupported-control",
