@@ -34,6 +34,12 @@ export function terminalObservationBeforeDeadline(input: {
   now: () => number;
 }): boolean;
 
+export function traceSummaryBeforeDeadline<T>(input: {
+  summary: T;
+  deadline: number;
+  now: () => number;
+}): T;
+
 export function readCodexSessionLedgers(homeDescriptor: number): string[];
 
 export function readCodexSessionLedgerRecords(
@@ -42,15 +48,31 @@ export function readCodexSessionLedgerRecords(
 
 export function openLocalSqliteLifecycle(homeDescriptor: number): number;
 
+export function openOperationalStateHealth(homeDescriptor: number): number;
+
 export function localSqliteReporterSettled(
   lifecycleDescriptor: number,
 ): boolean;
 
-export function localSqliteAcceptanceBaseline(homeDescriptor: number): number;
+export interface LocalSqliteAcceptanceBaseline {
+  readonly nextSequence: number;
+  readonly losses: Readonly<{
+    diagnostics: number;
+    health: number;
+    checkpoints: number;
+  }>;
+  readonly diagnostics: readonly Readonly<Record<string, unknown>>[];
+  readonly health: readonly Readonly<Record<string, unknown>>[];
+  readonly checkpoints: readonly Readonly<Record<string, unknown>>[];
+}
+
+export function localSqliteAcceptanceBaseline(
+  healthDescriptor: number,
+): LocalSqliteAcceptanceBaseline;
 
 export function localSqliteAcceptanceObservedAfterBaseline(
-  homeDescriptor: number,
-  baseline: number,
+  healthDescriptor: number,
+  baseline: LocalSqliteAcceptanceBaseline,
 ): boolean;
 
 export function settledLocalSqliteLifecycleSnapshot(input: {

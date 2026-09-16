@@ -355,8 +355,12 @@ describe("integration capability manifest", () => {
       lifecycleSettlement,
     );
     const boundedQuery = source.indexOf(
-      "  const summary = await readTraceSummary(traceDeadline);\n",
+      "    summary: await readTraceSummary(traceDeadline),\n",
       preQueryDeadline,
+    );
+    const postQueryDeadline = source.indexOf(
+      "    deadline: traceDeadline,\n    now: bootNow,\n",
+      boundedQuery,
     );
     const acceptSummary = source.indexOf(
       '  if (summary === null) throw new Error("integration.codex.trace-search");\n',
@@ -370,7 +374,8 @@ describe("integration capability manifest", () => {
       "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
       lifecycleSettlement,
     );
-    expect(acceptSummary).toBeGreaterThan(boundedQuery);
+    expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
+    expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeLessThan(preQueryDeadline);
     expect(source).toContain('            child.kill("SIGKILL");\n');
