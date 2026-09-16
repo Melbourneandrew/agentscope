@@ -112,7 +112,8 @@ if (
 const typedArrayBufferGetter = typedArrayBufferGetterCandidate;
 const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
 
-type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
+type ParserState =
+  "ground" | "escape" | "charset" | "csi" | "osc" | "osc-escape";
 
 const fail = (code: string): never => {
   throw new BoundedTerminalEmulatorError(code);
@@ -470,6 +471,25 @@ export class BoundedTerminalEmulator {
         this.#row = this.#savedRow;
         this.#column = this.#savedColumn;
         this.#state = "ground";
+      } else if (character === "(" || character === ")") {
+        this.#state = "charset";
+      } else if (character === "D") {
+        this.#lineFeed();
+        this.#state = "ground";
+      } else if (character === "E") {
+        this.#column = 0;
+        this.#lineFeed();
+        this.#state = "ground";
+      } else if (character === "M") {
+        this.#row = Math.max(0, this.#row - 1);
+        this.#state = "ground";
+      } else if (character === "H" || character === "=" || character === ">") {
+        this.#state = "ground";
+      } else if (character === "c") {
+        this.#clearDisplay(2);
+        this.#row = 0;
+        this.#column = 0;
+        this.#state = "ground";
       } else {
         this.#recordMalformedControl("escape");
         this.#state = "ground";
@@ -479,6 +499,12 @@ export class BoundedTerminalEmulator {
     }
     if (this.#state === "csi") {
       this.#consumeCsi(character);
+      return;
+    }
+    if (this.#state === "charset") {
+      if (character !== "0" && character !== "A" && character !== "B")
+        this.#recordMalformedControl("escape");
+      this.#state = "ground";
       return;
     }
     if (this.#state === "osc") {
