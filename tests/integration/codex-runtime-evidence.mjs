@@ -381,6 +381,157 @@ const readCapped = (descriptor) => {
   if (offset > ledgerLimit) throw new Error("integration.codex.session-ledger");
   return buffer.subarray(0, offset);
 };
+
+const operationalStateError = () =>
+  new Error("integration.codex.operational-state");
+const operationalStatePath = (homeDescriptor) => {
+  const opened = [];
+  try {
+    const agentscope = requireDirectory(homeDescriptor, ".agentscope");
+    opened.push(agentscope);
+    const health = requireDirectory(agentscope, "health");
+    opened.push(health);
+    const state = openChild(
+      health,
+      "operational-state-v1.json",
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    return state;
+  } catch (error) {
+    if (error?.message === "integration.codex.local-sqlite-settlement")
+      throw operationalStateError();
+    throw error;
+  } finally {
+    for (const descriptor of opened.reverse()) closeSync(descriptor);
+  }
+};
+const readOperationalState = (homeDescriptor, unstable) => {
+  if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
+    throw operationalStateError();
+  const descriptor = operationalStatePath(homeDescriptor);
+  if (descriptor === null) return null;
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    const bytes = readCapped(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      !sameSnapshotIdentity(before, after) ||
+      bytes.length !== Number(before.size)
+    ) {
+      if (unstable === "retry") return undefined;
+      throw operationalStateError();
+    }
+    const document = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+    if (
+      !plainRecord(document) ||
+      Object.keys(document).sort().join("\0") !==
+        "checkpoints\0diagnostics\0health\0losses\0nextSequence\0version" ||
+      document.version !== 1 ||
+      !Number.isSafeInteger(document.nextSequence) ||
+      document.nextSequence < 0 ||
+      !Array.isArray(document.health) ||
+      document.health.length > 64
+    )
+      throw operationalStateError();
+    return document;
+  } catch (error) {
+    if (error?.message === "integration.codex.operational-state") throw error;
+    throw operationalStateError();
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+export const localSqliteAcceptanceBaseline = (homeDescriptor) => {
+  const document = readOperationalState(homeDescriptor, "reject");
+  return document === null ? 0 : document.nextSequence;
+};
+
+export const localSqliteAcceptanceObservedAfterBaseline = (
+  homeDescriptor,
+  baseline,
+) => {
+  if (!Number.isSafeInteger(baseline) || baseline < 0)
+    throw operationalStateError();
+  const document = readOperationalState(homeDescriptor, "retry");
+  if (document === null || document === undefined) return false;
+  const healthEntry = (entry) => {
+    if (
+      !plainRecord(entry) ||
+      ![
+        "configurationGeneration\0observedAtUnixMilliseconds\0outcome\0policyMode\0receipt\0scope\0sequence\0stage",
+        "configurationGeneration\0connectionId\0destinationType\0observedAtUnixMilliseconds\0outcome\0policyMode\0receipt\0scope\0sequence\0stage",
+      ].includes(Object.keys(entry).sort().join("\0")) ||
+      !Number.isSafeInteger(entry.sequence) ||
+      entry.sequence < 0 ||
+      !Number.isSafeInteger(entry.observedAtUnixMilliseconds) ||
+      entry.observedAtUnixMilliseconds < 0 ||
+      !["hook", "connection"].includes(entry.scope) ||
+      ![
+        "hook-started",
+        "capture",
+        "redaction",
+        "routing",
+        "delivery",
+        "remote-acceptance",
+      ].includes(entry.stage) ||
+      ![
+        "completed",
+        "suppressed",
+        "no-route",
+        "accepted",
+        "rejected",
+        "unavailable",
+        "deadline-exceeded",
+        "outcome-unknown",
+      ].includes(entry.outcome) ||
+      ![
+        null,
+        "accepted",
+        "rejected",
+        "unavailable",
+        "deadline-exceeded",
+        "outcome-unknown",
+      ].includes(entry.receipt) ||
+      !(
+        entry.configurationGeneration === null ||
+        (Number.isSafeInteger(entry.configurationGeneration) &&
+          entry.configurationGeneration >= 0)
+      ) ||
+      ![null, "baseline", "strict"].includes(entry.policyMode) ||
+      (entry.destinationType !== undefined &&
+        (typeof entry.destinationType !== "string" ||
+          !/^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(
+            entry.destinationType,
+          ))) ||
+      (entry.connectionId !== undefined &&
+        (typeof entry.connectionId !== "string" ||
+          !/^destination-connection-v1-[a-f0-9]{64}$/u.test(
+            entry.connectionId,
+          )))
+    )
+      throw operationalStateError();
+    return entry;
+  };
+  const entries = document.health.map(healthEntry);
+  const matches = entries.filter((entry) => {
+    return (
+      entry.sequence >= baseline &&
+      entry.sequence < document.nextSequence &&
+      entry.scope === "connection" &&
+      entry.stage === "remote-acceptance" &&
+      entry.outcome === "accepted" &&
+      entry.receipt === "accepted" &&
+      entry.destinationType === "@agentscope/destination-local-sqlite" &&
+      typeof entry.connectionId === "string"
+    );
+  });
+  if (matches.length > 1) throw operationalStateError();
+  return matches.length === 1;
+};
 export const settledCodexLedgerSnapshot = ({
   before,
   first,

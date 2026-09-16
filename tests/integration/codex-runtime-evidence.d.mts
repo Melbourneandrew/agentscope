@@ -46,6 +46,13 @@ export function localSqliteReporterSettled(
   lifecycleDescriptor: number,
 ): boolean;
 
+export function localSqliteAcceptanceBaseline(homeDescriptor: number): number;
+
+export function localSqliteAcceptanceObservedAfterBaseline(
+  homeDescriptor: number,
+  baseline: number,
+): boolean;
+
 export function settledLocalSqliteLifecycleSnapshot(input: {
   before: Readonly<Record<string, unknown>>;
   first: ReadonlyArray<Readonly<{ kind: string; name: string }>>;

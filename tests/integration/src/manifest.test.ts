@@ -329,16 +329,12 @@ describe("integration capability manifest", () => {
     const traceSearchResultPhase = source.indexOf(
       '  interactiveFailurePhase = "trace-search-result";\n',
     );
-    const traceSearchEmptyPhase = source.indexOf(
-      '    interactiveFailurePhase = "trace-search-empty";\n',
-    );
     expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
     expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
-    expect(traceSearchEmptyPhase).toBeGreaterThan(traceSearchResultPhase);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
@@ -346,35 +342,35 @@ describe("integration capability manifest", () => {
     const terminalObservation = source.indexOf(
       "      observed: codexTurnTerminalObservedAfterBaseline(\n",
     );
-    const lifecycleSettlement = source.indexOf(
-      "    while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
+    const acceptanceObservation = source.indexOf(
+      "    !localSqliteAcceptanceObservedAfterBaseline(\n",
       terminalObservation,
     );
+    const lifecycleSettlement = source.indexOf(
+      "    !localSqliteReporterSettled(localSqliteLifecycleDescriptor)\n",
+      acceptanceObservation,
+    );
     const preQueryDeadline = source.indexOf(
-      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
       lifecycleSettlement,
     );
     const boundedQuery = source.indexOf(
-      "    const summary = await readTraceSummary(traceDeadline);\n",
+      "  const summary = await readTraceSummary(traceDeadline);\n",
       preQueryDeadline,
     );
-    const postQueryDeadline = source.indexOf(
-      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
+    const acceptSummary = source.indexOf(
+      '  if (summary === null) throw new Error("integration.codex.trace-search");\n',
       boundedQuery,
     );
-    const acceptSummary = source.indexOf(
-      "    if (summary !== null) return summary;\n",
-      postQueryDeadline,
-    );
-    expect(lifecycleSettlement).toBeGreaterThan(terminalObservation);
+    expect(acceptanceObservation).toBeGreaterThan(terminalObservation);
+    expect(lifecycleSettlement).toBeGreaterThan(acceptanceObservation);
     expect(lifecycleSettlement).toBeLessThan(preQueryDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
-    expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
     const boundedBackoff = source.indexOf(
-      "      await waitWithinObservationDeadline({\n        deadline: traceDeadline,\n        maximumWaitMilliseconds: 100,\n",
+      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
       lifecycleSettlement,
     );
-    expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
+    expect(acceptSummary).toBeGreaterThan(boundedQuery);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeLessThan(preQueryDeadline);
     expect(source).toContain('            child.kill("SIGKILL");\n');
