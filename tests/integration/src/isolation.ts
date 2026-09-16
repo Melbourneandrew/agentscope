@@ -352,8 +352,6 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("checkpoint-process-topology"),
     topology: z.literal("root-direct-child-direct-grandchild"),
-    byteLength: z.literal(1),
-    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
   }),
   z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
   z.strictObject({
@@ -384,8 +382,6 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("checkpoint-process-topology"),
     topology: z.literal("root-direct-child-direct-grandchild"),
-    byteLength: z.literal(1),
-    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({

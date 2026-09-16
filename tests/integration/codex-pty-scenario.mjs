@@ -100,37 +100,20 @@ const readReadinessChallenge = () =>
   });
 const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
-const readCheckpointAcknowledgement = () =>
+const waitForCheckpointSignal = () =>
   new Promise((resolve, reject) => {
     let settled = false;
     let timer;
     const settle = (error) => {
       if (settled) return;
       settled = true;
-      process.stdin.off("data", onData);
-      process.stdin.off("end", onEnd);
-      process.stdin.off("error", onError);
-      process.stdin.pause();
+      process.off("SIGUSR2", onSignal);
       if (timer !== undefined) clearTimeout(timer);
       if (error === undefined) resolve();
       else reject(error);
     };
-    const onEnd = () =>
-      settle(new Error("integration.codex.process-checkpoint"));
-    const onError = () =>
-      settle(new Error("integration.codex.process-checkpoint"));
-    const onData = (chunk) => {
-      const bytes = Buffer.from(chunk);
-      settle(
-        bytes.length === 1 && bytes[0] === 0x0a
-          ? undefined
-          : new Error("integration.codex.process-checkpoint"),
-      );
-    };
-    process.stdin.once("data", onData);
-    process.stdin.once("end", onEnd);
-    process.stdin.once("error", onError);
-    process.stdin.resume();
+    const onSignal = () => settle();
+    process.once("SIGUSR2", onSignal);
     timer = setTimeout(
       () => settle(new Error("integration.codex.process-checkpoint")),
       Math.min(5_000, remaining()),
@@ -402,10 +385,11 @@ const openChallengedModelGateway = async () => {
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
       );
+      const checkpointSignal = waitForCheckpointSignal();
       process.stdout.write(
         `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
       );
-      await readCheckpointAcknowledgement();
+      await checkpointSignal;
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end(challenged);
     } catch (error) {

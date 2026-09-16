@@ -88,7 +88,7 @@ describe("selected PTY transport", () => {
 
   it("rejects a fixed readiness marker before the per-run challenge", async () => {
     const challenge = "a".repeat(64);
-    const challengeInput = new TextEncoder().encode(`${challenge}\n\n\u0004`);
+    const challengeInput = new TextEncoder().encode(`${challenge}\n\u0004`);
     const now = performance.now();
     const challengeRequest: SelectedPtyExecutionRequest = {
       ...request({
@@ -111,17 +111,13 @@ describe("selected PTY transport", () => {
           {
             action: "checkpoint-process-topology",
             topology: "root-direct-child-direct-grandchild",
-            byteLength: 1,
-            inputSha256: createHash("sha256")
-              .update(challengeInput.subarray(65, 66))
-              .digest("hex"),
           },
           { action: "wait-for-semantic-completion" },
           {
             action: "input",
             byteLength: 1,
             inputSha256: createHash("sha256")
-              .update(challengeInput.subarray(66))
+              .update(challengeInput.subarray(65))
               .digest("hex"),
           },
         ],
@@ -145,6 +141,13 @@ describe("selected PTY transport", () => {
         "completion-before-readiness",
       ),
     ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
       outcome: "completed",
       readinessObserved: true,
     });

@@ -1214,7 +1214,7 @@ const freezeContainerProcessSet = (
   return fail("testkit.headless.observer.process-set");
 };
 
-const resumeContainerProcessSet = (
+const releaseFrozenContainerProcessSet = (
   namespaceIdentity: string,
   processes: readonly ProcessSnapshot[],
   rootPid: number,
@@ -1234,7 +1234,12 @@ const resumeContainerProcessSet = (
     )
       return fail("testkit.headless.observer.identity");
   }
-  for (const expected of ordered) process.kill(expected.pid, "SIGCONT");
+  for (const expected of ordered) {
+    if (expected.pid === rootPid) {
+      process.kill(expected.pid, "SIGUSR2");
+      process.kill(expected.pid, "SIGCONT");
+    } else process.kill(expected.pid, "SIGCONT");
+  }
 };
 
 const delay = (milliseconds: number): Promise<void> =>
@@ -1378,7 +1383,7 @@ type PtyRuntime = Readonly<{
     rootPid: number,
     monotonicDeadlineNs: bigint,
   ) => AdoptedZombieReapReceipt;
-  resumeProcessSet: (
+  releaseFrozenProcessSet: (
     namespaceIdentity: string,
     processes: readonly ProcessSnapshot[],
     rootPid: number,
@@ -1760,7 +1765,7 @@ const productionPtyRuntime = (
       deadline,
     );
   },
-  resumeProcessSet: resumeContainerProcessSet,
+  releaseFrozenProcessSet: releaseFrozenContainerProcessSet,
   sendSignal: (pid, signal) => process.kill(pid, signal),
   spawnPty: (request, geometry, interpreter, scriptSha256) => {
     authority.assertRuntime();
@@ -2059,27 +2064,13 @@ const snapshotPtyRequest = (
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "checkpoint-process-topology") {
-      const byteLength = ownData(action, "byteLength");
-      const inputSha256 = ownData(action, "inputSha256");
       const topology = ownData(action, "topology");
       if (
-        actionKeys !== "action\0byteLength\0inputSha256\0topology" ||
-        byteLength !== 1 ||
-        topology !== "root-direct-child-direct-grandchild" ||
-        typeof inputSha256 !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(inputSha256) ||
-        createHash("sha256")
-          .update(
-            safeBufferFrom(process_.stdin).subarray(
-              describedInputBytes,
-              describedInputBytes + 1,
-            ),
-          )
-          .digest("hex") !== inputSha256
+        actionKeys !== "action\0topology" ||
+        topology !== "root-direct-child-direct-grandchild"
       )
         return fail("testkit.pty.request");
       topologyCheckpointCount += 1;
-      describedInputBytes += 1;
       defineArrayIndex(
         stableActions,
         index,
@@ -2087,8 +2078,6 @@ const snapshotPtyRequest = (
           {
             action: "checkpoint-process-topology",
             topology,
-            byteLength: 1,
-            inputSha256,
           },
         ]) as SelectedPtyExecutionAction,
       );
@@ -2189,10 +2178,9 @@ const snapshotPtyRequest = (
         semanticWaitIndex < 1 ||
         topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
-        describedInputBytesAtSemanticWait !== 66 ||
+        describedInputBytesAtSemanticWait !== 65 ||
         safeBufferFrom(process_.stdin).subarray(0, 65).toString("utf8") !==
-          `${readinessChallenge}\n` ||
-        safeBufferFrom(process_.stdin)[65] !== 0x0a))
+          `${readinessChallenge}\n`))
   )
     return fail("testkit.pty.request");
   return safeReflectApply(freeze, Object, [
@@ -2686,21 +2674,14 @@ const armSelectedPty = (
               processRequest.monotonicExecutionDeadlineMs
             )
               return fail("testkit.headless.execution.deadline");
-            const pending = input.subarray(inputOffset, inputOffset + 1);
-            const written = exactPtyWrite(child.write(pending), 1);
-            if (written.bytesWritten !== 1)
-              return fail("testkit.pty.transport");
-            runtime.resumeProcessSet(
+            runtime.releaseFrozenProcessSet(
               composition.namespaceIdentity,
               processSet,
               root.pid,
             );
-            inputOffset += 1;
             recordAction({
               action: "checkpoint-process-topology",
               topology: action.topology,
-              byteLength: 1,
-              inputSha256: createHash("sha256").update(pending).digest("hex"),
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
@@ -3558,11 +3539,7 @@ const ptyTerminalControlActionMatches = (
     expected.action === "checkpoint-process-topology" &&
     observed.action === "checkpoint-process-topology"
   )
-    return (
-      expected.topology === observed.topology &&
-      expected.byteLength === observed.byteLength &&
-      expected.inputSha256 === observed.inputSha256
-    );
+    return expected.topology === observed.topology;
   if (expected.action === "signal" && observed.action === "signal")
     return (
       expected.signal === observed.signal &&
@@ -3624,16 +3601,7 @@ const ptyReceiptActionsMatch = (
       expected.action === "checkpoint-process-topology" &&
       observed.action === "checkpoint-process-topology"
     ) {
-      const bytes = input.subarray(inputOffset, inputOffset + 1);
-      if (
-        expected.topology !== observed.topology ||
-        expected.byteLength !== observed.byteLength ||
-        expected.inputSha256 !== observed.inputSha256 ||
-        createHash("sha256").update(bytes).digest("hex") !==
-          observed.inputSha256
-      )
-        return false;
-      inputOffset += 1;
+      if (expected.topology !== observed.topology) return false;
     } else if (!ptyTerminalControlActionMatches(expected, observed))
       return false;
   }
@@ -4582,7 +4550,11 @@ const selectedPtyRuntimeForTest = (
       processes.delete(pid);
       return { pid, startIdentity, status: "reaped" };
     },
-    resumeProcessSet: (_namespaceIdentity, expectedProcesses, rootPid) => {
+    releaseFrozenProcessSet: (
+      _namespaceIdentity,
+      expectedProcesses,
+      rootPid,
+    ) => {
       const ordered = [...expectedProcesses].sort((left, right) => {
         if (left.pid === rootPid) return 1;
         if (right.pid === rootPid) return -1;
