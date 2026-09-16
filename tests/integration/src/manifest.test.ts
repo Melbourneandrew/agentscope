@@ -187,15 +187,15 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("starts the Codex turn before sending its authenticated quit control", () => {
+  it("starts the Codex turn before typing its authenticated quit command", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from([12]),
+      Buffer.from([12, 47, 113, 117, 105, 116, 13]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(0);
-    expect(scenario.postCompletionControl).toBe("interrupt-byte");
+    expect(scenario.postCompletionInputByteLength).toBe(6);
+    expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     const actions = compileInteractivePtyActions(
       scenario,
@@ -205,12 +205,26 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "wait-for-semantic-completion",
-      "interrupt-byte",
+      "input",
+      "input",
+      "input",
+      "input",
+      "input",
+      "input",
     ]);
-    expect(actions.at(-1)).toEqual({
-      action: "interrupt-byte",
-      byte: 3,
-    });
+    expect(
+      actions
+        .slice(-6)
+        .map((action) =>
+          action.action === "input" ? action.inputSha256 : null,
+        ),
+    ).toEqual(
+      [...Buffer.from("/quit\r")].map((byte) =>
+        createHash("sha256")
+          .update(Buffer.from([byte]))
+          .digest("hex"),
+      ),
+    );
     const source = readFileSync(
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",

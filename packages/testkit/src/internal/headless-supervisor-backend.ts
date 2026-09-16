@@ -2268,12 +2268,18 @@ const armSelectedPty = (
       try {
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
+        const priorAction = actionsApplied[actionsApplied.length - 1];
+        const waitingForPriorInputOutput =
+          pendingActionBeforeRead?.action === "input" &&
+          priorAction?.action === "input" &&
+          outputBytes === lastCompletedInputOutputBytes;
         const shouldReadBeforeAction =
           !allowInput ||
           pendingActionBeforeRead === undefined ||
           request.interaction.trigger === "immediate" ||
           !readinessObserved ||
-          pendingActionBeforeRead.action === "wait-for-semantic-completion";
+          pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
+          waitingForPriorInputOutput;
         for (
           let index = 0;
           shouldReadBeforeAction && index < 64 && !outputTerminal;
@@ -2336,7 +2342,9 @@ const armSelectedPty = (
         }
         const inputAdmitted =
           allowInput &&
-          (request.interaction.trigger === "immediate" || readinessObserved);
+          (request.interaction.trigger === "immediate" || readinessObserved) &&
+          (!waitingForPriorInputOutput ||
+            outputBytes > lastCompletedInputOutputBytes);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
         if (
           inputAdmitted &&
@@ -4117,6 +4125,7 @@ type SelectedPtyTestSeed =
   | "partial-input"
   | "partial-input-output-limit"
   | "partial-input-timeout"
+  | "paced-input"
   | "post-input-completion"
   | "readiness-burst"
   | "residual"
@@ -4283,6 +4292,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
+      let priorInputTransportReads = -1;
       let transportReads = 0;
       let currentGeometry = geometry;
       queueMicrotask(() => {
@@ -4398,6 +4408,13 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           if (seed === "active-terminal" && transportReads === 0)
             throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
+          if (
+            seed === "paced-input" &&
+            inputCalls > 1 &&
+            transportReads === priorInputTransportReads
+          )
+            throw new Error("testkit.pty.test-input-not-acknowledged");
+          priorInputTransportReads = transportReads;
           if (seed === "control-write-substitution" && inputCalls === 1)
             return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "readiness-burst" && inputCalls === 2) {

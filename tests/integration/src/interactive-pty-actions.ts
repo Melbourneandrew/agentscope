@@ -31,20 +31,17 @@ export const compileInteractivePtyActions = (
       .update(input.subarray(start, start + byteLength))
       .digest("hex"),
   });
+  const postCompletionInputActions = Array.from(
+    { length: scenario.postCompletionInputByteLength },
+    (_, offset) => inputAction(initialInputBytes + offset, 1),
+  );
   return deepFreeze([
     { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
     inputAction(0, initialInputBytes),
     ...(scenario.waitForSemanticCompletionBeforeTerminalAction
       ? [
           { action: "wait-for-semantic-completion" as const },
-          ...(scenario.postCompletionInputByteLength === 0
-            ? []
-            : [
-                inputAction(
-                  initialInputBytes,
-                  scenario.postCompletionInputByteLength,
-                ),
-              ]),
+          ...postCompletionInputActions,
           ...(scenario.postCompletionControl === "interrupt-byte"
             ? [
                 {
