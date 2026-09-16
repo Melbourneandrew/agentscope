@@ -17,6 +17,8 @@ import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
+  localSqliteAcceptanceBaseline,
+  localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   readCodexSessionLedgers,
@@ -120,7 +122,68 @@ describe("Codex bounded native ledgers", () => {
   });
 });
 
+// Lifecycle fixtures keep descriptor identity, durable acceptance, and
+// settlement adversaries adjacent.
+// eslint-disable-next-line max-lines-per-function
 describe("Codex Local SQLite reporter settlement", () => {
+  it.runIf(process.platform === "linux")(
+    "requires a new durable Local SQLite acceptance after the exact baseline",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-health-"));
+      const health = join(root, ".agentscope", "health");
+      mkdirSync(health, { recursive: true });
+      const homeDescriptor = openSync(
+        root,
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+      const statePath = join(health, "operational-state-v1.json");
+      const accepted = {
+        version: 1,
+        nextSequence: 2,
+        losses: { diagnostics: 0, health: 0, checkpoints: 0 },
+        diagnostics: [],
+        health: [
+          {
+            scope: "connection",
+            stage: "remote-acceptance",
+            outcome: "accepted",
+            configurationGeneration: 1,
+            policyMode: "baseline",
+            destinationType: "@agentscope/destination-local-sqlite",
+            connectionId: `destination-connection-v1-${"a".repeat(64)}`,
+            receipt: "accepted",
+            sequence: 1,
+            observedAtUnixMilliseconds: 1,
+          },
+        ],
+        checkpoints: [],
+      };
+      try {
+        expect(localSqliteAcceptanceBaseline(homeDescriptor)).toBe(0);
+        writeFileSync(statePath, `${JSON.stringify(accepted)}\n`);
+        expect(
+          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 0),
+        ).toBe(true);
+        expect(
+          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 2),
+        ).toBe(false);
+        writeFileSync(
+          statePath,
+          `${JSON.stringify({
+            ...accepted,
+            health: [{ ...accepted.health[0], substituted: true }],
+          })}\n`,
+        );
+        expect(() =>
+          localSqliteAcceptanceObservedAfterBaseline(homeDescriptor, 0),
+        ).toThrow("integration.codex.operational-state");
+      } finally {
+        closeSync(homeDescriptor);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "binds one exact lifecycle and accepts only stable empty settlement",
     () => {

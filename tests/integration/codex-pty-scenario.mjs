@@ -20,6 +20,8 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   codexTurnTerminalObservedAfterBaseline,
+  localSqliteAcceptanceBaseline,
+  localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   readCodexSessionLedgerRecords,
@@ -220,6 +222,7 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
+let localSqliteOperationalBaseline;
 let interactiveFailurePhase = "bootstrap";
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
@@ -595,29 +598,16 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
   }
 };
 const waitForTraceSummary = async (traceDeadline) => {
-  // Turn completion can precede Stop-hook admission. A stable empty lifecycle
-  // therefore authorizes one bounded observation, not an empty terminal
-  // conclusion. Keep observing until the installed hook publishes the exact
-  // trace or the one outer observation deadline expires.
-  while (true) {
-    while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
-      await waitWithinObservationDeadline({
-        deadline: traceDeadline,
-        maximumWaitMilliseconds: 100,
-        now: bootNow,
-        wait: (milliseconds) =>
-          new Promise((resolve) => setTimeout(resolve, milliseconds)),
-      });
-      remaining();
-    }
-    if (bootNow() >= traceDeadline)
-      throw new Error("integration.codex.trace-deadline");
-    interactiveFailurePhase = "trace-search";
-    const summary = await readTraceSummary(traceDeadline);
-    if (bootNow() >= traceDeadline)
-      throw new Error("integration.codex.trace-deadline");
-    if (summary !== null) return summary;
-    interactiveFailurePhase = "trace-search-empty";
+  // An empty lifecycle before the Stop hook starts is not terminal evidence.
+  // Wait for the durable accepted connection record and then for the exact
+  // lifecycle to settle before issuing the sole retrieval search.
+  while (
+    !localSqliteAcceptanceObservedAfterBaseline(
+      homeDescriptor,
+      localSqliteOperationalBaseline,
+    ) ||
+    !localSqliteReporterSettled(localSqliteLifecycleDescriptor)
+  ) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -627,6 +617,12 @@ const waitForTraceSummary = async (traceDeadline) => {
     });
     remaining();
   }
+  if (bootNow() >= traceDeadline)
+    throw new Error("integration.codex.trace-deadline");
+  interactiveFailurePhase = "trace-search";
+  const summary = await readTraceSummary(traceDeadline);
+  if (summary === null) throw new Error("integration.codex.trace-search");
+  return summary;
 };
 
 let completed = false;
@@ -642,6 +638,8 @@ try {
   await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+  localSqliteOperationalBaseline =
+    localSqliteAcceptanceBaseline(homeDescriptor);
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "unchanged",
