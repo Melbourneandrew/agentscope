@@ -175,7 +175,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(2);
+    expect(scenario?.runtimeArtifacts).toHaveLength(3);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -229,8 +229,8 @@ describe("integration capability manifest", () => {
       "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
       modelRequest,
     );
-    const terminalWait = source.indexOf(
-      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+    const hookWait = source.indexOf(
+      "  await waitForStopHook(traceDeadline);\n",
       traceDeadline,
     );
     const semanticReady = source.indexOf(
@@ -238,6 +238,10 @@ describe("integration capability manifest", () => {
       modelRequest,
     );
     const codexJoin = source.indexOf("  await codexRun;\n", semanticReady);
+    const terminalWait = source.indexOf(
+      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+      codexJoin,
+    );
     const traceQueryAfterJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       codexJoin,
@@ -303,9 +307,10 @@ describe("integration capability manifest", () => {
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(traceDeadline).toBeGreaterThan(modelRequest);
-    expect(terminalWait).toBeGreaterThan(traceDeadline);
-    expect(semanticReady).toBeGreaterThan(terminalWait);
-    expect(codexJoin).toBeGreaterThan(terminalWait);
+    expect(hookWait).toBeGreaterThan(traceDeadline);
+    expect(semanticReady).toBeGreaterThan(hookWait);
+    expect(codexJoin).toBeGreaterThan(semanticReady);
+    expect(terminalWait).toBeGreaterThan(codexJoin);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',

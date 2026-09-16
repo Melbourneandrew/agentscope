@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
@@ -173,6 +174,13 @@ const cli = async (arguments_, command, options) =>
 
 const prompt = "Reply with one short confirmation and do not use tools.";
 const expectedAssistantMessage = "AGENTSCOPE_PTY_COMPLETE";
+const stopHookNonce = createHash("sha256")
+  .update(`agentscope-stop-hook:${scenarioId}`)
+  .digest("hex");
+const stopHookReceipt = join(ledger, "codex-stop-hook-complete.txt");
+const stopHookProbe = fileURLToPath(
+  new URL("./codex-hook-completion-probe.mjs", import.meta.url),
+);
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
@@ -393,11 +401,34 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
+const stopHookCompleted = () => {
+  if (!existsSync(stopHookReceipt)) return false;
+  const status = lstatSync(stopHookReceipt);
+  if (
+    !status.isFile() ||
+    status.isSymbolicLink() ||
+    (status.mode & 0o777) !== 0o600 ||
+    status.size !== stopHookNonce.length + 1 ||
+    readFileSync(stopHookReceipt, "utf8") !== `${stopHookNonce}\n`
+  )
+    throw new Error("integration.codex.stop-hook-receipt");
+  return true;
+};
+const waitForStopHook = async (traceDeadline) => {
+  while (!stopHookCompleted()) {
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 100,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
+    remaining();
+  }
+};
 const waitForTraceSummary = async (traceDeadline) => {
-  // The exact Codex version records task_complete after its Stop hook returns,
-  // but its accepted reporter retains the Local SQLite lease until the TUI
-  // exits. The PTY controller sends the documented terminal controls first;
-  // only a stable empty lifecycle can then authorize the one bounded query.
+  // The accepted reporter retains the Local SQLite lease until the TUI exits.
+  // Only a stable empty lifecycle can then authorize the bounded query.
   while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
@@ -435,7 +466,8 @@ try {
   );
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
-  const launcher = installedLauncher(JSON.parse(originalHooks));
+  const parsedHooks = JSON.parse(originalHooks);
+  const launcher = installedLauncher(parsedHooks);
   if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))
     throw new Error("integration.codex.hook-deadline");
   const launcherStatus = lstatSync(launcher);
@@ -445,6 +477,22 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
+  const probeStatus = lstatSync(stopHookProbe);
+  if (
+    !probeStatus.isFile() ||
+    probeStatus.isSymbolicLink() ||
+    !process.execPath.startsWith("/") ||
+    [process.execPath, stopHookProbe, launcher, stopHookReceipt].some((value) =>
+      value.includes("'"),
+    )
+  )
+    throw new Error("integration.codex.hook-configuration");
+  parsedHooks.hooks.Stop[0].hooks[0].command =
+    `'${process.execPath}' '${stopHookProbe}' --launcher '${launcher}' ` +
+    `--receipt '${stopHookReceipt}' --nonce '${stopHookNonce}'`;
+  writeFileSync(hookPath, `${JSON.stringify(parsedHooks, null, 2)}\n`, {
+    mode: 0o600,
+  });
   const configuration = `${createCodexInternalProviderConfiguration({
     baseUrl: `${modelEndpoint}/v1`,
     model: "fixture-model",
@@ -478,18 +526,18 @@ try {
   await waitForModelRequest();
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   interactiveFailurePhase = "trace";
-  await waitForCodexTurnTerminal(traceDeadline);
-  // Codex's real TUI renders AGENTSCOPE_PTY_COMPLETE before its Stop hook and
-  // native task-terminal ledger settle. Advertise input readiness only after
-  // that durable boundary so the controller cannot race Ctrl-D against the
-  // hook. The selected PTY kernel independently latches completion that was
-  // rendered before this readiness marker.
+  await waitForStopHook(traceDeadline);
+  // The selected PTY kernel independently latches the rendered completion.
+  // This nonce-bound receipt proves the exact installed Stop launcher returned
+  // successfully before the controller is allowed to send Ctrl-D.
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   interactiveFailurePhase = "tui-exit";
   await codexRun;
   interactiveFailurePhase = "trace";
+  await waitForCodexTurnTerminal(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
+  writeFileSync(hookPath, originalHooks, { mode: 0o600 });
   const modelRequests = await readModelRequests();
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
