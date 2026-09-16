@@ -2044,13 +2044,15 @@ const exactPtyExit = (value: PtyExit): PtyExit => {
 const exactPtyObservation = (
   value: PtyTerminalObservation,
   geometry: Readonly<{ columns: number; rows: number }>,
+  requireCanonicalMode: boolean,
 ): PtyTerminalObservation => {
   if (
     !plainRecord(value) ||
     safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
       "canonical\0columns\0eofByte\0isTTY\0rows" ||
     ownData(value, "isTTY") !== true ||
-    ownData(value, "canonical") !== true ||
+    typeof ownData(value, "canonical") !== "boolean" ||
+    (requireCanonicalMode && ownData(value, "canonical") !== true) ||
     ownData(value, "columns") !== geometry.columns ||
     ownData(value, "rows") !== geometry.rows ||
     !boundedNonnegativeInteger(ownData(value, "eofByte"), 255)
@@ -2114,6 +2116,9 @@ const armSelectedPty = (
   // eslint-disable-next-line max-lines-per-function
 ): Promise<ArmedPtyBackendAuthority> => {
   const processRequest = request.process;
+  const requestRequiresCanonicalEof = request.interaction.actions.some(
+    (action) => action.action === "eof",
+  );
   if (
     processRequest.monotonicShutdownDeadlineMs >
       composition.maximumShutdownDeadlineMs ||
@@ -2173,6 +2178,7 @@ const armSelectedPty = (
         terminalObservation = exactPtyObservation(
           child.inspect(),
           request.initialGeometry,
+          requestRequiresCanonicalEof,
         );
       }
     } catch (error) {
@@ -2344,6 +2350,7 @@ const armSelectedPty = (
             terminalObservation = exactPtyObservation(
               child.inspect(),
               action.geometry,
+              requestRequiresCanonicalEof,
             );
             terminal.resize(action.geometry);
             recordAction({
@@ -3341,7 +3348,8 @@ const assertPtyReceiptBinding = (
     receipt.observedGeometry.columns !== expectedGeometry.columns ||
     receipt.observedGeometry.rows !== expectedGeometry.rows ||
     receipt.isTTY !== true ||
-    receipt.observedCanonicalMode !== true ||
+    typeof receipt.observedCanonicalMode !== "boolean" ||
+    (requestRequiresEof && receipt.observedCanonicalMode !== true) ||
     !boundedNonnegativeInteger(receipt.eofByte, 255)
   )
     return fail("testkit.pty.receipt-terminal");
