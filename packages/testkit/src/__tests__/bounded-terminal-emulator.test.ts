@@ -112,7 +112,9 @@ describe("bounded semantic terminal emulator", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
 
     terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
-    terminal.write(bytes("\u001b[2m›\u001b[22m \u001b[1mtext\u001b[0m›"));
+    terminal.write(
+      bytes("\u001b[2m›\u001b[1m›\u001b[22m \u001b[1mtext\u001b[0m›"),
+    );
 
     expect(terminal.completionObserved()).toBe(true);
     expect(terminal.readinessObserved()).toBe(false);

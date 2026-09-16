@@ -704,9 +704,7 @@ export class BoundedTerminalEmulator {
         this.#dim = false;
       } else if (value === 1) {
         this.#bold = true;
-        this.#dim = false;
       } else if (value === 2) {
-        this.#bold = false;
         this.#dim = true;
       } else if (value === 22) {
         this.#bold = false;
