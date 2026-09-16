@@ -321,6 +321,8 @@ export class BoundedTerminalEmulator {
   #readinessTail = "";
   #completionObserved = false;
   #completionTail = "";
+  #bold = false;
+  #dim = false;
   #credentialPromptObserved = false;
   #credentialTail = "";
 
@@ -598,6 +600,13 @@ export class BoundedTerminalEmulator {
       -completedMarker.length,
     );
     this.#completionObserved ||= this.#completionTail === completedMarker;
+    if (
+      character === "›" &&
+      this.#completionObserved &&
+      this.#bold &&
+      !this.#dim
+    )
+      this.#readinessObserved = true;
     this.#credentialTail = `${this.#credentialTail}${character}`.slice(
       -maximumCredentialTailCodePoints,
     );
@@ -676,7 +685,7 @@ export class BoundedTerminalEmulator {
     else if (final === "J" && first >= 0 && first <= 3)
       this.#clearDisplay(first);
     else if (final === "K" && first >= 0 && first <= 2) this.#clearLine(first);
-    else if (final === "m") return;
+    else if (final === "m") this.#applySgr(values);
     else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
     else if (passiveCsiIsSupported(final, values, this.#geometry.rows)) return;
     else if (final === "s") {
@@ -686,6 +695,24 @@ export class BoundedTerminalEmulator {
       this.#row = this.#savedRow;
       this.#column = this.#savedColumn;
     } else this.#recordUnsupportedControl("csi");
+  }
+
+  #applySgr(values: readonly number[]): void {
+    for (const value of values) {
+      if (value === 0) {
+        this.#bold = false;
+        this.#dim = false;
+      } else if (value === 1) {
+        this.#bold = true;
+        this.#dim = false;
+      } else if (value === 2) {
+        this.#bold = false;
+        this.#dim = true;
+      } else if (value === 22) {
+        this.#bold = false;
+        this.#dim = false;
+      }
+    }
   }
 
   #applyExtendedCsi(
