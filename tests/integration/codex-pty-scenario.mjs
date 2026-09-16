@@ -408,6 +408,7 @@ const waitForTraceSummary = async (traceDeadline) => {
   }
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
+  interactiveFailurePhase = "trace-search";
   const summary = await readTraceSummary(traceDeadline);
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
@@ -480,8 +481,9 @@ try {
   // after TurnComplete, which follows the installed Stop hook lifecycle.
   interactiveFailurePhase = "tui-exit";
   await codexRun;
-  interactiveFailurePhase = "trace";
+  interactiveFailurePhase = "trace-terminal";
   await waitForCodexTurnTerminal(traceDeadline);
+  interactiveFailurePhase = "trace-settlement";
   const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
   if (readFileSync(hookPath, "utf8") !== originalHooks)

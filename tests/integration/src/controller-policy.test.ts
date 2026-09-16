@@ -159,6 +159,29 @@ describe("integration cleanup authority", () => {
     ).toBeLessThan(recorder.indexOf("installedPtyFailures.set(plan.runId"));
   });
 
+  it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const authority = readFileSync(
+      resolve(
+        workspaceRoot,
+        "tests/integration/immutable-candidate-authority.mjs",
+      ),
+      "utf8",
+    );
+    for (const phase of [
+      "trace-terminal",
+      "trace-settlement",
+      "trace-search",
+    ]) {
+      expect(scenario).toContain(`interactiveFailurePhase = "${phase}"`);
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+    }
+    expect(authority).not.toContain('"integration.fixture.codex-trace"');
+  });
+
   it("reserves the terminal controller window for Docker cleanup only", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
