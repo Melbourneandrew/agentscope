@@ -1140,6 +1140,103 @@ const listContainerProcesses = (
   return snapshots.sort((left, right) => left.pid - right.pid);
 };
 
+const strictContainerProcessSnapshot = ():
+  readonly ProcessSnapshot[] | undefined => {
+  let names: string[];
+  try {
+    names = readdirSync("/proc")
+      .filter((name) => /^\d+$/u.test(name))
+      .sort((left, right) => Number(left) - Number(right));
+  } catch {
+    return fail("testkit.headless.observer.read");
+  }
+  const snapshots: ProcessSnapshot[] = [];
+  for (const name of names) {
+    const pid = Number(name);
+    if (!numberIsSafeInteger(pid) || pid < 2 || pid === process.pid) continue;
+    const snapshot = readProcessSnapshot(pid);
+    if (snapshot === undefined) return undefined;
+    safeReflectApply(arrayPush, snapshots, [snapshot]);
+  }
+  return snapshots;
+};
+
+const sameProcessSnapshotSet = (
+  left: readonly ProcessSnapshot[],
+  right: readonly ProcessSnapshot[],
+): boolean =>
+  left.length === right.length &&
+  left.every(
+    (identity, index) =>
+      identity.pid === right[index]?.pid &&
+      identity.parentPid === right[index]?.parentPid &&
+      identity.startIdentity === right[index]?.startIdentity &&
+      identity.state === right[index]?.state,
+  );
+
+const stopProcessForCheckpoint = (identity: ProcessSnapshot): void => {
+  if (identity.state === "T" || identity.state === "t") return;
+  try {
+    process.kill(identity.pid, "SIGSTOP");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+      return fail("testkit.headless.observer.signal");
+  }
+};
+
+const freezeContainerProcessSet = (
+  namespaceIdentity: string,
+  monotonicDeadlineMs: number,
+): readonly ProcessSnapshot[] => {
+  assertNamespaceIdentity(namespaceIdentity);
+  for (let attempt = 0; attempt < 64; attempt += 1) {
+    if (
+      safeReflectApply(performanceNow, performance, []) >= monotonicDeadlineMs
+    )
+      return fail("testkit.headless.execution.deadline");
+    const before = strictContainerProcessSnapshot();
+    if (before === undefined) continue;
+    for (const identity of before) stopProcessForCheckpoint(identity);
+    const after = strictContainerProcessSnapshot();
+    if (
+      after !== undefined &&
+      after.every(({ state }) => state === "T" || state === "t") &&
+      sameProcessSnapshotSet(
+        before.map((identity) => ({ ...identity, state: "T" })),
+        after.map((identity) => ({
+          ...identity,
+          state: identity.state === "t" ? "T" : identity.state,
+        })),
+      )
+    )
+      return after;
+  }
+  return fail("testkit.headless.observer.process-set");
+};
+
+const resumeContainerProcessSet = (
+  namespaceIdentity: string,
+  processes: readonly ProcessSnapshot[],
+  rootPid: number,
+): void => {
+  assertNamespaceIdentity(namespaceIdentity);
+  const ordered = [...processes].sort((left, right) => {
+    if (left.pid === rootPid) return 1;
+    if (right.pid === rootPid) return -1;
+    return right.pid - left.pid;
+  });
+  for (const expected of ordered) {
+    const current = readProcessSnapshot(expected.pid);
+    if (
+      current === undefined ||
+      current.startIdentity !== expected.startIdentity ||
+      (current.state !== "T" && current.state !== "t")
+    )
+      return fail("testkit.headless.observer.identity");
+  }
+  for (const expected of ordered) process.kill(expected.pid, "SIGCONT");
+};
+
 const delay = (milliseconds: number): Promise<void> =>
   observeAtCreation(
     new SafePromise((resolve) => {
@@ -1269,6 +1366,10 @@ type PtyRuntime = Readonly<{
   assertImmutableCandidateFile: (descriptor: number, path: string) => void;
   assertImmutableCandidateRuntime: () => void;
   assertNamespaceIdentity: (expected: string) => void;
+  freezeProcessSet: (
+    namespaceIdentity: string,
+    monotonicDeadlineMs: number,
+  ) => readonly ProcessSnapshot[];
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
   readProcess: (pid: number) => ProcessSnapshot | undefined;
   reapAdoptedZombie: (
@@ -1277,6 +1378,11 @@ type PtyRuntime = Readonly<{
     rootPid: number,
     monotonicDeadlineNs: bigint,
   ) => AdoptedZombieReapReceipt;
+  resumeProcessSet: (
+    namespaceIdentity: string,
+    processes: readonly ProcessSnapshot[],
+    rootPid: number,
+  ) => void;
   sendSignal: (pid: number, signal: "SIGINT" | "SIGTERM" | "SIGKILL") => void;
   spawnPty: (
     request: HeadlessExecutionRequest,
@@ -1642,6 +1748,7 @@ const productionPtyRuntime = (
   assertImmutableCandidateFile: authority.assertFile,
   assertImmutableCandidateRuntime: authority.assertRuntime,
   assertNamespaceIdentity,
+  freezeProcessSet: freezeContainerProcessSet,
   listProcesses: listContainerProcesses,
   readProcess: readProcessSnapshot,
   reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
@@ -1653,6 +1760,7 @@ const productionPtyRuntime = (
       deadline,
     );
   },
+  resumeProcessSet: resumeContainerProcessSet,
   sendSignal: (pid, signal) => process.kill(pid, signal),
   spawnPty: (request, geometry, interpreter, scriptSha256) => {
     authority.assertRuntime();
@@ -2542,7 +2650,10 @@ const armSelectedPty = (
             if (root === undefined)
               return fail("testkit.headless.observer.root");
             runtime.assertNamespaceIdentity(composition.namespaceIdentity);
-            const processSet = currentProcessSet();
+            const processSet = runtime.freezeProcessSet(
+              composition.namespaceIdentity,
+              processRequest.monotonicExecutionDeadlineMs,
+            );
             const rootMatches = processSet.filter(
               (candidate) =>
                 candidate.pid === root.pid &&
@@ -2570,10 +2681,20 @@ const armSelectedPty = (
                 .size !== 3
             )
               return fail("testkit.headless.observer.process-set");
+            if (
+              safeReflectApply(performanceNow, performance, []) >=
+              processRequest.monotonicExecutionDeadlineMs
+            )
+              return fail("testkit.headless.execution.deadline");
             const pending = input.subarray(inputOffset, inputOffset + 1);
             const written = exactPtyWrite(child.write(pending), 1);
             if (written.bytesWritten !== 1)
               return fail("testkit.pty.transport");
+            runtime.resumeProcessSet(
+              composition.namespaceIdentity,
+              processSet,
+              root.pid,
+            );
             inputOffset += 1;
             recordAction({
               action: "checkpoint-process-topology",
@@ -4313,6 +4434,8 @@ type SelectedPtyTestSeed =
   | "completion-before-readiness"
   | "checkpoint-extra-process"
   | "checkpoint-missing-process"
+  | "checkpoint-observer-delay"
+  | "checkpoint-process-churn"
   | "control-eof-substitution"
   | "control-write-substitution"
   | "descriptor-closure"
@@ -4416,6 +4539,21 @@ const selectedPtyRuntimeForTest = (
       if (expected !== "pid:[synthetic-selected-pty]")
         return fail("testkit.headless.observer.identity");
     },
+    freezeProcessSet: (_namespaceIdentity, monotonicDeadlineMs) => {
+      if (seed === "checkpoint-observer-delay") {
+        while (
+          safeReflectApply(performanceNow, performance, []) <
+          monotonicDeadlineMs + 1
+        ) {
+          // Cross the immutable execution cutoff inside the observer.
+        }
+      }
+      if (seed === "checkpoint-process-churn")
+        return fail("testkit.headless.observer.process-set");
+      for (const [pid, identity] of processes)
+        processes.set(pid, { ...identity, state: "T" });
+      return [...processes.values()];
+    },
     listProcesses: () => {
       if (seed === "observer-failure")
         return fail("testkit.headless.observer.read");
@@ -4443,6 +4581,24 @@ const selectedPtyRuntimeForTest = (
         return { pid, startIdentity, status: "not-ready" };
       processes.delete(pid);
       return { pid, startIdentity, status: "reaped" };
+    },
+    resumeProcessSet: (_namespaceIdentity, expectedProcesses, rootPid) => {
+      const ordered = [...expectedProcesses].sort((left, right) => {
+        if (left.pid === rootPid) return 1;
+        if (right.pid === rootPid) return -1;
+        return right.pid - left.pid;
+      });
+      for (const expected of ordered) {
+        const current = processes.get(expected.pid);
+        if (
+          current === undefined ||
+          current.startIdentity !== expected.startIdentity ||
+          current.state !== "T"
+        )
+          return fail("testkit.headless.observer.identity");
+      }
+      for (const expected of ordered)
+        processes.set(expected.pid, { ...expected, state: "R" });
     },
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")

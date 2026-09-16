@@ -151,6 +151,7 @@ describe("selected PTY transport", () => {
     for (const seed of [
       "checkpoint-missing-process",
       "checkpoint-extra-process",
+      "checkpoint-process-churn",
     ] as const)
       await expect(
         executeSelectedPtyTransportForTest(challengeRequest, seed),
@@ -159,6 +160,25 @@ describe("selected PTY transport", () => {
         inputBytesWritten: 65,
         outcome: "transport-failed",
       });
+    const delayedAt = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...challengeRequest,
+          process: {
+            ...challengeRequest.process,
+            monotonicStartupDeadlineMs: delayedAt + 50,
+            monotonicExecutionDeadlineMs: delayedAt + 100,
+            monotonicShutdownDeadlineMs: delayedAt + 500,
+          },
+        },
+        "checkpoint-observer-delay",
+      ),
+    ).resolves.toMatchObject({
+      actions: [{ action: "input", byteLength: 65 }],
+      inputBytesWritten: 65,
+      outcome: "transport-failed",
+    });
   });
 
   it("causally validates the selected immutable principal record", () => {
