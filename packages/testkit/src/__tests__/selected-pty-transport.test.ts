@@ -86,6 +86,56 @@ describe("selected PTY transport", () => {
     ].join("\n"),
   });
 
+  it("rejects a fixed readiness marker before the per-run challenge", async () => {
+    const challenge = "a".repeat(64);
+    const challengeInput = new TextEncoder().encode(`${challenge}\n\u0004`);
+    const challengeRequest: SelectedPtyExecutionRequest = {
+      ...request({ stdin: challengeInput }),
+      readiness: { kind: "challenge-marker", challenge },
+      interaction: {
+        trigger: "immediate",
+        actions: [
+          {
+            action: "input",
+            byteLength: 65,
+            inputSha256: createHash("sha256")
+              .update(challengeInput.subarray(0, 65))
+              .digest("hex"),
+          },
+          { action: "wait-for-semantic-completion" },
+          {
+            action: "input",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(challengeInput.subarray(65))
+              .digest("hex"),
+          },
+        ],
+      },
+    };
+
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "fixed-readiness-spoof",
+      ),
+    ).resolves.toMatchObject({
+      actions: [{ action: "input", byteLength: 65 }],
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "completion-before-readiness",
+      ),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      readinessObserved: true,
+    });
+  });
+
   it("causally validates the selected immutable principal record", () => {
     expect(
       validateSelectedContainerPrincipalFactsForTest(principalFacts()),

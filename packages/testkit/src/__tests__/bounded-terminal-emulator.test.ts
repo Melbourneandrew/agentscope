@@ -117,6 +117,22 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(true);
   });
 
+  it("accepts only the exact per-run challenge marker", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+
+    terminal.write(bytes("AGENTSCOPE_PTY_READY"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`:${"b".repeat(64)}`));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\r\nAGENTSCOPE_PTY_READY:${challenge}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },

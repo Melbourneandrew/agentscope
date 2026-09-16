@@ -4,6 +4,7 @@ import { deepFreeze } from "./canonical.js";
 
 type InteractivePtyScenario = Readonly<{
   executionMode: string;
+  nativeReadiness: Readonly<{ kind: string }> | null;
   outputContract: string;
   postCompletionControl: string;
   postCompletionInputByteLength: number;
@@ -15,11 +16,17 @@ export const compileInteractivePtyActions = (
   scenario: InteractivePtyScenario,
   input: Uint8Array,
 ) => {
+  const staticInput = Buffer.from(scenario.terminalInputBase64, "base64");
+  const challengeBytes =
+    scenario.nativeReadiness?.kind === "challenge-marker" ? 65 : 0;
   if (
     scenario.executionMode !== "interactive" ||
     scenario.outputContract !== "semantic-pty" ||
-    input.byteLength !==
-      Buffer.from(scenario.terminalInputBase64, "base64").byteLength
+    input.byteLength !== staticInput.byteLength + challengeBytes ||
+    (challengeBytes === 65 &&
+      (!/^[a-f0-9]{64}$/u.test(Buffer.from(input.subarray(0, 64)).toString()) ||
+        input[64] !== 0x0a)) ||
+    !Buffer.from(input.subarray(challengeBytes)).equals(staticInput)
   )
     throw new Error("integration.manifest.interaction");
   const initialInputBytes =

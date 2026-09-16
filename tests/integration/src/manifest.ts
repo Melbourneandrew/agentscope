@@ -275,6 +275,7 @@ const scenarioSchema = z
     nativeReadiness: z
       .discriminatedUnion("kind", [
         z.strictObject({ kind: z.literal("semantic-marker") }),
+        z.strictObject({ kind: z.literal("challenge-marker") }),
         z.strictObject({
           kind: z.literal("codex-idle-prompt"),
           harness: z.literal("codex"),
@@ -318,6 +319,14 @@ const scenarioSchema = z
       context.addIssue({
         code: "custom",
         message: "native readiness harness drift",
+      });
+    if (
+      value.nativeReadiness?.kind === "challenge-marker" &&
+      value.harnessEvidenceId !== "codex-0-149-1"
+    )
+      context.addIssue({
+        code: "custom",
+        message: "native readiness challenge harness drift",
       });
   });
 
