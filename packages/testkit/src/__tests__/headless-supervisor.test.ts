@@ -64,6 +64,7 @@ const selectedPtyRequest = () => {
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" as const },
+    readiness: { kind: "semantic-marker" as const },
     interaction: {
       trigger: "semantic-ready" as const,
       actions: [{ action: "eof" as const }],
@@ -919,6 +920,7 @@ for (const candidate of hostileMatrix) {
 const ptyNow = performance.now();
 const ptyRequest = {
   completion: { kind: "semantic-marker" },
+  readiness: { kind: "semantic-marker" },
   interaction: {
     trigger: "semantic-ready",
     actions: [

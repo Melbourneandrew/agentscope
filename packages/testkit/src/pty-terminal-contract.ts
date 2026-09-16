@@ -6,6 +6,7 @@ import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
   type PtyTerminalGeometry,
+  type PtyTerminalReadinessMatcher,
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
 } from "./bounded-terminal-emulator.js";
@@ -39,6 +40,7 @@ export type SelectedPtyExecutionRequest = Readonly<{
   }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
+  readiness: PtyTerminalReadinessMatcher;
   interpreter: Readonly<{ path: string; sha256: string }>;
   scriptSha256: string;
 }>;

@@ -6,6 +6,15 @@ export type PtyTerminalGeometry = Readonly<{
   rows: number;
 }>;
 
+export type PtyTerminalReadinessMatcher =
+  | Readonly<{ kind: "semantic-marker" }>
+  | Readonly<{
+      kind: "styled-text-after-completion";
+      text: string;
+      bold: boolean;
+      dim: boolean;
+    }>;
+
 export type PtyTerminalEmulatorLimits = Readonly<{
   maximumCells: number;
   maximumColumns: number;
@@ -293,6 +302,37 @@ const passiveCsiIsSupported = (
     values.every((value) => value <= rows)) ||
   (["@", "L", "M", "P", "S", "T", "X"].includes(final) && values.length === 1);
 
+const validateReadinessMatcher = (
+  value: PtyTerminalReadinessMatcher,
+): PtyTerminalReadinessMatcher => {
+  if (value.kind === "semantic-marker") {
+    strictRecord(value, ["kind"], "testkit.pty.emulator.readiness");
+    return freezeAuthority({ kind: "semantic-marker" as const });
+  }
+  const record = strictRecord(
+    value,
+    ["bold", "dim", "kind", "text"],
+    "testkit.pty.emulator.readiness",
+  );
+  const text = record.text;
+  if (
+    record.kind !== "styled-text-after-completion" ||
+    typeof text !== "string" ||
+    [...text].length !== 1 ||
+    (text.codePointAt(0) ?? 0) < 0x20 ||
+    text.codePointAt(0) === 0x7f ||
+    typeof record.bold !== "boolean" ||
+    typeof record.dim !== "boolean"
+  )
+    return fail("testkit.pty.emulator.readiness");
+  return freezeAuthority({
+    kind: "styled-text-after-completion" as const,
+    text,
+    bold: record.bold,
+    dim: record.dim,
+  });
+};
+
 export class BoundedTerminalEmulator {
   readonly #decoder = new TextDecoderAuthority("utf-8", { fatal: true });
   readonly #limits: PtyTerminalEmulatorLimits;
@@ -325,10 +365,14 @@ export class BoundedTerminalEmulator {
   #dim = false;
   #credentialPromptObserved = false;
   #credentialTail = "";
+  readonly #readinessMatcher: PtyTerminalReadinessMatcher;
 
   public constructor(
     geometry: PtyTerminalGeometry,
     limits: PtyTerminalEmulatorLimits = defaultLimits,
+    readinessMatcher: PtyTerminalReadinessMatcher = {
+      kind: "semantic-marker",
+    },
   ) {
     this.#limits = validateLimits(limits);
     this.#geometry = validateGeometry(geometry, this.#limits);
@@ -336,6 +380,7 @@ export class BoundedTerminalEmulator {
       this.#geometry.columns * this.#geometry.rows,
       " ",
     );
+    this.#readinessMatcher = validateReadinessMatcher(readinessMatcher);
   }
 
   public write(bytes: Uint8Array): void {
@@ -595,16 +640,18 @@ export class BoundedTerminalEmulator {
     this.#readinessTail = `${this.#readinessTail}${character}`.slice(
       -readyMarker.length,
     );
-    this.#readinessObserved ||= this.#readinessTail === readyMarker;
+    if (this.#readinessMatcher.kind === "semantic-marker")
+      this.#readinessObserved ||= this.#readinessTail === readyMarker;
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
     );
     this.#completionObserved ||= this.#completionTail === completedMarker;
     if (
-      character === "›" &&
+      this.#readinessMatcher.kind === "styled-text-after-completion" &&
+      character === this.#readinessMatcher.text &&
       this.#completionObserved &&
-      this.#bold &&
-      !this.#dim
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
     )
       this.#readinessObserved = true;
     this.#credentialTail = `${this.#credentialTail}${character}`.slice(

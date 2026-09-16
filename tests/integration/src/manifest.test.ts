@@ -197,6 +197,24 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(1);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
+    expect(scenario.nativeReadiness).toEqual({
+      kind: "codex-idle-prompt",
+      harness: "codex",
+      exactHarnessVersion: "0.149.1",
+      text: "›",
+      bold: true,
+      dim: false,
+    });
+    expect(
+      manifestFixture()
+        .scenarios.filter(
+          ({ scenarioId }) => scenarioId !== scenario.scenarioId,
+        )
+        .some(
+          ({ nativeReadiness }) =>
+            nativeReadiness?.kind === "codex-idle-prompt",
+        ),
+    ).toBe(false);
     const actions = compileInteractivePtyActions(
       scenario,
       Buffer.from(scenario.terminalInputBase64, "base64"),
@@ -307,6 +325,29 @@ describe("integration capability manifest", () => {
     expect(source).not.toContain(
       'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
     );
+  });
+
+  it("rejects Codex native readiness on a different harness row", () => {
+    const original = manifestFixture();
+    const scenarios = structuredClone(original.scenarios);
+    scenarios[1]!.nativeReadiness = {
+      kind: "codex-idle-prompt",
+      harness: "codex",
+      exactHarnessVersion: "0.149.1",
+      text: "›",
+      bold: true,
+      dim: false,
+    };
+    expect(() =>
+      compileCapabilityManifest(
+        withIdentity({
+          manifestVersion: 1,
+          requiredRepresentativeIds: original.requiredRepresentativeIds,
+          evidence: original.evidence,
+          scenarios,
+        }),
+      ),
+    ).toThrow("integration.manifest.invalid");
   });
 
   it("selects mutually isolated MockServer expectations per scenario", () => {

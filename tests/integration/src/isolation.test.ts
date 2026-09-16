@@ -314,6 +314,7 @@ const ptyReceiptFor = (
   };
   const geometry = { columns: 80, rows: 24 };
   const completion = { kind: "semantic-marker" as const };
+  const readiness = { kind: "semantic-marker" as const };
   const interaction = {
     actions: [
       { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
@@ -339,6 +340,7 @@ const ptyReceiptFor = (
         JSON.stringify({
           processRequestFingerprint,
           completion,
+          readiness,
           initialGeometry: geometry,
           interaction,
           interpreter,
@@ -374,6 +376,7 @@ const ptyReceiptFor = (
     request: {
       process: processRequest,
       completion,
+      readiness,
       initialGeometry: geometry,
       interaction,
       interpreter,
@@ -433,6 +436,7 @@ const ptyControlReceiptFor = () => {
       JSON.stringify({
         processRequestFingerprint: receipt.processRequestFingerprint,
         completion: request.completion,
+        readiness: request.readiness,
         initialGeometry: request.initialGeometry,
         interaction,
         interpreter: request.interpreter,
@@ -489,6 +493,7 @@ const ptyPostInputReceiptFor = () => {
       JSON.stringify({
         processRequestFingerprint: receipt.processRequestFingerprint,
         completion: request.completion,
+        readiness: request.readiness,
         initialGeometry: request.initialGeometry,
         interaction,
         interpreter: request.interpreter,
@@ -549,6 +554,7 @@ const refingerprintPtyProcessDeadline = (
       JSON.stringify({
         processRequestFingerprint,
         completion: request.completion,
+        readiness: request.readiness,
         initialGeometry: request.initialGeometry,
         interaction: request.interaction,
         interpreter: request.interpreter,

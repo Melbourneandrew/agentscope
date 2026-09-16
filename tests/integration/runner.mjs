@@ -143,6 +143,39 @@ const fingerprintSelectedPtyAuthority = (authority) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(authority))
     .digest("hex")}`;
+const compileNativeReadiness = (scenario) => {
+  const readiness = scenario.nativeReadiness;
+  if (
+    readiness?.kind === "semantic-marker" &&
+    JSON.stringify(Object.keys(readiness).sort()) === JSON.stringify(["kind"])
+  )
+    return Object.freeze({ kind: "semantic-marker" });
+  if (
+    readiness?.kind === "codex-idle-prompt" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify([
+        "bold",
+        "dim",
+        "exactHarnessVersion",
+        "harness",
+        "kind",
+        "text",
+      ]) &&
+    readiness.harness === "codex" &&
+    readiness.exactHarnessVersion === "0.149.1" &&
+    readiness.text === "›" &&
+    readiness.bold === true &&
+    readiness.dim === false
+  )
+    return Object.freeze({
+      kind: "styled-text-after-completion",
+      text: "›",
+      bold: true,
+      dim: false,
+    });
+  throw new Error("integration.runner.native-readiness");
+};
 const assertEmptyDirectory = (path) => {
   if (readdirSync(path).length !== 0)
     throw new Error("integration.runner.home-not-empty");
@@ -415,12 +448,14 @@ try {
     const scriptSha256 = scenarioProcessSha256;
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
+    const readiness = compileNativeReadiness(scenario);
     const interaction = {
       actions: compileInteractivePtyActions(scenario, request.stdin),
       trigger: "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
       completion,
+      readiness,
       initialGeometry,
       interaction,
       interpreter,
@@ -450,6 +485,7 @@ try {
     const ptyAuthority = {
       processRequestFingerprint: processAuthority.requestFingerprint,
       completion,
+      readiness,
       initialGeometry,
       interaction,
       interpreter,
@@ -481,6 +517,7 @@ try {
       request: {
         process: processAuthority,
         completion,
+        readiness,
         initialGeometry,
         interaction,
         interpreter,

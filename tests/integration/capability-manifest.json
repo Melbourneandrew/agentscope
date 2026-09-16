@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-b8eace6a202c08f3911f3552ba52cc0835772246da4732435081314cf97b78ed",
+  "manifestIdentity": "sha256-e60c1a040d13059fca7deab58b08528fe5a8dc913cc092ad0af39421f6414024",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -103,6 +103,7 @@
       "postCompletionInputByteLength": 0,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": false,
+      "nativeReadiness": null,
       "resourceClass": "small",
       "shardWeight": 100
     },
@@ -138,6 +139,7 @@
       "postCompletionInputByteLength": 0,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": false,
+      "nativeReadiness": { "kind": "semantic-marker" },
       "resourceClass": "small",
       "shardWeight": 120
     },
@@ -185,6 +187,14 @@
       "postCompletionInputByteLength": 1,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,
+      "nativeReadiness": {
+        "kind": "codex-idle-prompt",
+        "harness": "codex",
+        "exactHarnessVersion": "0.149.1",
+        "text": "›",
+        "bold": true,
+        "dim": false
+      },
       "resourceClass": "medium",
       "shardWeight": 220
     }

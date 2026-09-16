@@ -1030,6 +1030,18 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       selectedScenario,
       input,
     );
+    const expectedReadiness =
+      selectedScenario.nativeReadiness?.kind === "semantic-marker"
+        ? { kind: "semantic-marker" }
+        : selectedScenario.nativeReadiness?.kind === "codex-idle-prompt" &&
+            selectedScenario.harnessEvidenceId === "codex-0-149-1"
+          ? {
+              kind: "styled-text-after-completion",
+              text: "›",
+              bold: true,
+              dim: false,
+            }
+          : null;
     const requiresCanonicalEof = expectedActions.some(
       ({ action }) => action === "eof",
     );
@@ -1041,6 +1053,9 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
       linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
       receipt?.request?.completion?.kind === "semantic-marker" &&
+      expectedReadiness !== null &&
+      JSON.stringify(receipt?.request?.readiness) ===
+        JSON.stringify(expectedReadiness) &&
       receipt?.request?.interaction?.trigger === "semantic-ready" &&
       JSON.stringify(receipt?.request?.interaction?.actions) ===
         JSON.stringify(expectedActions) &&
@@ -1083,6 +1098,7 @@ const interactivePtyFingerprintMatches = (receipt) =>
   fingerprintSelectedPtyAuthority({
     processRequestFingerprint: receipt?.processRequestFingerprint,
     completion: receipt?.request?.completion,
+    readiness: receipt?.request?.readiness,
     initialGeometry: receipt?.request?.initialGeometry,
     interaction: {
       actions: receipt?.request?.interaction?.actions,

@@ -96,6 +96,7 @@ const fixture = () => ({
     postCompletionInputByteLength: 0,
     postCompletionControl: "none" as const,
     waitForSemanticCompletionBeforeTerminalAction: false,
+    nativeReadiness: null,
     resourceClass: "small" as const,
     shardWeight: 1,
   },
