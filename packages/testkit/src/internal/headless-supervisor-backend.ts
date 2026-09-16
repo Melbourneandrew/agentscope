@@ -2276,8 +2276,8 @@ const armSelectedPty = (
         const shouldReadBeforeAction =
           !allowInput ||
           pendingActionBeforeRead === undefined ||
-          request.interaction.trigger === "immediate" ||
-          !readinessObserved ||
+          (request.interaction.trigger === "semantic-ready" &&
+            !readinessObserved) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
           waitingForPriorInputOutput;
         for (
@@ -4105,6 +4105,7 @@ type SelectedPtyTestSeed =
   | "fragmented-output"
   | "geometry-substitution"
   | "identity-substitution"
+  | "immediate-output"
   | "immutable-capability"
   | "immutable-device-inode"
   | "immutable-mount-id"
@@ -4257,7 +4258,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       const output =
         seed === "output-limit" || seed === "partial-input-output-limit"
           ? safeBufferFrom("x".repeat(request.stdoutLimitBytes + 1))
-          : seed === "active-terminal"
+          : seed === "active-terminal" || seed === "immediate-output"
             ? safeBufferFrom("ready")
             : seed === "credential-prompt"
               ? safeBufferFrom("Password:")
@@ -4283,6 +4284,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
             : seed === "output-limit" || seed === "partial-input-output-limit"
               ? [output.subarray(0, 4_096), output.subarray(4_096)]
               : seed === "active-terminal" ||
+                  seed === "immediate-output" ||
                   seed === "missing-ready" ||
                   seed === "credential-prompt" ||
                   seed === "malformed-control" ||
@@ -4292,6 +4294,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
+      let immediateActionApplied = false;
       let priorInputTransportReads = -1;
       let transportReads = 0;
       let currentGeometry = geometry;
@@ -4345,6 +4348,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         },
         eof: () => {
           if (seed === "eof-failure") return fail("testkit.pty.transport");
+          if (seed === "immediate-output") immediateActionApplied = true;
           return {
             status: "eof-byte-written" as const,
             canonical: true as const,
@@ -4364,6 +4368,8 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         }),
         read: (maximumBytes) => {
           transportReads += 1;
+          if (seed === "immediate-output" && !immediateActionApplied)
+            throw new Error("testkit.pty.test-read-before-immediate-action");
           if (seed === "action-deadline-crossing" && transportReads === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
             while (performance.now() < stopAt) {
@@ -4405,8 +4411,6 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           currentGeometry = { columns, rows };
         },
         write: (bytes) => {
-          if (seed === "active-terminal" && transportReads === 0)
-            throw new Error("testkit.pty.test-write-before-read");
           inputCalls += 1;
           if (
             seed === "paced-input" &&
