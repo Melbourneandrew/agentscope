@@ -12,6 +12,18 @@ export function codexTurnTerminalObserved(
   expectedMessage: string,
 ): boolean;
 
+export function codexTurnTerminalObservedAfterBaseline(
+  ledgers: readonly string[],
+  baseline: readonly string[],
+  expectedMessage: string,
+): boolean;
+
+export function terminalObservationBeforeDeadline(input: {
+  observed: boolean;
+  deadline: number;
+  now: () => number;
+}): boolean;
+
 export function readCodexSessionLedgers(homeDescriptor: number): string[];
 
 export function openLocalSqliteLifecycle(homeDescriptor: number): number;

@@ -16,12 +16,14 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   codexTurnTerminalObserved,
+  codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   readCodexSessionLedgers,
   readBoundedJsonResponse,
   settledCodexLedgerSnapshot,
   settledLocalSqliteLifecycleSnapshot,
+  terminalObservationBeforeDeadline,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
@@ -260,7 +262,28 @@ describe("Codex Local SQLite settlement snapshots", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed native-record adversarial matrix
 describe("Codex bounded native records", () => {
+  it("rejects a terminal observation at the exact deadline cutoff", () => {
+    let observedAt = 99;
+    const now = () => observedAt;
+    expect(
+      terminalObservationBeforeDeadline({
+        observed: true,
+        deadline: 100,
+        now,
+      }),
+    ).toBe(true);
+    observedAt = 100;
+    expect(
+      terminalObservationBeforeDeadline({
+        observed: true,
+        deadline: 100,
+        now,
+      }),
+    ).toBe(false);
+  });
+
   it("accepts exactly one complete native task-terminal witness", () => {
     const message = "AGENTSCOPE_PTY_COMPLETE";
     const terminal = JSON.stringify({
@@ -295,6 +318,31 @@ describe("Codex bounded native records", () => {
     expect(() => codexTurnTerminalObserved(["{\n"], message)).toThrow(
       "integration.codex.session-ledger",
     );
+    const baseline = [`${JSON.stringify({ type: "session_meta" })}\n`];
+    expect(
+      codexTurnTerminalObservedAfterBaseline(baseline, baseline, message),
+    ).toBe(false);
+    expect(
+      codexTurnTerminalObservedAfterBaseline(
+        [`${baseline[0]}${terminal}\n`],
+        baseline,
+        message,
+      ),
+    ).toBe(true);
+    expect(() =>
+      codexTurnTerminalObservedAfterBaseline(
+        [`${JSON.stringify({ type: "substituted" })}\n${terminal}\n`],
+        baseline,
+        message,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexTurnTerminalObservedAfterBaseline(
+        [`${terminal}\n`],
+        [`${terminal}\n`],
+        message,
+      ),
+    ).toThrow("integration.codex.session-ledger");
   });
 
   it("reads one bounded JSON response and rejects overflow or malformed data", async () => {

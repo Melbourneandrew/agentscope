@@ -13,16 +13,18 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { basename, join } from "node:path";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
-  codexTurnTerminalObserved,
+  codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   readCodexSessionLedgers,
   readBoundedJsonResponse,
+  terminalObservationBeforeDeadline,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
@@ -97,6 +99,7 @@ const readReadinessChallenge = () =>
     );
   });
 const readinessChallenge = await readReadinessChallenge();
+const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
 
 const maximumOutput = 1024 * 1024;
 const run = (executable, arguments_, options = {}) =>
@@ -212,7 +215,6 @@ const cli = async (arguments_, command, options) =>
   );
 
 const prompt = "Reply with one short confirmation and do not use tools.";
-const expectedAssistantMessage = "AGENTSCOPE_PTY_COMPLETE";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
@@ -274,6 +276,125 @@ const readModelRequests = async () =>
 const waitForModelRequest = async () => {
   while ((await readModelRequests()).length === 0)
     await new Promise((resolve) => setTimeout(resolve, 25));
+};
+const readBoundedResponseText = async (response) => {
+  if (!response.body) throw new Error("integration.codex.model-gateway");
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of response.body) {
+    const value = Buffer.from(chunk);
+    bytes += value.length;
+    if (bytes > maximumOutput)
+      throw new Error("integration.codex.model-gateway");
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, bytes).toString("utf8");
+};
+const openChallengedModelGateway = async () => {
+  let failure;
+  let requestCount = 0;
+  let closeResolved = false;
+  let resolveClosed;
+  const closed = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
+  const finishClose = () => {
+    if (closeResolved) return;
+    closeResolved = true;
+    resolveClosed();
+  };
+  const server = createServer(async (request, response) => {
+    requestCount += 1;
+    try {
+      if (
+        requestCount !== 1 ||
+        request.method !== "POST" ||
+        request.url !== "/v1/responses" ||
+        request.headers["content-type"] !== "application/json"
+      )
+        throw new Error("integration.codex.model-gateway");
+      const chunks = [];
+      let bytes = 0;
+      for await (const chunk of request) {
+        const value = Buffer.from(chunk);
+        bytes += value.length;
+        if (bytes > maximumOutput)
+          throw new Error("integration.codex.model-gateway");
+        chunks.push(value);
+      }
+      const upstream = await fetch(`${modelEndpoint}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: Buffer.concat(chunks, bytes),
+        signal: AbortSignal.timeout(Math.min(5_000, remaining())),
+      });
+      if (
+        !upstream.ok ||
+        upstream.headers.get("content-type") !== "text/event-stream"
+      )
+        throw new Error("integration.codex.model-gateway");
+      const body = await readBoundedResponseText(upstream);
+      if (
+        body.split("AGENTSCOPE_PTY_COMPLETE").length !== 2 ||
+        body.includes(expectedAssistantMessage)
+      )
+        throw new Error("integration.codex.model-gateway");
+      codexLedgerBaseline = readCodexSessionLedgers(homeDescriptor);
+      if (
+        codexTurnTerminalObservedAfterBaseline(
+          codexLedgerBaseline,
+          codexLedgerBaseline,
+          expectedAssistantMessage,
+        )
+      )
+        throw new Error("integration.codex.session-ledger");
+      const challenged = body.replace(
+        "AGENTSCOPE_PTY_COMPLETE",
+        expectedAssistantMessage,
+      );
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(challenged);
+    } catch (error) {
+      failure = error;
+      response.statusCode = 502;
+      response.end();
+    } finally {
+      server.close(finishClose);
+    }
+  });
+  server.on("clientError", (error, socket) => {
+    failure = error;
+    socket.destroy();
+    server.close(finishClose);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (typeof address !== "object" || address === null)
+    throw new Error("integration.codex.model-gateway");
+  return {
+    endpoint: `http://127.0.0.1:${address.port}`,
+    settle: async () => {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("integration.codex.model-gateway")),
+          Math.min(5_000, remaining()),
+        );
+        closed.then(() => {
+          clearTimeout(timer);
+          resolve();
+        }, reject);
+      });
+      if (failure !== undefined || requestCount !== 1)
+        throw new Error("integration.codex.model-gateway");
+    },
+    abort: () => {
+      server.closeAllConnections();
+      server.close(finishClose);
+    },
+  };
 };
 const projectHarnessStatus = (
   records,
@@ -409,11 +530,18 @@ const readTraceSummary = async (monotonicDeadline) => {
   return summary;
 };
 const waitForCodexTurnTerminal = async (traceDeadline) => {
+  if (codexLedgerBaseline === undefined)
+    throw new Error("integration.codex.session-ledger");
   while (
-    !codexTurnTerminalObserved(
-      readCodexSessionLedgers(homeDescriptor),
-      expectedAssistantMessage,
-    )
+    !terminalObservationBeforeDeadline({
+      observed: codexTurnTerminalObservedAfterBaseline(
+        readCodexSessionLedgers(homeDescriptor),
+        codexLedgerBaseline,
+        expectedAssistantMessage,
+      ),
+      deadline: traceDeadline,
+      now: bootNow,
+    })
   ) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
@@ -461,6 +589,8 @@ const waitForTraceSummary = async (traceDeadline) => {
 };
 
 let completed = false;
+let modelGateway;
+let codexLedgerBaseline;
 try {
   interactiveFailurePhase = "install";
   await cli(["init", "--yes"], "agentscope init");
@@ -488,8 +618,9 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
+  modelGateway = await openChallengedModelGateway();
   const configuration = `${createCodexInternalProviderConfiguration({
-    baseUrl: `${modelEndpoint}/v1`,
+    baseUrl: `${modelGateway.endpoint}/v1`,
     model: "fixture-model",
   })}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
   writeFileSync(join(codexHome, "config.toml"), configuration, {
@@ -533,6 +664,7 @@ try {
   );
   interactiveFailurePhase = "tui-exit";
   await codexRun;
+  await modelGateway.settle();
   interactiveFailurePhase = "trace-settlement";
   const summary = await waitForTraceSummary(traceDeadline);
   interactiveFailurePhase = "verify";
@@ -607,6 +739,7 @@ try {
   );
   completed = true;
 } finally {
+  modelGateway?.abort();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
   closeSync(homeDescriptor);
