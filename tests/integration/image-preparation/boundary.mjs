@@ -369,6 +369,12 @@ const recordFirstTimeoutForTesting = (
   if (firstFailure && timedOut && timeoutSource !== undefined)
     timeoutSourcesForTesting.set(failure, timeoutSource);
 };
+const replaceFailure = (current, replacement) => {
+  const timeoutSource = timeoutSourcesForTesting.get(current);
+  if (timeoutSource !== undefined)
+    timeoutSourcesForTesting.set(replacement, timeoutSource);
+  return replacement;
+};
 // The spawn-through-terminal-join path is one indivisible process authority.
 /* eslint-disable max-lines-per-function */
 const runOwnedCommand = async (
@@ -471,7 +477,10 @@ const runOwnedCommand = async (
       ),
     ]);
     if (result === undefined) {
-      failure = fixedError("integration.images.containment", true);
+      failure = replaceFailure(
+        failure,
+        fixedError("integration.images.containment", true),
+      );
       killProcessGroup(processGroup);
     }
     if (
@@ -483,7 +492,10 @@ const runOwnedCommand = async (
     if (failure === undefined && !processGroupIsAbsent(processGroup))
       failure = fixedError("integration.images.containment");
     if (!killProcessGroup(processGroup))
-      failure = fixedError("integration.images.containment", true);
+      failure = replaceFailure(
+        failure,
+        fixedError("integration.images.containment", true),
+      );
     const absent = await waitForProcessGroupAbsence(
       processGroup,
       Math.max(performance.now(), absenceDeadline),
@@ -514,6 +526,7 @@ const runOwnedCommand = async (
         true,
       );
       error.containmentProved = false;
+      replaceFailure(failure, error);
       processDiagnostics.set(error, processDiagnostic);
       throw error;
     }

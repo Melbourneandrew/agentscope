@@ -1864,18 +1864,20 @@ describe("owned buildx process execution", () => {
           processGroup = ownedProcessGroup;
           return new Promise(() => {});
         },
-        deadline: performance.now() + 1_000,
+        deadline: performance.now() + 3_000,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
         },
-        teardownMilliseconds: 250,
+        teardownMilliseconds: 1_000,
+        timeoutAfterOutputForTesting: Buffer.from("descendant-ready\n"),
       },
     ).catch((failure: unknown) => failure);
     expect(error).toMatchObject({
       code: "ETIMEDOUT",
       message: "integration.images.containment",
     });
+    expect(readImageTimeoutSourceForTesting(error)).toBe("output");
     expect(processGroup).toEqual(expect.any(Number));
     expect(() => process.kill(-processGroup!, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
