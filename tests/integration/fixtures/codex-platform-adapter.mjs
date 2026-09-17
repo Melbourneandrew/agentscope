@@ -101,7 +101,7 @@ export const translateCodexPlatformObservations = (input) => {
     !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
     !Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
     mediation.sessionStartCommandDurationMilliseconds < 0 ||
-    mediation.sessionStartCommandDurationMilliseconds > 120_000 ||
+    mediation.sessionStartCommandDurationMilliseconds > 1_000 ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
     !boundedString(search.completion, 32) ||
     !boundedString(search.harness, 64) ||
