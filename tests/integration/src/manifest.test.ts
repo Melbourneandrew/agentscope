@@ -407,8 +407,9 @@ describe("integration capability manifest", () => {
       '  const records = parseMachine(stdout, "agentscope traces search");\n',
       guardedRawResult,
     );
-    const postParseCutoff = traceSummaryFunction.lastIndexOf(
-      "    !terminalObservationBeforeDeadline({\n",
+    const guardedClassification = traceSummaryFunction.indexOf(
+      "  return classifyTraceSearchRecordsBeforeDeadline({\n",
+      resultParsing,
     );
     expect(terminalObservation).toBeGreaterThan(-1);
     expect(preQueryDeadline).toBeGreaterThan(-1);
@@ -424,7 +425,10 @@ describe("integration capability manifest", () => {
     expect(guardedRawResult).toBeGreaterThan(exactSessionFilter);
     expect(guardedRawResult).toBeGreaterThan(joinedSearch);
     expect(resultParsing).toBeGreaterThan(guardedRawResult);
-    expect(postParseCutoff).toBeGreaterThan(resultParsing);
+    expect(guardedClassification).toBeGreaterThan(resultParsing);
+    expect(traceSummaryFunction).not.toContain(
+      'recordInteractivePhase("trace-search-',
+    );
     const terminalCompletion = source.indexOf(
       "    process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error) =>",
       terminalObservation,

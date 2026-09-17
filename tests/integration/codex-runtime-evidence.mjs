@@ -251,6 +251,52 @@ export const recordTerminalObservationBeforeDeadline = ({
     throw new Error("integration.codex.trace-deadline");
 };
 
+/**
+ * @param {{
+ *   records: Array<{summaries?: Array<{harness?: string, locator?: {traceId?: string}}>}>;
+ *   deadline: number;
+ *   now: () => number;
+ *   record: (phase: string) => void;
+ * }} input
+ */
+export const classifyTraceSearchRecordsBeforeDeadline = ({
+  records,
+  deadline,
+  now,
+  record,
+}) => {
+  if (!terminalObservationBeforeDeadline({ observed: true, deadline, now }))
+    throw new Error("integration.codex.trace-deadline");
+  const reject = (phase, error) => {
+    recordTerminalObservationBeforeDeadline({
+      deadline,
+      now,
+      record: () => record(phase),
+    });
+    throw new Error(error);
+  };
+  if (records.length !== 1)
+    reject(
+      "trace-search-record-count",
+      "integration.codex.trace-search-record-count",
+    );
+  if (!Array.isArray(records[0]?.summaries))
+    reject("trace-search-shape", "integration.codex.trace-search-shape");
+  if (records[0].summaries.length > 1)
+    reject(
+      "trace-search-ambiguous",
+      "integration.codex.trace-search-ambiguous",
+    );
+  if (records[0].summaries.length === 0)
+    return traceSummaryBeforeDeadline({ summary: null, deadline, now });
+  const summary = records[0].summaries[0];
+  if (summary?.harness !== "codex")
+    reject("trace-search-harness", "integration.codex.trace-search-harness");
+  if (typeof summary?.locator?.traceId !== "string")
+    reject("trace-search-locator", "integration.codex.trace-search-locator");
+  return traceSummaryBeforeDeadline({ summary, deadline, now });
+};
+
 export const publishTerminalCompletionBeforeDeadline = async ({
   deadline,
   now,

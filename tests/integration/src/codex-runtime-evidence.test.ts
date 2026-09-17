@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
+  classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
@@ -574,6 +575,22 @@ describe("Codex bounded native records", () => {
       });
     }).toThrow("integration.codex.trace-deadline");
     expect(records).toBe(1);
+  });
+
+  it("publishes no trace classification when classification reaches the cutoff", () => {
+    let clockRead = 0;
+    const phases: string[] = [];
+    expect(() => {
+      classifyTraceSearchRecordsBeforeDeadline({
+        records: [],
+        deadline: 100,
+        now: () => (clockRead++ === 0 ? 99 : 100),
+        record: (phase: string) => {
+          phases.push(phase);
+        },
+      });
+    }).toThrow("integration.codex.trace-deadline");
+    expect(phases).toEqual([]);
   });
 
   it("rejects a completed trace search at the exact deadline cutoff", () => {
