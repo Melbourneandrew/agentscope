@@ -615,13 +615,17 @@ const projectTraceGraph = (graph, traceId) => {
     modelName: stringAttribute(model, "llm.model_name"),
   };
 };
-const readTraceSummary = async (monotonicDeadline) => {
+const readTraceSummary = async (traceDeadline) => {
   const records = await cli(
     ["traces", "search", "--destination", "local", "--limit", "50"],
     "agentscope traces search",
-    monotonicDeadline === undefined ? undefined : { monotonicDeadline },
+    { monotonicDeadline: traceDeadline },
   );
-  recordInteractivePhase("trace-search-result");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-search-result"),
+  });
   if (
     records.length !== 1 ||
     !Array.isArray(records[0]?.summaries) ||
@@ -635,6 +639,14 @@ const readTraceSummary = async (monotonicDeadline) => {
     typeof summary?.locator?.traceId !== "string"
   )
     throw new Error("integration.codex.trace-search");
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   return summary;
 };
 const waitForCodexTurnTerminal = async (traceDeadline) => {
