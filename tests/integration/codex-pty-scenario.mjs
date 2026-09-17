@@ -25,7 +25,9 @@ import {
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
-  codexSessionStartMediationUpperBoundMilliseconds,
+  codexSessionStartCheckpointMatchesLifecycle,
+  inspectCodexRootHookLifecycle,
+  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
@@ -274,6 +276,7 @@ let localSqliteLifecycleDescriptor;
 let operationalStateHealthDescriptor;
 let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
+let sessionStartBeforeFirstModelRequestAdmission;
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = -1;
 const interactivePhases = Object.freeze([
@@ -475,6 +478,23 @@ const readBoundedResponseText = async (response) => {
   }
   return Buffer.concat(chunks, bytes).toString("utf8");
 };
+const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
+  sessionStartBeforeFirstModelRequestAdmission =
+    inspectCodexSessionStartBeforeFirstModelRequestAdmission({
+      directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+      directoryPath: codexDiagnosticLogDirectory,
+    });
+  return sessionStartBeforeFirstModelRequestAdmission;
+};
+const assertFirstModelRequest = (request, requestCount) => {
+  if (
+    requestCount !== 1 ||
+    request.method !== "POST" ||
+    request.url !== "/v1/responses" ||
+    request.headers["content-type"] !== "application/json"
+  )
+    throw new Error("integration.codex.model-gateway");
+};
 const openChallengedModelGateway = async () => {
   let failure;
   let requestCount = 0;
@@ -494,13 +514,9 @@ const openChallengedModelGateway = async () => {
       request.destroy(new Error("integration.codex.model-gateway")),
     );
     try {
-      if (
-        requestCount !== 1 ||
-        request.method !== "POST" ||
-        request.url !== "/v1/responses" ||
-        request.headers["content-type"] !== "application/json"
-      )
-        throw new Error("integration.codex.model-gateway");
+      assertFirstModelRequest(request, requestCount);
+      if (inspectSessionStartBeforeFirstModelRequestAdmission() === undefined)
+        throw new Error("integration.codex.hook-session-start-missing");
       const chunks = [];
       let bytes = 0;
       for await (const chunk of request) {
@@ -543,11 +559,6 @@ const openChallengedModelGateway = async () => {
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
       );
-      const checkpointSignal = waitForCheckpointSignal();
-      process.stdout.write(
-        `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
-      );
-      await checkpointSignal;
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.end(challenged);
     } catch (error) {
@@ -1010,7 +1021,6 @@ try {
       "read-only",
       "--ask-for-approval",
       "never",
-      prompt,
     ],
     {
       cwd: worktree,
@@ -1026,6 +1036,15 @@ try {
       inherit: true,
     },
   );
+  const checkpointSignal = waitForCheckpointSignal();
+  await new Promise((resolve, reject) => {
+    process.stdout.write(
+      `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
+      (error) =>
+        error === null || error === undefined ? resolve() : reject(error),
+    );
+  });
+  await checkpointSignal;
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1053,36 +1072,33 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
-  const stopHookCommand = inspectDiagnosticBeforeDeadline({
+  const rootHookLifecycle = inspectDiagnosticBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
     inspect: () =>
-      inspectCodexStopHookCommand({
+      inspectCodexRootHookLifecycle({
         directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
         directoryPath: codexDiagnosticLogDirectory,
       }),
   });
-  if (stopHookCommand === undefined) {
+  if (rootHookLifecycle === undefined) {
     recordInteractivePhase("hook-command-missing");
     throw new Error("integration.codex.hook-command-missing");
   }
+  if (
+    !codexSessionStartCheckpointMatchesLifecycle(
+      sessionStartBeforeFirstModelRequestAdmission,
+      rootHookLifecycle,
+    )
+  )
+    throw new Error("integration.codex.hook-lifecycle");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
     record: () => recordInteractivePhase("trace-settlement"),
   });
   const sessionStartCommandDurationMilliseconds =
-    inspectDiagnosticBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      inspect: () =>
-        codexSessionStartMediationUpperBoundMilliseconds({
-          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
-          directoryPath: codexDiagnosticLogDirectory,
-        }),
-    });
-  if (sessionStartCommandDurationMilliseconds === undefined)
-    throw new Error("integration.codex.hook-session-start-missing");
+    rootHookLifecycle.sessionStartDurationMilliseconds;
   const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,

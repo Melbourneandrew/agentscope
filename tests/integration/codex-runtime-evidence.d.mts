@@ -54,6 +54,41 @@ export function codexSessionStartMediationUpperBoundMilliseconds(input: {
   directoryPath: string;
 }): number | undefined;
 
+export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | Readonly<{
+      durationMilliseconds: number;
+      spanSha256: string;
+    }>
+  | undefined;
+
+export function inspectCodexRootHookLifecycle(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | Readonly<{
+      sessionStartDurationMilliseconds: number;
+      sessionStartSpanSha256: string;
+      stopDurationMilliseconds: number;
+      sessionEndDurationMilliseconds: number;
+    }>
+  | undefined;
+
+export function codexSessionStartCheckpointMatchesLifecycle(
+  checkpoint:
+    Readonly<{ durationMilliseconds: number; spanSha256: string }> | undefined,
+  lifecycle:
+    | Readonly<{
+        sessionStartDurationMilliseconds: number;
+        sessionStartSpanSha256: string;
+      }>
+    | undefined,
+): boolean;
+
 export function inspectCodexStopHookCommand(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

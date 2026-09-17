@@ -187,12 +187,17 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("waits for the traced Codex TUI turn before sending the authenticated double Ctrl-D quit sequence", () => {
+  it("admits the Codex prompt only after readiness and quits after the traced TUI turn", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from([4, 4]),
+      Buffer.concat([
+        Buffer.from(
+          "Reply with one short confirmation and do not use tools.\n",
+        ),
+        Buffer.from([4, 4]),
+      ]),
     );
     expect(scenario.postCompletionInputByteLength).toBe(2);
     expect(scenario.postCompletionControl).toBe("none");
@@ -220,6 +225,7 @@ describe("integration capability manifest", () => {
       "resize",
       "input",
       "checkpoint-process-topology",
+      "input",
       "wait-for-semantic-completion",
       "input",
       "input",
@@ -229,6 +235,19 @@ describe("integration capability manifest", () => {
       byteLength: 65,
       inputSha256: createHash("sha256")
         .update(Buffer.from(`${challenge}\n`))
+        .digest("hex"),
+    });
+    expect(actions[3]).toEqual({
+      action: "input",
+      byteLength: Buffer.byteLength(
+        "Reply with one short confirmation and do not use tools.\n",
+      ),
+      inputSha256: createHash("sha256")
+        .update(
+          Buffer.from(
+            "Reply with one short confirmation and do not use tools.\n",
+          ),
+        )
         .digest("hex"),
     });
     expect(actions.at(-1)).toEqual({
@@ -250,7 +269,10 @@ describe("integration capability manifest", () => {
     const challengeRead = source.indexOf(
       "const readinessChallenge = await readReadinessChallenge();\n",
     );
-    const startupPrompt = source.indexOf("      prompt,\n");
+    const codexLaunch = source.indexOf("  const codexRun = run(\n");
+    const sessionStartCheckpoint = source.indexOf(
+      "      if (inspectSessionStartBeforeFirstModelRequestAdmission() === undefined)\n",
+    );
     const explicitHookEnablement = source.indexOf(
       '      "--enable",\n      "hooks",\n',
     );
@@ -272,12 +294,11 @@ describe("integration capability manifest", () => {
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
     const checkpointAcknowledgement = source.indexOf(
-      "      await checkpointSignal;\n",
+      "  await checkpointSignal;\n",
       readinessRelease,
     );
     const modelResponse = source.indexOf(
       '      response.writeHead(200, { "content-type": "text/event-stream" });\n',
-      checkpointAcknowledgement,
     );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
@@ -287,9 +308,14 @@ describe("integration capability manifest", () => {
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       terminalWait,
     );
-    expect(startupPrompt).toBeGreaterThan(-1);
+    expect(codexLaunch).toBeGreaterThan(-1);
+    expect(sessionStartCheckpoint).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
-    expect(challengeRead).toBeLessThan(startupPrompt);
+    expect(challengeRead).toBeLessThan(codexLaunch);
+    expect(readinessRelease).toBeLessThan(checkpointAcknowledgement);
+    expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
+    expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
+    expect(source).not.toContain("      prompt,\n");
     expect(source).toContain(
       "const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;",
     );
@@ -312,7 +338,6 @@ describe("integration capability manifest", () => {
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
-    expect(explicitHookTrust).toBeLessThan(startupPrompt);
     expect(source).toContain(
       "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
     );
@@ -491,7 +516,7 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",
     );
-    expect(modelRequest).toBeGreaterThan(startupPrompt);
+    expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
     expect(traceDeadline).toBeGreaterThan(challengeRead);
     expect(traceDeadline).toBeLessThan(modelRequest);
     expect(source).toContain(
@@ -518,7 +543,7 @@ describe("integration capability manifest", () => {
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
-    expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
+    expect(modelResponse).toBeGreaterThan(-1);
     expect(codexJoin).toBeGreaterThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(

@@ -33,6 +33,11 @@ export const compileInteractivePtyActions = (
     challengeBytes > 0
       ? challengeBytes
       : input.byteLength - scenario.postCompletionInputByteLength;
+  const preCompletionInputBytes =
+    challengeBytes > 0
+      ? staticInput.byteLength - scenario.postCompletionInputByteLength
+      : 0;
+  const postCompletionInputOffset = initialInputBytes + preCompletionInputBytes;
   const inputAction = (start: number, byteLength: number) => ({
     action: "input" as const,
     byteLength,
@@ -42,7 +47,7 @@ export const compileInteractivePtyActions = (
   });
   const postCompletionInputActions = Array.from(
     { length: scenario.postCompletionInputByteLength },
-    (_, offset) => inputAction(initialInputBytes + offset, 1),
+    (_, offset) => inputAction(postCompletionInputOffset + offset, 1),
   );
   return deepFreeze([
     { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
@@ -53,6 +58,9 @@ export const compileInteractivePtyActions = (
             action: "checkpoint-process-topology" as const,
             topology: "root-with-contained-process-set" as const,
           },
+          ...(preCompletionInputBytes > 0
+            ? [inputAction(initialInputBytes, preCompletionInputBytes)]
+            : []),
         ]
       : []),
     ...(scenario.waitForSemanticCompletionBeforeTerminalAction

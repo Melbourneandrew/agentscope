@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -200,6 +201,128 @@ const codexCommandSpanClose = (source, eventName) => {
     throw new Error("integration.codex.hook-log");
   return close;
 };
+
+const rootHookEvents = Object.freeze(["SessionStart", "Stop", "SessionEnd"]);
+const installedRootHookTimeoutMilliseconds = 7_000;
+
+const codexRootHookSpans = (source) => {
+  const spans = [];
+  let active;
+  let open;
+  for (const line of source.split("\n")) {
+    if (!line.includes("codex.hooks.command")) continue;
+    const eventFields = [
+      ...line.matchAll(/hook\.event_name=(?:"([^"]*)"|([^\s}]+))/gu),
+    ];
+    if (eventFields.length === 0) continue;
+    const eventName = eventFields[0]?.[1] ?? eventFields[0]?.[2];
+    if (eventFields.length !== 1 || !rootHookEvents.includes(eventName))
+      throw new Error("integration.codex.hook-log");
+    const isNew = /: new(?:\s|$)/u.test(line);
+    const isClose = /: close(?:\s|$)/u.test(line);
+    if (isNew === isClose) throw new Error("integration.codex.hook-log");
+    if (isNew) {
+      if (active !== undefined) throw new Error("integration.codex.hook-log");
+      active = eventName;
+      open = line;
+      continue;
+    }
+    if (active !== eventName || open === undefined)
+      throw new Error("integration.codex.hook-log");
+    active = undefined;
+    spans.push(Object.freeze({ close: line, eventName, open }));
+    open = undefined;
+  }
+  return Object.freeze({
+    activeEventName: active,
+    activeOpen: open,
+    spans: Object.freeze(spans),
+  });
+};
+
+const completedHookDurationMilliseconds = (span) => {
+  if (commandOutcome(span.close) !== "completed")
+    throw new Error("integration.codex.hook-log");
+  const durationMilliseconds =
+    tracingDurationMilliseconds(span.close, "time\\.busy") +
+    tracingDurationMilliseconds(span.close, "time\\.idle");
+  if (!Number.isFinite(durationMilliseconds) || durationMilliseconds < 0)
+    throw new Error("integration.codex.hook-log");
+  return durationMilliseconds;
+};
+
+const hookSpanIdentity = (span) =>
+  createHash("sha256").update(`${span.open}\n${span.close}\n`).digest("hex");
+
+/**
+ * Proves that the exact SessionStart command completed before the loopback
+ * gateway admits the first model request. No later root event may already be
+ * present at this causal checkpoint.
+ */
+export const inspectCodexSessionStartBeforeFirstModelRequestAdmission = (
+  input,
+) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
+  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  if (
+    spans.length === 0 &&
+    activeEventName === "SessionStart" &&
+    activeOpen !== undefined
+  )
+    return undefined;
+  if (activeEventName !== undefined || activeOpen !== undefined)
+    throw new Error("integration.codex.hook-lifecycle");
+  if (spans.length !== 1 || spans[0]?.eventName !== "SessionStart")
+    throw new Error("integration.codex.hook-lifecycle");
+  const durationMilliseconds = completedHookDurationMilliseconds(spans[0]);
+  if (durationMilliseconds > 1_000)
+    throw new Error("integration.codex.hook-mediation");
+  return Object.freeze({
+    durationMilliseconds,
+    spanSha256: hookSpanIdentity(spans[0]),
+  });
+};
+
+/**
+ * Proves the one graceful root lifecycle from one authenticated log snapshot.
+ */
+export const inspectCodexRootHookLifecycle = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
+  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  if (
+    activeEventName !== undefined ||
+    activeOpen !== undefined ||
+    spans.length !== rootHookEvents.length ||
+    spans.some((span, index) => span.eventName !== rootHookEvents[index])
+  )
+    throw new Error("integration.codex.hook-lifecycle");
+  const durations = spans.map(completedHookDurationMilliseconds);
+  if (
+    durations.some(
+      (duration) => duration > installedRootHookTimeoutMilliseconds,
+    )
+  )
+    throw new Error("integration.codex.hook-log");
+  if (durations[0] > 1_000) throw new Error("integration.codex.hook-mediation");
+  return Object.freeze({
+    sessionStartDurationMilliseconds: durations[0],
+    sessionStartSpanSha256: hookSpanIdentity(spans[0]),
+    stopDurationMilliseconds: durations[1],
+    sessionEndDurationMilliseconds: durations[2],
+  });
+};
+
+export const codexSessionStartCheckpointMatchesLifecycle = (
+  checkpoint,
+  lifecycle,
+) =>
+  checkpoint !== undefined &&
+  lifecycle !== undefined &&
+  checkpoint.durationMilliseconds ===
+    lifecycle.sessionStartDurationMilliseconds &&
+  checkpoint.spanSha256 === lifecycle.sessionStartSpanSha256;
 
 /**
  * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
