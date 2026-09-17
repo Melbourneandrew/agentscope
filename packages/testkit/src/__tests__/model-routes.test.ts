@@ -48,10 +48,13 @@ describe("model protocol routes", () => {
       headers: { "content-type": "application/json" },
     });
     expect("requestBody" in route).toBe(false);
-    const events = route.responseBodyText
-      .split("\n\n")
-      .filter((line) => line.startsWith("data: {"))
-      .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>);
+    const frames = route.responseBodyText.split("\n\n").filter(Boolean);
+    const events = frames.map((frame) => {
+      const [eventLine, dataLine] = frame.split("\n");
+      const event = JSON.parse(dataLine!.slice(6)) as Record<string, unknown>;
+      expect(eventLine).toBe(`event: ${String(event.type)}`);
+      return event;
+    });
     expect(events.map(({ type }) => type)).toEqual([
       "response.created",
       "response.output_item.done",
@@ -62,6 +65,7 @@ describe("model protocol routes", () => {
         content: [{ type: "output_text", text: "AGENTSCOPE_PTY_COMPLETE" }],
       },
     });
+    expect(route.responseBodyText).not.toContain("[DONE]");
     const expectation = createMockServerInitialization()[0] as {
       httpRequest: Record<string, unknown>;
       httpResponse: { headers: Record<string, readonly string[]> };

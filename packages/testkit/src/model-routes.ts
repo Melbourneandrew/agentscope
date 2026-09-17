@@ -28,37 +28,38 @@ export const MODEL_PROTOCOL_ROUTES = deepFreeze([
     method: "POST",
     path: "/v1/responses",
     headers: { "content-type": "application/json" },
-    responseBodyText:
-      [
-        {
-          type: "response.created",
-          response: { id: "resp_agentscope_pty_0001" },
+    responseBodyText: [
+      {
+        type: "response.created",
+        response: { id: "resp_agentscope_pty_0001" },
+      },
+      {
+        type: "response.output_item.done",
+        item: {
+          type: "message",
+          role: "assistant",
+          id: "msg_agentscope_pty_0001",
+          content: [{ type: "output_text", text: "AGENTSCOPE_PTY_COMPLETE" }],
         },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "message",
-            role: "assistant",
-            id: "msg_agentscope_pty_0001",
-            content: [{ type: "output_text", text: "AGENTSCOPE_PTY_COMPLETE" }],
+      },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_agentscope_pty_0001",
+          usage: {
+            input_tokens: 8,
+            input_tokens_details: null,
+            output_tokens: 6,
+            output_tokens_details: null,
+            total_tokens: 14,
           },
         },
-        {
-          type: "response.completed",
-          response: {
-            id: "resp_agentscope_pty_0001",
-            usage: {
-              input_tokens: 8,
-              input_tokens_details: null,
-              output_tokens: 6,
-              output_tokens_details: null,
-              total_tokens: 14,
-            },
-          },
-        },
-      ]
-        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-        .join("") + "data: [DONE]\n\n",
+      },
+    ]
+      .map(
+        (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+      )
+      .join(""),
   },
   {
     routeId: "openai-responses",
