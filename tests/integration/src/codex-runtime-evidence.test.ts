@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  codexTraceSearchUnavailable,
   classifyCodexStopHookCommand,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -93,6 +94,48 @@ describe("Codex bounded native ledgers", () => {
         tracePresent: false,
       }),
     ).toBe("missing");
+  });
+
+  it("retries only the exact content-free trace-unavailable diagnostic", () => {
+    const diagnostic = Buffer.from(
+      `${JSON.stringify({
+        schema: "agentscope.cli.diagnostic.v1",
+        command: "agentscope traces search",
+        category: "unavailable",
+        code: "traces.unavailable",
+      })}\n`,
+    );
+    const exact = {
+      code: 5,
+      signal: null,
+      stderr: diagnostic,
+      stdout: Buffer.alloc(0),
+    };
+    expect(codexTraceSearchUnavailable(exact)).toBe(true);
+    expect(codexTraceSearchUnavailable({ ...exact, code: 0 })).toBe(false);
+    expect(
+      codexTraceSearchUnavailable({ ...exact, stdout: Buffer.from("{}\n") }),
+    ).toBe(false);
+    expect(
+      codexTraceSearchUnavailable({
+        ...exact,
+        stderr: Buffer.from(
+          `${JSON.stringify({
+            schema: "agentscope.cli.diagnostic.v1",
+            command: "agentscope traces search",
+            category: "unavailable",
+            code: "traces.unavailable",
+            detail: "substituted",
+          })}\n`,
+        ),
+      }),
+    ).toBe(false);
+    expect(
+      codexTraceSearchUnavailable({
+        ...exact,
+        stderr: Buffer.from("not-json\n"),
+      }),
+    ).toBe(false);
   });
 
   it.runIf(process.platform === "linux")(

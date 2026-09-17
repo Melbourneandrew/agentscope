@@ -20,6 +20,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  codexTraceSearchUnavailable,
   codexSessionStartMediationUpperBoundMilliseconds,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -195,15 +196,17 @@ const run = (executable, arguments_, options = {}) => {
       if (timer !== undefined) clearTimeout(timer);
       try {
         remaining();
+        const traceUnavailable =
+          options.acceptTraceSearchUnavailable === true &&
+          codexTraceSearchUnavailable({ code, signal, stderr, stdout });
         if (
           deadlineExpired ||
-          code !== 0 ||
-          signal !== null ||
+          (!traceUnavailable && (code !== 0 || signal !== null)) ||
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
         )
           return reject(new Error("integration.codex.child"));
-        resolve({ stdout, stderr });
+        resolve({ stderr, stdout, traceUnavailable });
       } catch (error) {
         reject(error);
       }
@@ -669,7 +672,7 @@ const projectTraceGraph = (graph, traceId) => {
 const readTraceSummary = async (traceDeadline) => {
   if (codexSessionId === undefined)
     throw new Error("integration.codex.session-ledger");
-  const { stdout } = await run(
+  const { stdout, traceUnavailable } = await run(
     agentscope,
     [
       "traces",
@@ -683,7 +686,10 @@ const readTraceSummary = async (traceDeadline) => {
       "--output",
       "json",
     ],
-    { monotonicDeadline: traceDeadline },
+    {
+      acceptTraceSearchUnavailable: true,
+      monotonicDeadline: traceDeadline,
+    },
   );
   if (
     !terminalObservationBeforeDeadline({
@@ -693,6 +699,7 @@ const readTraceSummary = async (traceDeadline) => {
     })
   )
     throw new Error("integration.codex.trace-deadline");
+  if (traceUnavailable) return null;
   const records = parseMachine(stdout, "agentscope traces search");
   return classifyTraceSearchRecordsBeforeDeadline({
     records,
@@ -768,7 +775,7 @@ const waitForTraceSummary = async (traceDeadline) => {
       localSqliteLifecycleDescriptor,
     );
     const observationClosed = traceDeadline - bootNow() <= 2_500;
-    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 2_000);
+    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 5_000);
     const candidate = traceSummaryBeforeDeadline({
       summary: observationClosed ? null : await readTraceSummary(queryDeadline),
       deadline: traceDeadline,

@@ -50,6 +50,42 @@ export const classifyCodexSettledTraceObservation = ({
   return "pending";
 };
 
+export const codexTraceSearchUnavailable = ({
+  code,
+  signal,
+  stderr,
+  stdout,
+}) => {
+  if (
+    code !== 5 ||
+    signal !== null ||
+    !Buffer.isBuffer(stdout) ||
+    stdout.length !== 0 ||
+    !Buffer.isBuffer(stderr) ||
+    stderr.length < 1 ||
+    stderr.length > 4_096
+  )
+    return false;
+  try {
+    const diagnostic = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(stderr),
+    );
+    return (
+      diagnostic !== null &&
+      typeof diagnostic === "object" &&
+      !Array.isArray(diagnostic) &&
+      Object.keys(diagnostic).sort().join("\0") ===
+        "category\0code\0command\0schema" &&
+      diagnostic.category === "unavailable" &&
+      diagnostic.code === "traces.unavailable" &&
+      diagnostic.command === "agentscope traces search" &&
+      diagnostic.schema === "agentscope.cli.diagnostic.v1"
+    );
+  } catch {
+    return false;
+  }
+};
+
 const readCodexHookLog = ({
   afterRead,
   directoryDescriptor,
