@@ -187,14 +187,14 @@ describe("integration capability manifest", () => {
   });
 
   // eslint-disable-next-line max-lines-per-function
-  it("waits for the traced Codex TUI turn before sending authenticated Ctrl-D", () => {
+  it("waits for the traced Codex TUI turn before sending the authenticated double Ctrl-D quit sequence", () => {
     const scenario = manifestFixture().scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     )!;
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
-      Buffer.from([4]),
+      Buffer.from([4, 4]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(1);
+    expect(scenario.postCompletionInputByteLength).toBe(2);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     expect(scenario.nativeReadiness).toEqual({ kind: "challenge-marker" });
@@ -222,6 +222,7 @@ describe("integration capability manifest", () => {
       "checkpoint-process-topology",
       "wait-for-semantic-completion",
       "input",
+      "input",
     ]);
     expect(actions[1]).toEqual({
       action: "input",
@@ -237,6 +238,7 @@ describe("integration capability manifest", () => {
         .update(Buffer.from([4]))
         .digest("hex"),
     });
+    expect(actions.at(-2)).toEqual(actions.at(-1));
     expect(actions[2]).toEqual({
       action: "checkpoint-process-topology",
       topology: "root-with-contained-process-set",
