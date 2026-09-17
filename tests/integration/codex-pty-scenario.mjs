@@ -868,6 +868,18 @@ let codexSessionId;
 try {
   recordInteractivePhase("install");
   await cli(["init", "--yes"], "agentscope init");
+  await cli(
+    [
+      "destination",
+      "configure",
+      "local-sqlite",
+      "--name",
+      "diagnostic",
+      "--yes",
+    ],
+    "agentscope destination configure",
+  );
+  await cli(["routing", "set", "diagnostic"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
