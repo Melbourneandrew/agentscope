@@ -39,6 +39,8 @@ const interactivePhases = Object.freeze([
   "tui-start",
   "model-request",
   "trace-terminal",
+  "tui-exit",
+  "trace-settlement",
   "trace-search",
   "trace-search-record-count",
   "trace-search-shape",
@@ -48,8 +50,6 @@ const interactivePhases = Object.freeze([
   "trace-reporter-settled",
   "trace-acceptance",
   "trace-search-result",
-  "tui-exit",
-  "trace-settlement",
   "verify",
 ]);
 const retainedInteractivePhase = (ledger) => {

@@ -259,6 +259,8 @@ const interactivePhases = Object.freeze([
   "tui-start",
   "model-request",
   "trace-terminal",
+  "tui-exit",
+  "trace-settlement",
   "trace-search",
   "trace-search-record-count",
   "trace-search-shape",
@@ -268,8 +270,6 @@ const interactivePhases = Object.freeze([
   "trace-reporter-settled",
   "trace-acceptance",
   "trace-search-result",
-  "tui-exit",
-  "trace-settlement",
   "verify",
 ]);
 const recordInteractivePhase = (phase) => {
@@ -837,9 +837,9 @@ try {
   recordInteractivePhase("trace-terminal");
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
   // its rollout. Prove the installed hook through the durable trace and exact
-  // rollout session identity below, after the sole challenged turn completes.
+  // rollout session identity below, after the sole challenged turn completes
+  // and Testkit joins Codex so its vendor Stop hook has run.
   await waitForCodexTurnTerminal(traceDeadline);
-  const summary = await waitForTraceSummary(traceDeadline);
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -857,6 +857,7 @@ try {
     now: bootNow,
     record: () => recordInteractivePhase("trace-settlement"),
   });
+  const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
