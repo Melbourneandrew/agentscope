@@ -91,9 +91,10 @@ function runTraceSearchUntilAvailable(command, arguments_, options = {}) {
       ...options,
       timeout: Math.max(1, Math.ceil(remainingBeforeAttempt)),
     });
-    if (result.status === 0 || !traceSearchUnavailable(result)) return result;
     const remainingMilliseconds = deadline - performance.now();
-    if (remainingMilliseconds <= 0) return result;
+    if (result.status === 0 || !traceSearchUnavailable(result))
+      return { result, timely: remainingMilliseconds > 0 };
+    if (remainingMilliseconds <= 0) return { result, timely: false };
     Atomics.wait(
       new Int32Array(new SharedArrayBuffer(4)),
       0,
@@ -899,7 +900,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.ok(acceptedHookConnections.length >= 1);
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
-    const searchedLocal = runTraceSearchUntilAvailable(
+    const searchedLocalObservation = runTraceSearchUntilAvailable(
       executable,
       [
         "traces",
@@ -913,14 +914,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
       ],
       { ...executableOptions, env: localEnvironment },
     );
-    if (searchedLocal.status !== 0) {
-      const diagnosedLocal = runRaw(
-        executable,
-        ["doctor", "--output", "json"],
-        { ...executableOptions, env: localEnvironment },
-      );
+    const searchedLocal = searchedLocalObservation.result;
+    if (!searchedLocalObservation.timely || searchedLocal.status !== 0) {
       assert.fail(
-        `installed Stop trace retrieval unavailable; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}; doctorStatus=${diagnosedLocal.status}; doctor=${diagnosedLocal.stdout}${diagnosedLocal.stderr}`,
+        `installed Stop trace retrieval unavailable; timely=${searchedLocalObservation.timely}; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}`,
       );
     }
     const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
