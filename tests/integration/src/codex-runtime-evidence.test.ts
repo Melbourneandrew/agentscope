@@ -48,6 +48,7 @@ describe("Codex bounded native ledgers", () => {
     expect(
       classifyCodexSettledTraceObservation({
         hookCompleted: false,
+        observationClosed: false,
         reporterSettled: false,
         tracePresent: false,
       }),
@@ -55,6 +56,7 @@ describe("Codex bounded native ledgers", () => {
     expect(
       classifyCodexSettledTraceObservation({
         hookCompleted: false,
+        observationClosed: false,
         reporterSettled: true,
         tracePresent: true,
       }),
@@ -62,6 +64,23 @@ describe("Codex bounded native ledgers", () => {
     expect(
       classifyCodexSettledTraceObservation({
         hookCompleted: true,
+        observationClosed: true,
+        reporterSettled: false,
+        tracePresent: false,
+      }),
+    ).toBe("pending");
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: true,
+        observationClosed: false,
+        reporterSettled: true,
+        tracePresent: false,
+      }),
+    ).toBe("pending");
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: true,
+        observationClosed: false,
         reporterSettled: true,
         tracePresent: true,
       }),
@@ -69,6 +88,7 @@ describe("Codex bounded native ledgers", () => {
     expect(
       classifyCodexSettledTraceObservation({
         hookCompleted: true,
+        observationClosed: true,
         reporterSettled: true,
         tracePresent: false,
       }),

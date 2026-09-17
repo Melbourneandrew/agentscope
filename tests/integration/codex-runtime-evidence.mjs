@@ -40,11 +40,13 @@ const commandOutcome = (line) => {
 
 export const classifyCodexSettledTraceObservation = ({
   hookCompleted,
+  observationClosed,
   reporterSettled,
   tracePresent,
 }) => {
   if (hookCompleted && reporterSettled && tracePresent) return "accepted";
-  if (hookCompleted && reporterSettled && !tracePresent) return "missing";
+  if (hookCompleted && observationClosed && reporterSettled && !tracePresent)
+    return "missing";
   return "pending";
 };
 
