@@ -261,7 +261,14 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = -1;
 const interactivePhases = Object.freeze([
   "bootstrap",
+  "init",
+  "diagnostic-destination",
+  "diagnostic-routing",
   "install",
+  "hook-direct-probe-setup",
+  "acceptance-destination",
+  "acceptance-routing",
+  "installed-status",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -866,8 +873,9 @@ let modelGateway;
 let codexLedgerBaseline;
 let codexSessionId;
 try {
-  recordInteractivePhase("install");
+  recordInteractivePhase("init");
   await cli(["init", "--yes"], "agentscope init");
+  recordInteractivePhase("diagnostic-destination");
   await cli(
     [
       "destination",
@@ -879,7 +887,9 @@ try {
     ],
     "agentscope destination configure",
   );
+  recordInteractivePhase("diagnostic-routing");
   await cli(["routing", "set", "diagnostic"], "agentscope routing set");
+  recordInteractivePhase("install");
   await cli(["install", "codex", "--yes"], "agentscope install");
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
@@ -894,15 +904,19 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
+  recordInteractivePhase("hook-direct-probe-setup");
   await runDirectHookProbe(
     join(agentscopeHome, "health", "operational-state-v1.json"),
   );
+  recordInteractivePhase("acceptance-destination");
   await cli(
     ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
     "agentscope destination configure",
   );
+  recordInteractivePhase("acceptance-routing");
   await cli(["routing", "set", "local"], "agentscope routing set");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+  recordInteractivePhase("installed-status");
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "unchanged",

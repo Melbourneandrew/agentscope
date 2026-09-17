@@ -31,7 +31,14 @@ const substrateCertificationCase = parseSubstrateCertificationCaseValue(
 
 const interactivePhases = Object.freeze([
   "bootstrap",
+  "init",
+  "diagnostic-destination",
+  "diagnostic-routing",
   "install",
+  "hook-direct-probe-setup",
+  "acceptance-destination",
+  "acceptance-routing",
+  "installed-status",
   "tui-start",
   "model-request",
   "trace-terminal",
