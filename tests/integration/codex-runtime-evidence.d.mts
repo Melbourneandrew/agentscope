@@ -66,6 +66,16 @@ export function inspectCodexStopHookCommand(input: {
     }>
   | undefined;
 
+export function classifyMissingOperationalStateByHookDuration(
+  durationMilliseconds: number,
+):
+  | "hook-command-completed-near-budget-boundary"
+  | "hook-no-operational-state-near-deadline"
+  | "hook-no-operational-state-high-latency"
+  | "hook-no-operational-state-mid-latency"
+  | "hook-no-operational-state-low-latency"
+  | "hook-no-operational-state-subsecond";
+
 export function codexTurnTerminalObserved(
   ledgers: readonly string[],
   expectedMessage: string,

@@ -264,6 +264,29 @@ export const inspectCodexStopHookCommand = (input) => {
   return match;
 };
 
+export const classifyMissingOperationalStateByHookDuration = (
+  durationMilliseconds,
+) => {
+  if (
+    typeof durationMilliseconds !== "number" ||
+    !Number.isFinite(durationMilliseconds) ||
+    durationMilliseconds < 0 ||
+    durationMilliseconds > 120_000
+  )
+    throw new Error("integration.codex.hook-log");
+  if (durationMilliseconds >= 4_900)
+    return "hook-command-completed-near-budget-boundary";
+  if (durationMilliseconds >= 4_000)
+    return "hook-no-operational-state-near-deadline";
+  if (durationMilliseconds >= 3_000)
+    return "hook-no-operational-state-high-latency";
+  if (durationMilliseconds >= 1_500)
+    return "hook-no-operational-state-mid-latency";
+  if (durationMilliseconds >= 500)
+    return "hook-no-operational-state-low-latency";
+  return "hook-no-operational-state-subsecond";
+};
+
 /**
  * Returns the complete observed SessionStart command span. This short-lived
  * non-capturing hook is a conservative upper bound on vendor mediation before
