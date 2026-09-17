@@ -50,6 +50,21 @@ export function recordTerminalObservationBeforeDeadline(input: {
   record: () => void;
 }): void;
 
+export function classifyTraceSearchRecordsBeforeDeadline(input: {
+  records: Array<{
+    summaries?: Array<{
+      harness?: string;
+      locator?: { traceId?: string };
+    }>;
+  }>;
+  deadline: number;
+  now: () => number;
+  record: (phase: string) => void;
+}): {
+  harness?: string;
+  locator?: { traceId?: string };
+} | null;
+
 export function publishTerminalCompletionBeforeDeadline(input: {
   deadline: number;
   now: () => number;

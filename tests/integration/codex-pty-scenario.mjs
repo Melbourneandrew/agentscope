@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
@@ -672,37 +673,12 @@ const readTraceSummary = async (traceDeadline) => {
   )
     throw new Error("integration.codex.trace-deadline");
   const records = parseMachine(stdout, "agentscope traces search");
-  if (records.length !== 1) {
-    recordInteractivePhase("trace-search-record-count");
-    throw new Error("integration.codex.trace-search-record-count");
-  }
-  if (!Array.isArray(records[0]?.summaries)) {
-    recordInteractivePhase("trace-search-shape");
-    throw new Error("integration.codex.trace-search-shape");
-  }
-  if (records[0].summaries.length > 1) {
-    recordInteractivePhase("trace-search-ambiguous");
-    throw new Error("integration.codex.trace-search-ambiguous");
-  }
-  if (records[0].summaries.length === 0) return null;
-  const summary = records[0].summaries[0];
-  if (summary?.harness !== "codex") {
-    recordInteractivePhase("trace-search-harness");
-    throw new Error("integration.codex.trace-search-harness");
-  }
-  if (typeof summary?.locator?.traceId !== "string") {
-    recordInteractivePhase("trace-search-locator");
-    throw new Error("integration.codex.trace-search-locator");
-  }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  return summary;
+  return classifyTraceSearchRecordsBeforeDeadline({
+    records,
+    deadline: traceDeadline,
+    now: bootNow,
+    record: recordInteractivePhase,
+  });
 };
 const waitForCodexTurnTerminal = async (traceDeadline) => {
   if (codexLedgerBaseline === undefined)
