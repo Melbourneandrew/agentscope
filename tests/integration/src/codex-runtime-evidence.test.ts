@@ -22,6 +22,7 @@ import {
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   openOperationalStateHealth,
+  publishTerminalCompletionBeforeDeadline,
   readCodexSessionLedgers,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
@@ -524,6 +525,25 @@ describe("Codex bounded native records", () => {
         now,
       }),
     ).toBe(false);
+  });
+
+  it("rechecks the cutoff after recording the terminal diagnostic", async () => {
+    let observedAt = 99;
+    let published = false;
+    await expect(
+      publishTerminalCompletionBeforeDeadline({
+        deadline: 100,
+        now: () => observedAt,
+        record: () => {
+          observedAt = 100;
+        },
+        publish: () => {
+          published = true;
+          return Promise.resolve();
+        },
+      }),
+    ).rejects.toThrow("integration.codex.trace-deadline");
+    expect(published).toBe(false);
   });
 
   it("rejects a completed trace search at the exact deadline cutoff", () => {

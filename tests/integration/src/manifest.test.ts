@@ -398,7 +398,10 @@ describe("integration capability manifest", () => {
     );
     expect(
       traceSettlementFunction.match(/!terminalObservationBeforeDeadline\(\{/gu),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    expect(traceSettlementFunction).toContain(
+      "await publishTerminalCompletionBeforeDeadline({",
+    );
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",
