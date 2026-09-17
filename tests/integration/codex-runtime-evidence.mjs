@@ -114,15 +114,9 @@ const readCodexHookLog = ({
   return source;
 };
 
-/**
- * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
- * @returns {"completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error" | undefined}
- */
-export const classifyCodexStopHookCommand = (input) => {
-  const source = readCodexHookLog(input);
-  if (source === undefined) return undefined;
-  const outcomes = [];
-  let stopLineCount = 0;
+const codexCommandSpanClose = (source, eventName) => {
+  let state = "absent";
+  let close;
   for (const line of source.split("\n")) {
     if (!line.includes("codex.hooks.command")) continue;
     const eventFields = [
@@ -130,15 +124,38 @@ export const classifyCodexStopHookCommand = (input) => {
     ];
     if (eventFields.length === 0) continue;
     if (eventFields.length !== 1) throw new Error("integration.codex.hook-log");
-    if (!/^hook\.event_name=(?:"Stop"|Stop)$/u.test(eventFields[0][0]))
+    if (
+      eventFields[0][0] !== `hook.event_name="${eventName}"` &&
+      eventFields[0][0] !== `hook.event_name=${eventName}`
+    )
       continue;
-    stopLineCount += 1;
-    outcomes.push(commandOutcome(line));
+    const isNew = /: new(?:\s|$)/u.test(line);
+    const isClose = /: close(?:\s|$)/u.test(line);
+    if (isNew === isClose) throw new Error("integration.codex.hook-log");
+    if (isNew) {
+      if (state !== "absent") throw new Error("integration.codex.hook-log");
+      state = "started";
+      continue;
+    }
+    if (state !== "started") throw new Error("integration.codex.hook-log");
+    state = "closed";
+    close = line;
   }
-  if (stopLineCount === 0) return undefined;
-  if (stopLineCount !== 1 || outcomes.length !== 1)
+  if (state === "absent") return undefined;
+  if (state !== "closed" || close === undefined)
     throw new Error("integration.codex.hook-log");
-  return outcomes[0];
+  return close;
+};
+
+/**
+ * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
+ * @returns {"completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error" | undefined}
+ */
+export const classifyCodexStopHookCommand = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
+  const close = codexCommandSpanClose(source, "Stop");
+  return close === undefined ? undefined : commandOutcome(close);
 };
 
 const durationUnitMilliseconds = Object.freeze({
@@ -180,37 +197,23 @@ const tracingDurationMilliseconds = (line, field) => {
 export const inspectCodexStopHookCommand = (input) => {
   const source = readCodexHookLog(input);
   if (source === undefined) return undefined;
-  const matches = [];
-  for (const line of source.split("\n")) {
-    if (
-      !line.includes("codex.hooks.command") ||
-      !/^.*hook\.event_name=(?:"Stop"|Stop)(?:[\s}]).*$/u.test(line)
-    )
-      continue;
-    const eventFields = [
-      ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
-    ];
-    if (eventFields.length !== 1) throw new Error("integration.codex.hook-log");
-    const outcome = commandOutcome(line);
-    matches.push(
-      Object.freeze({
-        outcome,
-        durationMilliseconds:
-          tracingDurationMilliseconds(line, "time\\.busy") +
-          tracingDurationMilliseconds(line, "time\\.idle"),
-      }),
-    );
-  }
-  if (matches.length === 0) return undefined;
-  if (matches.length !== 1 || matches[0].durationMilliseconds > 120_000)
+  const close = codexCommandSpanClose(source, "Stop");
+  if (close === undefined) return undefined;
+  const match = Object.freeze({
+    outcome: commandOutcome(close),
+    durationMilliseconds:
+      tracingDurationMilliseconds(close, "time\\.busy") +
+      tracingDurationMilliseconds(close, "time\\.idle"),
+  });
+  if (match.durationMilliseconds > 120_000)
     throw new Error("integration.codex.hook-log");
-  return matches[0];
+  return match;
 };
 
 /**
- * Returns the complete observed SessionStart command-span duration. Because the
- * installed non-Stop launcher exits before capture, this is a conservative
- * upper bound on vendor mediation before the launcher's first instruction.
+ * Returns the complete observed SessionStart command span. This short-lived
+ * non-capturing hook is a conservative upper bound on vendor mediation before
+ * the exact installed launcher's first instruction.
  *
  * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
  * @returns {number | undefined}
@@ -218,29 +221,16 @@ export const inspectCodexStopHookCommand = (input) => {
 export const codexSessionStartMediationUpperBoundMilliseconds = (input) => {
   const source = readCodexHookLog(input);
   if (source === undefined) return undefined;
-  const matches = [];
-  for (const line of source.split("\n")) {
-    if (
-      !line.includes("codex.hooks.command") ||
-      !/^.*hook\.event_name=(?:"SessionStart"|SessionStart)(?:[\s}]).*$/u.test(
-        line,
-      )
-    )
-      continue;
-    const eventFields = [
-      ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
-    ];
-    if (eventFields.length !== 1 || commandOutcome(line) !== "completed")
-      throw new Error("integration.codex.hook-log");
-    matches.push(
-      tracingDurationMilliseconds(line, "time\\.busy") +
-        tracingDurationMilliseconds(line, "time\\.idle"),
-    );
-  }
-  if (matches.length === 0) return undefined;
-  if (matches.length !== 1 || matches[0] > 120_000)
+  const close = codexCommandSpanClose(source, "SessionStart");
+  if (close === undefined) return undefined;
+  if (commandOutcome(close) !== "completed")
     throw new Error("integration.codex.hook-log");
-  return matches[0];
+  const span =
+    tracingDurationMilliseconds(close, "time\\.busy") +
+    tracingDurationMilliseconds(close, "time\\.idle");
+  if (!Number.isFinite(span) || span < 0 || span > 1_000)
+    throw new Error("integration.codex.hook-mediation");
+  return span;
 };
 
 const plainRecord = (value) =>

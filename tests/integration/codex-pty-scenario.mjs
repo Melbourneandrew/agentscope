@@ -20,8 +20,8 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
-  inspectCodexStopHookCommand,
   codexSessionStartMediationUpperBoundMilliseconds,
+  inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
@@ -952,8 +952,6 @@ try {
     });
   if (sessionStartCommandDurationMilliseconds === undefined)
     throw new Error("integration.codex.hook-session-start-missing");
-  if (sessionStartCommandDurationMilliseconds > 1_000)
-    throw new Error("integration.codex.hook-mediation");
   const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
