@@ -392,7 +392,7 @@ describe("integration capability manifest", () => {
       preQueryDeadline,
     );
     const boundedQuery = traceSummaryWait.indexOf(
-      "      summary: await readTraceSummary(traceDeadline),\n",
+      "      summary: observationClosed ? null : await readTraceSummary(queryDeadline),\n",
       traceSearchPhaseInWait,
     );
     const lifecycleSettlement = traceSummaryWait.indexOf(
@@ -400,6 +400,10 @@ describe("integration capability manifest", () => {
         "      localSqliteLifecycleDescriptor,\n" +
         "    );\n",
       traceSearchPhaseInWait,
+    );
+    const terminalObservationCut = traceSummaryWait.indexOf(
+      "    const observationClosed = traceDeadline - bootNow() <= 2_500;\n",
+      lifecycleSettlement,
     );
     const boundedBackoff = traceSummaryWait.indexOf(
       "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
@@ -440,6 +444,7 @@ describe("integration capability manifest", () => {
     expect(preQueryDeadline).toBeGreaterThan(-1);
     expect(traceSearchPhaseInWait).toBeGreaterThan(preQueryDeadline);
     expect(lifecycleSettlement).toBeGreaterThan(traceSearchPhaseInWait);
+    expect(terminalObservationCut).toBeGreaterThan(lifecycleSettlement);
     expect(boundedQuery).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(reporterSettledPhase).toBeGreaterThan(lifecycleSettlement);

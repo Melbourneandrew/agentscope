@@ -767,13 +767,16 @@ const waitForTraceSummary = async (traceDeadline) => {
     const reporterSettled = localSqliteReporterSettled(
       localSqliteLifecycleDescriptor,
     );
+    const observationClosed = traceDeadline - bootNow() <= 2_500;
+    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 2_000);
     const candidate = traceSummaryBeforeDeadline({
-      summary: await readTraceSummary(traceDeadline),
+      summary: observationClosed ? null : await readTraceSummary(queryDeadline),
       deadline: traceDeadline,
       now: bootNow,
     });
     const terminalCut = classifyCodexSettledTraceObservation({
       hookCompleted: hookCommandObservation?.outcome === "completed",
+      observationClosed,
       reporterSettled,
       tracePresent: candidate !== null,
     });

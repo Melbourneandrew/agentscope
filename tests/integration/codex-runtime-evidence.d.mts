@@ -9,6 +9,7 @@ export function boundedRequestLedger(
 
 export function classifyCodexSettledTraceObservation(input: {
   hookCompleted: boolean;
+  observationClosed: boolean;
   reporterSettled: boolean;
   tracePresent: boolean;
 }): "accepted" | "missing" | "pending";
