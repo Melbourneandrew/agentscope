@@ -73,6 +73,7 @@ const interactivePhases = Object.freeze([
   "hook-payload-identity",
   "hook-payload-permission",
   "hook-payload-fields",
+  "hook-payload-correlation",
   "hook-payload-accepted",
   "trace-search-record-count",
   "trace-search-shape",

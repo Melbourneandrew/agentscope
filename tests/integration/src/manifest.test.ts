@@ -265,7 +265,7 @@ describe("integration capability manifest", () => {
       challengeRead,
     );
     const terminalWait = source.indexOf(
-      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+      "  const turnTerminal = await waitForCodexTurnTerminal(traceDeadline);\n",
       traceDeadline,
     );
     const readinessRelease = source.indexOf(
