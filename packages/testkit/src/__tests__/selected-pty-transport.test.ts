@@ -492,7 +492,7 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("does not accept a completion marker observed before the preceding input", async () => {
+  it("does not accept a completion marker while the preceding input is blocked", async () => {
     expect(
       await executeSelectedPtyTransportForTest(
         {
@@ -511,10 +511,11 @@ describe("selected PTY transport", () => {
             ],
           },
         },
-        "fragmented-output",
+        "blocked-input-completion",
       ),
     ).toMatchObject({
-      actions: [{ action: "input" }],
+      actions: [],
+      inputBytesWritten: 0,
       outcome: "input-incomplete",
       terminalInputJoined: false,
     });
