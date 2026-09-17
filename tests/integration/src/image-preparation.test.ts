@@ -267,6 +267,18 @@ const executableFixture = (directory = root()) => {
   chmodSync(path, 0o500);
   return path;
 };
+const readReadyDescendant = (directory: string) => {
+  const ready = resolve(directory, "ready");
+  if (!existsSync(ready))
+    throw new Error("image preparation fixture readiness was not published");
+  const value = readFileSync(ready, "utf8");
+  if (!/^[1-9]\d*$/u.test(value))
+    throw new Error("image preparation fixture readiness was malformed");
+  const descendant = Number(value);
+  if (!Number.isSafeInteger(descendant))
+    throw new Error("image preparation fixture readiness was malformed");
+  return descendant;
+};
 
 type Request = {
   body?: Buffer;
@@ -1768,6 +1780,16 @@ describe("owned buildx process execution", () => {
   );
 
   it.each([
+    [undefined, "image preparation fixture readiness was not published"],
+    ["not-a-pid", "image preparation fixture readiness was malformed"],
+  ])("rejects %s readiness evidence", (value, message) => {
+    const directory = root();
+    if (value !== undefined)
+      writeFileSync(resolve(directory, "ready"), value, { mode: 0o600 });
+    expect(() => readReadyDescendant(directory)).toThrow(message);
+  });
+
+  it.each([
     ["hang-descendant", "integration.images.timeout"],
     ["close-descendant", "integration.images.containment"],
   ])("kills and joins the exact process group for %s", async (mode, code) => {
@@ -1776,12 +1798,18 @@ describe("owned buildx process execution", () => {
       executableFixture(directory),
       [fixture],
       {
-        deadline: performance.now() + 1_000,
+        deadline:
+          performance.now() + (mode === "hang-descendant" ? 5_000 : 1_000),
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
         },
         teardownMilliseconds: 250,
+        ...(mode === "hang-descendant"
+          ? {
+              timeoutAfterOutputForTesting: Buffer.from("descendant-ready\n"),
+            }
+          : {}),
       },
     ).catch((failure: unknown) => failure);
     if (mode === "hang-descendant") {
@@ -1791,9 +1819,7 @@ describe("owned buildx process execution", () => {
         "integration.images.containment",
       ]).toContain((error as Error).message);
     } else expect(error).toEqual(expect.objectContaining({ message: code }));
-    const descendant = Number(
-      readFileSync(resolve(directory, "ready"), "utf8"),
-    );
+    const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
     );
@@ -1826,9 +1852,7 @@ describe("owned buildx process execution", () => {
     expect(() => process.kill(-processGroup!, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
     );
-    const descendant = Number(
-      readFileSync(resolve(directory, "ready"), "utf8"),
-    );
+    const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
     );

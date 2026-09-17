@@ -350,6 +350,17 @@ const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
     workDeadline,
   };
 };
+const armCommandTimeout = (workDeadline, timeoutAfterOutput, fail) =>
+  timeoutAfterOutput === undefined
+    ? setTimeout(
+        () => fail("integration.images.timeout", true),
+        Math.max(1, workDeadline - performance.now()),
+      )
+    : undefined;
+const applyOutputTimeoutForTesting = (output, expected, fail) => {
+  if (expected !== undefined && Buffer.concat(output).equals(expected))
+    fail("integration.images.timeout", true);
+};
 // The spawn-through-terminal-join path is one indivisible process authority.
 /* eslint-disable max-lines-per-function */
 const runOwnedCommand = async (
@@ -363,6 +374,7 @@ const runOwnedCommand = async (
     observeProcess,
     signal,
     teardownMilliseconds,
+    timeoutAfterOutputForTesting,
   },
 ) => {
   if (process.platform === "win32" || processInspectionExecutable === undefined)
@@ -401,8 +413,10 @@ const runOwnedCommand = async (
     if (bytes > maximumBuildOutputBytes) {
       outputTruncated = true;
       fail("integration.images.output");
-    } else if (retain) output.push(chunk);
-    else if (diagnosticStderrBytes < maximumHeaderBytes) {
+    } else if (retain) {
+      output.push(chunk);
+      applyOutputTimeoutForTesting(output, timeoutAfterOutputForTesting, fail);
+    } else if (diagnosticStderrBytes < maximumHeaderBytes) {
       const retained = chunk.subarray(
         0,
         Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
@@ -416,9 +430,10 @@ const runOwnedCommand = async (
   child.stderr.on("data", (chunk) => consume(chunk, false));
   const onAbort = () => fail("integration.images.interrupted");
   signal?.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(
-    () => fail("integration.images.timeout", true),
-    Math.max(1, workDeadline - performance.now()),
+  const timeout = armCommandTimeout(
+    workDeadline,
+    timeoutAfterOutputForTesting,
+    fail,
   );
   const closed = new Promise((resolveClose) => {
     child.once("error", () => fail("integration.images.command"));

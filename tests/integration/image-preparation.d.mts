@@ -173,6 +173,7 @@ export declare const runOwnedImageCommandForTesting: (
     input?: Buffer;
     signal?: AbortSignal;
     teardownMilliseconds?: number;
+    timeoutAfterOutputForTesting?: Buffer;
   }>,
 ) => Promise<string>;
 
