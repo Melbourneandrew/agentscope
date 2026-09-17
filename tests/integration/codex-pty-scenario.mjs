@@ -881,7 +881,9 @@ try {
   const uninstall = projectUninstall(uninstallRecords);
   if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
   const uninstalledStatus = projectHarnessStatus(
-    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    await cli(["harness", "status", "codex"], "agentscope harness status", {
+      monotonicDeadline: traceDeadline,
+    }),
     "ready",
     1,
   );
@@ -917,11 +919,16 @@ try {
   const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
     "base64url",
   );
-  writeFileSync(
-    join(ledger, "fixture-result.json"),
-    `${JSON.stringify({ evidenceVersion: 1, scenarioId, encodedEvidence })}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () =>
+      writeFileSync(
+        join(ledger, "fixture-result.json"),
+        `${JSON.stringify({ evidenceVersion: 1, scenarioId, encodedEvidence })}\n`,
+        { flag: "wx", mode: 0o600 },
+      ),
+  });
   completed = true;
 } finally {
   modelGateway?.abort();
