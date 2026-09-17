@@ -20,6 +20,21 @@ export function codexTraceSearchUnavailable(input: {
   stderr: Buffer;
   stdout: Buffer;
 }): boolean;
+export function codexTraceSearchTimedOut(input: {
+  code: number | null;
+  deadlineExpired: boolean;
+  signal: NodeJS.Signals | null;
+  stderr: Buffer;
+  stdout: Buffer;
+}): boolean;
+export function codexTraceSearchAttemptDeadlines(input: {
+  now: number;
+  observationDeadline: number;
+}): Readonly<{
+  attemptDeadline: number;
+  childDeadline: number;
+  observationDeadline: number;
+}> | null;
 
 export function classifyCodexStopHookCommand(input: {
   afterRead?: () => void;

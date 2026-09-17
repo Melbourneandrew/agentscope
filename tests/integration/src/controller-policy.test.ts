@@ -201,7 +201,10 @@ describe("integration cleanup authority", () => {
     );
     expect(
       scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
-    ).toBeLessThan(scenario.indexOf("await readTraceSummary(queryDeadline)"));
+    ).toBeLessThan(
+      scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
+    );
+    expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
     expect(scenario).toContain(
       "const terminalCut = classifyCodexSettledTraceObservation({",
     );

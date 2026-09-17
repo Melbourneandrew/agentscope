@@ -73,6 +73,35 @@ export const codexTraceSearchUnavailable = ({
   );
 };
 
+export const codexTraceSearchTimedOut = ({
+  code,
+  deadlineExpired,
+  signal,
+  stderr,
+  stdout,
+}) =>
+  deadlineExpired === true &&
+  code === null &&
+  signal === "SIGKILL" &&
+  stdout.length === 0 &&
+  stderr.length === 0;
+
+export const codexTraceSearchAttemptDeadlines = ({
+  now,
+  observationDeadline,
+}) => {
+  if (observationDeadline - now <= 2_500) return null;
+  const attemptDeadline = Math.min(observationDeadline - 500, now + 7_000);
+  const childDeadline = attemptDeadline - 250;
+  if (childDeadline <= now)
+    throw new Error("integration.codex.trace-search-deadline");
+  return Object.freeze({
+    attemptDeadline,
+    childDeadline,
+    observationDeadline,
+  });
+};
+
 const readCodexHookLog = ({
   afterRead,
   directoryDescriptor,
