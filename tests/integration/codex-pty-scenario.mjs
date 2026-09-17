@@ -721,6 +721,7 @@ const waitForTraceSummary = async (traceDeadline) => {
     record: () => recordInteractivePhase("trace-search"),
   });
   let summary;
+  let emptySearchCount = 0;
   while (summary === undefined) {
     const candidate = traceSummaryBeforeDeadline({
       summary: await readTraceSummary(traceDeadline),
@@ -733,6 +734,48 @@ const waitForTraceSummary = async (traceDeadline) => {
     ) {
       summary = candidate;
       break;
+    }
+    emptySearchCount += 1;
+    if (emptySearchCount === 20) {
+      const operationalStatePath = join(
+        agentscopeHome,
+        "health",
+        "operational-state-v1.json",
+      );
+      let classification = "hook-no-operational-state";
+      if (existsSync(operationalStatePath)) {
+        const state = lstatSync(operationalStatePath);
+        if (
+          state.isFile() &&
+          !state.isSymbolicLink() &&
+          state.size > 0 &&
+          state.size <= 262_144
+        ) {
+          const parsed = JSON.parse(readFileSync(operationalStatePath, "utf8"));
+          const health = Array.isArray(parsed?.health) ? parsed.health : [];
+          const latest = health
+            .filter(
+              (entry) =>
+                entry?.scope === "hook" || entry?.scope === "connection",
+            )
+            .sort((left, right) => right.sequence - left.sequence)[0];
+          const key = `${latest?.stage}:${latest?.outcome}`;
+          classification =
+            {
+              "hook-started:suppressed": "hook-start-suppressed",
+              "hook-started:deadline-exceeded": "hook-start-deadline",
+              "capture:suppressed": "hook-capture-suppressed",
+              "routing:no-route": "hook-routing-no-route",
+              "delivery:rejected": "hook-delivery-rejected",
+              "delivery:unavailable": "hook-delivery-unavailable",
+              "delivery:deadline-exceeded": "hook-delivery-deadline",
+              "delivery:outcome-unknown": "hook-delivery-unknown",
+              "remote-acceptance:accepted": "hook-accepted-without-trace",
+            }[key] ?? "hook-operational-unclassified";
+        }
+      }
+      interactiveFailurePhase = classification;
+      throw new Error(`integration.codex.${classification}`);
     }
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
