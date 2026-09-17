@@ -408,10 +408,7 @@ const installedLauncher = (hookConfiguration) => {
   return commands[0].slice(1, -1);
 };
 let installedHookCommand;
-const diagnoseMissingOperationalState = async (
-  operationalStatePath,
-  traceDeadline,
-) => {
+const diagnoseMissingOperationalState = async (operationalStatePath) => {
   recordInteractivePhase("hook-direct-probe-start");
   const diagnosticSessionId = `diagnostic-${scenarioId}`;
   const diagnosticInput = JSON.stringify({
@@ -425,12 +422,17 @@ const diagnoseMissingOperationalState = async (
     transcript_path: null,
     turn_id: "diagnostic-turn",
   });
-  await run("/bin/sh", ["-lc", installedHookCommand], {
-    cwd: worktree,
-    env: { ...process.env, CODEX_HOME: codexHome },
-    input: diagnosticInput,
-    monotonicDeadline: traceDeadline,
-  });
+  try {
+    await run("/bin/sh", ["-lc", installedHookCommand], {
+      cwd: worktree,
+      env: { ...process.env, CODEX_HOME: codexHome },
+      input: diagnosticInput,
+      monotonicDeadline: deadline,
+    });
+  } catch {
+    // The exact operational receipt below is the authority: the installed
+    // launcher deliberately keeps its command surface content-free.
+  }
   const classification = existsSync(operationalStatePath)
     ? "hook-direct-probe-accepted"
     : "hook-direct-probe-failed";
@@ -796,10 +798,7 @@ const waitForTraceSummary = async (traceDeadline) => {
         "operational-state-v1.json",
       );
       if (!existsSync(operationalStatePath))
-        await diagnoseMissingOperationalState(
-          operationalStatePath,
-          traceDeadline,
-        );
+        await diagnoseMissingOperationalState(operationalStatePath);
       let classification = "hook-no-operational-state";
       if (existsSync(operationalStatePath)) {
         const state = lstatSync(operationalStatePath);
