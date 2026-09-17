@@ -63,6 +63,25 @@ const remaining = () => {
     throw new Error("integration.codex.deadline");
   return value;
 };
+const observeBeforeDiagnosticDeadline = async (completion, cutoff) => {
+  const milliseconds = Math.floor(cutoff - bootNow());
+  if (milliseconds <= 0)
+    throw new Error("integration.codex.diagnostic-deadline");
+  let timer;
+  try {
+    await Promise.race([
+      completion,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("integration.codex.diagnostic-deadline")),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 const readReadinessChallenge = () =>
   new Promise((resolve, reject) => {
     let bytes = Buffer.alloc(0);
@@ -676,6 +695,7 @@ try {
     mode: 0o600,
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
+  const traceDeadline = deadline - 3_000;
   interactiveFailurePhase = "tui-start";
   const codexRun = run(
     codex,
@@ -698,9 +718,8 @@ try {
   );
   interactiveFailurePhase = "model-request";
   await waitForModelRequest();
-  const traceDeadline = deadline - 3_000;
   interactiveFailurePhase = "tui-exit";
-  await codexRun;
+  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();
   interactiveFailurePhase = "trace-terminal";
   await waitForCodexTurnTerminal(traceDeadline);

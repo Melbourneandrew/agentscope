@@ -258,7 +258,7 @@ describe("integration capability manifest", () => {
     const modelRequest = source.indexOf("  await waitForModelRequest();\n");
     const traceDeadline = source.indexOf(
       "  const traceDeadline = deadline - 3_000;\n",
-      modelRequest,
+      challengeRead,
     );
     const terminalWait = source.indexOf(
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
@@ -275,7 +275,10 @@ describe("integration capability manifest", () => {
       '      response.writeHead(200, { "content-type": "text/event-stream" });\n',
       checkpointAcknowledgement,
     );
-    const codexJoin = source.indexOf("  await codexRun;\n", modelRequest);
+    const codexJoin = source.indexOf(
+      "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
+      modelRequest,
+    );
     const traceQueryAfterJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       codexJoin,
@@ -383,7 +386,12 @@ describe("integration capability manifest", () => {
       "      if (timer !== undefined) clearTimeout(timer);\n",
     );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
-    expect(traceDeadline).toBeGreaterThan(modelRequest);
+    expect(traceDeadline).toBeGreaterThan(challengeRead);
+    expect(traceDeadline).toBeLessThan(modelRequest);
+    expect(source).toContain(
+      "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
+    );
+    expect(source).not.toContain("      monotonicDeadline: traceDeadline,\n");
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
