@@ -202,8 +202,8 @@ describe("Codex bounded native ledgers", () => {
         observationDeadline: 20_000,
       }),
     ).toEqual({
-      attemptDeadline: 8_000,
-      childDeadline: 7_750,
+      attemptDeadline: 19_500,
+      childDeadline: 19_250,
       observationDeadline: 20_000,
     });
     expect(
