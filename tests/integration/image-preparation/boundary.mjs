@@ -352,12 +352,21 @@ const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
 };
 const armCommandTimeout = (workDeadline, fail) =>
   setTimeout(
-    () => fail("integration.images.timeout", true),
+    () => fail("integration.images.timeout", true, "deadline"),
     Math.max(1, workDeadline - performance.now()),
   );
 const applyOutputTimeoutForTesting = (output, expected, fail) => {
   if (expected !== undefined && Buffer.concat(output).equals(expected))
-    fail("integration.images.timeout", true);
+    fail("integration.images.timeout", true, "output");
+};
+const observeFirstTimeoutForTesting = (
+  firstFailure,
+  timedOut,
+  timeoutSource,
+  observer,
+) => {
+  if (firstFailure && timedOut && timeoutSource !== undefined)
+    observer?.(timeoutSource);
 };
 // The spawn-through-terminal-join path is one indivisible process authority.
 /* eslint-disable max-lines-per-function */
@@ -370,6 +379,7 @@ const runOwnedCommand = async (
     environment,
     input,
     observeProcess,
+    observeTimeoutForTesting,
     signal,
     teardownMilliseconds,
     timeoutAfterOutputForTesting,
@@ -402,8 +412,15 @@ const runOwnedCommand = async (
   let diagnosticStderrBytes = 0;
   let outputTruncated = false;
   let failure;
-  const fail = (code, timedOut = false) => {
+  const fail = (code, timedOut = false, timeoutSource) => {
+    const firstFailure = failure === undefined;
     failure ??= fixedError(code, timedOut);
+    observeFirstTimeoutForTesting(
+      firstFailure,
+      timedOut,
+      timeoutSource,
+      observeTimeoutForTesting,
+    );
     killProcessGroup(processGroup);
   };
   const consume = (chunk, retain) => {

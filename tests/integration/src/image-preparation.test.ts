@@ -1791,6 +1791,7 @@ describe("owned buildx process execution", () => {
 
   it("retains the work deadline when the readiness token does not match", async () => {
     const directory = root();
+    let timeoutSource: string | undefined;
     const error = await runOwnedImageCommandForTesting(
       executableFixture(directory),
       [fixture],
@@ -1800,6 +1801,9 @@ describe("owned buildx process execution", () => {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
         },
+        observeTimeoutForTesting: (source) => {
+          timeoutSource = source;
+        },
         teardownMilliseconds: 2_000,
         timeoutAfterOutputForTesting: Buffer.from("different-token\n"),
       },
@@ -1808,6 +1812,7 @@ describe("owned buildx process execution", () => {
       code: "ETIMEDOUT",
       message: "integration.images.timeout",
     });
+    expect(timeoutSource).toBe("deadline");
     const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
@@ -1819,6 +1824,7 @@ describe("owned buildx process execution", () => {
     ["close-descendant", "integration.images.containment"],
   ])("kills and joins the exact process group for %s", async (mode, code) => {
     const directory = root();
+    let timeoutSource: string | undefined;
     const error = await runOwnedImageCommandForTesting(
       executableFixture(directory),
       [fixture],
@@ -1828,6 +1834,9 @@ describe("owned buildx process execution", () => {
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+        },
+        observeTimeoutForTesting: (source) => {
+          timeoutSource = source;
         },
         teardownMilliseconds: 250,
         ...(mode === "hang-descendant"
@@ -1843,6 +1852,7 @@ describe("owned buildx process execution", () => {
         "integration.images.timeout",
         "integration.images.containment",
       ]).toContain((error as Error).message);
+      expect(timeoutSource).toBe("output");
     } else expect(error).toEqual(expect.objectContaining({ message: code }));
     const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
