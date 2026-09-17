@@ -1004,18 +1004,21 @@ try {
     "unchanged",
     1,
   );
+  const diagnosticReplay = process.env.AGENTSCOPE_SCENARIO_ID !== undefined;
   const stopPayloadPath = join(codexHome, "codex-stop-payload.json");
-  const stopProbePath = join(codexHome, "codex-stop-payload-probe.mjs");
-  writeFileSync(
-    stopProbePath,
-    `#!/usr/bin/env node\nimport { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst chunks = [];\nlet size = 0;\nfor await (const chunk of process.stdin) {\n  size += chunk.length;\n  if (size > 65536) process.exit(1);\n  chunks.push(Buffer.from(chunk));\n}\nconst payload = Buffer.concat(chunks);\nwriteFileSync(${JSON.stringify(stopPayloadPath)}, payload, { flag: "wx", mode: 0o600 });\nconst child = spawn(${JSON.stringify(launcher)}, [], { stdio: ["pipe", "inherit", "inherit"] });\nchild.stdin.end(payload);\nchild.once("error", () => process.exit(1));\nchild.once("exit", (code, signal) => process.exit(signal === null && Number.isInteger(code) ? code : 1));\n`,
-    { flag: "wx", mode: 0o700 },
-  );
-  const diagnosticHooks = JSON.parse(originalHooks);
-  diagnosticHooks.hooks.Stop[0].hooks[0].command = `'${stopProbePath}'`;
-  writeFileSync(hookPath, `${JSON.stringify(diagnosticHooks)}\n`, {
-    mode: 0o600,
-  });
+  if (diagnosticReplay) {
+    const stopProbePath = join(codexHome, "codex-stop-payload-probe.mjs");
+    writeFileSync(
+      stopProbePath,
+      `#!/usr/bin/env node\nimport { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst chunks = [];\nlet size = 0;\nfor await (const chunk of process.stdin) {\n  size += chunk.length;\n  if (size > 65536) process.exit(1);\n  chunks.push(Buffer.from(chunk));\n}\nconst payload = Buffer.concat(chunks);\nwriteFileSync(${JSON.stringify(stopPayloadPath)}, payload, { flag: "wx", mode: 0o600 });\nconst child = spawn(${JSON.stringify(launcher)}, [], { stdio: ["pipe", "inherit", "inherit"] });\nchild.stdin.end(payload);\nchild.once("error", () => process.exit(1));\nchild.once("exit", (code, signal) => process.exit(signal === null && Number.isInteger(code) ? code : 1));\n`,
+      { flag: "wx", mode: 0o700 },
+    );
+    const diagnosticHooks = JSON.parse(originalHooks);
+    diagnosticHooks.hooks.Stop[0].hooks[0].command = `'${stopProbePath}'`;
+    writeFileSync(hookPath, `${JSON.stringify(diagnosticHooks)}\n`, {
+      mode: 0o600,
+    });
+  }
   modelGateway = await openChallengedModelGateway();
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
@@ -1083,28 +1086,29 @@ try {
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
   await waitForCodexTurnTerminal(traceDeadline);
-  while (!existsSync(stopPayloadPath)) {
-    if (bootNow() >= traceDeadline) {
-      recordInteractivePhase("hook-payload-missing");
-      throw new Error("integration.codex.hook-payload-missing");
+  if (diagnosticReplay) {
+    while (!existsSync(stopPayloadPath)) {
+      if (bootNow() >= traceDeadline) {
+        recordInteractivePhase("hook-payload-missing");
+        throw new Error("integration.codex.hook-payload-missing");
+      }
+      await waitWithinObservationDeadline({
+        deadline: traceDeadline,
+        maximumWaitMilliseconds: 20,
+        now: bootNow,
+        wait: (milliseconds) =>
+          new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      });
     }
-    await waitWithinObservationDeadline({
+    const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
+    const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
+    recordTerminalObservationBeforeDeadline({
       deadline: traceDeadline,
-      maximumWaitMilliseconds: 20,
       now: bootNow,
-      wait: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      record: () => recordInteractivePhase(stopPayloadPhase),
     });
-  }
-  const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
-  const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase(stopPayloadPhase),
-  });
-  if (process.env.AGENTSCOPE_SCENARIO_ID !== undefined)
     throw new Error(`integration.codex.${stopPayloadPhase}`);
+  }
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
