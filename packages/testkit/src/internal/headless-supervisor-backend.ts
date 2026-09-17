@@ -4397,6 +4397,7 @@ type SelectedPtyTestSeed =
   | "active-terminal"
   | "action-deadline-crossing"
   | "adopted-zombie"
+  | "blocked-input-completion"
   | "clean"
   | "close-failure"
   | "completion-before-readiness"
@@ -4843,6 +4844,8 @@ const selectedPtyRuntimeForTest = (
           )
             throw new Error("testkit.pty.test-input-not-acknowledged");
           priorInputTransportReads = transportReads;
+          if (seed === "blocked-input-completion")
+            return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "control-write-substitution" && inputCalls === 1)
             return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "readiness-burst" && inputCalls === 2) {
