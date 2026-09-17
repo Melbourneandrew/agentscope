@@ -337,10 +337,10 @@ describe("integration capability manifest", () => {
     const traceSearchResultPhase = source.indexOf(
       '  recordInteractivePhase("trace-search-result");\n',
     );
-    expect(traceSettlementPhase).toBeGreaterThan(modelRequest);
-    expect(traceSettlementPhase).toBeLessThan(codexJoin);
-    expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
+    expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
+    expect(terminalWait).toBeLessThan(traceSettlementPhase);
+    expect(traceSettlementPhase).toBeLessThan(codexJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
@@ -418,11 +418,11 @@ describe("integration capability manifest", () => {
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
     expect(codexJoin).toBeGreaterThan(modelRequest);
-    expect(terminalWait).toBeGreaterThan(codexJoin);
+    expect(terminalWait).toBeLessThan(codexJoin);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(
-      source.indexOf("  await modelGateway.settle();\n", codexJoin),
-    ).toBeLessThan(traceQueryAfterJoin);
+      source.indexOf("  await modelGateway.settle();\n", modelRequest),
+    ).toBeLessThan(terminalWait);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");

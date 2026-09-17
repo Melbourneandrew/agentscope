@@ -255,11 +255,11 @@ const interactivePhases = Object.freeze([
   "install",
   "tui-start",
   "model-request",
+  "trace-terminal",
   "trace-settlement",
   "trace-acceptance",
   "trace-reporter-settled",
   "tui-exit",
-  "trace-terminal",
   "trace-search",
   "trace-search-result",
   "verify",
@@ -798,13 +798,13 @@ try {
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
   recordInteractivePhase("model-request");
+  await modelGateway.settle();
+  recordInteractivePhase("trace-terminal");
+  await waitForCodexTurnTerminal(traceDeadline);
   recordInteractivePhase("trace-settlement");
   await waitForTraceSettlement(traceDeadline);
   recordInteractivePhase("tui-exit");
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
-  await modelGateway.settle();
-  recordInteractivePhase("trace-terminal");
-  await waitForCodexTurnTerminal(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
   recordInteractivePhase("verify");
   if (readFileSync(hookPath, "utf8") !== originalHooks)
