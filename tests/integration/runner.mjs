@@ -37,9 +37,9 @@ const interactivePhases = Object.freeze([
   "trace-terminal",
   "tui-exit",
   "trace-settlement",
-  "trace-acceptance",
-  "trace-reporter-settled",
   "trace-search",
+  "trace-reporter-settled",
+  "trace-acceptance",
   "trace-search-result",
   "verify",
 ]);

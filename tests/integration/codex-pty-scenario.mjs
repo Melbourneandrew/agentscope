@@ -20,11 +20,8 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   codexTurnTerminalObservedAfterBaseline,
-  localSqliteAcceptanceBaseline,
-  localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
-  openOperationalStateHealth,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
@@ -247,8 +244,6 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
-let localSqliteHealthDescriptor;
-let localSqliteOperationalBaseline;
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = -1;
 const interactivePhases = Object.freeze([
@@ -259,9 +254,9 @@ const interactivePhases = Object.freeze([
   "trace-terminal",
   "tui-exit",
   "trace-settlement",
-  "trace-acceptance",
-  "trace-reporter-settled",
   "trace-search",
+  "trace-reporter-settled",
+  "trace-acceptance",
   "trace-search-result",
   "verify",
 ]);
@@ -292,12 +287,34 @@ process.setUncaughtExceptionCaptureCallback(() => {
   }
 });
 
-const cli = async (arguments_, command, options) =>
-  parseMachine(
-    (await run(agentscope, [...arguments_, "--output", "json"], options))
-      .stdout,
-    command,
+const cli = async (arguments_, command, options) => {
+  const { stdout } = await run(
+    agentscope,
+    [...arguments_, "--output", "json"],
+    options,
   );
+  const monotonicDeadline = options?.monotonicDeadline;
+  if (
+    monotonicDeadline !== undefined &&
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: monotonicDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
+  const records = parseMachine(stdout, command);
+  if (
+    monotonicDeadline !== undefined &&
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: monotonicDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
+  return records;
+};
 
 const prompt = "Reply with one short confirmation and do not use tools.";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
@@ -630,11 +647,14 @@ const readTraceSummary = async (traceDeadline) => {
     ],
     { monotonicDeadline: traceDeadline },
   );
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-search-result"),
-  });
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   const records = parseMachine(stdout, "agentscope traces search");
   if (
     records.length !== 1 ||
@@ -683,31 +703,28 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
-const waitForTraceSettlement = async (traceDeadline) => {
-  // An empty lifecycle before the Stop hook starts is not terminal evidence.
-  // After the joined TUI exit, require the installed Stop hook to durably
-  // accept the trace and its exact reporter lifecycle to become empty.
-  while (
-    !localSqliteAcceptanceObservedAfterBaseline(
-      localSqliteHealthDescriptor,
-      localSqliteOperationalBaseline,
-    )
-  ) {
-    await waitWithinObservationDeadline({
-      deadline: traceDeadline,
-      maximumWaitMilliseconds: 100,
-      now: bootNow,
-      wait: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    });
-    remaining();
-  }
+const waitForTraceSummary = async (traceDeadline) => {
+  if (bootNow() >= traceDeadline)
+    throw new Error("integration.codex.trace-deadline");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
-    record: () => recordInteractivePhase("trace-acceptance"),
+    record: () => recordInteractivePhase("trace-search"),
   });
-  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
+  let summary;
+  while (summary === undefined) {
+    const candidate = traceSummaryBeforeDeadline({
+      summary: await readTraceSummary(traceDeadline),
+      deadline: traceDeadline,
+      now: bootNow,
+    });
+    if (
+      candidate !== null &&
+      localSqliteReporterSettled(localSqliteLifecycleDescriptor)
+    ) {
+      summary = candidate;
+      break;
+    }
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -722,23 +739,16 @@ const waitForTraceSettlement = async (traceDeadline) => {
     now: bootNow,
     record: () => recordInteractivePhase("trace-reporter-settled"),
   });
-};
-const waitForTraceSummary = async (traceDeadline) => {
-  if (bootNow() >= traceDeadline)
-    throw new Error("integration.codex.trace-deadline");
-  if (!localSqliteReporterSettled(localSqliteLifecycleDescriptor))
-    throw new Error("integration.codex.local-sqlite-settlement");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
-    record: () => recordInteractivePhase("trace-search"),
+    record: () => recordInteractivePhase("trace-acceptance"),
   });
-  const summary = traceSummaryBeforeDeadline({
-    summary: await readTraceSummary(traceDeadline),
+  recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
+    record: () => recordInteractivePhase("trace-search-result"),
   });
-  if (summary === null) throw new Error("integration.codex.trace-search");
   return summary;
 };
 
@@ -755,10 +765,6 @@ try {
   await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  localSqliteHealthDescriptor = openOperationalStateHealth(homeDescriptor);
-  localSqliteOperationalBaseline = localSqliteAcceptanceBaseline(
-    localSqliteHealthDescriptor,
-  );
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
     "unchanged",
@@ -835,9 +841,12 @@ try {
     now: bootNow,
     record: () => recordInteractivePhase("trace-settlement"),
   });
-  await waitForTraceSettlement(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
-  recordInteractivePhase("verify");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("verify"),
+  });
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
   const modelRequests = await readModelRequests();
@@ -854,14 +863,20 @@ try {
       JSON.stringify(summary.locator),
     ],
     "agentscope traces get",
+    { monotonicDeadline: traceDeadline },
   );
   if (getRecords.length !== 1 || getRecords[0]?.locator?.traceId !== traceId)
     throw new Error("integration.codex.trace-get");
   const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
-  const doctor = projectDoctor(await cli(["doctor"], "agentscope doctor"));
+  const doctor = projectDoctor(
+    await cli(["doctor"], "agentscope doctor", {
+      monotonicDeadline: traceDeadline,
+    }),
+  );
   const uninstallRecords = await cli(
     ["uninstall", "codex", "--yes"],
     "agentscope uninstall",
+    { monotonicDeadline: traceDeadline },
   );
   const uninstall = projectUninstall(uninstallRecords);
   if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
@@ -912,8 +927,6 @@ try {
   modelGateway?.abort();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
-  if (localSqliteHealthDescriptor !== undefined)
-    closeSync(localSqliteHealthDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {
