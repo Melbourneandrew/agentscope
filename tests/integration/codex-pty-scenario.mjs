@@ -797,6 +797,22 @@ const waitForTraceObservation = (traceDeadline) =>
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
+const recordCompletedHookDuration = (observation) => {
+  if (observation === undefined) return;
+  recordInteractivePhase(
+    observation.durationMilliseconds >= 4_900
+      ? "hook-command-completed-near-budget-boundary"
+      : "hook-command-completed-before-budget-boundary",
+  );
+};
+const waitForTraceObservationOrRecord = async (deadline, observation) => {
+  try {
+    await waitForTraceObservation(deadline);
+  } catch (error) {
+    recordCompletedHookDuration(observation);
+    throw error;
+  }
+};
 const waitForTraceSummary = async (traceDeadline) => {
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
@@ -806,6 +822,7 @@ const waitForTraceSummary = async (traceDeadline) => {
     record: () => recordInteractivePhase("trace-search"),
   });
   let summary;
+  let lastCompletedHookCommand;
   while (summary === undefined) {
     const hookCommandObservation = inspectDiagnosticBeforeDeadline({
       deadline: traceDeadline,
@@ -816,6 +833,8 @@ const waitForTraceSummary = async (traceDeadline) => {
           directoryPath: codexDiagnosticLogDirectory,
         }),
     });
+    if (hookCommandObservation?.outcome === "completed")
+      lastCompletedHookCommand = hookCommandObservation;
     if (
       hookCommandObservation !== undefined &&
       hookCommandObservation.outcome !== "completed"
@@ -834,7 +853,10 @@ const waitForTraceSummary = async (traceDeadline) => {
       localSqliteLifecycleDescriptor,
     );
     if (hookCommandObservation?.outcome !== "completed" || !reporterSettled) {
-      await waitForTraceObservation(traceDeadline);
+      await waitForTraceObservationOrRecord(
+        traceDeadline,
+        lastCompletedHookCommand,
+      );
       continue;
     }
     const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({
@@ -866,7 +888,10 @@ const waitForTraceSummary = async (traceDeadline) => {
         operationalStateBaseline,
       );
       if (operationalPhase === "pending") {
-        await waitForTraceObservation(traceDeadline);
+        await waitForTraceObservationOrRecord(
+          traceDeadline,
+          lastCompletedHookCommand,
+        );
         continue;
       }
       const phase =
