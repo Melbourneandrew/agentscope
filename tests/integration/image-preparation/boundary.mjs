@@ -31,6 +31,7 @@ export const maximumPrivateStateFileBytes = 8 * 1024 * 1024;
 export const maximumPrivateStateTotalBytes = 64 * 1024 * 1024;
 const processAbsencePollMilliseconds = 10;
 const processDiagnostics = new WeakMap();
+const timeoutSourcesForTesting = new WeakMap();
 export const digestPattern = /^sha256:[a-f\d]{64}$/u;
 export const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
 export const manifestIdentityPattern = /^sha256-[a-f\d]{64}$/u;
@@ -359,14 +360,14 @@ const applyOutputTimeoutForTesting = (output, expected, fail) => {
   if (expected !== undefined && Buffer.concat(output).equals(expected))
     fail("integration.images.timeout", true, "output");
 };
-const observeFirstTimeoutForTesting = (
+const recordFirstTimeoutForTesting = (
+  failure,
   firstFailure,
   timedOut,
   timeoutSource,
-  observer,
 ) => {
   if (firstFailure && timedOut && timeoutSource !== undefined)
-    observer?.(timeoutSource);
+    timeoutSourcesForTesting.set(failure, timeoutSource);
 };
 // The spawn-through-terminal-join path is one indivisible process authority.
 /* eslint-disable max-lines-per-function */
@@ -379,7 +380,6 @@ const runOwnedCommand = async (
     environment,
     input,
     observeProcess,
-    observeTimeoutForTesting,
     signal,
     teardownMilliseconds,
     timeoutAfterOutputForTesting,
@@ -415,11 +415,11 @@ const runOwnedCommand = async (
   const fail = (code, timedOut = false, timeoutSource) => {
     const firstFailure = failure === undefined;
     failure ??= fixedError(code, timedOut);
-    observeFirstTimeoutForTesting(
+    recordFirstTimeoutForTesting(
+      failure,
       firstFailure,
       timedOut,
       timeoutSource,
-      observeTimeoutForTesting,
     );
     killProcessGroup(processGroup);
   };
@@ -535,6 +535,8 @@ const runOwnedImageCommand = (executable, arguments_, options) =>
   });
 export const readImageProcessDiagnostic = (error) =>
   processDiagnostics.get(error);
+export const readImageTimeoutSourceForTesting = (error) =>
+  timeoutSourcesForTesting.get(error);
 export const runOwnedImageCommandForTesting = (
   executable,
   arguments_,

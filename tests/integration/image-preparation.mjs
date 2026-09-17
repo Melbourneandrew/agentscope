@@ -13,6 +13,7 @@ export {
   assertImagePreparationPlatformForTesting,
   authenticateDockerSocketAliasForTesting,
   classifyBuildxStderrForTesting,
+  readImageTimeoutSourceForTesting,
   runOwnedImageCommandForTesting,
 } from "./image-preparation/boundary.mjs";
 export { createBoundedBuildContext } from "./image-preparation/build-context.mjs";

@@ -171,12 +171,15 @@ export declare const runOwnedImageCommandForTesting: (
     deadline: number;
     environment?: Readonly<Record<string, string>>;
     input?: Buffer;
-    observeTimeoutForTesting?: (source: "deadline" | "output") => void;
     signal?: AbortSignal;
     teardownMilliseconds?: number;
     timeoutAfterOutputForTesting?: Buffer;
   }>,
 ) => Promise<string>;
+
+export declare const readImageTimeoutSourceForTesting: (
+  error: unknown,
+) => "deadline" | "output" | undefined;
 
 export declare const buildPreparedDockerImage: (
   client: PreparedDockerClient,

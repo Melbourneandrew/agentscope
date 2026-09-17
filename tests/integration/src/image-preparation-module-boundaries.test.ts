@@ -31,6 +31,7 @@ describe("image-preparation module boundaries", () => {
       "preparedDockerClientRequiresOuterHostRetirement",
       "probePinnedRegistryTlsForTesting",
       "publishPreparedImageEvidence",
+      "readImageTimeoutSourceForTesting",
       "readPreparedImageEvidence",
       "retirePreparedDockerImage",
       "retirePreparedImageEvidence",
@@ -40,6 +41,9 @@ describe("image-preparation module boundaries", () => {
     ]);
     expect(imagePreparation.runOwnedImageCommandForTesting.name).toBe(
       "runOwnedImageCommandForTesting",
+    );
+    expect(imagePreparation.readImageTimeoutSourceForTesting.name).toBe(
+      "readImageTimeoutSourceForTesting",
     );
     expect(imagePreparation.publishPreparedImageEvidence.length).toBe(3);
     expect(imagePreparation.publishPreparedImageEvidence.name).toBe(
