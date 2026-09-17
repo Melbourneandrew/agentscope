@@ -662,8 +662,8 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
 };
 const waitForTraceSettlement = async (traceDeadline) => {
   // An empty lifecycle before the Stop hook starts is not terminal evidence.
-  // Do not let the PTY driver issue Ctrl-D until the installed Stop hook has
-  // durably accepted the trace and its exact reporter lifecycle is empty.
+  // After the joined TUI exit, require the installed Stop hook to durably
+  // accept the trace and its exact reporter lifecycle to become empty.
   while (
     !localSqliteAcceptanceObservedAfterBaseline(
       localSqliteHealthDescriptor,
@@ -698,6 +698,14 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-reporter-settled");
 };
 const waitForTraceSummary = async (traceDeadline) => {
@@ -803,6 +811,14 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-settlement");
   await waitForTraceSettlement(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
