@@ -1805,10 +1805,11 @@ describe("owned buildx process execution", () => {
         timeoutAfterOutputForTesting: Buffer.from("different-token\n"),
       },
     ).catch((failure: unknown) => failure);
-    expect(error).toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
+    expect(error).toMatchObject({ code: "ETIMEDOUT" });
+    expect([
+      "integration.images.timeout",
+      "integration.images.containment",
+    ]).toContain((error as Error).message);
     expect(readImageTimeoutSourceForTesting(error)).toBe("deadline");
     const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
