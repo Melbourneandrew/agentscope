@@ -321,18 +321,18 @@ describe("integration capability manifest", () => {
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
     );
     const traceTerminalPhase = source.indexOf(
-      '  interactiveFailurePhase = "trace-terminal";\n',
+      '  recordInteractivePhase("trace-terminal");\n',
       traceDeadline,
     );
     const traceSettlementPhase = source.indexOf(
-      '  interactiveFailurePhase = "trace-settlement";\n',
+      '  recordInteractivePhase("trace-settlement");\n',
       traceTerminalPhase,
     );
     const traceSearchPhase = source.indexOf(
-      '  interactiveFailurePhase = "trace-search";\n',
+      '  recordInteractivePhase("trace-search");\n',
     );
     const traceSearchResultPhase = source.indexOf(
-      '  interactiveFailurePhase = "trace-search-result";\n',
+      '  recordInteractivePhase("trace-search-result");\n',
     );
     expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);

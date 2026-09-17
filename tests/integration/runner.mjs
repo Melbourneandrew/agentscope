@@ -29,6 +29,40 @@ const substrateCertificationCase = parseSubstrateCertificationCaseValue(
   process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
 );
 
+const interactivePhases = Object.freeze([
+  "bootstrap",
+  "install",
+  "tui-start",
+  "model-request",
+  "tui-exit",
+  "trace-terminal",
+  "trace-settlement",
+  "trace-search",
+  "trace-search-result",
+  "verify",
+]);
+const retainedInteractivePhase = (ledger) => {
+  let retained;
+  for (const phase of interactivePhases) {
+    const path = join(ledger, `interactive-phase-${phase}.txt`);
+    try {
+      const status = lstatSync(path);
+      const content = readFileSync(path, "utf8");
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        status.size !== Buffer.byteLength(content) ||
+        content !== `integration.fixture.codex-${phase}\n`
+      )
+        throw new Error("integration.runner.interactive-phase");
+      retained = content.trim();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return retained;
+};
+
 const requiredEnvironment = (name) => {
   const value = process.env[name];
   if (!value) throw new Error(`integration.runner.environment-${name}`);
@@ -507,8 +541,14 @@ try {
       !receipt.terminalInputJoined ||
       !receipt.terminalOutputJoined ||
       !receipt.terminalTransportClosed
-    )
+    ) {
+      const diagnostic = retainedInteractivePhase(ledger);
+      if (diagnostic !== undefined)
+        process.stderr.write(
+          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+        );
       fixtureFailure = new Error("integration.runner.fixture-failed");
+    }
   } else {
     if (
       scenario.executionMode !== "headless" ||
