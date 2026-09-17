@@ -98,12 +98,7 @@ describe("Codex bounded native ledgers", () => {
 
   it("retries only the exact content-free trace-unavailable diagnostic", () => {
     const diagnostic = Buffer.from(
-      `${JSON.stringify({
-        schema: "agentscope.cli.diagnostic.v1",
-        command: "agentscope traces search",
-        category: "unavailable",
-        code: "traces.unavailable",
-      })}\n`,
+      '{"category":"unavailable","code":"traces.unavailable","command":"agentscope traces search","schema":"agentscope.cli.diagnostic.v1"}\n',
     );
     const exact = {
       code: 5,
@@ -127,6 +122,14 @@ describe("Codex bounded native ledgers", () => {
             code: "traces.unavailable",
             detail: "substituted",
           })}\n`,
+        ),
+      }),
+    ).toBe(false);
+    expect(
+      codexTraceSearchUnavailable({
+        ...exact,
+        stderr: Buffer.from(
+          '{"category":"unavailable","code":"substituted","code":"traces.unavailable","command":"agentscope traces search","schema":"agentscope.cli.diagnostic.v1"}\n',
         ),
       }),
     ).toBe(false);

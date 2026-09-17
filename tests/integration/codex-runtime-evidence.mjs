@@ -66,24 +66,11 @@ export const codexTraceSearchUnavailable = ({
     stderr.length > 4_096
   )
     return false;
-  try {
-    const diagnostic = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(stderr),
-    );
-    return (
-      diagnostic !== null &&
-      typeof diagnostic === "object" &&
-      !Array.isArray(diagnostic) &&
-      Object.keys(diagnostic).sort().join("\0") ===
-        "category\0code\0command\0schema" &&
-      diagnostic.category === "unavailable" &&
-      diagnostic.code === "traces.unavailable" &&
-      diagnostic.command === "agentscope traces search" &&
-      diagnostic.schema === "agentscope.cli.diagnostic.v1"
-    );
-  } catch {
-    return false;
-  }
+  return stderr.equals(
+    Buffer.from(
+      '{"category":"unavailable","code":"traces.unavailable","command":"agentscope traces search","schema":"agentscope.cli.diagnostic.v1"}\n',
+    ),
+  );
 };
 
 const readCodexHookLog = ({
