@@ -26,6 +26,7 @@ import {
   openLocalSqliteLifecycle,
   openOperationalStateHealth,
   publishTerminalCompletionBeforeDeadline,
+  recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
   terminalObservationBeforeDeadline,
@@ -679,15 +680,11 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  recordInteractivePhase("trace-acceptance");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-acceptance"),
+  });
   while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
@@ -698,22 +695,22 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  recordInteractivePhase("trace-reporter-settled");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-reporter-settled"),
+  });
 };
 const waitForTraceSummary = async (traceDeadline) => {
-  if (!localSqliteReporterSettled(localSqliteLifecycleDescriptor))
-    throw new Error("integration.codex.local-sqlite-settlement");
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
-  recordInteractivePhase("trace-search");
+  if (!localSqliteReporterSettled(localSqliteLifecycleDescriptor))
+    throw new Error("integration.codex.local-sqlite-settlement");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-search"),
+  });
   const summary = traceSummaryBeforeDeadline({
     summary: await readTraceSummary(traceDeadline),
     deadline: traceDeadline,
@@ -811,15 +808,11 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  recordInteractivePhase("trace-settlement");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-settlement"),
+  });
   await waitForTraceSettlement(traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
   recordInteractivePhase("verify");

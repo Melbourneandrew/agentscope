@@ -23,6 +23,7 @@ import {
   openLocalSqliteLifecycle,
   openOperationalStateHealth,
   publishTerminalCompletionBeforeDeadline,
+  recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgers,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
@@ -544,6 +545,34 @@ describe("Codex bounded native records", () => {
       }),
     ).rejects.toThrow("integration.codex.trace-deadline");
     expect(published).toBe(false);
+  });
+
+  it("admits no phase record before or after the immutable cutoff", () => {
+    let observedAt = 100;
+    let records = 0;
+    expect(() => {
+      recordTerminalObservationBeforeDeadline({
+        deadline: 100,
+        now: () => observedAt,
+        record: () => {
+          records += 1;
+        },
+      });
+    }).toThrow("integration.codex.trace-deadline");
+    expect(records).toBe(0);
+
+    observedAt = 99;
+    expect(() => {
+      recordTerminalObservationBeforeDeadline({
+        deadline: 100,
+        now: () => observedAt,
+        record: () => {
+          records += 1;
+          observedAt = 100;
+        },
+      });
+    }).toThrow("integration.codex.trace-deadline");
+    expect(records).toBe(1);
   });
 
   it("rejects a completed trace search at the exact deadline cutoff", () => {

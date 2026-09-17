@@ -34,6 +34,12 @@ export function terminalObservationBeforeDeadline(input: {
   now: () => number;
 }): boolean;
 
+export function recordTerminalObservationBeforeDeadline(input: {
+  deadline: number;
+  now: () => number;
+  record: () => void;
+}): void;
+
 export function publishTerminalCompletionBeforeDeadline(input: {
   deadline: number;
   now: () => number;
