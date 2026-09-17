@@ -192,6 +192,23 @@ export const terminalObservationBeforeDeadline = ({
   return observed && observedAt < deadline;
 };
 
+/**
+ * @param {{deadline: number, now: () => number, record: () => void}} input
+ */
+export const recordTerminalObservationBeforeDeadline = ({
+  deadline,
+  now,
+  record,
+}) => {
+  if (typeof record !== "function")
+    throw new Error("integration.codex.trace-deadline");
+  if (!terminalObservationBeforeDeadline({ observed: true, deadline, now }))
+    throw new Error("integration.codex.trace-deadline");
+  record();
+  if (!terminalObservationBeforeDeadline({ observed: true, deadline, now }))
+    throw new Error("integration.codex.trace-deadline");
+};
+
 export const publishTerminalCompletionBeforeDeadline = async ({
   deadline,
   now,
@@ -200,15 +217,7 @@ export const publishTerminalCompletionBeforeDeadline = async ({
 }) => {
   if (typeof record !== "function" || typeof publish !== "function")
     throw new Error("integration.codex.trace-deadline");
-  record();
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline,
-      now,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
+  recordTerminalObservationBeforeDeadline({ deadline, now, record });
   await publish();
 };
 

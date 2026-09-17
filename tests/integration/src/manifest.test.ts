@@ -328,11 +328,11 @@ describe("integration capability manifest", () => {
       traceDeadline,
     );
     const traceSettlementPhase = source.indexOf(
-      '  recordInteractivePhase("trace-settlement");\n',
+      '    record: () => recordInteractivePhase("trace-settlement"),\n',
       traceDeadline,
     );
     const traceSearchPhase = source.indexOf(
-      '  recordInteractivePhase("trace-search");\n',
+      '    record: () => recordInteractivePhase("trace-search"),\n',
     );
     const traceSearchResultPhase = source.indexOf(
       '  recordInteractivePhase("trace-search-result");\n',
@@ -359,11 +359,11 @@ describe("integration capability manifest", () => {
       acceptanceObservation,
     );
     const postReporterDeadline = source.indexOf(
-      "    !terminalObservationBeforeDeadline({\n",
+      "  recordTerminalObservationBeforeDeadline({\n",
       lifecycleSettlement,
     );
     const reporterSettledPhase = source.indexOf(
-      '  recordInteractivePhase("trace-reporter-settled");\n',
+      '    record: () => recordInteractivePhase("trace-reporter-settled"),\n',
       lifecycleSettlement,
     );
     const preQueryDeadline = source.indexOf(
@@ -403,7 +403,7 @@ describe("integration capability manifest", () => {
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
     const postJoinDeadline = source.indexOf(
-      "    !terminalObservationBeforeDeadline({\n",
+      "  recordTerminalObservationBeforeDeadline({\n",
       codexJoin,
     );
     expect(postJoinDeadline).toBeGreaterThan(codexJoin);
@@ -413,7 +413,9 @@ describe("integration capability manifest", () => {
       source.indexOf("const waitForTraceSummary ="),
     );
     expect(
-      traceSettlementFunction.match(/!terminalObservationBeforeDeadline\(\{/gu),
+      traceSettlementFunction.match(
+        /recordTerminalObservationBeforeDeadline\(\{/gu,
+      ),
     ).toHaveLength(2);
     expect(traceSettlementFunction).not.toContain(
       "publishTerminalCompletionBeforeDeadline",
