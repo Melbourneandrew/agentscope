@@ -178,6 +178,26 @@ export function localSqliteAcceptanceObservedAfterBaseline(
   baseline: LocalSqliteAcceptanceBaseline,
 ): boolean;
 
+export function classifyLocalSqliteOutcomeAfterBaseline(
+  healthDescriptor: number,
+  baseline: LocalSqliteAcceptanceBaseline,
+):
+  | "pending"
+  | "no-operational-state"
+  | "hook-start-suppressed"
+  | "hook-start-deadline"
+  | "hook-capture-suppressed"
+  | "hook-capture-deadline"
+  | "hook-redaction-suppressed"
+  | "hook-redaction-deadline"
+  | "hook-routing-no-route"
+  | "hook-delivery-rejected"
+  | "hook-delivery-unavailable"
+  | "hook-delivery-deadline"
+  | "hook-delivery-unknown"
+  | "hook-accepted-without-trace"
+  | "hook-operational-unclassified";
+
 export function settledLocalSqliteLifecycleSnapshot(input: {
   before: Readonly<Record<string, unknown>>;
   first: ReadonlyArray<Readonly<{ kind: string; name: string }>>;

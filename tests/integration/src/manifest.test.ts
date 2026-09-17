@@ -377,9 +377,9 @@ describe("integration capability manifest", () => {
     const terminalObservation = source.indexOf(
       "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
     );
-    expect(source).not.toContain("localSqliteAcceptanceBaseline");
-    expect(source).not.toContain("localSqliteAcceptanceObservedAfterBaseline");
-    expect(source).not.toContain("openOperationalStateHealth");
+    expect(source).toContain("localSqliteAcceptanceBaseline");
+    expect(source).toContain("classifyLocalSqliteOutcomeAfterBaseline");
+    expect(source).toContain("openOperationalStateHealth");
     const traceSummaryWait = source.slice(
       source.indexOf("const waitForTraceSummary ="),
       source.indexOf("let completed = false;"),
