@@ -16,7 +16,9 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
+  codexTraceSearchTimedOut,
   classifyCodexStopHookCommand,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -139,6 +141,63 @@ describe("Codex bounded native ledgers", () => {
         stderr: Buffer.from("not-json\n"),
       }),
     ).toBe(false);
+  });
+
+  it("treats only an exact joined content-free trace-search cutoff as pending", () => {
+    const exact = {
+      code: null,
+      deadlineExpired: true,
+      signal: "SIGKILL" as const,
+      stderr: Buffer.alloc(0),
+      stdout: Buffer.alloc(0),
+    };
+    expect(codexTraceSearchTimedOut(exact)).toBe(true);
+    expect(codexTraceSearchTimedOut({ ...exact, deadlineExpired: false })).toBe(
+      false,
+    );
+    expect(codexTraceSearchTimedOut({ ...exact, code: 0 })).toBe(false);
+    expect(codexTraceSearchTimedOut({ ...exact, signal: null })).toBe(false);
+    expect(
+      codexTraceSearchTimedOut({ ...exact, stderr: Buffer.from("late") }),
+    ).toBe(false);
+    expect(
+      codexTraceSearchTimedOut({ ...exact, stdout: Buffer.from("{}\n") }),
+    ).toBe(false);
+  });
+
+  it("reserves trace-search join time inside the immutable observation window", () => {
+    expect(
+      codexTraceSearchAttemptDeadlines({
+        now: 1_000,
+        observationDeadline: 20_000,
+      }),
+    ).toEqual({
+      attemptDeadline: 8_000,
+      childDeadline: 7_750,
+      observationDeadline: 20_000,
+    });
+    expect(
+      codexTraceSearchAttemptDeadlines({
+        now: 17_499,
+        observationDeadline: 20_000,
+      }),
+    ).toEqual({
+      attemptDeadline: 19_500,
+      childDeadline: 19_250,
+      observationDeadline: 20_000,
+    });
+    expect(
+      codexTraceSearchAttemptDeadlines({
+        now: 17_500,
+        observationDeadline: 20_000,
+      }),
+    ).toBeNull();
+    expect(
+      codexTraceSearchAttemptDeadlines({
+        now: 20_000,
+        observationDeadline: 20_000,
+      }),
+    ).toBeNull();
   });
 
   it.runIf(process.platform === "linux")(

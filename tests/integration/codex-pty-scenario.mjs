@@ -20,7 +20,9 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
+  codexTraceSearchTimedOut,
   codexSessionStartMediationUpperBoundMilliseconds,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -199,14 +201,24 @@ const run = (executable, arguments_, options = {}) => {
         const traceUnavailable =
           options.acceptTraceSearchUnavailable === true &&
           codexTraceSearchUnavailable({ code, signal, stderr, stdout });
+        const traceTimedOut =
+          options.acceptTraceSearchUnavailable === true &&
+          codexTraceSearchTimedOut({
+            code,
+            deadlineExpired,
+            signal,
+            stderr,
+            stdout,
+          });
         if (
-          deadlineExpired ||
-          (!traceUnavailable && (code !== 0 || signal !== null)) ||
+          (!traceUnavailable &&
+            !traceTimedOut &&
+            (deadlineExpired || code !== 0 || signal !== null)) ||
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
         )
           return reject(new Error("integration.codex.child"));
-        resolve({ stderr, stdout, traceUnavailable });
+        resolve({ stderr, stdout, traceTimedOut, traceUnavailable });
       } catch (error) {
         reject(error);
       }
@@ -669,10 +681,14 @@ const projectTraceGraph = (graph, traceId) => {
     modelName: stringAttribute(model, "llm.model_name"),
   };
 };
-const readTraceSummary = async (traceDeadline) => {
+const readTraceSummary = async ({
+  attemptDeadline,
+  childDeadline,
+  observationDeadline,
+}) => {
   if (codexSessionId === undefined)
     throw new Error("integration.codex.session-ledger");
-  const { stdout, traceUnavailable } = await run(
+  const { stdout, traceTimedOut, traceUnavailable } = await run(
     agentscope,
     [
       "traces",
@@ -688,13 +704,24 @@ const readTraceSummary = async (traceDeadline) => {
     ],
     {
       acceptTraceSearchUnavailable: true,
-      monotonicDeadline: traceDeadline,
+      monotonicDeadline: childDeadline,
     },
   );
+  if (traceTimedOut) {
+    if (
+      !terminalObservationBeforeDeadline({
+        observed: true,
+        deadline: observationDeadline,
+        now: bootNow,
+      })
+    )
+      throw new Error("integration.codex.trace-deadline");
+    return null;
+  }
   if (
     !terminalObservationBeforeDeadline({
       observed: true,
-      deadline: traceDeadline,
+      deadline: attemptDeadline,
       now: bootNow,
     })
   )
@@ -703,7 +730,7 @@ const readTraceSummary = async (traceDeadline) => {
   const records = parseMachine(stdout, "agentscope traces search");
   return classifyTraceSearchRecordsBeforeDeadline({
     records,
-    deadline: traceDeadline,
+    deadline: attemptDeadline,
     now: bootNow,
     record: recordInteractivePhase,
   });
@@ -774,10 +801,16 @@ const waitForTraceSummary = async (traceDeadline) => {
     const reporterSettled = localSqliteReporterSettled(
       localSqliteLifecycleDescriptor,
     );
-    const observationClosed = traceDeadline - bootNow() <= 2_500;
-    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 2_000);
+    const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({
+      now: bootNow(),
+      observationDeadline: traceDeadline,
+    });
+    const observationClosed = traceSearchDeadlines === null;
     const candidate = traceSummaryBeforeDeadline({
-      summary: observationClosed ? null : await readTraceSummary(queryDeadline),
+      summary:
+        traceSearchDeadlines === null
+          ? null
+          : await readTraceSummary(traceSearchDeadlines),
       deadline: traceDeadline,
       now: bootNow,
     });

@@ -392,7 +392,7 @@ describe("integration capability manifest", () => {
       preQueryDeadline,
     );
     const boundedQuery = traceSummaryWait.indexOf(
-      "      summary: observationClosed ? null : await readTraceSummary(queryDeadline),\n",
+      "          : await readTraceSummary(traceSearchDeadlines),\n",
       traceSearchPhaseInWait,
     );
     const lifecycleSettlement = traceSummaryWait.indexOf(
@@ -402,7 +402,7 @@ describe("integration capability manifest", () => {
       traceSearchPhaseInWait,
     );
     const terminalObservationCut = traceSummaryWait.indexOf(
-      "    const observationClosed = traceDeadline - bootNow() <= 2_500;\n",
+      "    const observationClosed = traceSearchDeadlines === null;\n",
       lifecycleSettlement,
     );
     const boundedBackoff = traceSummaryWait.indexOf(
@@ -422,7 +422,7 @@ describe("integration capability manifest", () => {
       source.indexOf("const waitForCodexTurnTerminal ="),
     );
     const joinedSearch = traceSummaryFunction.indexOf(
-      "  const { stdout, traceUnavailable } = await run(\n",
+      "  const { stdout, traceTimedOut, traceUnavailable } = await run(\n",
     );
     const exactSessionFilter = traceSummaryFunction.indexOf(
       '      "--session",\n      codexSessionId,\n',
@@ -456,6 +456,19 @@ describe("integration capability manifest", () => {
     expect(guardedRawResult).toBeGreaterThan(joinedSearch);
     expect(resultParsing).toBeGreaterThan(guardedRawResult);
     expect(guardedClassification).toBeGreaterThan(resultParsing);
+    expect(traceSummaryFunction).toContain("  if (traceTimedOut) {\n");
+    expect(traceSummaryFunction).toContain(
+      "        deadline: observationDeadline,\n",
+    );
+    expect(traceSummaryFunction).toContain(
+      "      monotonicDeadline: childDeadline,\n",
+    );
+    expect(traceSummaryFunction).toContain(
+      "      deadline: attemptDeadline,\n",
+    );
+    expect(traceSummaryFunction).toContain(
+      "  if (traceUnavailable) return null;\n",
+    );
     expect(traceSummaryFunction).not.toContain(
       'recordInteractivePhase("trace-search-',
     );
