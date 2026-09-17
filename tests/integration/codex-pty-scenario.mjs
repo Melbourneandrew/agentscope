@@ -296,6 +296,18 @@ const interactivePhases = Object.freeze([
   "hook-command-missing",
   "hook-command-completed-before-budget-boundary",
   "hook-command-completed-near-budget-boundary",
+  "hook-diagnostic-configuration-configuration-unavailable",
+  "hook-diagnostic-policy-policy-unavailable",
+  "hook-diagnostic-context-context-unavailable",
+  "hook-diagnostic-context-deadline-exceeded",
+  "hook-diagnostic-capture-failed",
+  "hook-diagnostic-capture-cancelled",
+  "hook-diagnostic-redaction-failed",
+  "hook-diagnostic-redaction-cancelled",
+  "hook-diagnostic-sink-failed",
+  "hook-diagnostic-sink-cancelled",
+  "hook-diagnostic-routing-unselected",
+  "hook-diagnostic-completed-not-accepted",
   "hook-no-operational-state-subsecond",
   "hook-no-operational-state-low-latency",
   "hook-no-operational-state-mid-latency",
@@ -1065,6 +1077,22 @@ try {
   if (stopHookCommand === undefined) {
     recordInteractivePhase("hook-command-missing");
     throw new Error("integration.codex.hook-command-missing");
+  }
+  const hookDiagnosticPath = join(agentscopeHome, ".wth2-hook-diagnostic.json");
+  if (existsSync(hookDiagnosticPath)) {
+    const diagnostic = JSON.parse(readFileSync(hookDiagnosticPath, "utf8"));
+    if (
+      Object.keys(diagnostic).length !== 1 ||
+      typeof diagnostic.classification !== "string"
+    )
+      throw new Error("integration.codex.hook-diagnostic");
+    if (diagnostic.classification !== "completed-accepted") {
+      const phase = `hook-diagnostic-${diagnostic.classification}`;
+      if (!interactivePhases.includes(phase))
+        throw new Error("integration.codex.hook-diagnostic");
+      recordInteractivePhase(phase);
+      throw new Error(`integration.codex.${phase}`);
+    }
   }
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
