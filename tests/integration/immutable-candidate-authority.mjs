@@ -13,6 +13,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-hook-command-stdin-error",
   "integration.fixture.codex-hook-command-timeout",
   "integration.fixture.codex-hook-command-wait-error",
+  "integration.fixture.codex-hook-command-completed-before-budget-boundary",
+  "integration.fixture.codex-hook-command-completed-near-budget-boundary",
   "integration.fixture.codex-init",
   "integration.fixture.codex-routing",
   "integration.fixture.codex-model-request",

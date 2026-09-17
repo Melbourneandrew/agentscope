@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   classifyCodexStopHookCommand,
+  inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexSessionStartMediationUpperBoundMilliseconds,
@@ -117,6 +118,70 @@ describe("Codex bounded native ledgers", () => {
             directoryPath: directory,
           }),
         ).toThrow("integration.codex.hook-log");
+      } finally {
+        closeSync(descriptor);
+        rmSync(root, { recursive: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "measures only one descriptor-bound Codex Stop command span",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
+      const directory = join(root, "log");
+      mkdirSync(directory, { mode: 0o700 });
+      const descriptor = openSync(
+        directory,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+      );
+      const path = join(directory, "codex-tui.log");
+      const inspect = (afterRead?: () => void) =>
+        inspectCodexStopHookCommand({
+          ...(afterRead === undefined ? {} : { afterRead }),
+          directoryDescriptor: descriptor,
+          directoryPath: directory,
+        });
+      const line = (durations = "time.busy=4.75s time.idle=125ms") =>
+        `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="completed"}: close ${durations}\n`;
+      try {
+        expect(inspect()).toBeUndefined();
+        writeFileSync(path, line());
+        expect(inspect()).toEqual({
+          outcome: "completed",
+          durationMilliseconds: 4_875,
+        });
+        writeFileSync(path, line("time.busy=500us time.idle=0.25s"));
+        expect(inspect()).toEqual({
+          outcome: "completed",
+          durationMilliseconds: 250.5,
+        });
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="timeout"}: close time.busy=5ms time.idle=1ms\n',
+        );
+        expect(inspect()).toEqual({
+          outcome: "timeout",
+          durationMilliseconds: 6,
+        });
+        expect(() =>
+          inspect(() => {
+            writeFileSync(path, "mutated", { flag: "a" });
+          }),
+        ).toThrow("integration.codex.hook-log");
+        for (const hostile of [
+          `${line()}${line()}`,
+          line("time.busy=1ms"),
+          line("time.busy=1ms time.busy=2ms time.idle=3ms"),
+          line("time.busy=120001ms time.idle=0ms"),
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.event_name="SessionStart" hook.command_outcome="completed"}: close time.busy=1ms time.idle=1ms\n',
+        ]) {
+          writeFileSync(path, hostile);
+          expect(inspect).toThrow("integration.codex.hook-log");
+        }
       } finally {
         closeSync(descriptor);
         rmSync(root, { recursive: true });

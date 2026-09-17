@@ -19,7 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
-  classifyCodexStopHookCommand,
+  inspectCodexStopHookCommand,
   codexSessionStartMediationUpperBoundMilliseconds,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
@@ -271,6 +271,8 @@ const interactivePhases = Object.freeze([
   "hook-command-spawn-error",
   "hook-command-stdin-error",
   "hook-command-wait-error",
+  "hook-command-completed-before-budget-boundary",
+  "hook-command-completed-near-budget-boundary",
   "trace-search-record-count",
   "trace-search-shape",
   "trace-search-ambiguous",
@@ -750,26 +752,44 @@ const waitForTraceSummary = async (traceDeadline) => {
       summary = candidate;
       break;
     }
-    const hookCommandOutcome = inspectDiagnosticBeforeDeadline({
+    const hookCommandObservation = inspectDiagnosticBeforeDeadline({
       deadline: traceDeadline,
       now: bootNow,
       inspect: () =>
-        classifyCodexStopHookCommand({
+        inspectCodexStopHookCommand({
           directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
           directoryPath: codexDiagnosticLogDirectory,
         }),
     });
     if (
-      hookCommandOutcome !== undefined &&
-      hookCommandOutcome !== "completed"
+      hookCommandObservation !== undefined &&
+      hookCommandObservation.outcome !== "completed"
     ) {
-      const failure = codexStopHookCommandFailure(hookCommandOutcome);
+      const failure = codexStopHookCommandFailure(
+        hookCommandObservation.outcome,
+      );
       recordTerminalObservationBeforeDeadline({
         deadline: traceDeadline,
         now: bootNow,
         record: () => recordInteractivePhase(failure.phase),
       });
       throw new Error(failure.error);
+    }
+    if (
+      hookCommandObservation?.outcome === "completed" &&
+      traceDeadline - bootNow() <= 150
+    ) {
+      const nearBudgetBoundary =
+        hookCommandObservation.durationMilliseconds >= 4_900;
+      const phase = nearBudgetBoundary
+        ? "hook-command-completed-near-budget-boundary"
+        : "hook-command-completed-before-budget-boundary";
+      recordTerminalObservationBeforeDeadline({
+        deadline: traceDeadline,
+        now: bootNow,
+        record: () => recordInteractivePhase(phase),
+      });
+      throw new Error(`integration.codex.${phase}`);
     }
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
