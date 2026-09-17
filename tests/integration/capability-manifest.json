@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-b7b783a6fee7f484d48b7b96cd13209fc1aee875cf515f6847b3f598f99df3f2",
+  "manifestIdentity": "sha256-2d33d9cd4a24347af4dcdecc8793c68861f62ba059ded3a33de49d1c776f9e3f",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -139,9 +139,7 @@
       "postCompletionInputByteLength": 0,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": false,
-      "nativeReadiness": {
-        "kind": "semantic-marker"
-      },
+      "nativeReadiness": { "kind": "semantic-marker" },
       "resourceClass": "small",
       "shardWeight": 120
     },
@@ -165,7 +163,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "6fb18934fd98afefd72c0f8571a1b0e53ae89c078d6126826cf8973e6a2ee3f6"
+        "sha256": "220abe3cbfb620f4e37126a9c862c443891cdbaa51e968945e8fc8f02cab20a9"
       },
       "runtimeArtifacts": [
         {
