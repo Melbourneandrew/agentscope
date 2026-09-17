@@ -29,6 +29,7 @@ import {
   settledLocalSqliteLifecycleSnapshot,
   terminalObservationBeforeDeadline,
   traceSummaryBeforeDeadline,
+  waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
@@ -686,5 +687,73 @@ describe("Codex bounded native records", () => {
       }),
     ).rejects.toThrow("integration.codex.trace-deadline");
     expect(waits).toEqual([500, 100]);
+  });
+
+  it("starts no model-ledger request after its diagnostic cutoff", async () => {
+    const requests: AbortSignal[] = [];
+    await expect(
+      waitForModelRequestBeforeDeadline({
+        deadline: 100,
+        now: () => 100,
+        request: (signal) => {
+          requests.push(signal);
+          return Promise.resolve([]);
+        },
+        wait: () => Promise.resolve(),
+      }),
+    ).rejects.toThrow("integration.codex.diagnostic-deadline");
+    expect(requests).toEqual([]);
+  });
+
+  it("aborts and joins an in-flight model-ledger request at the cutoff", async () => {
+    let now = 0;
+    let joined = false;
+    const request = (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            joined = true;
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      });
+    const observation = waitForModelRequestBeforeDeadline({
+      deadline: 10,
+      now: () => now,
+      request,
+      wait: () => Promise.resolve(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    now = 10;
+    await expect(observation).rejects.toThrow(
+      "integration.codex.diagnostic-deadline",
+    );
+    expect(joined).toBe(true);
+  });
+
+  it("starts no later request when the diagnostic cutoff ends a backoff", async () => {
+    let now = 99;
+    let requests = 0;
+    let pendingWait = false;
+    await expect(
+      waitForModelRequestBeforeDeadline({
+        deadline: 100,
+        now: () => now,
+        request: () => {
+          requests += 1;
+          return Promise.resolve([]);
+        },
+        wait: (milliseconds) => {
+          pendingWait = true;
+          now += milliseconds;
+          pendingWait = false;
+          return Promise.resolve();
+        },
+      }),
+    ).rejects.toThrow("integration.codex.diagnostic-deadline");
+    expect(requests).toBe(1);
+    expect(pendingWait).toBe(false);
   });
 });
