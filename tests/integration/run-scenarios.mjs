@@ -762,6 +762,7 @@ const expectedHeadlessEnvironment = (plan, outerMonotonicDeadlineMs) => ({
       ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
       : "/usr/local/bin:/usr/bin:/bin",
   XDG_CONFIG_HOME: "/harness-home",
+  ...(plan.executionMode === "interactive" ? { TERM: "xterm-256color" } : {}),
   ...(testMode === undefined
     ? {}
     : { AGENTSCOPE_INTEGRATION_TEST_MODE: testMode }),

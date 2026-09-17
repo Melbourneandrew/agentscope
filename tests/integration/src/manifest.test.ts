@@ -255,7 +255,9 @@ describe("integration capability manifest", () => {
     const explicitHookTrust = source.indexOf(
       '      "--dangerously-bypass-hook-trust",\n',
     );
-    const modelRequest = source.indexOf("  await waitForModelRequest();\n");
+    const modelRequest = source.indexOf(
+      "  await observeBeforeDiagnosticDeadline(waitForModelRequest(), traceDeadline);\n",
+    );
     const traceDeadline = source.indexOf(
       "  const traceDeadline = deadline - 3_000;\n",
       challengeRead,
@@ -391,6 +393,7 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
     );
+    expect(source).not.toContain("  await waitForModelRequest();\n");
     expect(source).not.toContain("      monotonicDeadline: traceDeadline,\n");
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);

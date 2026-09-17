@@ -300,6 +300,9 @@ try {
         ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
         : "/usr/local/bin:/usr/bin:/bin",
     XDG_CONFIG_HOME: requiredEnvironment("XDG_CONFIG_HOME"),
+    ...(scenario.executionMode === "interactive"
+      ? { TERM: "xterm-256color" }
+      : {}),
     ...(process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === undefined
       ? {}
       : {
