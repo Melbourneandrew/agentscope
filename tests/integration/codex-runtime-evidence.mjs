@@ -2,10 +2,122 @@ import {
   closeSync,
   constants,
   fstatSync,
+  lstatSync,
   openSync,
   readSync,
   readdirSync,
 } from "node:fs";
+
+const descriptorRoot =
+  process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
+const sameFileIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.uid === right.uid &&
+  left.gid === right.gid &&
+  left.size === right.size &&
+  left.mtimeNs === right.mtimeNs &&
+  left.ctimeNs === right.ctimeNs;
+
+/**
+ * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
+ * @returns {"completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error" | undefined}
+ */
+/* eslint-disable complexity -- one closed descriptor/read/parser authority validates every hostile edge atomically */
+export const classifyCodexStopHookCommand = ({
+  afterRead,
+  directoryDescriptor,
+  directoryPath,
+}) => {
+  if (afterRead !== undefined && typeof afterRead !== "function")
+    throw new Error("integration.codex.hook-log");
+  const parentBefore = fstatSync(directoryDescriptor, { bigint: true });
+  const pathBefore = lstatSync(directoryPath, { bigint: true });
+  if (
+    !parentBefore.isDirectory() ||
+    !pathBefore.isDirectory() ||
+    !sameFileIdentity(parentBefore, pathBefore)
+  )
+    throw new Error("integration.codex.hook-log");
+  let descriptor;
+  try {
+    descriptor = openSync(
+      `${descriptorRoot}/${directoryDescriptor}/codex-tui.log`,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error("integration.codex.hook-log", { cause: error });
+  }
+  let source;
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.size <= 0n || before.size > 1_048_576n)
+      throw new Error("integration.codex.hook-log");
+    const bytes = Buffer.alloc(Number(before.size) + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+    afterRead?.();
+    const after = fstatSync(descriptor, { bigint: true });
+    if (offset !== Number(before.size) || !sameFileIdentity(before, after))
+      throw new Error("integration.codex.hook-log");
+    source = new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, offset),
+    );
+  } catch {
+    throw new Error("integration.codex.hook-log");
+  } finally {
+    closeSync(descriptor);
+  }
+  const parentAfter = fstatSync(directoryDescriptor, { bigint: true });
+  const pathAfter = lstatSync(directoryPath, { bigint: true });
+  if (
+    !pathAfter.isDirectory() ||
+    !sameFileIdentity(parentBefore, parentAfter) ||
+    !sameFileIdentity(parentBefore, pathAfter)
+  )
+    throw new Error("integration.codex.hook-log");
+  const outcomes = [];
+  let stopLineCount = 0;
+  for (const line of source.split("\n")) {
+    if (!line.includes("codex.hooks.command")) continue;
+    const eventFields = [
+      ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    if (eventFields.length === 0) continue;
+    if (eventFields.length !== 1) throw new Error("integration.codex.hook-log");
+    if (!/^hook\.event_name=(?:"Stop"|Stop)$/u.test(eventFields[0][0]))
+      continue;
+    stopLineCount += 1;
+    const outcomeFields = [
+      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    if (outcomeFields.length !== 1)
+      throw new Error("integration.codex.hook-log");
+    const match =
+      /^hook\.command_outcome=(?:")?(completed|timeout|spawn_error|stdin_error|wait_error)(?:")?$/u.exec(
+        outcomeFields[0][0],
+      );
+    if (match?.[1] === undefined) throw new Error("integration.codex.hook-log");
+    outcomes.push(match[1]);
+  }
+  if (stopLineCount === 0) return undefined;
+  if (stopLineCount !== 1 || outcomes.length !== 1)
+    throw new Error("integration.codex.hook-log");
+  return outcomes[0];
+};
+/* eslint-enable complexity */
 
 const plainRecord = (value) =>
   typeof value === "object" &&
@@ -252,6 +364,23 @@ export const recordTerminalObservationBeforeDeadline = ({
 };
 
 /**
+ * @template T
+ * @param {{deadline: number, now: () => number, inspect: () => T}} input
+ * @returns {T}
+ */
+export const inspectDiagnosticBeforeDeadline = ({ deadline, now, inspect }) => {
+  if (
+    typeof inspect !== "function" ||
+    !terminalObservationBeforeDeadline({ observed: true, deadline, now })
+  )
+    throw new Error("integration.codex.trace-deadline");
+  const result = inspect();
+  if (!terminalObservationBeforeDeadline({ observed: true, deadline, now }))
+    throw new Error("integration.codex.trace-deadline");
+  return result;
+};
+
+/**
  * @param {{
  *   records: Array<{summaries?: Array<{harness?: string, locator?: {traceId?: string}}>}>;
  *   deadline: number;
@@ -319,8 +448,6 @@ export const traceSummaryBeforeDeadline = ({ summary, deadline, now }) => {
 };
 
 const ledgerLimit = 2 * 1024 * 1024;
-const descriptorRoot =
-  process.platform === "linux" ? "/proc/self/fd" : "/dev/fd";
 const directoryFlags =
   constants.O_RDONLY |
   constants.O_DIRECTORY |

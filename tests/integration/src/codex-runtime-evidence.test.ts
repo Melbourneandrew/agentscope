@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
+  classifyCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalObserved,
@@ -23,6 +24,7 @@ import {
   localSqliteAcceptanceObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
+  inspectDiagnosticBeforeDeadline,
   openOperationalStateHealth,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
@@ -37,7 +39,149 @@ import {
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
+// eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
+  it.runIf(process.platform === "linux")(
+    "classifies only one descriptor-bound Codex Stop hook outcome",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
+      const directory = join(root, "log");
+      mkdirSync(directory, { mode: 0o700 });
+      const descriptor = openSync(
+        directory,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+      );
+      const path = join(directory, "codex-tui.log");
+      const line = (outcome: string) =>
+        `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="${outcome}"}: close\n`;
+      try {
+        expect(
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toBeUndefined();
+        for (const outcome of [
+          "completed",
+          "timeout",
+          "spawn_error",
+          "stdin_error",
+          "wait_error",
+        ]) {
+          writeFileSync(path, line(outcome));
+          expect(
+            classifyCodexStopHookCommand({
+              directoryDescriptor: descriptor,
+              directoryPath: directory,
+            }),
+          ).toBe(outcome);
+        }
+        writeFileSync(path, `${line("timeout")}${line("completed")}`);
+        expect(() =>
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toThrow("integration.codex.hook-log");
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop"}: close\n',
+        );
+        expect(() =>
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toThrow("integration.codex.hook-log");
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.event_name="SessionEnd" hook.command_outcome="timeout"}: close\n',
+        );
+        expect(() =>
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toThrow("integration.codex.hook-log");
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="timeout" hook.command_outcome="completed"}: close\n',
+        );
+        expect(() =>
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toThrow("integration.codex.hook-log");
+      } finally {
+        closeSync(descriptor);
+        rmSync(root, { recursive: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "rejects hostile Codex hook logs and substituted parents",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
+      const directory = join(root, "log");
+      const moved = join(root, "moved");
+      mkdirSync(directory, { mode: 0o700 });
+      const descriptor = openSync(
+        directory,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+      );
+      const path = join(directory, "codex-tui.log");
+      const classify = (afterRead?: () => void) =>
+        classifyCodexStopHookCommand({
+          ...(afterRead === undefined ? {} : { afterRead }),
+          directoryDescriptor: descriptor,
+          directoryPath: directory,
+        });
+      try {
+        writeFileSync(path, Buffer.from([0xff]));
+        expect(classify).toThrow("integration.codex.hook-log");
+        writeFileSync(path, "");
+        expect(classify).toThrow("integration.codex.hook-log");
+        writeFileSync(path, Buffer.alloc(1_048_577, 0x61));
+        expect(classify).toThrow("integration.codex.hook-log");
+        rmSync(path);
+        mkdirSync(path);
+        expect(classify).toThrow("integration.codex.hook-log");
+        rmSync(path, { recursive: true });
+        writeFileSync(join(root, "external"), "safe");
+        symlinkSync(join(root, "external"), path);
+        expect(classify).toThrow("integration.codex.hook-log");
+        rmSync(path);
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="timeout"}: close\n',
+        );
+        expect(() =>
+          classify(() => {
+            writeFileSync(path, "mutated", { flag: "a" });
+          }),
+        ).toThrow("integration.codex.hook-log");
+        renameSync(directory, moved);
+        mkdirSync(directory);
+        writeFileSync(
+          join(directory, "codex-tui.log"),
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="timeout"}: close\n',
+        );
+        expect(classify).toThrow("integration.codex.hook-log");
+      } finally {
+        closeSync(descriptor);
+        rmSync(root, { recursive: true });
+      }
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "holds the home identity and rejects symlinked session ancestors",
     () => {
@@ -547,6 +691,23 @@ describe("Codex bounded native records", () => {
       }),
     ).rejects.toThrow("integration.codex.trace-deadline");
     expect(published).toBe(false);
+  });
+
+  it("rejects a synchronous diagnostic that crosses the immutable cutoff", () => {
+    let observedAt = 99;
+    let inspected = 0;
+    expect(() =>
+      inspectDiagnosticBeforeDeadline({
+        deadline: 100,
+        now: () => observedAt,
+        inspect: () => {
+          inspected += 1;
+          observedAt = 100;
+          return "timeout";
+        },
+      }),
+    ).toThrow("integration.codex.trace-deadline");
+    expect(inspected).toBe(1);
   });
 
   it("admits no phase record before or after the immutable cutoff", () => {

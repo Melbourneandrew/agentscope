@@ -7,6 +7,18 @@ export function boundedRequestLedger(
   value: unknown,
 ): readonly Readonly<Record<string, unknown>>[];
 
+export function classifyCodexStopHookCommand(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | "completed"
+  | "timeout"
+  | "spawn_error"
+  | "stdin_error"
+  | "wait_error"
+  | undefined;
+
 export function codexTurnTerminalObserved(
   ledgers: readonly string[],
   expectedMessage: string,
@@ -49,6 +61,12 @@ export function recordTerminalObservationBeforeDeadline(input: {
   now: () => number;
   record: () => void;
 }): void;
+
+export function inspectDiagnosticBeforeDeadline<T>(input: {
+  deadline: number;
+  now: () => number;
+  inspect: () => T;
+}): T;
 
 export function classifyTraceSearchRecordsBeforeDeadline(input: {
   records: Array<{
