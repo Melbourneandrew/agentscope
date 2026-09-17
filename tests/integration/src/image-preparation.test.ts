@@ -1795,20 +1795,19 @@ describe("owned buildx process execution", () => {
       executableFixture(directory),
       [fixture],
       {
-        deadline: performance.now() + 3_000,
+        deadline: performance.now() + 4_000,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
         },
-        teardownMilliseconds: 500,
+        teardownMilliseconds: 2_000,
         timeoutAfterOutputForTesting: Buffer.from("different-token\n"),
       },
     ).catch((failure: unknown) => failure);
-    expect(error).toMatchObject({ code: "ETIMEDOUT" });
-    expect([
-      "integration.images.timeout",
-      "integration.images.containment",
-    ]).toContain((error as Error).message);
+    expect(error).toMatchObject({
+      code: "ETIMEDOUT",
+      message: "integration.images.timeout",
+    });
     const descendant = readReadyDescendant(directory);
     expect(() => process.kill(descendant, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
