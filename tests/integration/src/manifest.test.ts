@@ -175,7 +175,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(2);
+    expect(scenario?.runtimeArtifacts).toHaveLength(3);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -271,7 +271,7 @@ describe("integration capability manifest", () => {
     );
     const codexLaunch = source.indexOf("  const codexRun = run(\n");
     const sessionStartCheckpoint = source.indexOf(
-      "      if (inspectSessionStartBeforeFirstModelRequestAdmission() === undefined)\n",
+      "    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
     );
     const explicitHookEnablement = source.indexOf(
       '      "--enable",\n      "hooks",\n',
@@ -297,9 +297,7 @@ describe("integration capability manifest", () => {
       "  await checkpointSignal;\n",
       readinessRelease,
     );
-    const modelResponse = source.indexOf(
-      '      response.writeHead(200, { "content-type": "text/event-stream" });\n',
-    );
+    const modelResponse = source.indexOf("  await releaseModelResponse();\n");
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
       modelRequest,
@@ -325,7 +323,7 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       'body.replace(\n        "AGENTSCOPE_PTY_COMPLETE",\n        expectedAssistantMessage,\n      )',
     );
-    expect(source).toContain("baseUrl: `${modelGateway.endpoint}/v1`,");
+    expect(source).toContain("baseUrl: `${modelEndpoint}/v1`,");
     expect(source).toContain(
       "codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);",
     );
@@ -354,7 +352,7 @@ describe("integration capability manifest", () => {
       "const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\\n${createCodexInternalProviderConfiguration(",
     );
     const providerConfiguration = source.indexOf(
-      "    baseUrl: `${modelGateway.endpoint}/v1`,",
+      "    baseUrl: `${modelEndpoint}/v1`,",
       rootLogDirectory,
     );
     const projectConfiguration = source.indexOf(
@@ -547,7 +545,7 @@ describe("integration capability manifest", () => {
     expect(codexJoin).toBeGreaterThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(
-      source.indexOf("  await modelGateway.settle();\n", modelRequest),
+      source.indexOf("  await releaseModelResponse();\n", modelRequest),
     ).toBeLessThan(terminalWait);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");

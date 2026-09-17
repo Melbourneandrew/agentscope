@@ -13,7 +13,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
 import { basename, join } from "node:path";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
@@ -456,27 +455,27 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const readModelRequests = async (signal) =>
-  boundedRequestLedger(
-    await requestJson(`${modelEndpoint}/mockserver/retrieve?type=REQUESTS`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-      signal,
-    }),
-  );
-const readBoundedResponseText = async (response) => {
-  if (!response.body) throw new Error("integration.codex.model-gateway");
-  const chunks = [];
-  let bytes = 0;
-  for await (const chunk of response.body) {
-    const value = Buffer.from(chunk);
-    bytes += value.length;
-    if (bytes > maximumOutput)
-      throw new Error("integration.codex.model-gateway");
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks, bytes).toString("utf8");
+const modelControlEndpoint = (() => {
+  const value = new URL(modelEndpoint);
+  if (value.protocol !== "http:" || value.pathname !== "/")
+    throw new Error("integration.codex.model-gate");
+  value.port = "1081";
+  return value.origin;
+})();
+const gateHeaders = Object.freeze({
+  authorization: `Bearer ${readinessChallenge}`,
+  "content-type": "application/json",
+});
+const readModelRequests = async (signal) => {
+  const value = await requestJson(`${modelControlEndpoint}/requests`, {
+    method: "PUT",
+    headers: gateHeaders,
+    body: "{}",
+    signal,
+  });
+  if (!exactKeys(value, ["ledger"]))
+    throw new Error("integration.codex.model-gate");
+  return boundedRequestLedger(value.ledger);
 };
 const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
   sessionStartBeforeFirstModelRequestAdmission =
@@ -486,125 +485,139 @@ const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
     });
   return sessionStartBeforeFirstModelRequestAdmission;
 };
-const assertFirstModelRequest = (request, requestCount) => {
-  if (
-    requestCount !== 1 ||
-    request.method !== "POST" ||
-    request.url !== "/v1/responses" ||
-    request.headers["content-type"] !== "application/json"
-  )
-    throw new Error("integration.codex.model-gateway");
-};
-const openChallengedModelGateway = async () => {
-  let failure;
-  let requestCount = 0;
-  let closeResolved = false;
-  let resolveClosed;
-  const closed = new Promise((resolve) => {
-    resolveClosed = resolve;
+const gateRequest = (path, value, signal) =>
+  requestJson(`${modelControlEndpoint}${path}`, {
+    method: "POST",
+    headers: gateHeaders,
+    body: JSON.stringify(value),
+    signal,
   });
-  const finishClose = () => {
-    if (closeResolved) return;
-    closeResolved = true;
-    resolveClosed();
-  };
-  const server = createServer(async (request, response) => {
-    requestCount += 1;
-    request.setTimeout(Math.min(5_000, remaining()), () =>
-      request.destroy(new Error("integration.codex.model-gateway")),
-    );
+const waitForModelGate = async () => {
+  while (remaining() > 5_000) {
     try {
-      assertFirstModelRequest(request, requestCount);
-      if (inspectSessionStartBeforeFirstModelRequestAdmission() === undefined)
-        throw new Error("integration.codex.hook-session-start-missing");
-      const chunks = [];
-      let bytes = 0;
-      for await (const chunk of request) {
-        const value = Buffer.from(chunk);
-        bytes += value.length;
-        if (bytes > maximumOutput)
-          throw new Error("integration.codex.model-gateway");
-        chunks.push(value);
-      }
-      const upstream = await fetch(`${modelEndpoint}/v1/responses`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: Buffer.concat(chunks, bytes),
-        signal: AbortSignal.timeout(Math.min(5_000, remaining())),
+      const response = await requestJson(`${modelControlEndpoint}/health`, {
+        signal: AbortSignal.timeout(Math.min(250, remaining())),
       });
-      if (
-        !upstream.ok ||
-        upstream.headers.get("content-type") !== "text/event-stream"
-      )
-        throw new Error("integration.codex.model-gateway");
-      const body = await readBoundedResponseText(upstream);
-      if (
-        body.split("AGENTSCOPE_PTY_COMPLETE").length !== 2 ||
-        body.includes(expectedAssistantMessage)
-      )
-        throw new Error("integration.codex.model-gateway");
-      codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
-      if (codexLedgerBaseline.length !== 1)
-        throw new Error("integration.codex.session-ledger");
-      codexSessionId = codexSessionIdentity(codexLedgerBaseline);
-      if (
-        codexTurnTerminalObservedAfterBaseline(
-          codexLedgerBaseline,
-          codexLedgerBaseline,
-          expectedAssistantMessage,
-        )
-      )
-        throw new Error("integration.codex.session-ledger");
-      const challenged = body.replace(
+      if (exactKeys(response, ["state"]) && response.state === "unconfigured")
+        return;
+    } catch {
+      // The exact-build sidecar may still be starting. The outer deadline is
+      // the sole authority; each probe only consumes its remaining budget.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("integration.codex.model-gate");
+};
+const configureModelGate = async (modelAdmissionCutoff) => {
+  const routeAuthority = JSON.parse(
+    readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
+  );
+  const routeIndex = routeAuthority.routeIds?.indexOf("codex-tui-responses");
+  const route =
+    Number.isInteger(routeIndex) && routeIndex >= 0
+      ? routeAuthority.routes?.[routeIndex]
+      : undefined;
+  const body = route?.responseBodyText;
+  if (
+    routeAuthority.routeIds?.lastIndexOf("codex-tui-responses") !==
+      routeIndex ||
+    route?.method !== "POST" ||
+    route?.path !== "/v1/responses" ||
+    typeof body !== "string" ||
+    body.split("AGENTSCOPE_PTY_COMPLETE").length !== 2 ||
+    body.includes(expectedAssistantMessage)
+  )
+    throw new Error("integration.codex.model-gate");
+  const response = await requestJson(`${modelControlEndpoint}/configure`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      challenge: readinessChallenge,
+      cutoff: modelAdmissionCutoff,
+      responseText: body.replace(
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
-      );
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(challenged);
-    } catch (error) {
-      failure = error;
-      response.statusCode = 502;
-      response.end();
-    } finally {
-      server.close(finishClose);
-    }
+      ),
+      runId: scenarioId,
+    }),
   });
-  server.on("clientError", (error, socket) => {
-    failure = error;
-    socket.destroy();
-    server.close(finishClose);
-  });
-  server.headersTimeout = Math.min(5_000, remaining());
-  server.requestTimeout = Math.min(5_000, remaining());
-  server.keepAliveTimeout = 1_000;
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (typeof address !== "object" || address === null)
-    throw new Error("integration.codex.model-gateway");
-  return {
-    endpoint: `http://127.0.0.1:${address.port}`,
-    settle: async () => {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("integration.codex.model-gateway")),
-          Math.min(5_000, remaining()),
-        );
-        closed.then(() => {
-          clearTimeout(timer);
-          resolve();
-        }, reject);
+  if (
+    !exactKeys(response, ["runId", "state"]) ||
+    response.runId !== scenarioId ||
+    response.state !== "pending"
+  )
+    throw new Error("integration.codex.model-gate");
+};
+const armModelGate = async (modelAdmissionCutoff) => {
+  while (bootNow() < modelAdmissionCutoff) {
+    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
+    if (checkpoint !== undefined) {
+      const response = await gateRequest("/arm", {
+        runId: scenarioId,
+        sessionStartSpanSha256: checkpoint.spanSha256,
       });
-      if (failure !== undefined || requestCount !== 1)
-        throw new Error("integration.codex.model-gateway");
-    },
-    abort: () => {
-      server.closeAllConnections();
-      server.close(finishClose);
-    },
-  };
+      if (
+        !exactKeys(response, ["runId", "state"]) ||
+        response.runId !== scenarioId ||
+        response.state !== "armed"
+      )
+        throw new Error("integration.codex.model-gate");
+      return checkpoint;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("integration.codex.hook-session-start-missing");
+};
+const releaseModelResponse = async () => {
+  codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
+  if (codexLedgerBaseline.length !== 1)
+    throw new Error("integration.codex.session-ledger");
+  codexSessionId = codexSessionIdentity(codexLedgerBaseline);
+  if (
+    codexTurnTerminalObservedAfterBaseline(
+      codexLedgerBaseline,
+      codexLedgerBaseline,
+      expectedAssistantMessage,
+    )
+  )
+    throw new Error("integration.codex.session-ledger");
+  const response = await gateRequest("/release", { runId: scenarioId });
+  if (
+    !exactKeys(response, ["runId", "state"]) ||
+    response.runId !== scenarioId ||
+    response.state !== "admitted"
+  )
+    throw new Error("integration.codex.model-gate");
+};
+const sealModelGate = async (checkpoint) => {
+  const value = await gateRequest("/seal", { runId: scenarioId });
+  if (!exactKeys(value, ["ledger", "receipt"]))
+    throw new Error("integration.codex.model-gate");
+  const receipt = value.receipt;
+  if (
+    !exactKeys(receipt, [
+      "challengeSha256",
+      "connectionCount",
+      "ledgerCount",
+      "mutationGeneration",
+      "parserFailures",
+      "runId",
+      "sessionStartSpanSha256",
+      "state",
+    ]) ||
+    receipt.challengeSha256 !==
+      createHash("sha256").update(readinessChallenge).digest("hex") ||
+    receipt.connectionCount !== 1 ||
+    receipt.ledgerCount !== 1 ||
+    !Number.isSafeInteger(receipt.mutationGeneration) ||
+    receipt.mutationGeneration < 1 ||
+    receipt.parserFailures !== 0 ||
+    receipt.runId !== scenarioId ||
+    receipt.sessionStartSpanSha256 !== checkpoint.spanSha256 ||
+    receipt.state !== "draining"
+  )
+    throw new Error("integration.codex.model-gate");
+  return boundedRequestLedger(value.ledger);
 };
 const projectHarnessStatus = (
   records,
@@ -947,7 +960,6 @@ const waitForTraceSummary = async (traceDeadline) => {
 };
 
 let completed = false;
-let modelGateway;
 let codexLedgerBaseline;
 let codexSessionId;
 try {
@@ -985,7 +997,6 @@ try {
     "unchanged",
     1,
   );
-  modelGateway = await openChallengedModelGateway();
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
     codexDiagnosticLogDirectory,
@@ -994,12 +1005,17 @@ try {
       constants.O_NOFOLLOW |
       constants.O_NONBLOCK,
   );
+  const modelAdmissionCutoff = deadline - 5_000;
+  if (modelAdmissionCutoff <= bootNow())
+    throw new Error("integration.codex.model-gate");
+  await waitForModelGate();
+  await configureModelGate(modelAdmissionCutoff);
   // TOML has no syntax for returning to the root table. Keep every root key
   // ahead of the first table emitted by the provider configuration; appending
   // log_dir after it would silently make the key part of model_providers.
   const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\n${createCodexInternalProviderConfiguration(
     {
-      baseUrl: `${modelGateway.endpoint}/v1`,
+      baseUrl: `${modelEndpoint}/v1`,
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
@@ -1045,6 +1061,7 @@ try {
     );
   });
   await checkpointSignal;
+  const gateArm = armModelGate(modelAdmissionCutoff);
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1052,8 +1069,9 @@ try {
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
+  sessionStartBeforeFirstModelRequestAdmission = await gateArm;
   recordInteractivePhase("model-request");
-  await modelGateway.settle();
+  await releaseModelResponse();
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
@@ -1107,7 +1125,9 @@ try {
   });
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
-  const modelRequests = await readModelRequests();
+  const modelRequests = await sealModelGate(
+    sessionStartBeforeFirstModelRequestAdmission,
+  );
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
     throw new Error("integration.codex.trace-search");
@@ -1192,7 +1212,18 @@ try {
   });
   completed = true;
 } finally {
-  modelGateway?.abort();
+  if (!completed) {
+    try {
+      await gateRequest(
+        "/deny",
+        { runId: scenarioId },
+        AbortSignal.timeout(Math.min(1_000, Math.max(1, deadline - bootNow()))),
+      );
+    } catch {
+      // The outer controller retains the causal failure and retires the exact
+      // sidecar when the in-container denial receipt cannot be completed.
+    }
+  }
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)
