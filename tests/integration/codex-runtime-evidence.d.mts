@@ -19,6 +19,12 @@ export function classifyCodexStopHookCommand(input: {
   | "wait_error"
   | undefined;
 
+export function codexSessionStartMediationUpperBoundMilliseconds(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}): number | undefined;
+
 export function codexTurnTerminalObserved(
   ledgers: readonly string[],
   expectedMessage: string,

@@ -79,6 +79,7 @@ export const translateCodexPlatformObservations = (input) => {
       "scenarioId",
       "prompt",
       "promptSha256",
+      "mediation",
       "modelRequests",
       "search",
       "retrieval",
@@ -95,8 +96,12 @@ export const translateCodexPlatformObservations = (input) => {
   const modelRequests = input.modelRequests.map((request) =>
     translateModelRequest(request, input.prompt),
   );
-  const { search, retrieval, doctor, uninstall } = input;
+  const { mediation, search, retrieval, doctor, uninstall } = input;
   if (
+    !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
+    !Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
+    mediation.sessionStartCommandDurationMilliseconds < 0 ||
+    mediation.sessionStartCommandDurationMilliseconds > 120_000 ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
     !boundedString(search.completion, 32) ||
     !boundedString(search.harness, 64) ||
@@ -169,6 +174,7 @@ export const translateCodexPlatformObservations = (input) => {
   return Object.freeze({
     scenarioId: input.scenarioId,
     promptSha256: input.promptSha256,
+    mediation: Object.freeze({ ...mediation }),
     modelRequests: Object.freeze(modelRequests),
     search: Object.freeze({ ...search }),
     retrieval: Object.freeze({

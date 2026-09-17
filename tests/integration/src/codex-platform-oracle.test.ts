@@ -15,6 +15,7 @@ const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   prompt,
   promptSha256,
+  mediation: { sessionStartCommandDurationMilliseconds: 125 },
   modelRequests: [
     {
       method: "POST",
@@ -81,6 +82,7 @@ describe("Codex PTY scenario observation boundary", () => {
         parentLinked: true,
         doctorErrors: 0,
         uninstallDisposition: "committed",
+        sessionStartCommandDurationMilliseconds: 125,
       },
       destinationLedger: {
         retrieval: [{ operation: "search" }, { operation: "get" }],

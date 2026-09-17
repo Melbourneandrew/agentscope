@@ -15,7 +15,11 @@ const rootEvents = ["SessionStart", "Stop", "SessionEnd"] as const;
 const ownedStatus = "Agentscope trace capture";
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const encodeUtf8 = new TextEncoder();
-const maximumCodexHookDeadlineMilliseconds = 2_500;
+const minimumCodexHookDeadlineMilliseconds = 50;
+const maximumCodexHookDeadlineMilliseconds = 60_000;
+const codexPreLauncherReserveMilliseconds = 1_000;
+const codexPostDeadlineReserveSeconds = 1;
+const legacyMaximumCodexHookDeadlineMilliseconds = 2_500;
 const posixSingleQuoteEscape = `'"'"'`;
 
 type JsonRecord = Record<string, unknown>;
@@ -32,6 +36,20 @@ export class CodexInstallationError extends Error {
 
 const invalid = (): never => {
   throw new CodexInstallationError();
+};
+
+const codexHookTimeoutSeconds = (durationMilliseconds: number): number => {
+  if (
+    !Number.isInteger(durationMilliseconds) ||
+    durationMilliseconds < minimumCodexHookDeadlineMilliseconds ||
+    durationMilliseconds > maximumCodexHookDeadlineMilliseconds
+  )
+    return invalid();
+  return (
+    Math.ceil(
+      (durationMilliseconds + codexPreLauncherReserveMilliseconds) / 1_000,
+    ) + codexPostDeadlineReserveSeconds
+  );
 };
 
 const plainRecord = (value: unknown): value is JsonRecord =>
@@ -183,6 +201,7 @@ const matcherFor = (event: (typeof rootEvents)[number]): string | undefined =>
 const ownedGroup = (
   event: (typeof rootEvents)[number],
   command: string,
+  timeoutSeconds: number,
 ): JsonRecord => {
   const group = emptyRecord();
   Object.defineProperty(group, "hooks", {
@@ -190,7 +209,7 @@ const ownedGroup = (
       {
         type: "command",
         command,
-        timeout: 3,
+        timeout: timeoutSeconds,
         statusMessage: ownedStatus,
       },
     ],
@@ -213,6 +232,7 @@ const currentGroup = (
   value: unknown,
   event: (typeof rootEvents)[number],
   command: string,
+  timeoutSeconds: number,
 ): boolean => {
   if (!plainRecord(value)) return false;
   const expectedKeys =
@@ -231,7 +251,7 @@ const currentGroup = (
     hasExactOwnKeys(handler, ["command", "statusMessage", "timeout", "type"]) &&
     handler.type === "command" &&
     handler.command === command &&
-    handler.timeout === 3 &&
+    handler.timeout === timeoutSeconds &&
     handler.statusMessage === ownedStatus
   );
 };
@@ -262,18 +282,30 @@ const ownedGroupForHarness = (
     ]) ||
     handler.type !== "command" ||
     handler.statusMessage !== ownedStatus ||
-    handler.timeout !== 3 ||
+    !Number.isInteger(handler.timeout) ||
     typeof handler.command !== "string"
   )
     return false;
   const path = decodeOwnedPosixShellWord(handler.command);
   if (path === undefined || dirname(path) !== dirname(invocation.launcherPath))
     return false;
-  const pattern = new RegExp(
-    `^agentscope-hook-v1-${invocation.harnessDigest}-d(?:[5-9][0-9]|[1-9][0-9]{2}|1[0-9]{3}|2[0-4][0-9]{2}|2500)$`,
+  const match = new RegExp(
+    `^agentscope-hook-v1-${invocation.harnessDigest}-d([1-9][0-9]{1,4})$`,
     "u",
+  ).exec(basename(path));
+  if (match === null) return false;
+  const durationMilliseconds = Number(match[1]);
+  if (
+    !Number.isInteger(durationMilliseconds) ||
+    durationMilliseconds < minimumCodexHookDeadlineMilliseconds ||
+    durationMilliseconds > maximumCodexHookDeadlineMilliseconds
+  )
+    return false;
+  return (
+    handler.timeout === codexHookTimeoutSeconds(durationMilliseconds) ||
+    (durationMilliseconds <= legacyMaximumCodexHookDeadlineMilliseconds &&
+      handler.timeout === 3)
   );
-  return pattern.test(basename(path));
 };
 
 const parseConfiguration = (bytes: Uint8Array): JsonRecord | undefined => {
@@ -335,6 +367,9 @@ const installOwnedGroups = (
   invocation: OwnedHarnessHookInvocation,
   replaceOverlap: boolean,
 ): Uint8Array => {
+  const timeoutSeconds = codexHookTimeoutSeconds(
+    invocation.hookDeadlineMilliseconds,
+  );
   const hooks = plainRecord(root.hooks) ? root.hooks : emptyRecord();
   for (let eventIndex = 0; eventIndex < rootEvents.length; eventIndex += 1) {
     const event = rootEvents[eventIndex]!;
@@ -345,7 +380,10 @@ const installOwnedGroups = (
       for (let index = 0; index < current.length; index += 1)
         if (!ownedGroupForHarness(current[index], event, invocation))
           appendOwnArrayValue(replacement, current[index]);
-    appendOwnArrayValue(replacement, ownedGroup(event, command));
+    appendOwnArrayValue(
+      replacement,
+      ownedGroup(event, command, timeoutSeconds),
+    );
     hooks[event] = replacement;
   }
   root.hooks = hooks;
@@ -385,8 +423,12 @@ const plan = (
   target: HarnessTargetInspection,
 ): HarnessTargetDecision => {
   let command: string;
+  let timeoutSeconds: number;
   try {
     command = encodeCodexPosixHookCommand(invocation);
+    timeoutSeconds = codexHookTimeoutSeconds(
+      invocation.hookDeadlineMilliseconds,
+    );
   } catch {
     return { kind: "unsupported" };
   }
@@ -422,7 +464,7 @@ const plan = (
     const eventGroups = unknownArray(eventValue) ? eventValue : [];
     if (
       eventGroups.length !== 1 ||
-      !currentGroup(eventGroups[0], event, command)
+      !currentGroup(eventGroups[0], event, command, timeoutSeconds)
     )
       complete = false;
   }
