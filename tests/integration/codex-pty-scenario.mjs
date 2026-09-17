@@ -20,6 +20,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   codexOwnedStopHookStatusAfterBaseline,
+  codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
@@ -686,17 +687,23 @@ const readTraceSummary = async (traceDeadline) => {
 const waitForCodexTurnTerminal = async (traceDeadline) => {
   if (codexLedgerBaseline === undefined)
     throw new Error("integration.codex.session-ledger");
-  while (
-    !terminalObservationBeforeDeadline({
-      observed: codexTurnTerminalObservedAfterBaseline(
-        readCodexSessionLedgerRecords(homeDescriptor),
-        codexLedgerBaseline,
-        expectedAssistantMessage,
-      ),
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  ) {
+  while (true) {
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
+    const records = readCodexSessionLedgerRecords(homeDescriptor);
+    const turnId = codexTurnTerminalIdAfterBaseline(
+      records,
+      codexLedgerBaseline,
+      expectedAssistantMessage,
+    );
+    if (
+      terminalObservationBeforeDeadline({
+        observed: turnId !== null,
+        deadline: traceDeadline,
+        now: bootNow,
+      })
+    )
+      return { records, turnId };
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -827,16 +834,26 @@ try {
   recordInteractivePhase("model-request");
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
-  await waitForCodexTurnTerminal(traceDeadline);
+  const terminal = await waitForCodexTurnTerminal(traceDeadline);
   const hookStatus = codexOwnedStopHookStatusAfterBaseline(
-    readCodexSessionLedgerRecords(homeDescriptor),
+    terminal.records,
     codexLedgerBaseline,
+    terminal.turnId,
   );
+  const recordHookStatus = () => recordInteractivePhase(`hook-${hookStatus}`);
   if (hookStatus !== "completed") {
-    recordInteractivePhase(`hook-${hookStatus}`);
+    recordTerminalObservationBeforeDeadline({
+      deadline: traceDeadline,
+      now: bootNow,
+      record: recordHookStatus,
+    });
     throw new Error("integration.codex.hook-terminal");
   }
-  recordInteractivePhase("hook-completed");
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: recordHookStatus,
+  });
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,

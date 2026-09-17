@@ -35,7 +35,7 @@ const sameCodexLedgerIdentity = (current, prior) =>
   current.uid === prior.uid &&
   current.gid === prior.gid;
 
-const ownedStopHookStatus = (entry) => {
+const ownedStopHookStatus = (entry, expectedTurnId) => {
   const run = entry?.payload?.run;
   if (
     entry?.type !== "event_msg" ||
@@ -46,9 +46,7 @@ const ownedStopHookStatus = (entry) => {
   )
     return null;
   if (
-    typeof entry.payload.turn_id !== "string" ||
-    entry.payload.turn_id.length < 1 ||
-    entry.payload.turn_id.length > 256 ||
+    entry.payload.turn_id !== expectedTurnId ||
     !["completed", "failed"].includes(run.status) ||
     !Number.isSafeInteger(run.duration_ms) ||
     run.duration_ms < 0 ||
@@ -108,7 +106,7 @@ export const boundedRequestLedger = (value) => {
   return Object.freeze(value.map((entry) => Object.freeze({ ...entry })));
 };
 
-export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
+const codexTurnTerminalId = (ledgers, expectedMessage) => {
   if (
     !Array.isArray(ledgers) ||
     ledgers.length > 8 ||
@@ -154,10 +152,13 @@ export const codexTurnTerminalObserved = (ledgers, expectedMessage) => {
     }
   }
   if (matches.length > 1) throw new Error("integration.codex.session-ledger");
-  return matches.length === 1;
+  return matches[0] ?? null;
 };
 
-export const codexTurnTerminalObservedAfterBaseline = (
+export const codexTurnTerminalObserved = (ledgers, expectedMessage) =>
+  codexTurnTerminalId(ledgers, expectedMessage) !== null;
+
+export const codexTurnTerminalIdAfterBaseline = (
   records,
   baseline,
   expectedMessage,
@@ -199,19 +200,33 @@ export const codexTurnTerminalObservedAfterBaseline = (
       throw new Error("integration.codex.session-ledger");
     if (current.content.length > prior.content.length) changedCount += 1;
   }
-  if (changedCount === 0) return false;
+  if (changedCount === 0) return null;
   if (changedCount !== 1) throw new Error("integration.codex.session-ledger");
-  return codexTurnTerminalObserved(
+  return codexTurnTerminalId(
     records.map(({ content }) => content),
     expectedMessage,
   );
 };
 
-export const codexOwnedStopHookStatusAfterBaseline = (records, baseline) => {
+export const codexTurnTerminalObservedAfterBaseline = (
+  records,
+  baseline,
+  expectedMessage,
+) =>
+  codexTurnTerminalIdAfterBaseline(records, baseline, expectedMessage) !== null;
+
+export const codexOwnedStopHookStatusAfterBaseline = (
+  records,
+  baseline,
+  expectedTurnId,
+) => {
   if (
     !Array.isArray(records) ||
     !Array.isArray(baseline) ||
     baseline.length > 8 ||
+    typeof expectedTurnId !== "string" ||
+    expectedTurnId.length < 1 ||
+    expectedTurnId.length > 256 ||
     records.length !== baseline.length ||
     records.some((record) => !validCodexSessionLedgerRecord(record)) ||
     baseline.some((record) => !validCodexSessionLedgerRecord(record)) ||
@@ -246,7 +261,7 @@ export const codexOwnedStopHookStatusAfterBaseline = (records, baseline) => {
       } catch {
         throw new Error("integration.codex.session-ledger");
       }
-      const status = ownedStopHookStatus(entry);
+      const status = ownedStopHookStatus(entry, expectedTurnId);
       if (status !== null) matches.push(status);
     }
   }

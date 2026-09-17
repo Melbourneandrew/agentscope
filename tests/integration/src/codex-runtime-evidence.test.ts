@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   codexOwnedStopHookStatusAfterBaseline,
+  codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteAcceptanceBaseline,
@@ -703,25 +704,28 @@ describe("Codex bounded native records", () => {
           },
         },
       });
-    expect(codexOwnedStopHookStatusAfterBaseline(baseline, baseline)).toBe(
-      "missing",
-    );
+    expect(
+      codexOwnedStopHookStatusAfterBaseline(baseline, baseline, "turn-1"),
+    ).toBe("missing");
     expect(
       codexOwnedStopHookStatusAfterBaseline(
         [record(`${baseline[0]!.content}${event("completed")}\n`)],
         baseline,
+        "turn-1",
       ),
     ).toBe("completed");
     expect(
       codexOwnedStopHookStatusAfterBaseline(
         [record(`${baseline[0]!.content}${event("failed")}\n`)],
         baseline,
+        "turn-1",
       ),
     ).toBe("failed");
     expect(() =>
       codexOwnedStopHookStatusAfterBaseline(
         [record(`${baseline[0]!.content}${event("completed")}\n`, { ino: 3n })],
         baseline,
+        "turn-1",
       ),
     ).toThrow("integration.codex.session-ledger");
     expect(() =>
@@ -732,6 +736,7 @@ describe("Codex bounded native records", () => {
           ),
         ],
         baseline,
+        "turn-1",
       ),
     ).toThrow("integration.codex.session-ledger");
     expect(() =>
@@ -742,8 +747,34 @@ describe("Codex bounded native records", () => {
           ),
         ],
         baseline,
+        "turn-1",
       ),
     ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexOwnedStopHookStatusAfterBaseline(
+        [record(`${baseline[0]!.content}${event("completed")}\n`)],
+        baseline,
+        "turn-2",
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(
+      codexTurnTerminalIdAfterBaseline(
+        [
+          record(
+            `${baseline[0]!.content}${JSON.stringify({
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                turn_id: "turn-1",
+                last_agent_message: "expected",
+              },
+            })}\n`,
+          ),
+        ],
+        baseline,
+        "expected",
+      ),
+    ).toBe("turn-1");
   });
 
   it("reads one bounded JSON response and rejects overflow or malformed data", async () => {

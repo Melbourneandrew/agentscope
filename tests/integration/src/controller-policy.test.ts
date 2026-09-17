@@ -174,7 +174,6 @@ describe("integration cleanup authority", () => {
     );
     for (const phase of [
       "trace-terminal",
-      "hook-completed",
       "trace-settlement",
       "trace-acceptance",
       "trace-reporter-settled",
@@ -185,7 +184,7 @@ describe("integration cleanup authority", () => {
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
     expect(scenario).toContain("recordInteractivePhase(`hook-${hookStatus}`)");
-    for (const phase of ["hook-missing", "hook-failed"])
+    for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
@@ -329,7 +328,26 @@ describe("Codex interactive diagnostic order", () => {
       "await waitForTraceSummary(traceDeadline)",
       settlementPhase,
     );
+    const terminalLedgerRead = scenario.indexOf(
+      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+    );
+    const terminalDeadlinePrecheck = scenario.lastIndexOf(
+      "if (bootNow() >= traceDeadline)",
+      terminalLedgerRead,
+    );
+    const hookClassification = scenario.indexOf(
+      "const hookStatus = codexOwnedStopHookStatusAfterBaseline(",
+      terminalLedgerRead,
+    );
+    const hookPhaseGuard = scenario.indexOf(
+      "recordTerminalObservationBeforeDeadline({",
+      hookClassification,
+    );
     expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
+    expect(terminalDeadlinePrecheck).toBeGreaterThan(-1);
+    expect(terminalLedgerRead).toBeGreaterThan(terminalDeadlinePrecheck);
+    expect(hookClassification).toBeGreaterThan(terminalLedgerRead);
+    expect(hookPhaseGuard).toBeGreaterThan(hookClassification);
     expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
     expect(settlementObservation).toBeGreaterThan(settlementPhase);
     for (let index = 0; index < expected.length; index += 1)

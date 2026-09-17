@@ -263,7 +263,7 @@ describe("integration capability manifest", () => {
       challengeRead,
     );
     const terminalWait = source.indexOf(
-      "  await waitForCodexTurnTerminal(traceDeadline);\n",
+      "  const terminal = await waitForCodexTurnTerminal(traceDeadline);\n",
       traceDeadline,
     );
     const readinessRelease = source.indexOf(
@@ -348,7 +348,7 @@ describe("integration capability manifest", () => {
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
     const terminalObservation = source.indexOf(
-      "      observed: codexTurnTerminalObservedAfterBaseline(\n",
+      "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
     );
     expect(source).not.toContain("localSqliteAcceptanceBaseline");
     expect(source).not.toContain("localSqliteAcceptanceObservedAfterBaseline");
