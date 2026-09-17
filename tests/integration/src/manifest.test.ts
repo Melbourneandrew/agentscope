@@ -339,8 +339,8 @@ describe("integration capability manifest", () => {
     );
     expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(terminalWait).toBeLessThan(traceSettlementPhase);
-    expect(traceSettlementPhase).toBeLessThan(codexJoin);
+    expect(terminalWait).toBeLessThan(codexJoin);
+    expect(codexJoin).toBeLessThan(traceSettlementPhase);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
@@ -390,7 +390,7 @@ describe("integration capability manifest", () => {
       "    process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error) =>",
       lifecycleSettlement,
     );
-    expect(terminalCompletion).toBeGreaterThan(lifecycleSettlement);
+    expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
     const traceSettlementFunction = source.slice(
       source.indexOf("const waitForTraceSettlement ="),
@@ -399,8 +399,11 @@ describe("integration capability manifest", () => {
     expect(
       traceSettlementFunction.match(/!terminalObservationBeforeDeadline\(\{/gu),
     ).toHaveLength(1);
-    expect(traceSettlementFunction).toContain(
-      "await publishTerminalCompletionBeforeDeadline({",
+    expect(traceSettlementFunction).not.toContain(
+      "publishTerminalCompletionBeforeDeadline",
+    );
+    expect(source).toContain(
+      "  await publishTerminalCompletionBeforeDeadline({",
     );
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(

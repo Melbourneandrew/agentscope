@@ -256,10 +256,10 @@ const interactivePhases = Object.freeze([
   "tui-start",
   "model-request",
   "trace-terminal",
+  "tui-exit",
   "trace-settlement",
   "trace-acceptance",
   "trace-reporter-settled",
-  "tui-exit",
   "trace-search",
   "trace-search-result",
   "verify",
@@ -698,17 +698,7 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
-  await publishTerminalCompletionBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-reporter-settled"),
-    publish: () =>
-      new Promise((resolve, reject) => {
-        process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
-          error === null || error === undefined ? resolve() : reject(error),
-        );
-      }),
-  });
+  recordInteractivePhase("trace-reporter-settled");
 };
 const waitForTraceSummary = async (traceDeadline) => {
   if (!localSqliteReporterSettled(localSqliteLifecycleDescriptor))
@@ -801,10 +791,20 @@ try {
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
   await waitForCodexTurnTerminal(traceDeadline);
+  await publishTerminalCompletionBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("tui-exit"),
+    publish: () =>
+      new Promise((resolve, reject) => {
+        process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        );
+      }),
+  });
+  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   recordInteractivePhase("trace-settlement");
   await waitForTraceSettlement(traceDeadline);
-  recordInteractivePhase("tui-exit");
-  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   const summary = await waitForTraceSummary(traceDeadline);
   recordInteractivePhase("verify");
   if (readFileSync(hookPath, "utf8") !== originalHooks)
