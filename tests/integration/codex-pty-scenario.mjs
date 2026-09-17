@@ -273,6 +273,11 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
+  "trace-search-record-count",
+  "trace-search-shape",
+  "trace-search-ambiguous",
+  "trace-search-harness",
+  "trace-search-locator",
   "hook-direct-probe-accepted",
   "hook-direct-probe-failed",
   "hook-no-operational-state",
@@ -736,19 +741,28 @@ const readTraceSummary = async (traceDeadline) => {
   )
     throw new Error("integration.codex.trace-deadline");
   const records = parseMachine(stdout, "agentscope traces search");
-  if (
-    records.length !== 1 ||
-    !Array.isArray(records[0]?.summaries) ||
-    records[0].summaries.length > 1
-  )
-    throw new Error("integration.codex.trace-search");
+  if (records.length !== 1) {
+    recordInteractivePhase("trace-search-record-count");
+    throw new Error("integration.codex.trace-search-record-count");
+  }
+  if (!Array.isArray(records[0]?.summaries)) {
+    recordInteractivePhase("trace-search-shape");
+    throw new Error("integration.codex.trace-search-shape");
+  }
+  if (records[0].summaries.length > 1) {
+    recordInteractivePhase("trace-search-ambiguous");
+    throw new Error("integration.codex.trace-search-ambiguous");
+  }
   if (records[0].summaries.length === 0) return null;
   const summary = records[0].summaries[0];
-  if (
-    summary?.harness !== "codex" ||
-    typeof summary?.locator?.traceId !== "string"
-  )
-    throw new Error("integration.codex.trace-search");
+  if (summary?.harness !== "codex") {
+    recordInteractivePhase("trace-search-harness");
+    throw new Error("integration.codex.trace-search-harness");
+  }
+  if (typeof summary?.locator?.traceId !== "string") {
+    recordInteractivePhase("trace-search-locator");
+    throw new Error("integration.codex.trace-search-locator");
+  }
   if (
     !terminalObservationBeforeDeadline({
       observed: true,
