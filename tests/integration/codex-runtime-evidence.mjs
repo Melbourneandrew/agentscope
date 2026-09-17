@@ -151,6 +151,53 @@ const tracingDurationMilliseconds = (line, field) => {
 };
 
 /**
+ * Returns one terminal Stop command outcome and its complete observed vendor
+ * span from the same descriptor snapshot. The span includes vendor mediation,
+ * so it is only a proximity observation and never proof of the launcher's
+ * internal deadline.
+ *
+ * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
+ * @returns {{outcome: "completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error", durationMilliseconds: number} | undefined}
+ */
+export const inspectCodexStopHookCommand = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
+  const matches = [];
+  for (const line of source.split("\n")) {
+    if (
+      !line.includes("codex.hooks.command") ||
+      !/^.*hook\.event_name=(?:"Stop"|Stop)(?:[\s}]).*$/u.test(line)
+    )
+      continue;
+    const eventFields = [
+      ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    const outcomeFields = [
+      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    if (eventFields.length !== 1 || outcomeFields.length !== 1)
+      throw new Error("integration.codex.hook-log");
+    const outcome =
+      /^hook\.command_outcome=(?:")?(completed|timeout|spawn_error|stdin_error|wait_error)(?:")?$/u.exec(
+        outcomeFields[0][0],
+      )?.[1];
+    if (outcome === undefined) throw new Error("integration.codex.hook-log");
+    matches.push(
+      Object.freeze({
+        outcome,
+        durationMilliseconds:
+          tracingDurationMilliseconds(line, "time\\.busy") +
+          tracingDurationMilliseconds(line, "time\\.idle"),
+      }),
+    );
+  }
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1 || matches[0].durationMilliseconds > 120_000)
+    throw new Error("integration.codex.hook-log");
+  return matches[0];
+};
+
+/**
  * Returns the complete observed SessionStart command-span duration. Because the
  * installed non-Stop launcher exits before capture, this is a conservative
  * upper bound on vendor mediation before the launcher's first instruction.

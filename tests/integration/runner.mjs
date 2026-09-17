@@ -46,6 +46,8 @@ const interactivePhases = Object.freeze([
   "hook-command-spawn-error",
   "hook-command-stdin-error",
   "hook-command-wait-error",
+  "hook-command-completed-before-budget-boundary",
+  "hook-command-completed-near-budget-boundary",
   "trace-search-record-count",
   "trace-search-shape",
   "trace-search-ambiguous",

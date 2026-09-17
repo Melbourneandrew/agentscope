@@ -188,6 +188,8 @@ describe("integration cleanup authority", () => {
       "hook-command-spawn-error",
       "hook-command-stdin-error",
       "hook-command-wait-error",
+      "hook-command-completed-before-budget-boundary",
+      "hook-command-completed-near-budget-boundary",
     ]) {
       expect(scenario).toContain(`"${phase}"`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
@@ -310,6 +312,8 @@ describe("Codex interactive diagnostic order", () => {
       "hook-command-spawn-error",
       "hook-command-stdin-error",
       "hook-command-wait-error",
+      "hook-command-completed-before-budget-boundary",
+      "hook-command-completed-near-budget-boundary",
       "trace-search-record-count",
       "trace-search-shape",
       "trace-search-ambiguous",

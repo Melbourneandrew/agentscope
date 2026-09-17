@@ -25,6 +25,18 @@ export function codexSessionStartMediationUpperBoundMilliseconds(input: {
   directoryPath: string;
 }): number | undefined;
 
+export function inspectCodexStopHookCommand(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | Readonly<{
+      outcome:
+        "completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error";
+      durationMilliseconds: number;
+    }>
+  | undefined;
+
 export function codexTurnTerminalObserved(
   ledgers: readonly string[],
   expectedMessage: string,
