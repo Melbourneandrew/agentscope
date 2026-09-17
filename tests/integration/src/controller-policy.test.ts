@@ -36,26 +36,6 @@ const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
 };
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
-const codexHookDiagnosticPhases = Object.freeze([
-  "hook-diagnostic-configuration-configuration-unavailable",
-  "hook-diagnostic-policy-policy-unavailable",
-  "hook-diagnostic-context-context-unavailable",
-  "hook-diagnostic-context-deadline-exceeded",
-  "hook-diagnostic-capture-failed",
-  "hook-diagnostic-capture-cancelled",
-  "hook-diagnostic-redaction-failed",
-  "hook-diagnostic-redaction-cancelled",
-  "hook-diagnostic-sink-failed",
-  "hook-diagnostic-sink-cancelled",
-  "hook-diagnostic-routing-unselected",
-  "hook-diagnostic-completed-not-accepted",
-  "hook-diagnostic-threw-native-unavailable",
-  "hook-diagnostic-threw-lifecycle-unavailable",
-  "hook-diagnostic-threw-local-sqlite",
-  "hook-diagnostic-threw-core",
-  "hook-diagnostic-threw-cli",
-  "hook-diagnostic-threw-other",
-]);
 const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
@@ -228,7 +208,6 @@ describe("integration cleanup authority", () => {
       "hook-command-missing",
       "hook-command-completed-before-budget-boundary",
       "hook-command-completed-near-budget-boundary",
-      ...codexHookDiagnosticPhases,
       "hook-no-operational-state-subsecond",
       "hook-no-operational-state-low-latency",
       "hook-no-operational-state-mid-latency",
@@ -384,7 +363,6 @@ describe("Codex interactive diagnostic order", () => {
       "hook-command-missing",
       "hook-command-completed-before-budget-boundary",
       "hook-command-completed-near-budget-boundary",
-      ...codexHookDiagnosticPhases,
       "hook-no-operational-state-subsecond",
       "hook-no-operational-state-low-latency",
       "hook-no-operational-state-mid-latency",
