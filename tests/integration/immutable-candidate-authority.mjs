@@ -5,15 +5,13 @@ const fail = () => {
 };
 export const ptyExecutionFailurePredicates = Object.freeze([
   "child-failure",
-  "integration.fixture.codex-acceptance-destination",
-  "integration.fixture.codex-acceptance-routing",
   "integration.fixture.codex-bootstrap",
-  "integration.fixture.codex-diagnostic-destination",
-  "integration.fixture.codex-diagnostic-routing",
+  "integration.fixture.codex-destination",
   "integration.fixture.codex-hook-direct-probe-setup",
   "integration.fixture.codex-install",
   "integration.fixture.codex-installed-status",
   "integration.fixture.codex-init",
+  "integration.fixture.codex-routing",
   "integration.fixture.codex-hook-accepted-without-trace",
   "integration.fixture.codex-hook-capture-suppressed",
   "integration.fixture.codex-hook-delivery-deadline",

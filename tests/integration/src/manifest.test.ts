@@ -391,6 +391,10 @@ describe("integration capability manifest", () => {
     const joinedSearch = traceSummaryFunction.indexOf(
       "  const { stdout } = await run(\n",
     );
+    const exactSessionFilter = traceSummaryFunction.indexOf(
+      '      "--session",\n      codexSessionId,\n',
+      joinedSearch,
+    );
     const guardedRawResult = traceSummaryFunction.indexOf(
       "    !terminalObservationBeforeDeadline({\n",
       joinedSearch,
@@ -412,6 +416,8 @@ describe("integration capability manifest", () => {
     expect(acceptancePhase).toBeGreaterThan(reporterSettledPhase);
     expect(traceSearchResultPhase).toBeGreaterThan(acceptancePhase);
     expect(joinedSearch).toBeGreaterThan(-1);
+    expect(exactSessionFilter).toBeGreaterThan(joinedSearch);
+    expect(guardedRawResult).toBeGreaterThan(exactSessionFilter);
     expect(guardedRawResult).toBeGreaterThan(joinedSearch);
     expect(resultParsing).toBeGreaterThan(guardedRawResult);
     expect(postParseCutoff).toBeGreaterThan(resultParsing);
