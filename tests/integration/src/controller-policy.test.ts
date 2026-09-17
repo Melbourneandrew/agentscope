@@ -292,6 +292,8 @@ describe("Codex interactive diagnostic order", () => {
       "tui-start",
       "model-request",
       "trace-terminal",
+      "tui-exit",
+      "trace-settlement",
       "trace-search",
       "trace-search-record-count",
       "trace-search-shape",
@@ -301,8 +303,6 @@ describe("Codex interactive diagnostic order", () => {
       "trace-reporter-settled",
       "trace-acceptance",
       "trace-search-result",
-      "tui-exit",
-      "trace-settlement",
       "verify",
     ];
     const phases = (source: string) => {
@@ -357,7 +357,7 @@ describe("Codex interactive diagnostic order", () => {
     expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
     expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
     expect(traceObservation).toBeGreaterThan(terminalObservation);
-    expect(settlementPhase).toBeGreaterThan(traceObservation);
+    expect(settlementPhase).toBeLessThan(traceObservation);
     for (let index = 0; index < expected.length; index += 1)
       expect(expected.slice(0, index + 1).at(-1)).toBe(expected[index]);
   });

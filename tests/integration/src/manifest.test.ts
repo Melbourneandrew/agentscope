@@ -281,7 +281,7 @@ describe("integration capability manifest", () => {
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
       modelRequest,
     );
-    const traceQueryBeforeJoin = source.indexOf(
+    const traceQueryAfterJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
       terminalWait,
     );
@@ -339,9 +339,9 @@ describe("integration capability manifest", () => {
     );
     expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(terminalWait).toBeLessThan(traceQueryBeforeJoin);
-    expect(traceQueryBeforeJoin).toBeLessThan(codexJoin);
+    expect(terminalWait).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
+    expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
@@ -471,15 +471,14 @@ describe("integration capability manifest", () => {
       "  completed = true;\n",
       guardedEvidenceWrite,
     );
-    expect(evidenceEncoding).toBeGreaterThan(traceQueryBeforeJoin);
+    expect(evidenceEncoding).toBeGreaterThan(traceQueryAfterJoin);
     expect(guardedEvidenceWrite).toBeGreaterThan(evidenceEncoding);
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
     expect(codexJoin).toBeGreaterThan(modelRequest);
-    expect(terminalWait).toBeLessThan(traceQueryBeforeJoin);
-    expect(traceQueryBeforeJoin).toBeLessThan(codexJoin);
+    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(
       source.indexOf("  await modelGateway.settle();\n", modelRequest),
     ).toBeLessThan(terminalWait);
