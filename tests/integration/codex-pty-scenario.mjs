@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  codexOwnedStopHookStatusAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
@@ -252,6 +253,9 @@ const interactivePhases = Object.freeze([
   "tui-start",
   "model-request",
   "trace-terminal",
+  "hook-missing",
+  "hook-failed",
+  "hook-completed",
   "tui-exit",
   "trace-settlement",
   "trace-search",
@@ -824,6 +828,15 @@ try {
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
   await waitForCodexTurnTerminal(traceDeadline);
+  const hookStatus = codexOwnedStopHookStatusAfterBaseline(
+    readCodexSessionLedgerRecords(homeDescriptor),
+    codexLedgerBaseline,
+  );
+  if (hookStatus !== "completed") {
+    recordInteractivePhase(`hook-${hookStatus}`);
+    throw new Error("integration.codex.hook-terminal");
+  }
+  recordInteractivePhase("hook-completed");
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,

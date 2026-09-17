@@ -143,6 +143,7 @@ describe("integration controller policy", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed integration authority matrix
 describe("integration cleanup authority", () => {
   it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
     const source = readFileSync(
@@ -173,6 +174,7 @@ describe("integration cleanup authority", () => {
     );
     for (const phase of [
       "trace-terminal",
+      "hook-completed",
       "trace-settlement",
       "trace-acceptance",
       "trace-reporter-settled",
@@ -182,6 +184,9 @@ describe("integration cleanup authority", () => {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
+    expect(scenario).toContain("recordInteractivePhase(`hook-${hookStatus}`)");
+    for (const phase of ["hook-missing", "hook-failed"])
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
@@ -284,6 +289,9 @@ describe("Codex interactive diagnostic order", () => {
       "tui-start",
       "model-request",
       "trace-terminal",
+      "hook-missing",
+      "hook-failed",
+      "hook-completed",
       "tui-exit",
       "trace-settlement",
       "trace-search",

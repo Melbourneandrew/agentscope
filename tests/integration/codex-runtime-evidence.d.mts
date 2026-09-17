@@ -18,6 +18,11 @@ export function codexTurnTerminalObservedAfterBaseline(
   expectedMessage: string,
 ): boolean;
 
+export function codexOwnedStopHookStatusAfterBaseline(
+  ledgers: readonly CodexSessionLedgerRecord[],
+  baseline: readonly CodexSessionLedgerRecord[],
+): "completed" | "failed" | "missing";
+
 export interface CodexSessionLedgerRecord {
   readonly relativePath: string;
   readonly dev: bigint;

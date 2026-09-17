@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
+  codexOwnedStopHookStatusAfterBaseline,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteAcceptanceBaseline,
@@ -669,6 +670,78 @@ describe("Codex bounded native records", () => {
         ],
         baseline,
         message,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+  });
+
+  it("classifies only the exact owned Stop hook event appended after baseline", () => {
+    const record = (content: string, overrides = {}) => ({
+      relativePath:
+        ".codex/sessions/2026/09/16/rollout-2026-09-16T00:00:00-test.jsonl",
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100600n,
+      uid: 1000n,
+      gid: 1000n,
+      content,
+      ...overrides,
+    });
+    const baseline = [record(`${JSON.stringify({ type: "session_meta" })}\n`)];
+    const event = (status: "completed" | "failed", overrides = {}) =>
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "hook_completed",
+          turn_id: "turn-1",
+          run: {
+            event_name: "stop",
+            handler_type: "command",
+            status_message: "Agentscope trace capture",
+            status,
+            duration_ms: 123,
+            ...overrides,
+          },
+        },
+      });
+    expect(codexOwnedStopHookStatusAfterBaseline(baseline, baseline)).toBe(
+      "missing",
+    );
+    expect(
+      codexOwnedStopHookStatusAfterBaseline(
+        [record(`${baseline[0]!.content}${event("completed")}\n`)],
+        baseline,
+      ),
+    ).toBe("completed");
+    expect(
+      codexOwnedStopHookStatusAfterBaseline(
+        [record(`${baseline[0]!.content}${event("failed")}\n`)],
+        baseline,
+      ),
+    ).toBe("failed");
+    expect(() =>
+      codexOwnedStopHookStatusAfterBaseline(
+        [record(`${baseline[0]!.content}${event("completed")}\n`, { ino: 3n })],
+        baseline,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexOwnedStopHookStatusAfterBaseline(
+        [
+          record(
+            `${baseline[0]!.content}${event("completed")}\n${event("completed")}\n`,
+          ),
+        ],
+        baseline,
+      ),
+    ).toThrow("integration.codex.session-ledger");
+    expect(() =>
+      codexOwnedStopHookStatusAfterBaseline(
+        [
+          record(
+            `${baseline[0]!.content}${event("completed", { duration_ms: 3_001 })}\n`,
+          ),
+        ],
+        baseline,
       ),
     ).toThrow("integration.codex.session-ledger");
   });
