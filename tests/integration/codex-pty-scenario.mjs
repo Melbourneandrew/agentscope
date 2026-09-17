@@ -899,7 +899,11 @@ try {
       env: {
         ...process.env,
         CODEX_HOME: codexHome,
-        RUST_LOG: "codex_hooks::engine::command_runner=trace",
+        // Select the authenticated Codex hooks crate rather than one private
+        // module target. The command span remains the only accepted record,
+        // while the crate-level directive is stable across compiler/module
+        // target rendering and still excludes unrelated TUI/model content.
+        RUST_LOG: "codex_hooks=trace",
       },
       inherit: true,
     },
@@ -936,7 +940,6 @@ try {
     now: bootNow,
     record: () => recordInteractivePhase("trace-settlement"),
   });
-  const summary = await waitForTraceSummary(traceDeadline);
   const sessionStartCommandDurationMilliseconds =
     inspectDiagnosticBeforeDeadline({
       deadline: traceDeadline,
@@ -947,11 +950,11 @@ try {
           directoryPath: codexDiagnosticLogDirectory,
         }),
     });
-  if (
-    sessionStartCommandDurationMilliseconds === undefined ||
-    sessionStartCommandDurationMilliseconds > 1_000
-  )
+  if (sessionStartCommandDurationMilliseconds === undefined)
+    throw new Error("integration.codex.hook-session-start-missing");
+  if (sessionStartCommandDurationMilliseconds > 1_000)
     throw new Error("integration.codex.hook-mediation");
+  const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
