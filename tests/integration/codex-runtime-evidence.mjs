@@ -1226,6 +1226,55 @@ export const localSqliteAcceptanceObservedAfterBaseline = (
   if (matches.length > 1) throw operationalStateError();
   return matches.length === 1;
 };
+
+const operationalOutcomePhase = (entry) => {
+  const key = `${entry.scope}:${entry.stage}:${entry.outcome}`;
+  return (
+    {
+      "hook:hook-started:suppressed": "hook-start-suppressed",
+      "hook:hook-started:deadline-exceeded": "hook-start-deadline",
+      "hook:capture:suppressed": "hook-capture-suppressed",
+      "hook:capture:deadline-exceeded": "hook-capture-deadline",
+      "hook:redaction:suppressed": "hook-redaction-suppressed",
+      "hook:redaction:deadline-exceeded": "hook-redaction-deadline",
+      "hook:routing:no-route": "hook-routing-no-route",
+      "connection:delivery:rejected": "hook-delivery-rejected",
+      "connection:delivery:unavailable": "hook-delivery-unavailable",
+      "connection:delivery:deadline-exceeded": "hook-delivery-deadline",
+      "connection:delivery:outcome-unknown": "hook-delivery-unknown",
+      "connection:remote-acceptance:accepted": "hook-accepted-without-trace",
+    }[key] ?? "hook-operational-unclassified"
+  );
+};
+
+export const classifyLocalSqliteOutcomeAfterBaseline = (
+  healthDescriptor,
+  baseline,
+) => {
+  // Reuse the acceptance oracle first so baseline shape, retained history,
+  // replacement keys, loss accounting, and descriptor identity stay governed
+  // by one closed parser. A second stable read selects only a sanitized phase.
+  if (localSqliteAcceptanceObservedAfterBaseline(healthDescriptor, baseline))
+    return "hook-accepted-without-trace";
+  const document = readOperationalState(healthDescriptor, "retry");
+  if (document === undefined) return "pending";
+  if (document === null) return "no-operational-state";
+  if (
+    document.nextSequence < baseline.nextSequence ||
+    !preservesHistory(document, baseline, "diagnostics") ||
+    !preservesHistory(document, baseline, "health", healthKey) ||
+    !preservesHistory(document, baseline, "checkpoints", checkpointKey)
+  )
+    throw operationalStateError();
+  const current = document.health
+    .filter(
+      ({ sequence }) =>
+        sequence >= baseline.nextSequence && sequence < document.nextSequence,
+    )
+    .sort((left, right) => right.sequence - left.sequence);
+  if (current.length === 0) return "no-operational-state";
+  return operationalOutcomePhase(current[0]);
+};
 export const settledCodexLedgerSnapshot = ({
   before,
   first,

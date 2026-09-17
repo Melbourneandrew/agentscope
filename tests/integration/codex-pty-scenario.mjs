@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  classifyLocalSqliteOutcomeAfterBaseline,
   classifyCodexSettledTraceObservation,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
@@ -30,7 +31,9 @@ import {
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
+  localSqliteAcceptanceBaseline,
   openLocalSqliteLifecycle,
+  openOperationalStateHealth,
   inspectDiagnosticBeforeDeadline,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
@@ -267,6 +270,8 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
+let operationalStateHealthDescriptor;
+let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = -1;
@@ -289,6 +294,20 @@ const interactivePhases = Object.freeze([
   "hook-command-wait-error",
   "hook-command-completed-before-budget-boundary",
   "hook-command-completed-near-budget-boundary",
+  "hook-no-operational-state",
+  "hook-start-suppressed",
+  "hook-start-deadline",
+  "hook-capture-suppressed",
+  "hook-capture-deadline",
+  "hook-redaction-suppressed",
+  "hook-redaction-deadline",
+  "hook-routing-no-route",
+  "hook-delivery-rejected",
+  "hook-delivery-unavailable",
+  "hook-delivery-deadline",
+  "hook-delivery-unknown",
+  "hook-accepted-without-trace",
+  "hook-operational-unclassified",
   "trace-search-record-count",
   "trace-search-shape",
   "trace-search-ambiguous",
@@ -825,11 +844,26 @@ const waitForTraceSummary = async (traceDeadline) => {
       break;
     }
     if (terminalCut === "missing") {
-      const nearBudgetBoundary =
-        hookCommandObservation.durationMilliseconds >= 4_900;
-      const phase = nearBudgetBoundary
-        ? "hook-command-completed-near-budget-boundary"
-        : "hook-command-completed-before-budget-boundary";
+      const operationalPhase = classifyLocalSqliteOutcomeAfterBaseline(
+        operationalStateHealthDescriptor,
+        operationalStateBaseline,
+      );
+      if (operationalPhase === "pending") {
+        await waitWithinObservationDeadline({
+          deadline: traceDeadline,
+          maximumWaitMilliseconds: 20,
+          now: bootNow,
+          wait: (milliseconds) =>
+            new Promise((resolve) => setTimeout(resolve, milliseconds)),
+        });
+        continue;
+      }
+      const phase =
+        operationalPhase === "no-operational-state"
+          ? hookCommandObservation.durationMilliseconds >= 4_900
+            ? "hook-command-completed-near-budget-boundary"
+            : "hook-no-operational-state"
+          : operationalPhase;
       recordTerminalObservationBeforeDeadline({
         deadline: traceDeadline,
         now: bootNow,
@@ -893,6 +927,10 @@ try {
   )
     throw new Error("integration.codex.hook-configuration");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+  operationalStateHealthDescriptor = openOperationalStateHealth(homeDescriptor);
+  operationalStateBaseline = localSqliteAcceptanceBaseline(
+    operationalStateHealthDescriptor,
+  );
   recordInteractivePhase("installed-status");
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
@@ -1093,6 +1131,8 @@ try {
     closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)
     closeSync(codexDiagnosticLogDirectoryDescriptor);
+  if (operationalStateHealthDescriptor !== undefined)
+    closeSync(operationalStateHealthDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {

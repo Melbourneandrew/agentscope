@@ -20,6 +20,7 @@ import {
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
   classifyCodexStopHookCommand,
+  classifyLocalSqliteOutcomeAfterBaseline,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
@@ -646,6 +647,7 @@ describe("Codex bounded native ledgers", () => {
 describe("Codex Local SQLite reporter settlement", () => {
   it.runIf(process.platform === "linux")(
     "requires a new durable Local SQLite acceptance after the exact baseline",
+    // eslint-disable-next-line max-lines-per-function -- one closed operational-state adversary matrix
     () => {
       const root = mkdtempSync(join(tmpdir(), "agentscope-codex-health-"));
       const health = join(root, ".agentscope", "health");
@@ -693,6 +695,9 @@ describe("Codex Local SQLite reporter settlement", () => {
             baseline,
           ),
         ).toBe(true);
+        expect(
+          classifyLocalSqliteOutcomeAfterBaseline(healthDescriptor, baseline),
+        ).toBe("hook-accepted-without-trace");
         const afterAcceptance = localSqliteAcceptanceBaseline(healthDescriptor);
         expect(
           localSqliteAcceptanceObservedAfterBaseline(
@@ -700,6 +705,53 @@ describe("Codex Local SQLite reporter settlement", () => {
             afterAcceptance,
           ),
         ).toBe(false);
+        expect(
+          classifyLocalSqliteOutcomeAfterBaseline(
+            healthDescriptor,
+            afterAcceptance,
+          ),
+        ).toBe("no-operational-state");
+        for (const [scope, stage, outcome, receipt, expected] of [
+          ["hook", "hook-started", "suppressed", null, "hook-start-suppressed"],
+          [
+            "hook",
+            "capture",
+            "deadline-exceeded",
+            null,
+            "hook-capture-deadline",
+          ],
+          ["hook", "routing", "no-route", null, "hook-routing-no-route"],
+          [
+            "connection",
+            "delivery",
+            "unavailable",
+            "unavailable",
+            "hook-delivery-unavailable",
+          ],
+        ] as const) {
+          const healthEntry = {
+            ...accepted.health[0],
+            scope,
+            stage,
+            outcome,
+            receipt,
+            ...(scope === "hook"
+              ? { destinationType: undefined, connectionId: undefined }
+              : {}),
+          };
+          const normalizedHealthEntry = Object.fromEntries(
+            Object.entries(healthEntry).filter(
+              ([, value]) => value !== undefined,
+            ),
+          );
+          writeFileSync(
+            statePath,
+            `${JSON.stringify({ ...accepted, health: [normalizedHealthEntry] })}\n`,
+          );
+          expect(
+            classifyLocalSqliteOutcomeAfterBaseline(healthDescriptor, baseline),
+          ).toBe(expected);
+        }
         writeFileSync(
           statePath,
           `${JSON.stringify({
