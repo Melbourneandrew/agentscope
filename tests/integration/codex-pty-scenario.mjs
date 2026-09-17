@@ -616,9 +616,18 @@ const projectTraceGraph = (graph, traceId) => {
   };
 };
 const readTraceSummary = async (traceDeadline) => {
-  const records = await cli(
-    ["traces", "search", "--destination", "local", "--limit", "50"],
-    "agentscope traces search",
+  const { stdout } = await run(
+    agentscope,
+    [
+      "traces",
+      "search",
+      "--destination",
+      "local",
+      "--limit",
+      "50",
+      "--output",
+      "json",
+    ],
     { monotonicDeadline: traceDeadline },
   );
   recordTerminalObservationBeforeDeadline({
@@ -626,6 +635,7 @@ const readTraceSummary = async (traceDeadline) => {
     now: bootNow,
     record: () => recordInteractivePhase("trace-search-result"),
   });
+  const records = parseMachine(stdout, "agentscope traces search");
   if (
     records.length !== 1 ||
     !Array.isArray(records[0]?.summaries) ||
