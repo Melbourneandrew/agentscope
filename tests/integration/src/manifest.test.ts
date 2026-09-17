@@ -361,8 +361,8 @@ describe("integration capability manifest", () => {
       '    record: () => recordInteractivePhase("trace-search-result"),\n',
     );
     expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
-    expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(terminalWait).toBeLessThan(codexJoin);
+    expect(terminalWait).toBeLessThan(traceTerminalPhase);
+    expect(traceTerminalPhase).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
