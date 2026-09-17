@@ -358,6 +358,14 @@ describe("integration capability manifest", () => {
       "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
       acceptanceObservation,
     );
+    const postReporterDeadline = source.indexOf(
+      "    !terminalObservationBeforeDeadline({\n",
+      lifecycleSettlement,
+    );
+    const reporterSettledPhase = source.indexOf(
+      '  recordInteractivePhase("trace-reporter-settled");\n',
+      lifecycleSettlement,
+    );
     const preQueryDeadline = source.indexOf(
       '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
       lifecycleSettlement,
@@ -376,6 +384,8 @@ describe("integration capability manifest", () => {
     );
     expect(acceptanceObservation).toBeGreaterThan(terminalObservation);
     expect(lifecycleSettlement).toBeGreaterThan(acceptanceObservation);
+    expect(postReporterDeadline).toBeGreaterThan(lifecycleSettlement);
+    expect(reporterSettledPhase).toBeGreaterThan(postReporterDeadline);
     expect(lifecycleSettlement).toBeLessThan(preQueryDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
     const boundedBackoff = source.indexOf(
@@ -392,13 +402,19 @@ describe("integration capability manifest", () => {
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
+    const postJoinDeadline = source.indexOf(
+      "    !terminalObservationBeforeDeadline({\n",
+      codexJoin,
+    );
+    expect(postJoinDeadline).toBeGreaterThan(codexJoin);
+    expect(postJoinDeadline).toBeLessThan(traceSettlementPhase);
     const traceSettlementFunction = source.slice(
       source.indexOf("const waitForTraceSettlement ="),
       source.indexOf("const waitForTraceSummary ="),
     );
     expect(
       traceSettlementFunction.match(/!terminalObservationBeforeDeadline\(\{/gu),
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(traceSettlementFunction).not.toContain(
       "publishTerminalCompletionBeforeDeadline",
     );
