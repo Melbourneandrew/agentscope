@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +17,13 @@ if (process.argv[2] === "descendant") {
     [fileURLToPath(import.meta.url), "descendant"],
     { env: process.env, stdio: "ignore" },
   );
-  writeFileSync(resolve(root, "ready"), String(child.pid));
+  const ready = resolve(root, "ready");
+  writeFileSync(`${ready}.partial`, String(child.pid), {
+    flag: "wx",
+    mode: 0o600,
+  });
+  renameSync(`${ready}.partial`, ready);
+  process.stdout.write("descendant-ready\n");
   if (mode === "hang-descendant") setInterval(() => {}, 1_000);
   else child.unref();
 } else if (mode === "oversized") {

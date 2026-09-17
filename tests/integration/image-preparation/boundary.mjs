@@ -31,6 +31,7 @@ export const maximumPrivateStateFileBytes = 8 * 1024 * 1024;
 export const maximumPrivateStateTotalBytes = 64 * 1024 * 1024;
 const processAbsencePollMilliseconds = 10;
 const processDiagnostics = new WeakMap();
+const timeoutSourcesForTesting = new WeakMap();
 export const digestPattern = /^sha256:[a-f\d]{64}$/u;
 export const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
 export const manifestIdentityPattern = /^sha256-[a-f\d]{64}$/u;
@@ -350,6 +351,30 @@ const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
     workDeadline,
   };
 };
+const armCommandTimeout = (workDeadline, fail) =>
+  setTimeout(
+    () => fail("integration.images.timeout", true, "deadline"),
+    Math.max(1, workDeadline - performance.now()),
+  );
+const applyOutputTimeoutForTesting = (output, expected, fail) => {
+  if (expected !== undefined && Buffer.concat(output).equals(expected))
+    fail("integration.images.timeout", true, "output");
+};
+const recordFirstTimeoutForTesting = (
+  failure,
+  firstFailure,
+  timedOut,
+  timeoutSource,
+) => {
+  if (firstFailure && timedOut && timeoutSource !== undefined)
+    timeoutSourcesForTesting.set(failure, timeoutSource);
+};
+const replaceFailure = (current, replacement) => {
+  const timeoutSource = timeoutSourcesForTesting.get(current);
+  if (timeoutSource !== undefined)
+    timeoutSourcesForTesting.set(replacement, timeoutSource);
+  return replacement;
+};
 // The spawn-through-terminal-join path is one indivisible process authority.
 /* eslint-disable max-lines-per-function */
 const runOwnedCommand = async (
@@ -363,6 +388,7 @@ const runOwnedCommand = async (
     observeProcess,
     signal,
     teardownMilliseconds,
+    timeoutAfterOutputForTesting,
   },
 ) => {
   if (process.platform === "win32" || processInspectionExecutable === undefined)
@@ -392,8 +418,15 @@ const runOwnedCommand = async (
   let diagnosticStderrBytes = 0;
   let outputTruncated = false;
   let failure;
-  const fail = (code, timedOut = false) => {
+  const fail = (code, timedOut = false, timeoutSource) => {
+    const firstFailure = failure === undefined;
     failure ??= fixedError(code, timedOut);
+    recordFirstTimeoutForTesting(
+      failure,
+      firstFailure,
+      timedOut,
+      timeoutSource,
+    );
     killProcessGroup(processGroup);
   };
   const consume = (chunk, retain) => {
@@ -401,8 +434,10 @@ const runOwnedCommand = async (
     if (bytes > maximumBuildOutputBytes) {
       outputTruncated = true;
       fail("integration.images.output");
-    } else if (retain) output.push(chunk);
-    else if (diagnosticStderrBytes < maximumHeaderBytes) {
+    } else if (retain) {
+      output.push(chunk);
+      applyOutputTimeoutForTesting(output, timeoutAfterOutputForTesting, fail);
+    } else if (diagnosticStderrBytes < maximumHeaderBytes) {
       const retained = chunk.subarray(
         0,
         Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
@@ -416,10 +451,7 @@ const runOwnedCommand = async (
   child.stderr.on("data", (chunk) => consume(chunk, false));
   const onAbort = () => fail("integration.images.interrupted");
   signal?.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(
-    () => fail("integration.images.timeout", true),
-    Math.max(1, workDeadline - performance.now()),
-  );
+  const timeout = armCommandTimeout(workDeadline, fail);
   const closed = new Promise((resolveClose) => {
     child.once("error", () => fail("integration.images.command"));
     child.once("close", (code, childSignal) =>
@@ -445,7 +477,10 @@ const runOwnedCommand = async (
       ),
     ]);
     if (result === undefined) {
-      failure = fixedError("integration.images.containment", true);
+      failure = replaceFailure(
+        failure,
+        fixedError("integration.images.containment", true),
+      );
       killProcessGroup(processGroup);
     }
     if (
@@ -457,7 +492,10 @@ const runOwnedCommand = async (
     if (failure === undefined && !processGroupIsAbsent(processGroup))
       failure = fixedError("integration.images.containment");
     if (!killProcessGroup(processGroup))
-      failure = fixedError("integration.images.containment", true);
+      failure = replaceFailure(
+        failure,
+        fixedError("integration.images.containment", true),
+      );
     const absent = await waitForProcessGroupAbsence(
       processGroup,
       Math.max(performance.now(), absenceDeadline),
@@ -488,6 +526,7 @@ const runOwnedCommand = async (
         true,
       );
       error.containmentProved = false;
+      replaceFailure(failure, error);
       processDiagnostics.set(error, processDiagnostic);
       throw error;
     }
@@ -509,6 +548,8 @@ const runOwnedImageCommand = (executable, arguments_, options) =>
   });
 export const readImageProcessDiagnostic = (error) =>
   processDiagnostics.get(error);
+export const readImageTimeoutSourceForTesting = (error) =>
+  timeoutSourcesForTesting.get(error);
 export const runOwnedImageCommandForTesting = (
   executable,
   arguments_,
