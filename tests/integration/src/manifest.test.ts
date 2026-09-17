@@ -387,14 +387,14 @@ describe("integration capability manifest", () => {
       source.indexOf("const waitForCodexTurnTerminal ="),
     );
     const joinedSearch = traceSummaryFunction.indexOf(
-      '    "agentscope traces search",\n',
+      "  const { stdout } = await run(\n",
     );
     const guardedResultPhase = traceSummaryFunction.indexOf(
       "  recordTerminalObservationBeforeDeadline({\n",
       joinedSearch,
     );
     const resultParsing = traceSummaryFunction.indexOf(
-      "  if (\n    records.length !== 1 ||\n",
+      '  const records = parseMachine(stdout, "agentscope traces search");\n',
       guardedResultPhase,
     );
     const postParseCutoff = traceSummaryFunction.lastIndexOf(
