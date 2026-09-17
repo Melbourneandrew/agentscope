@@ -352,7 +352,7 @@ describe("integration capability manifest", () => {
       terminalObservation,
     );
     const lifecycleSettlement = source.indexOf(
-      "    !localSqliteReporterSettled(localSqliteLifecycleDescriptor)\n",
+      "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
       acceptanceObservation,
     );
     const preQueryDeadline = source.indexOf(

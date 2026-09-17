@@ -255,6 +255,8 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-terminal",
   "trace-settlement",
+  "trace-acceptance",
+  "trace-reporter-settled",
   "trace-search-result",
   "trace-search",
   "verify",
@@ -661,8 +663,7 @@ const waitForTraceSummary = async (traceDeadline) => {
     !localSqliteAcceptanceObservedAfterBaseline(
       localSqliteHealthDescriptor,
       localSqliteOperationalBaseline,
-    ) ||
-    !localSqliteReporterSettled(localSqliteLifecycleDescriptor)
+    )
   ) {
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
@@ -673,6 +674,18 @@ const waitForTraceSummary = async (traceDeadline) => {
     });
     remaining();
   }
+  recordInteractivePhase("trace-acceptance");
+  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 100,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
+    remaining();
+  }
+  recordInteractivePhase("trace-reporter-settled");
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-search");

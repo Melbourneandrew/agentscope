@@ -174,6 +174,8 @@ describe("integration cleanup authority", () => {
     for (const phase of [
       "trace-terminal",
       "trace-settlement",
+      "trace-acceptance",
+      "trace-reporter-settled",
       "trace-search",
       "trace-search-result",
     ]) {
