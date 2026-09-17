@@ -65,6 +65,44 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
+function traceSearchUnavailable(result) {
+  if (result.status !== 5 || result.stdout !== "") return false;
+  try {
+    const diagnostic = JSON.parse(result.stderr);
+    return (
+      Object.keys(diagnostic).sort().join(",") ===
+        "category,code,command,schema" &&
+      diagnostic.category === "unavailable" &&
+      diagnostic.code === "traces.unavailable" &&
+      diagnostic.command === "agentscope traces search" &&
+      diagnostic.schema === "agentscope.cli.diagnostic.v1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runTraceSearchUntilAvailable(command, arguments_, options = {}) {
+  const deadline = performance.now() + 5_000;
+  while (true) {
+    const remainingBeforeAttempt = deadline - performance.now();
+    assert.ok(remainingBeforeAttempt > 0);
+    const result = runRaw(command, arguments_, {
+      ...options,
+      timeout: Math.max(1, Math.ceil(remainingBeforeAttempt)),
+    });
+    if (result.status === 0 || !traceSearchUnavailable(result)) return result;
+    const remainingMilliseconds = deadline - performance.now();
+    if (remainingMilliseconds <= 0) return result;
+    Atomics.wait(
+      new Int32Array(new SharedArrayBuffer(4)),
+      0,
+      0,
+      Math.min(25, remainingMilliseconds),
+    );
+  }
+}
+
 function regularFiles(root) {
   const files = [];
   const pending = [root];
@@ -861,7 +899,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.ok(acceptedHookConnections.length >= 1);
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
-    const searchedLocal = runRaw(
+    const searchedLocal = runTraceSearchUntilAvailable(
       executable,
       [
         "traces",
