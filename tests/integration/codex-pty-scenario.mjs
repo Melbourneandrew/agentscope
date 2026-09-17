@@ -775,7 +775,7 @@ const waitForTraceSummary = async (traceDeadline) => {
       localSqliteLifecycleDescriptor,
     );
     const observationClosed = traceDeadline - bootNow() <= 2_500;
-    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 5_000);
+    const queryDeadline = Math.min(traceDeadline - 500, bootNow() + 2_000);
     const candidate = traceSummaryBeforeDeadline({
       summary: observationClosed ? null : await readTraceSummary(queryDeadline),
       deadline: traceDeadline,
