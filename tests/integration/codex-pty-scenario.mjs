@@ -721,7 +721,6 @@ const waitForTraceSummary = async (traceDeadline) => {
     record: () => recordInteractivePhase("trace-search"),
   });
   let summary;
-  let emptySearchCount = 0;
   while (summary === undefined) {
     const candidate = traceSummaryBeforeDeadline({
       summary: await readTraceSummary(traceDeadline),
@@ -735,8 +734,7 @@ const waitForTraceSummary = async (traceDeadline) => {
       summary = candidate;
       break;
     }
-    emptySearchCount += 1;
-    if (emptySearchCount === 20) {
+    if (candidate === null) {
       const operationalStatePath = join(
         agentscopeHome,
         "health",
