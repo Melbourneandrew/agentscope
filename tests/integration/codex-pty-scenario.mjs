@@ -432,12 +432,14 @@ const runDirectHookProbe = async (operationalStatePath) => {
   const diagnosticSessionId = `diagnostic-${scenarioId}`;
   const diagnosticInput = JSON.stringify({
     cwd: worktree,
-    hook_event_name: "SessionStart",
+    hook_event_name: "Stop",
+    last_assistant_message: null,
     model: "fixture-model",
     permission_mode: "bypassPermissions",
     session_id: diagnosticSessionId,
-    source: "startup",
+    stop_hook_active: false,
     transcript_path: null,
+    turn_id: `diagnostic-turn-${scenarioId}`,
   });
   try {
     await run("/bin/sh", ["-lc", installedHookCommand], {
