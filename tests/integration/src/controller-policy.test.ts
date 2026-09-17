@@ -177,7 +177,7 @@ describe("integration cleanup authority", () => {
       "trace-search",
       "trace-search-result",
     ]) {
-      expect(scenario).toContain(`interactiveFailurePhase = "${phase}"`);
+      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
     expect(authority).not.toContain('"integration.fixture.codex-trace"');

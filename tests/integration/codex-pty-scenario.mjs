@@ -247,6 +247,29 @@ let localSqliteLifecycleDescriptor;
 let localSqliteHealthDescriptor;
 let localSqliteOperationalBaseline;
 let interactiveFailurePhase = "bootstrap";
+const interactivePhases = Object.freeze([
+  "bootstrap",
+  "install",
+  "tui-start",
+  "model-request",
+  "tui-exit",
+  "trace-terminal",
+  "trace-settlement",
+  "trace-search-result",
+  "trace-search",
+  "verify",
+]);
+const recordInteractivePhase = (phase) => {
+  if (!interactivePhases.includes(phase))
+    throw new Error("integration.codex.failure-phase");
+  interactiveFailurePhase = phase;
+  writeFileSync(
+    join(ledger, `interactive-phase-${phase}.txt`),
+    `integration.fixture.codex-${phase}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
+recordInteractivePhase(interactiveFailurePhase);
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
 process.setUncaughtExceptionCaptureCallback(() => {
@@ -590,7 +613,7 @@ const readTraceSummary = async (monotonicDeadline) => {
     "agentscope traces search",
     monotonicDeadline === undefined ? undefined : { monotonicDeadline },
   );
-  interactiveFailurePhase = "trace-search-result";
+  recordInteractivePhase("trace-search-result");
   if (
     records.length !== 1 ||
     !Array.isArray(records[0]?.summaries) ||
@@ -652,7 +675,7 @@ const waitForTraceSummary = async (traceDeadline) => {
   }
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
-  interactiveFailurePhase = "trace-search";
+  recordInteractivePhase("trace-search");
   const summary = traceSummaryBeforeDeadline({
     summary: await readTraceSummary(traceDeadline),
     deadline: traceDeadline,
@@ -666,7 +689,7 @@ let completed = false;
 let modelGateway;
 let codexLedgerBaseline;
 try {
-  interactiveFailurePhase = "install";
+  recordInteractivePhase("install");
   await cli(["init", "--yes"], "agentscope init");
   await cli(
     ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
@@ -707,7 +730,7 @@ try {
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
   const traceDeadline = deadline - 3_000;
-  interactiveFailurePhase = "tui-start";
+  recordInteractivePhase("tui-start");
   const codexRun = run(
     codex,
     [
@@ -727,7 +750,7 @@ try {
       inherit: true,
     },
   );
-  interactiveFailurePhase = "model-request";
+  recordInteractivePhase("model-request");
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -735,14 +758,14 @@ try {
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
-  interactiveFailurePhase = "tui-exit";
+  recordInteractivePhase("tui-exit");
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();
-  interactiveFailurePhase = "trace-terminal";
+  recordInteractivePhase("trace-terminal");
   await waitForCodexTurnTerminal(traceDeadline);
-  interactiveFailurePhase = "trace-settlement";
+  recordInteractivePhase("trace-settlement");
   const summary = await waitForTraceSummary(traceDeadline);
-  interactiveFailurePhase = "verify";
+  recordInteractivePhase("verify");
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
   const modelRequests = await readModelRequests();
