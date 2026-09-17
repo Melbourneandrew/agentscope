@@ -216,6 +216,23 @@ describe("integration cleanup authority", () => {
     );
   });
 
+  it("does not reset a scenario deadline after preparation", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;",
+    );
+    expect(source).toContain(
+      "runScenario(selectedPlan, signal, scenarioDeadline)",
+    );
+    expect(source).toContain("scenarioDeadline - performance.now()");
+    expect(source).not.toContain(
+      "const remainingOuterMilliseconds = Math.min(\n    scenarioTimeoutMilliseconds,",
+    );
+  });
+
   it("uses distinct closed npm configuration files for offline harness installation", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
