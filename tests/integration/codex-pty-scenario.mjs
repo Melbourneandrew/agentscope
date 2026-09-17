@@ -313,15 +313,6 @@ const interactivePhases = Object.freeze([
   "hook-delivery-unknown",
   "hook-accepted-without-trace",
   "hook-operational-unclassified",
-  "hook-payload-missing",
-  "hook-payload-shape",
-  "hook-payload-keys",
-  "hook-payload-root",
-  "hook-payload-identity",
-  "hook-payload-permission",
-  "hook-payload-fields",
-  "hook-payload-correlation",
-  "hook-payload-accepted",
   "trace-search-record-count",
   "trace-search-shape",
   "trace-search-ambiguous",
@@ -352,54 +343,6 @@ const codexStopHookCommandFailure = (outcome) => {
   else if (outcome === "wait_error") phase = "hook-command-wait-error";
   else throw new Error("integration.codex.hook-command-outcome");
   return { error: `integration.codex.hook-command-${outcome}`, phase };
-};
-const classifyCodexStopPayload = (value) => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return "shape";
-  const keys = Object.keys(value).sort();
-  const expected = [
-    "cwd",
-    "hook_event_name",
-    "last_assistant_message",
-    "model",
-    "permission_mode",
-    "session_id",
-    "stop_hook_active",
-    "transcript_path",
-    "turn_id",
-  ];
-  if (keys.join("\0") !== expected.join("\0")) return "keys";
-  if (
-    value.hook_event_name !== "Stop" ||
-    typeof value.cwd !== "string" ||
-    !value.cwd.startsWith("/") ||
-    value.cwd.length > 4_096
-  )
-    return "root";
-  const token = (candidate) =>
-    typeof candidate === "string" &&
-    /^[a-z0-9][a-z0-9._:-]{0,127}$/u.test(candidate);
-  if (!token(value.session_id) || !token(value.turn_id) || !token(value.model))
-    return "identity";
-  if (
-    ![
-      "default",
-      "acceptEdits",
-      "plan",
-      "dontAsk",
-      "bypassPermissions",
-    ].includes(value.permission_mode)
-  )
-    return "permission";
-  if (
-    (value.transcript_path !== null &&
-      typeof value.transcript_path !== "string") ||
-    (value.last_assistant_message !== null &&
-      typeof value.last_assistant_message !== "string") ||
-    typeof value.stop_hook_active !== "boolean"
-  )
-    return "fields";
-  return "accepted";
 };
 recordInteractivePhase(interactiveFailurePhase);
 if (process.hasUncaughtExceptionCaptureCallback())
@@ -1005,21 +948,6 @@ try {
     "unchanged",
     1,
   );
-  const diagnosticReplay = process.env.AGENTSCOPE_SCENARIO_ID !== undefined;
-  const stopPayloadPath = join(codexHome, "codex-stop-payload.json");
-  if (diagnosticReplay) {
-    const stopProbePath = join(codexHome, "codex-stop-payload-probe.mjs");
-    writeFileSync(
-      stopProbePath,
-      `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst chunks = [];\nlet size = 0;\nfor await (const chunk of process.stdin) {\n  size += chunk.length;\n  if (size > 65536) process.exit(1);\n  chunks.push(Buffer.from(chunk));\n}\nconst payload = Buffer.concat(chunks);\nwriteFileSync(${JSON.stringify(stopPayloadPath)}, payload, { flag: "wx", mode: 0o600 });\nconst child = spawn(${JSON.stringify(launcher)}, [], { stdio: ["pipe", "inherit", "inherit"] });\nchild.stdin.end(payload);\nchild.once("error", () => process.exit(1));\nchild.once("exit", (code, signal) => process.exit(signal === null && Number.isInteger(code) ? code : 1));\n`,
-      { flag: "wx", mode: 0o700 },
-    );
-    const diagnosticHooks = JSON.parse(originalHooks);
-    diagnosticHooks.hooks.Stop[0].hooks[0].command = `'${process.execPath}' '${stopProbePath}'`;
-    writeFileSync(hookPath, `${JSON.stringify(diagnosticHooks)}\n`, {
-      mode: 0o600,
-    });
-  }
   modelGateway = await openChallengedModelGateway();
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
@@ -1085,42 +1013,8 @@ try {
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
-  const turnTerminal = await waitForCodexTurnTerminal(traceDeadline);
+  await waitForCodexTurnTerminal(traceDeadline);
   recordInteractivePhase("trace-terminal");
-  if (diagnosticReplay) {
-    while (!existsSync(stopPayloadPath)) {
-      if (bootNow() >= traceDeadline) {
-        recordInteractivePhase("hook-payload-missing");
-        throw new Error("integration.codex.hook-payload-missing");
-      }
-      await waitWithinObservationDeadline({
-        deadline: traceDeadline,
-        maximumWaitMilliseconds: 20,
-        now: bootNow,
-        wait: (milliseconds) =>
-          new Promise((resolve) => setTimeout(resolve, milliseconds)),
-      });
-    }
-    const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
-    let stopPayloadClassification = classifyCodexStopPayload(stopPayload);
-    if (
-      stopPayloadClassification === "accepted" &&
-      (stopPayload.session_id !== codexSessionId ||
-        stopPayload.turn_id !== turnTerminal.turnId ||
-        stopPayload.model !== "fixture-model" ||
-        stopPayload.cwd !== worktree ||
-        stopPayload.last_assistant_message !== expectedAssistantMessage ||
-        stopPayload.stop_hook_active !== false)
-    )
-      stopPayloadClassification = "correlation";
-    const stopPayloadPhase = `hook-payload-${stopPayloadClassification}`;
-    recordTerminalObservationBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      record: () => recordInteractivePhase(stopPayloadPhase),
-    });
-    throw new Error(`integration.codex.${stopPayloadPhase}`);
-  }
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
