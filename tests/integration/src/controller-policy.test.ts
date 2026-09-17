@@ -183,6 +183,17 @@ describe("integration cleanup authority", () => {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
+    for (const phase of [
+      "hook-command-timeout",
+      "hook-command-spawn-error",
+      "hook-command-stdin-error",
+      "hook-command-wait-error",
+    ]) {
+      expect(scenario).toContain(`"${phase}"`);
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+    }
+    expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
+    expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
     expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
@@ -295,6 +306,10 @@ describe("Codex interactive diagnostic order", () => {
       "tui-exit",
       "trace-settlement",
       "trace-search",
+      "hook-command-timeout",
+      "hook-command-spawn-error",
+      "hook-command-stdin-error",
+      "hook-command-wait-error",
       "trace-search-record-count",
       "trace-search-shape",
       "trace-search-ambiguous",

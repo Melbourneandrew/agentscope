@@ -19,12 +19,14 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  classifyCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
+  inspectDiagnosticBeforeDeadline,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
@@ -239,6 +241,7 @@ if (worktree !== "/worktree")
   throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");
 for (const directory of [home, agentscopeHome, worktree, ledger])
   mkdirSync(directory, { recursive: true });
+const codexDiagnosticLogDirectory = join(codexHome, "diagnostic-log");
 const homeDescriptor = openSync(
   home,
   constants.O_RDONLY |
@@ -247,6 +250,7 @@ const homeDescriptor = openSync(
     constants.O_NONBLOCK,
 );
 let localSqliteLifecycleDescriptor;
+let codexDiagnosticLogDirectoryDescriptor;
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = -1;
 const interactivePhases = Object.freeze([
@@ -262,6 +266,10 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
+  "hook-command-timeout",
+  "hook-command-spawn-error",
+  "hook-command-stdin-error",
+  "hook-command-wait-error",
   "trace-search-record-count",
   "trace-search-shape",
   "trace-search-ambiguous",
@@ -283,6 +291,15 @@ const recordInteractivePhase = (phase) => {
     `integration.fixture.codex-${phase}\n`,
     { flag: "wx", mode: 0o600 },
   );
+};
+const codexStopHookCommandFailure = (outcome) => {
+  let phase;
+  if (outcome === "timeout") phase = "hook-command-timeout";
+  else if (outcome === "spawn_error") phase = "hook-command-spawn-error";
+  else if (outcome === "stdin_error") phase = "hook-command-stdin-error";
+  else if (outcome === "wait_error") phase = "hook-command-wait-error";
+  else throw new Error("integration.codex.hook-command-outcome");
+  return { error: `integration.codex.hook-command-${outcome}`, phase };
 };
 recordInteractivePhase(interactiveFailurePhase);
 if (process.hasUncaughtExceptionCaptureCallback())
@@ -732,6 +749,27 @@ const waitForTraceSummary = async (traceDeadline) => {
       summary = candidate;
       break;
     }
+    const hookCommandOutcome = inspectDiagnosticBeforeDeadline({
+      deadline: traceDeadline,
+      now: bootNow,
+      inspect: () =>
+        classifyCodexStopHookCommand({
+          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+          directoryPath: codexDiagnosticLogDirectory,
+        }),
+    });
+    if (
+      hookCommandOutcome !== undefined &&
+      hookCommandOutcome !== "completed"
+    ) {
+      const failure = codexStopHookCommandFailure(hookCommandOutcome);
+      recordTerminalObservationBeforeDeadline({
+        deadline: traceDeadline,
+        now: bootNow,
+        record: () => recordInteractivePhase(failure.phase),
+      });
+      throw new Error(failure.error);
+    }
     await waitWithinObservationDeadline({
       deadline: traceDeadline,
       maximumWaitMilliseconds: 100,
@@ -795,10 +833,18 @@ try {
     1,
   );
   modelGateway = await openChallengedModelGateway();
+  mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
+  codexDiagnosticLogDirectoryDescriptor = openSync(
+    codexDiagnosticLogDirectory,
+    constants.O_RDONLY |
+      constants.O_DIRECTORY |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK,
+  );
   const configuration = `${createCodexInternalProviderConfiguration({
     baseUrl: `${modelGateway.endpoint}/v1`,
     model: "fixture-model",
-  })}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
+  })}\nlog_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
   writeFileSync(join(codexHome, "config.toml"), configuration, {
     flag: "wx",
     mode: 0o600,
@@ -821,7 +867,11 @@ try {
     ],
     {
       cwd: worktree,
-      env: { ...process.env, CODEX_HOME: codexHome },
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        RUST_LOG: "codex_hooks::engine::command_runner=trace",
+      },
       inherit: true,
     },
   );
@@ -952,6 +1002,8 @@ try {
   modelGateway?.abort();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
+  if (codexDiagnosticLogDirectoryDescriptor !== undefined)
+    closeSync(codexDiagnosticLogDirectoryDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {
