@@ -1750,9 +1750,9 @@ const proveFailedAttachSettled = async (error, plan, signal) => {
     return reject("witness-error");
   }
 };
-const runScenario = async (plan, signal) => {
+const runScenario = async (plan, signal, scenarioDeadline) => {
   const remainingOuterMilliseconds = Math.min(
-    scenarioTimeoutMilliseconds,
+    scenarioDeadline - performance.now(),
     capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
   );
   if (remainingOuterMilliseconds < 40_000)
@@ -2162,6 +2162,7 @@ const countDockerResources = async (kind, plan, signal) => {
   return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
 };
 const createDriver = (plan) => {
+  const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;
   let removalSignal;
   let runtimeIdentity;
   const boundedRemovalSignal = () => {
@@ -2193,7 +2194,8 @@ const createDriver = (plan) => {
     startCollector,
     startRetrieval,
     startMockServer,
-    runScenario,
+    runScenario: (selectedPlan, signal) =>
+      runScenario(selectedPlan, signal, scenarioDeadline),
     recordEvidence,
     removeContainer: (name) =>
       ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
