@@ -367,7 +367,6 @@ describe("integration capability manifest", () => {
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
-    expect(source).not.toContain('      "--harness",\n      "codex",\n');
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))",
     );
@@ -424,8 +423,8 @@ describe("integration capability manifest", () => {
     const joinedSearch = traceSummaryFunction.indexOf(
       "  const { stdout, traceTimedOut, traceUnavailable } = await run(\n",
     );
-    const exactSessionFilter = traceSummaryFunction.indexOf(
-      '      "--session",\n      codexSessionId,\n',
+    const exactHarnessFilter = traceSummaryFunction.indexOf(
+      '      "--harness",\n      "codex",\n',
       joinedSearch,
     );
     const guardedRawResult = traceSummaryFunction.indexOf(
@@ -451,8 +450,8 @@ describe("integration capability manifest", () => {
     expect(acceptancePhase).toBeGreaterThan(reporterSettledPhase);
     expect(traceSearchResultPhase).toBeGreaterThan(acceptancePhase);
     expect(joinedSearch).toBeGreaterThan(-1);
-    expect(exactSessionFilter).toBeGreaterThan(joinedSearch);
-    expect(guardedRawResult).toBeGreaterThan(exactSessionFilter);
+    expect(exactHarnessFilter).toBeGreaterThan(joinedSearch);
+    expect(guardedRawResult).toBeGreaterThan(exactHarnessFilter);
     expect(guardedRawResult).toBeGreaterThan(joinedSearch);
     expect(resultParsing).toBeGreaterThan(guardedRawResult);
     expect(guardedClassification).toBeGreaterThan(resultParsing);

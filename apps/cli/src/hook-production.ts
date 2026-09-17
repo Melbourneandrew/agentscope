@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 
 import {
   compileCredentialBackendRegistry,
@@ -37,30 +35,6 @@ type ProductHookInput = {
   launcher: Readonly<{ harnessType: string; homeRoot: string }>;
 };
 
-const writeWth2Diagnostic = (
-  homeRoot: string,
-  classification: string,
-): void => {
-  writeFileSync(
-    join(homeRoot, ".wth2-hook-diagnostic.json"),
-    `${JSON.stringify({ classification })}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
-};
-
-const exceptionClassification = (error: unknown): string => {
-  const message = error instanceof Error ? error.message : "";
-  if (message === "destination.local-sqlite.native-unavailable")
-    return "threw-native-unavailable";
-  if (message === "destination.local-sqlite.lifecycle-unavailable")
-    return "threw-lifecycle-unavailable";
-  if (message.startsWith("destination.local-sqlite."))
-    return "threw-local-sqlite";
-  if (message.startsWith("core.")) return "threw-core";
-  if (message.startsWith("cli.")) return "threw-cli";
-  return "threw-other";
-};
-
 const runProductCodexHookEvidenceWith = async (
   input: ProductHookInput,
   environment: Readonly<Record<string, string | undefined>>,
@@ -81,48 +55,32 @@ const runProductCodexHookEvidenceWith = async (
     process.pid,
     `process-start-v1-${randomBytes(32).toString("hex")}`,
   );
-  try {
-    const result = await runResolvedTraceLifecycle({
-      configurationStore: createConfigurationStore(home, registry),
-      operationalStateStore: createOperationalStateStore(home, owner),
-      credentialBackendRegistry: compileCredentialBackendRegistry([
-        createCiEnvironmentCredentialAdapter(environment),
-      ]),
-      transportExecutor,
-      policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
-      harnessRegistryId: "codex",
-      harnessVersion: {
-        state: "unavailable",
-        reason: "not-emitted",
-        source: "process",
-      },
-      hookObservedUnixNano: String(BigInt(Date.now()) * 1_000_000n),
-      operationIdScope: "session-global",
-      workspaceCandidates: Object.freeze([
-        Object.freeze({ path: hook.workspacePath, source: "hook-payload" }),
-      ]),
-      gitExecutable:
-        process.platform === "win32"
-          ? "C:\\Program Files\\Git\\cmd\\git.exe"
-          : "/usr/bin/git",
-      hookEntryAuthority: input.hookEntryAuthority,
-      capture: (factory) => factory.capture(mapCodexRootHookCapture(hook)),
-    });
-    const classification =
-      result.outcome === "failed-open"
-        ? "code" in result
-          ? `${result.stage}-${result.code}`
-          : `${result.stage}-${result.reason}`
-        : result.outcome === "routing-unselected"
-          ? "routing-unselected"
-          : result.connections.every(({ outcome }) => outcome === "accepted")
-            ? "completed-accepted"
-            : "completed-not-accepted";
-    writeWth2Diagnostic(home.root, classification);
-  } catch (error) {
-    writeWth2Diagnostic(home.root, exceptionClassification(error));
-    throw error;
-  }
+  await runResolvedTraceLifecycle({
+    configurationStore: createConfigurationStore(home, registry),
+    operationalStateStore: createOperationalStateStore(home, owner),
+    credentialBackendRegistry: compileCredentialBackendRegistry([
+      createCiEnvironmentCredentialAdapter(environment),
+    ]),
+    transportExecutor,
+    policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+    harnessRegistryId: "codex",
+    harnessVersion: {
+      state: "unavailable",
+      reason: "not-emitted",
+      source: "process",
+    },
+    hookObservedUnixNano: String(BigInt(Date.now()) * 1_000_000n),
+    operationIdScope: "session-global",
+    workspaceCandidates: Object.freeze([
+      Object.freeze({ path: hook.workspacePath, source: "hook-payload" }),
+    ]),
+    gitExecutable:
+      process.platform === "win32"
+        ? "C:\\Program Files\\Git\\cmd\\git.exe"
+        : "/usr/bin/git",
+    hookEntryAuthority: input.hookEntryAuthority,
+    capture: (factory) => factory.capture(mapCodexRootHookCapture(hook)),
+  });
 };
 
 export const runProductCodexHookEvidence = (
