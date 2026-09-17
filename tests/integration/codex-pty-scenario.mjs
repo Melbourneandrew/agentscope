@@ -717,7 +717,7 @@ try {
     },
   );
   interactiveFailurePhase = "model-request";
-  await waitForModelRequest();
+  await observeBeforeDiagnosticDeadline(waitForModelRequest(), traceDeadline);
   interactiveFailurePhase = "tui-exit";
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();

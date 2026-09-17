@@ -183,6 +183,25 @@ describe("integration cleanup authority", () => {
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
+  it("gives only interactive fixtures one exact capable terminal identity", () => {
+    const scenarios = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    expect(scenarios).toContain(
+      '...(plan.executionMode === "interactive" ? { TERM: "xterm-256color" } : {})',
+    );
+    expect(runner).toContain(
+      '...(scenario.executionMode === "interactive"\n      ? { TERM: "xterm-256color" }\n      : {})',
+    );
+    expect(scenarios.match(/TERM: "xterm-256color"/gu)).toHaveLength(1);
+    expect(runner.match(/TERM: "xterm-256color"/gu)).toHaveLength(1);
+  });
+
   it("reserves the terminal controller window for Docker cleanup only", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
