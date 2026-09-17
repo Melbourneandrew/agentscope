@@ -19,9 +19,12 @@ import {
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
+  codexSessionStartCheckpointMatchesLifecycle,
   classifyCodexStopHookCommand,
   classifyMissingOperationalStateByHookDuration,
   classifyLocalSqliteOutcomeAfterBaseline,
+  inspectCodexRootHookLifecycle,
+  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
@@ -481,7 +484,8 @@ describe("Codex bounded native ledgers", () => {
   );
 
   it.runIf(process.platform === "linux")(
-    "decodes complete SessionStart and Stop pairs from one real-log grammar",
+    "proves the closed root-hook lifecycle before the first model request",
+    // eslint-disable-next-line max-lines-per-function -- one fixture preserves the causal checkpoint through terminal lifecycle negatives
     () => {
       const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
       const directory = join(root, "log");
@@ -493,18 +497,68 @@ describe("Codex bounded native ledgers", () => {
           constants.O_NOFOLLOW |
           constants.O_NONBLOCK,
       );
-      writeFileSync(
-        join(directory, "codex-tui.log"),
-        'TRACE codex.hooks.command{hook.event_name="SessionStart"}: new\n' +
-          'TRACE codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed" hook.command_outcome="completed"}: close time.busy=125ms time.idle=25ms\n' +
-          'TRACE codex.hooks.command{hook.event_name="Stop"}: new\n' +
-          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="completed" hook.command_outcome="completed"}: close time.busy=4.75s time.idle=125ms\n',
+      const span = (event: string, duration: string) =>
+        `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n` +
+        `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${duration}\n`;
+      const sessionStart = span(
+        "SessionStart",
+        "time.busy=125ms time.idle=25ms",
       );
+      const stop = span("Stop", "time.busy=4.75s time.idle=125ms");
+      const sessionEnd = span("SessionEnd", "time.busy=100ms time.idle=50ms");
+      const path = join(directory, "codex-tui.log");
       const input = {
         directoryDescriptor: descriptor,
         directoryPath: directory,
       };
       try {
+        writeFileSync(
+          path,
+          sessionStart.slice(0, sessionStart.indexOf("\n") + 1),
+        );
+        expect(
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
+        ).toBe(undefined);
+        writeFileSync(path, sessionStart);
+        const firstModelRequestCheckpoint =
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input);
+        expect(firstModelRequestCheckpoint?.durationMilliseconds).toBe(150);
+        expect(firstModelRequestCheckpoint?.spanSha256).toMatch(
+          /^[a-f\d]{64}$/u,
+        );
+        writeFileSync(path, `${sessionStart}${stop}${sessionEnd}`);
+        const lifecycle = inspectCodexRootHookLifecycle(input);
+        expect(lifecycle).toEqual({
+          sessionStartDurationMilliseconds: 150,
+          sessionStartSpanSha256: firstModelRequestCheckpoint?.spanSha256,
+          stopDurationMilliseconds: 4_875,
+          sessionEndDurationMilliseconds: 150,
+        });
+        expect(
+          codexSessionStartCheckpointMatchesLifecycle(
+            firstModelRequestCheckpoint,
+            lifecycle,
+          ),
+        ).toBe(true);
+        const substitutedSessionStart = span(
+          "SessionStart",
+          "time.busy=100ms time.idle=50ms",
+        );
+        writeFileSync(path, `${substitutedSessionStart}${stop}${sessionEnd}`);
+        const substitutedLifecycle = inspectCodexRootHookLifecycle(input);
+        expect(substitutedLifecycle?.sessionStartDurationMilliseconds).toBe(
+          firstModelRequestCheckpoint?.durationMilliseconds,
+        );
+        expect(substitutedLifecycle?.sessionStartSpanSha256).not.toBe(
+          firstModelRequestCheckpoint?.spanSha256,
+        );
+        expect(
+          codexSessionStartCheckpointMatchesLifecycle(
+            firstModelRequestCheckpoint,
+            substitutedLifecycle,
+          ),
+        ).toBe(false);
+        writeFileSync(path, `${sessionStart}${stop}${sessionEnd}`);
         expect(codexSessionStartMediationUpperBoundMilliseconds(input)).toBe(
           150,
         );
@@ -513,6 +567,49 @@ describe("Codex bounded native ledgers", () => {
           outcome: "completed",
           durationMilliseconds: 4_875,
         });
+        for (const hostile of [
+          `${sessionStart}${stop}`,
+          `${sessionStart}${sessionEnd}${stop}`,
+          `${sessionStart}${sessionStart}${stop}${sessionEnd}`,
+          `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
+          `${stop}${sessionStart}${sessionEnd}`,
+          `${sessionStart}${stop}${sessionEnd.replaceAll(
+            "completed",
+            "timeout",
+          )}`,
+          `${sessionStart}${span(
+            "PreToolUse",
+            "time.busy=1ms time.idle=1ms",
+          )}${stop}${sessionEnd}`,
+          `${sessionStart}${span(
+            "Stop",
+            "time.busy=7s time.idle=1ms",
+          )}${sessionEnd}`,
+          `${sessionStart}${stop}${span(
+            "SessionEnd",
+            "time.busy=7s time.idle=1ms",
+          )}`,
+        ]) {
+          writeFileSync(path, hostile);
+          expect(() => inspectCodexRootHookLifecycle(input)).toThrow(
+            /integration\.codex\.hook-(?:lifecycle|log)/u,
+          );
+        }
+        writeFileSync(
+          path,
+          `${sessionStart}${span(
+            "Stop",
+            "time.busy=7s time.idle=0ms",
+          )}${span("SessionEnd", "time.busy=7s time.idle=0ms")}`,
+        );
+        expect(inspectCodexRootHookLifecycle(input)).toMatchObject({
+          stopDurationMilliseconds: 7_000,
+          sessionEndDurationMilliseconds: 7_000,
+        });
+        writeFileSync(path, `${sessionStart}${stop}`);
+        expect(() =>
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
+        ).toThrow("integration.codex.hook-lifecycle");
       } finally {
         closeSync(descriptor);
         rmSync(root, { recursive: true });

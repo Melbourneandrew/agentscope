@@ -124,6 +124,81 @@ describe("selected PTY transport", () => {
         ],
       },
     };
+    const prompt = new TextEncoder().encode(
+      "Reply with one short confirmation and do not use tools.\n",
+    );
+    const promptInput = new Uint8Array(
+      Buffer.concat([
+        Buffer.from(challengeInput.subarray(0, 65)),
+        Buffer.from(prompt),
+        Buffer.from([4]),
+      ]),
+    );
+    const promptAction = {
+      action: "input" as const,
+      byteLength: prompt.length,
+      inputSha256: createHash("sha256").update(prompt).digest("hex"),
+    };
+    const promptRequest: SelectedPtyExecutionRequest = {
+      ...challengeRequest,
+      process: { ...challengeRequest.process, stdin: promptInput },
+      interaction: {
+        trigger: "immediate",
+        actions: [
+          challengeRequest.interaction.actions[0]!,
+          challengeRequest.interaction.actions[1]!,
+          promptAction,
+          { action: "wait-for-semantic-completion" },
+          {
+            action: "input",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(promptInput.subarray(promptInput.length - 1))
+              .digest("hex"),
+          },
+        ],
+      },
+    };
+
+    await expect(
+      executeSelectedPtyTransportForTest(promptRequest, "clean"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: promptInput.length,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    for (const actions of [
+      [
+        challengeRequest.interaction.actions[0]!,
+        promptAction,
+        challengeRequest.interaction.actions[1]!,
+        { action: "wait-for-semantic-completion" as const },
+        promptRequest.interaction.actions[4]!,
+      ],
+      [
+        challengeRequest.interaction.actions[0]!,
+        challengeRequest.interaction.actions[1]!,
+        { action: "wait-for-semantic-completion" as const },
+        promptAction,
+        promptRequest.interaction.actions[4]!,
+      ],
+    ])
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...promptRequest,
+            interaction: { trigger: "immediate", actions },
+          },
+          "clean",
+        ),
+      ).rejects.toThrow("testkit.pty.request");
 
     await expect(
       executeSelectedPtyTransportForTest(

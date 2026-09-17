@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-b6c160007c5f1521bef73865106e7e8498d354cad65a07be846611038a8675e3",
+  "manifestIdentity": "sha256-2099c580ed66be601f65d118fbe1c16a14ab6ca010af3f8b722c11550ed7c3eb",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "a628a831099c7b8ed2ff8f150fa1ab36a7621da122b6ba6e1f468990e3e0417f"
+        "sha256": "0b68a33c9c9c60a2291fc4b166912849243a3055cb9d8693f7def2aeeaf2308a"
       },
       "runtimeArtifacts": [
         {
@@ -174,7 +174,7 @@
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "5de1959a0a59b74b5aad24f3c211b54e210182ec1977db3d5d094f5d61bec15a"
+          "sha256": "09fafb054fa3a9b5f2fb0883c9542cb8c029500e7cdf50cde3d78e4a9f312dfd"
         },
         {
           "source": {
@@ -185,7 +185,7 @@
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
         }
       ],
-      "terminalInputBase64": "BAQ=",
+      "terminalInputBase64": "UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLgoEBA==",
       "postCompletionInputByteLength": 2,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,

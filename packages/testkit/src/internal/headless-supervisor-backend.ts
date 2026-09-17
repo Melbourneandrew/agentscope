@@ -2025,6 +2025,11 @@ const snapshotPtyRequest = (
   let semanticWaitIndex = -1;
   let describedInputBytesAtSemanticWait = -1;
   let topologyCheckpointCount = 0;
+  let topologyCheckpointIndex = -1;
+  let inputCountBeforeSemanticWait = 0;
+  let firstInputIndex = -1;
+  let firstInputByteLength = -1;
+  let secondInputIndex = -1;
   let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
@@ -2057,6 +2062,13 @@ const snapshotPtyRequest = (
           .digest("hex") !== inputSha256
       )
         return fail("testkit.pty.request");
+      if (semanticWaitCount === 0) {
+        inputCountBeforeSemanticWait += 1;
+        if (inputCountBeforeSemanticWait === 1) {
+          firstInputIndex = index;
+          firstInputByteLength = byteLength;
+        } else if (inputCountBeforeSemanticWait === 2) secondInputIndex = index;
+      }
       describedInputBytes += byteLength;
       defineArrayIndex(
         stableActions,
@@ -2073,6 +2085,7 @@ const snapshotPtyRequest = (
       )
         return fail("testkit.pty.request");
       topologyCheckpointCount += 1;
+      topologyCheckpointIndex = index;
       defineArrayIndex(
         stableActions,
         index,
@@ -2177,10 +2190,19 @@ const snapshotPtyRequest = (
     (readinessKind === "challenge-marker" &&
       (trigger !== "immediate" ||
         semanticWaitCount !== 1 ||
-        semanticWaitIndex < 1 ||
         topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
-        describedInputBytesAtSemanticWait !== 65 ||
+        inputCountBeforeSemanticWait < 1 ||
+        inputCountBeforeSemanticWait > 2 ||
+        firstInputByteLength !== 65 ||
+        topologyCheckpointIndex !== firstInputIndex + 1 ||
+        (inputCountBeforeSemanticWait === 1
+          ? semanticWaitIndex !== topologyCheckpointIndex + 1
+          : secondInputIndex !== topologyCheckpointIndex + 1 ||
+            semanticWaitIndex !== secondInputIndex + 1) ||
+        describedInputBytesAtSemanticWait < 65 ||
+        describedInputBytesAtSemanticWait > 165 ||
+        describedInputBytes - describedInputBytesAtSemanticWait > 32 ||
         safeBufferFrom(process_.stdin).subarray(0, 65).toString("utf8") !==
           `${readinessChallenge}\n`))
   )
