@@ -789,6 +789,14 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
+const waitForTraceObservation = (traceDeadline) =>
+  waitWithinObservationDeadline({
+    deadline: traceDeadline,
+    maximumWaitMilliseconds: 20,
+    now: bootNow,
+    wait: (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  });
 const waitForTraceSummary = async (traceDeadline) => {
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
@@ -825,6 +833,10 @@ const waitForTraceSummary = async (traceDeadline) => {
     const reporterSettled = localSqliteReporterSettled(
       localSqliteLifecycleDescriptor,
     );
+    if (hookCommandObservation?.outcome !== "completed" || !reporterSettled) {
+      await waitForTraceObservation(traceDeadline);
+      continue;
+    }
     const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({
       now: bootNow(),
       observationDeadline: traceDeadline,
@@ -839,9 +851,9 @@ const waitForTraceSummary = async (traceDeadline) => {
       now: bootNow,
     });
     const terminalCut = classifyCodexSettledTraceObservation({
-      hookCompleted: hookCommandObservation?.outcome === "completed",
+      hookCompleted: true,
       observationClosed,
-      reporterSettled,
+      reporterSettled: true,
       tracePresent: candidate !== null,
     });
     if (terminalCut === "accepted") {
@@ -854,13 +866,7 @@ const waitForTraceSummary = async (traceDeadline) => {
         operationalStateBaseline,
       );
       if (operationalPhase === "pending") {
-        await waitWithinObservationDeadline({
-          deadline: traceDeadline,
-          maximumWaitMilliseconds: 20,
-          now: bootNow,
-          wait: (milliseconds) =>
-            new Promise((resolve) => setTimeout(resolve, milliseconds)),
-        });
+        await waitForTraceObservation(traceDeadline);
         continue;
       }
       const phase =
