@@ -350,37 +350,39 @@ describe("integration capability manifest", () => {
     const terminalObservation = source.indexOf(
       "      observed: codexTurnTerminalObservedAfterBaseline(\n",
     );
-    const acceptanceObservation = source.indexOf(
-      "    !localSqliteAcceptanceObservedAfterBaseline(\n",
-      terminalObservation,
+    expect(source).not.toContain("localSqliteAcceptanceBaseline");
+    expect(source).not.toContain("localSqliteAcceptanceObservedAfterBaseline");
+    expect(source).not.toContain("openOperationalStateHealth");
+    const traceSummaryWait = source.slice(
+      source.indexOf("const waitForTraceSummary ="),
+      source.indexOf("let completed = false;"),
     );
-    const lifecycleSettlement = source.indexOf(
-      "  while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {\n",
-      acceptanceObservation,
+    const preQueryDeadline = traceSummaryWait.indexOf(
+      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
     );
-    const postReporterDeadline = source.indexOf(
-      "  recordTerminalObservationBeforeDeadline({\n",
+    const traceSearchPhaseInWait = traceSummaryWait.indexOf(
+      '    record: () => recordInteractivePhase("trace-search"),\n',
+      preQueryDeadline,
+    );
+    const boundedQuery = traceSummaryWait.indexOf(
+      "      summary: await readTraceSummary(traceDeadline),\n",
+      traceSearchPhaseInWait,
+    );
+    const lifecycleSettlement = traceSummaryWait.indexOf(
+      "      localSqliteReporterSettled(localSqliteLifecycleDescriptor)\n",
+      boundedQuery,
+    );
+    const boundedBackoff = traceSummaryWait.indexOf(
+      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
       lifecycleSettlement,
     );
     const reporterSettledPhase = source.indexOf(
       '    record: () => recordInteractivePhase("trace-reporter-settled"),\n',
-      lifecycleSettlement,
+      source.indexOf("const waitForTraceSummary ="),
     );
-    const preQueryDeadline = source.indexOf(
-      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
-      lifecycleSettlement,
-    );
-    const boundedQuery = source.indexOf(
-      "    summary: await readTraceSummary(traceDeadline),\n",
-      preQueryDeadline,
-    );
-    const postQueryDeadline = source.indexOf(
-      "    deadline: traceDeadline,\n    now: bootNow,\n",
-      boundedQuery,
-    );
-    const acceptSummary = source.indexOf(
-      '  if (summary === null) throw new Error("integration.codex.trace-search");\n',
-      boundedQuery,
+    const acceptancePhase = source.indexOf(
+      '    record: () => recordInteractivePhase("trace-acceptance"),\n',
+      reporterSettledPhase,
     );
     const traceSummaryFunction = source.slice(
       source.indexOf("const readTraceSummary ="),
@@ -389,38 +391,33 @@ describe("integration capability manifest", () => {
     const joinedSearch = traceSummaryFunction.indexOf(
       "  const { stdout } = await run(\n",
     );
-    const guardedResultPhase = traceSummaryFunction.indexOf(
-      "  recordTerminalObservationBeforeDeadline({\n",
+    const guardedRawResult = traceSummaryFunction.indexOf(
+      "    !terminalObservationBeforeDeadline({\n",
       joinedSearch,
     );
     const resultParsing = traceSummaryFunction.indexOf(
       '  const records = parseMachine(stdout, "agentscope traces search");\n',
-      guardedResultPhase,
+      guardedRawResult,
     );
     const postParseCutoff = traceSummaryFunction.lastIndexOf(
       "    !terminalObservationBeforeDeadline({\n",
     );
-    expect(acceptanceObservation).toBeGreaterThan(terminalObservation);
-    expect(lifecycleSettlement).toBeGreaterThan(acceptanceObservation);
-    expect(postReporterDeadline).toBeGreaterThan(lifecycleSettlement);
-    expect(reporterSettledPhase).toBeGreaterThan(postReporterDeadline);
-    expect(lifecycleSettlement).toBeLessThan(preQueryDeadline);
+    expect(terminalObservation).toBeGreaterThan(-1);
+    expect(preQueryDeadline).toBeGreaterThan(-1);
+    expect(traceSearchPhaseInWait).toBeGreaterThan(preQueryDeadline);
     expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
-    const boundedBackoff = source.indexOf(
-      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
-      lifecycleSettlement,
-    );
-    expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
-    expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
-    expect(joinedSearch).toBeGreaterThan(-1);
-    expect(guardedResultPhase).toBeGreaterThan(joinedSearch);
-    expect(resultParsing).toBeGreaterThan(guardedResultPhase);
-    expect(postParseCutoff).toBeGreaterThan(resultParsing);
+    expect(lifecycleSettlement).toBeGreaterThan(boundedQuery);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
-    expect(boundedBackoff).toBeLessThan(preQueryDeadline);
+    expect(reporterSettledPhase).toBeGreaterThan(lifecycleSettlement);
+    expect(acceptancePhase).toBeGreaterThan(reporterSettledPhase);
+    expect(traceSearchResultPhase).toBeGreaterThan(acceptancePhase);
+    expect(joinedSearch).toBeGreaterThan(-1);
+    expect(guardedRawResult).toBeGreaterThan(joinedSearch);
+    expect(resultParsing).toBeGreaterThan(guardedRawResult);
+    expect(postParseCutoff).toBeGreaterThan(resultParsing);
     const terminalCompletion = source.indexOf(
       "    process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error) =>",
-      lifecycleSettlement,
+      terminalObservation,
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
@@ -430,18 +427,7 @@ describe("integration capability manifest", () => {
     );
     expect(postJoinDeadline).toBeGreaterThan(codexJoin);
     expect(postJoinDeadline).toBeLessThan(traceSettlementPhase);
-    const traceSettlementFunction = source.slice(
-      source.indexOf("const waitForTraceSettlement ="),
-      source.indexOf("const waitForTraceSummary ="),
-    );
-    expect(
-      traceSettlementFunction.match(
-        /recordTerminalObservationBeforeDeadline\(\{/gu,
-      ),
-    ).toHaveLength(2);
-    expect(traceSettlementFunction).not.toContain(
-      "publishTerminalCompletionBeforeDeadline",
-    );
+    expect(source).not.toContain("const waitForTraceSettlement =");
     expect(source).toContain(
       "  await publishTerminalCompletionBeforeDeadline({",
     );
@@ -456,7 +442,7 @@ describe("integration capability manifest", () => {
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
     );
     expect(source).not.toContain("  await waitForModelRequest();\n");
-    expect(source).not.toContain("      monotonicDeadline: traceDeadline,\n");
+    expect(source).toContain("{ monotonicDeadline: traceDeadline },\n");
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);

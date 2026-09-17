@@ -286,9 +286,9 @@ describe("Codex interactive diagnostic order", () => {
       "trace-terminal",
       "tui-exit",
       "trace-settlement",
-      "trace-acceptance",
-      "trace-reporter-settled",
       "trace-search",
+      "trace-reporter-settled",
+      "trace-acceptance",
       "trace-search-result",
       "verify",
     ];
@@ -318,7 +318,7 @@ describe("Codex interactive diagnostic order", () => {
       modelRequestPhase,
     );
     const settlementObservation = scenario.indexOf(
-      "await waitForTraceSettlement(traceDeadline)",
+      "await waitForTraceSummary(traceDeadline)",
       settlementPhase,
     );
     expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
