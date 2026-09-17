@@ -27,35 +27,6 @@ const validCodexSessionLedgerRecord = (record) =>
     (value) => typeof value === "bigint" && value >= 0n,
   );
 
-const sameCodexLedgerIdentity = (current, prior) =>
-  current !== undefined &&
-  current.dev === prior.dev &&
-  current.ino === prior.ino &&
-  current.mode === prior.mode &&
-  current.uid === prior.uid &&
-  current.gid === prior.gid;
-
-const ownedStopHookStatus = (entry, expectedTurnId) => {
-  const run = entry?.payload?.run;
-  if (
-    entry?.type !== "event_msg" ||
-    entry?.payload?.type !== "hook_completed" ||
-    run?.event_name !== "stop" ||
-    run?.handler_type !== "command" ||
-    run?.status_message !== "Agentscope trace capture"
-  )
-    return null;
-  if (
-    entry.payload.turn_id !== expectedTurnId ||
-    !["completed", "failed"].includes(run.status) ||
-    !Number.isSafeInteger(run.duration_ms) ||
-    run.duration_ms < 0 ||
-    run.duration_ms > 3_000
-  )
-    throw new Error("integration.codex.session-ledger");
-  return run.status;
-};
-
 export const readBoundedJsonResponse = async (response, maximumBytes) => {
   if (
     !Number.isSafeInteger(maximumBytes) ||
@@ -215,58 +186,35 @@ export const codexTurnTerminalObservedAfterBaseline = (
 ) =>
   codexTurnTerminalIdAfterBaseline(records, baseline, expectedMessage) !== null;
 
-export const codexOwnedStopHookStatusAfterBaseline = (
-  records,
-  baseline,
-  expectedTurnId,
-) => {
+export const codexSessionIdentity = (records) => {
   if (
     !Array.isArray(records) ||
-    !Array.isArray(baseline) ||
-    baseline.length > 8 ||
-    typeof expectedTurnId !== "string" ||
-    expectedTurnId.length < 1 ||
-    expectedTurnId.length > 256 ||
-    records.length !== baseline.length ||
+    records.length !== 1 ||
     records.some((record) => !validCodexSessionLedgerRecord(record)) ||
-    baseline.some((record) => !validCodexSessionLedgerRecord(record)) ||
-    new Set(records.map(({ relativePath }) => relativePath)).size !==
-      records.length ||
-    new Set(baseline.map(({ relativePath }) => relativePath)).size !==
-      baseline.length
+    !records[0].content.endsWith("\n")
   )
     throw new Error("integration.codex.session-ledger");
-  const byPath = new Map(
-    records.map((record) => [record.relativePath, record]),
-  );
   const matches = [];
-  for (const prior of baseline) {
-    const current = byPath.get(prior.relativePath);
-    if (
-      !sameCodexLedgerIdentity(current, prior) ||
-      !current.content.startsWith(prior.content)
-    )
+  for (const line of records[0].content.split("\n")) {
+    if (line === "") continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
       throw new Error("integration.codex.session-ledger");
-    const suffix = current.content.slice(prior.content.length);
-    if (
-      suffix.length > 2 * 1024 * 1024 ||
-      (suffix.length > 0 && !suffix.endsWith("\n"))
-    )
-      throw new Error("integration.codex.session-ledger");
-    for (const line of suffix.split("\n")) {
-      if (line === "") continue;
-      let entry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        throw new Error("integration.codex.session-ledger");
-      }
-      const status = ownedStopHookStatus(entry, expectedTurnId);
-      if (status !== null) matches.push(status);
     }
+    if (entry?.type !== "session_meta") continue;
+    const sessionId = entry?.payload?.id;
+    if (
+      typeof sessionId !== "string" ||
+      sessionId.length < 1 ||
+      sessionId.length > 256
+    )
+      throw new Error("integration.codex.session-ledger");
+    matches.push(sessionId);
   }
-  if (matches.length > 1) throw new Error("integration.codex.session-ledger");
-  return matches[0] ?? "missing";
+  if (matches.length !== 1) throw new Error("integration.codex.session-ledger");
+  return matches[0];
 };
 
 export const terminalObservationBeforeDeadline = ({

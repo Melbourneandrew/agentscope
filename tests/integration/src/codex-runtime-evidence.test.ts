@@ -15,8 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
-  codexOwnedStopHookStatusAfterBaseline,
-  codexTurnTerminalIdAfterBaseline,
+  codexSessionIdentity,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteAcceptanceBaseline,
@@ -675,7 +674,7 @@ describe("Codex bounded native records", () => {
     ).toThrow("integration.codex.session-ledger");
   });
 
-  it("classifies only the exact owned Stop hook event appended after baseline", () => {
+  it("extracts exactly one bounded Codex session identity", () => {
     const record = (content: string, overrides = {}) => ({
       relativePath:
         ".codex/sessions/2026/09/16/rollout-2026-09-16T00:00:00-test.jsonl",
@@ -687,94 +686,25 @@ describe("Codex bounded native records", () => {
       content,
       ...overrides,
     });
-    const baseline = [record(`${JSON.stringify({ type: "session_meta" })}\n`)];
-    const event = (status: "completed" | "failed", overrides = {}) =>
-      JSON.stringify({
-        type: "event_msg",
-        payload: {
-          type: "hook_completed",
-          turn_id: "turn-1",
-          run: {
-            event_name: "stop",
-            handler_type: "command",
-            status_message: "Agentscope trace capture",
-            status,
-            duration_ms: 123,
-            ...overrides,
-          },
-        },
-      });
-    expect(
-      codexOwnedStopHookStatusAfterBaseline(baseline, baseline, "turn-1"),
-    ).toBe("missing");
-    expect(
-      codexOwnedStopHookStatusAfterBaseline(
-        [record(`${baseline[0]!.content}${event("completed")}\n`)],
-        baseline,
-        "turn-1",
-      ),
-    ).toBe("completed");
-    expect(
-      codexOwnedStopHookStatusAfterBaseline(
-        [record(`${baseline[0]!.content}${event("failed")}\n`)],
-        baseline,
-        "turn-1",
-      ),
-    ).toBe("failed");
-    expect(() =>
-      codexOwnedStopHookStatusAfterBaseline(
-        [record(`${baseline[0]!.content}${event("completed")}\n`, { ino: 3n })],
-        baseline,
-        "turn-1",
-      ),
-    ).toThrow("integration.codex.session-ledger");
-    expect(() =>
-      codexOwnedStopHookStatusAfterBaseline(
-        [
-          record(
-            `${baseline[0]!.content}${event("completed")}\n${event("completed")}\n`,
-          ),
-        ],
-        baseline,
-        "turn-1",
-      ),
-    ).toThrow("integration.codex.session-ledger");
-    expect(() =>
-      codexOwnedStopHookStatusAfterBaseline(
-        [
-          record(
-            `${baseline[0]!.content}${event("completed", { duration_ms: 3_001 })}\n`,
-          ),
-        ],
-        baseline,
-        "turn-1",
-      ),
-    ).toThrow("integration.codex.session-ledger");
-    expect(() =>
-      codexOwnedStopHookStatusAfterBaseline(
-        [record(`${baseline[0]!.content}${event("completed")}\n`)],
-        baseline,
-        "turn-2",
-      ),
-    ).toThrow("integration.codex.session-ledger");
-    expect(
-      codexTurnTerminalIdAfterBaseline(
-        [
-          record(
-            `${baseline[0]!.content}${JSON.stringify({
-              type: "event_msg",
-              payload: {
-                type: "task_complete",
-                turn_id: "turn-1",
-                last_agent_message: "expected",
-              },
-            })}\n`,
-          ),
-        ],
-        baseline,
-        "expected",
-      ),
-    ).toBe("turn-1");
+    const session = (id: unknown) =>
+      JSON.stringify({ type: "session_meta", payload: { id } });
+    expect(codexSessionIdentity([record(`${session("session-1")}\n`)])).toBe(
+      "session-1",
+    );
+    for (const content of [
+      "",
+      `${session(1)}\n`,
+      `${session("")}\n`,
+      `${session("x".repeat(257))}\n`,
+      `${session("session-1")}\n${session("session-2")}\n`,
+      session("session-1"),
+    ])
+      expect(() => codexSessionIdentity([record(content)])).toThrow(
+        "integration.codex.session-ledger",
+      );
+    expect(() => codexSessionIdentity([])).toThrow(
+      "integration.codex.session-ledger",
+    );
   });
 
   it("reads one bounded JSON response and rejects overflow or malformed data", async () => {

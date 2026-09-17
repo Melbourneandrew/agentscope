@@ -24,11 +24,9 @@ export function codexTurnTerminalIdAfterBaseline(
   expectedMessage: string,
 ): string | null;
 
-export function codexOwnedStopHookStatusAfterBaseline(
+export function codexSessionIdentity(
   ledgers: readonly CodexSessionLedgerRecord[],
-  baseline: readonly CodexSessionLedgerRecord[],
-  expectedTurnId: string,
-): "completed" | "failed" | "missing";
+): string;
 
 export interface CodexSessionLedgerRecord {
   readonly relativePath: string;
