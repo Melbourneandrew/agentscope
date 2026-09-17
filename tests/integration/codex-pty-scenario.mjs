@@ -25,6 +25,7 @@ import {
   localSqliteReporterSettled,
   openLocalSqliteLifecycle,
   openOperationalStateHealth,
+  publishTerminalCompletionBeforeDeadline,
   readCodexSessionLedgerRecords,
   readBoundedJsonResponse,
   terminalObservationBeforeDeadline,
@@ -697,19 +698,16 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: traceDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  recordInteractivePhase("trace-reporter-settled");
-  await new Promise((resolve, reject) => {
-    process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
-      error === null || error === undefined ? resolve() : reject(error),
-    );
+  await publishTerminalCompletionBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase("trace-reporter-settled"),
+    publish: () =>
+      new Promise((resolve, reject) => {
+        process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
+          error === null || error === undefined ? resolve() : reject(error),
+        );
+      }),
   });
 };
 const waitForTraceSummary = async (traceDeadline) => {
@@ -792,8 +790,6 @@ try {
       inherit: true,
     },
   );
-  const traceSettlement = waitForTraceSettlement(traceDeadline);
-  recordInteractivePhase("model-request");
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -801,8 +797,9 @@ try {
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
+  recordInteractivePhase("model-request");
   recordInteractivePhase("trace-settlement");
-  await traceSettlement;
+  await waitForTraceSettlement(traceDeadline);
   recordInteractivePhase("tui-exit");
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();

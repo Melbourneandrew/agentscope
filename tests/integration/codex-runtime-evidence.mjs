@@ -192,6 +192,26 @@ export const terminalObservationBeforeDeadline = ({
   return observed && observedAt < deadline;
 };
 
+export const publishTerminalCompletionBeforeDeadline = async ({
+  deadline,
+  now,
+  record,
+  publish,
+}) => {
+  if (typeof record !== "function" || typeof publish !== "function")
+    throw new Error("integration.codex.trace-deadline");
+  record();
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline,
+      now,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
+  await publish();
+};
+
 export const traceSummaryBeforeDeadline = ({ summary, deadline, now }) => {
   if (!Number.isFinite(deadline) || typeof now !== "function")
     throw new Error("integration.codex.trace-deadline");

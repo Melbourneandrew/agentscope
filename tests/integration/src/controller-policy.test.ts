@@ -306,6 +306,24 @@ describe("Codex interactive diagnostic order", () => {
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
+    const modelRequestObservation = scenario.indexOf(
+      "await waitForModelRequestBeforeDeadline({",
+    );
+    const modelRequestPhase = scenario.indexOf(
+      'recordInteractivePhase("model-request")',
+      modelRequestObservation,
+    );
+    const settlementPhase = scenario.indexOf(
+      'recordInteractivePhase("trace-settlement")',
+      modelRequestPhase,
+    );
+    const settlementObservation = scenario.indexOf(
+      "await waitForTraceSettlement(traceDeadline)",
+      settlementPhase,
+    );
+    expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
+    expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
+    expect(settlementObservation).toBeGreaterThan(settlementPhase);
     for (let index = 0; index < expected.length; index += 1)
       expect(expected.slice(0, index + 1).at(-1)).toBe(expected[index]);
   });
