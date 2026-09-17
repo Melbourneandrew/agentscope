@@ -123,7 +123,8 @@ const readReadinessChallenge = () =>
     );
   });
 const readinessChallenge = await readReadinessChallenge();
-const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
+const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;
+const terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
 const waitForCheckpointSignal = () =>
   new Promise((resolve, reject) => {
     let settled = false;
@@ -655,10 +656,10 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
-const waitForTraceSummary = async (traceDeadline) => {
+const waitForTraceSettlement = async (traceDeadline) => {
   // An empty lifecycle before the Stop hook starts is not terminal evidence.
-  // Wait for the durable accepted connection record and then for the exact
-  // lifecycle to settle before issuing the sole retrieval search.
+  // Do not let the PTY driver issue Ctrl-D until the installed Stop hook has
+  // durably accepted the trace and its exact reporter lifecycle is empty.
   while (
     !localSqliteAcceptanceObservedAfterBaseline(
       localSqliteHealthDescriptor,
@@ -686,6 +687,15 @@ const waitForTraceSummary = async (traceDeadline) => {
     remaining();
   }
   recordInteractivePhase("trace-reporter-settled");
+  await new Promise((resolve, reject) => {
+    process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
+      error === null || error === undefined ? resolve() : reject(error),
+    );
+  });
+};
+const waitForTraceSummary = async (traceDeadline) => {
+  if (!localSqliteReporterSettled(localSqliteLifecycleDescriptor))
+    throw new Error("integration.codex.local-sqlite-settlement");
   if (bootNow() >= traceDeadline)
     throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-search");
@@ -763,6 +773,7 @@ try {
       inherit: true,
     },
   );
+  const traceSettlement = waitForTraceSettlement(traceDeadline);
   recordInteractivePhase("model-request");
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
@@ -771,12 +782,13 @@ try {
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
+  recordInteractivePhase("trace-settlement");
+  await traceSettlement;
   recordInteractivePhase("tui-exit");
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
   await waitForCodexTurnTerminal(traceDeadline);
-  recordInteractivePhase("trace-settlement");
   const summary = await waitForTraceSummary(traceDeadline);
   recordInteractivePhase("verify");
   if (readFileSync(hookPath, "utf8") !== originalHooks)

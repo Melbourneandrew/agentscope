@@ -289,7 +289,10 @@ describe("integration capability manifest", () => {
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(startupPrompt);
     expect(source).toContain(
-      "const expectedAssistantMessage = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;",
+      "const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;",
+    );
+    expect(source).toContain(
+      "const terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;",
     );
     expect(source).toContain(
       'body.replace(\n        "AGENTSCOPE_PTY_COMPLETE",\n        expectedAssistantMessage,\n      )',
@@ -326,7 +329,7 @@ describe("integration capability manifest", () => {
     );
     const traceSettlementPhase = source.indexOf(
       '  recordInteractivePhase("trace-settlement");\n',
-      traceTerminalPhase,
+      traceDeadline,
     );
     const traceSearchPhase = source.indexOf(
       '  recordInteractivePhase("trace-search");\n',
@@ -334,10 +337,10 @@ describe("integration capability manifest", () => {
     const traceSearchResultPhase = source.indexOf(
       '  recordInteractivePhase("trace-search-result");\n',
     );
+    expect(traceSettlementPhase).toBeGreaterThan(modelRequest);
+    expect(traceSettlementPhase).toBeLessThan(codexJoin);
     expect(traceTerminalPhase).toBeGreaterThan(codexJoin);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(traceSettlementPhase).toBeGreaterThan(terminalWait);
-    expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
@@ -383,6 +386,12 @@ describe("integration capability manifest", () => {
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeLessThan(preQueryDeadline);
+    const terminalCompletion = source.indexOf(
+      "    process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error) =>",
+      lifecycleSettlement,
+    );
+    expect(terminalCompletion).toBeGreaterThan(lifecycleSettlement);
+    expect(terminalCompletion).toBeLessThan(codexJoin);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",
@@ -407,9 +416,6 @@ describe("integration capability manifest", () => {
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
-    expect(source).not.toContain(
-      'process.stdout.write("AGENTSCOPE_PTY_COMPLETE\\r\\n")',
-    );
   });
 
   it("rejects Codex native readiness on a different harness row", () => {
