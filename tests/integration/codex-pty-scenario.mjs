@@ -1010,7 +1010,7 @@ try {
     const stopProbePath = join(codexHome, "codex-stop-payload-probe.mjs");
     writeFileSync(
       stopProbePath,
-      `#!/usr/bin/env node\nimport { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst chunks = [];\nlet size = 0;\nfor await (const chunk of process.stdin) {\n  size += chunk.length;\n  if (size > 65536) process.exit(1);\n  chunks.push(Buffer.from(chunk));\n}\nconst payload = Buffer.concat(chunks);\nwriteFileSync(${JSON.stringify(stopPayloadPath)}, payload, { flag: "wx", mode: 0o600 });\nconst child = spawn(${JSON.stringify(launcher)}, [], { stdio: ["pipe", "inherit", "inherit"] });\nchild.stdin.end(payload);\nchild.once("error", () => process.exit(1));\nchild.once("exit", (code, signal) => process.exit(signal === null && Number.isInteger(code) ? code : 1));\n`,
+      `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nimport { spawn } from "node:child_process";\nconst chunks = [];\nlet size = 0;\nfor await (const chunk of process.stdin) {\n  size += chunk.length;\n  if (size > 65536) process.exit(1);\n  chunks.push(Buffer.from(chunk));\n}\nconst payload = Buffer.concat(chunks);\nwriteFileSync(${JSON.stringify(stopPayloadPath)}, payload, { flag: "wx", mode: 0o600 });\nconst child = spawn(${JSON.stringify(launcher)}, [], { stdio: ["pipe", "inherit", "inherit"] });\nchild.stdin.end(payload);\nchild.once("error", () => process.exit(1));\nchild.once("exit", (code, signal) => process.exit(signal === null && Number.isInteger(code) ? code : 1));\n`,
       { flag: "wx", mode: 0o700 },
     );
     const diagnosticHooks = JSON.parse(originalHooks);
