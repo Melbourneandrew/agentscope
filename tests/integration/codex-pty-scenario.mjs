@@ -320,6 +320,7 @@ const interactivePhases = Object.freeze([
   "hook-payload-identity",
   "hook-payload-permission",
   "hook-payload-fields",
+  "hook-payload-correlation",
   "hook-payload-accepted",
   "trace-search-record-count",
   "trace-search-shape",
@@ -1084,7 +1085,7 @@ try {
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
-  await waitForCodexTurnTerminal(traceDeadline);
+  const turnTerminal = await waitForCodexTurnTerminal(traceDeadline);
   recordInteractivePhase("trace-terminal");
   if (diagnosticReplay) {
     while (!existsSync(stopPayloadPath)) {
@@ -1101,7 +1102,18 @@ try {
       });
     }
     const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
-    const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
+    let stopPayloadClassification = classifyCodexStopPayload(stopPayload);
+    if (
+      stopPayloadClassification === "accepted" &&
+      (stopPayload.session_id !== codexSessionId ||
+        stopPayload.turn_id !== turnTerminal.turnId ||
+        stopPayload.model !== "fixture-model" ||
+        stopPayload.cwd !== worktree ||
+        stopPayload.last_assistant_message !== expectedAssistantMessage ||
+        stopPayload.stop_hook_active !== false)
+    )
+      stopPayloadClassification = "correlation";
+    const stopPayloadPhase = `hook-payload-${stopPayloadClassification}`;
     recordTerminalObservationBeforeDeadline({
       deadline: traceDeadline,
       now: bootNow,
