@@ -20,6 +20,7 @@ import {
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
   classifyCodexStopHookCommand,
+  classifyMissingOperationalStateByHookDuration,
   classifyLocalSqliteOutcomeAfterBaseline,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -48,6 +49,34 @@ import {
 
 // eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
+  it("classifies the closed Stop-hook latency buckets", () => {
+    expect(classifyMissingOperationalStateByHookDuration(0)).toBe(
+      "hook-no-operational-state-subsecond",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(499.999)).toBe(
+      "hook-no-operational-state-subsecond",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(500)).toBe(
+      "hook-no-operational-state-low-latency",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(1_500)).toBe(
+      "hook-no-operational-state-mid-latency",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(3_000)).toBe(
+      "hook-no-operational-state-high-latency",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(4_000)).toBe(
+      "hook-no-operational-state-near-deadline",
+    );
+    expect(classifyMissingOperationalStateByHookDuration(4_900)).toBe(
+      "hook-command-completed-near-budget-boundary",
+    );
+    for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY, 120_001])
+      expect(() =>
+        classifyMissingOperationalStateByHookDuration(value),
+      ).toThrow("integration.codex.hook-log");
+  });
+
   it("requires a fresh post-settlement trace observation", () => {
     expect(
       classifyCodexSettledTraceObservation({

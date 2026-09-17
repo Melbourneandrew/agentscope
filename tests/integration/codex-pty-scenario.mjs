@@ -20,6 +20,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   classifyLocalSqliteOutcomeAfterBaseline,
+  classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
@@ -294,7 +295,11 @@ const interactivePhases = Object.freeze([
   "hook-command-wait-error",
   "hook-command-completed-before-budget-boundary",
   "hook-command-completed-near-budget-boundary",
-  "hook-no-operational-state",
+  "hook-no-operational-state-subsecond",
+  "hook-no-operational-state-low-latency",
+  "hook-no-operational-state-mid-latency",
+  "hook-no-operational-state-high-latency",
+  "hook-no-operational-state-near-deadline",
   "hook-start-suppressed",
   "hook-start-deadline",
   "hook-capture-suppressed",
@@ -860,9 +865,9 @@ const waitForTraceSummary = async (traceDeadline) => {
       }
       const phase =
         operationalPhase === "no-operational-state"
-          ? hookCommandObservation.durationMilliseconds >= 4_900
-            ? "hook-command-completed-near-budget-boundary"
-            : "hook-no-operational-state"
+          ? classifyMissingOperationalStateByHookDuration(
+              hookCommandObservation.durationMilliseconds,
+            )
           : operationalPhase;
       recordTerminalObservationBeforeDeadline({
         deadline: traceDeadline,
