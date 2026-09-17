@@ -18,6 +18,23 @@ import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
 
+const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
+  const reporterSettlement = scenario.indexOf(
+    "const reporterSettled = localSqliteReporterSettled(",
+  );
+  const settlementGate = scenario.indexOf(
+    'hookCommandObservation?.outcome !== "completed" ||',
+    reporterSettlement,
+  );
+  const traceSearchAdmission = scenario.indexOf(
+    "const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({",
+    settlementGate,
+  );
+  expect(reporterSettlement).toBeGreaterThan(-1);
+  expect(settlementGate).toBeGreaterThan(reporterSettlement);
+  expect(traceSearchAdmission).toBeGreaterThan(settlementGate);
+};
+
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
@@ -387,6 +404,7 @@ describe("Codex interactive diagnostic order", () => {
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
     expect(scenario).not.toContain("recordInteractivePhase(classification)");
+    expectCodexSettlementBeforeTraceSearch(scenario);
     const modelRequestObservation = scenario.indexOf(
       "await waitForModelRequestBeforeDeadline({",
     );
