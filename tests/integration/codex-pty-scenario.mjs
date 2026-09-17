@@ -992,6 +992,17 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
+  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+  operationalStateHealthDescriptor = openOperationalStateHealth(homeDescriptor);
+  operationalStateBaseline = localSqliteAcceptanceBaseline(
+    operationalStateHealthDescriptor,
+  );
+  recordInteractivePhase("installed-status");
+  const installedStatus = projectHarnessStatus(
+    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    "unchanged",
+    1,
+  );
   const stopPayloadPath = join(ledger, "codex-stop-payload.json");
   const stopProbePath = join(codexHome, "codex-stop-payload-probe.mjs");
   writeFileSync(
@@ -1004,17 +1015,6 @@ try {
   writeFileSync(hookPath, `${JSON.stringify(diagnosticHooks)}\n`, {
     mode: 0o600,
   });
-  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  operationalStateHealthDescriptor = openOperationalStateHealth(homeDescriptor);
-  operationalStateBaseline = localSqliteAcceptanceBaseline(
-    operationalStateHealthDescriptor,
-  );
-  recordInteractivePhase("installed-status");
-  const installedStatus = projectHarnessStatus(
-    await cli(["harness", "status", "codex"], "agentscope harness status"),
-    "unchanged",
-    1,
-  );
   modelGateway = await openChallengedModelGateway();
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
