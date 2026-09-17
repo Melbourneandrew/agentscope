@@ -899,11 +899,11 @@ try {
       env: {
         ...process.env,
         CODEX_HOME: codexHome,
-        // Select the authenticated Codex hooks crate rather than one private
-        // module target. The command span remains the only accepted record,
-        // while the crate-level directive is stable across compiler/module
-        // target rendering and still excludes unrelated TUI/model content.
-        RUST_LOG: "codex_hooks=trace",
+        // The pinned Codex source emits the command authority span from this
+        // exact module target. Select it directly: accepting a broader crate
+        // prefix made the evidence depend on EnvFilter prefix behaviour rather
+        // than the authenticated producer identity.
+        RUST_LOG: "codex_hooks::engine::command_runner=trace",
       },
       inherit: true,
     },

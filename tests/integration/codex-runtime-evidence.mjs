@@ -20,6 +20,24 @@ const sameFileIdentity = (left, right) =>
   left.mtimeNs === right.mtimeNs &&
   left.ctimeNs === right.ctimeNs;
 
+const commandOutcome = (line) => {
+  const fields = [
+    ...line.matchAll(/hook\.command_outcome=(?:"([^"]*)"|([^\s}]+))/gu),
+  ];
+  if (fields.length < 1 || fields.length > 2)
+    throw new Error("integration.codex.hook-log");
+  const outcomes = fields.map((match) => match[1] ?? match[2]);
+  if (
+    outcomes[0] === undefined ||
+    outcomes.some((outcome) => outcome !== outcomes[0]) ||
+    !/^(?:completed|timeout|spawn_error|stdin_error|wait_error)$/u.test(
+      outcomes[0],
+    )
+  )
+    throw new Error("integration.codex.hook-log");
+  return outcomes[0];
+};
+
 export const classifyCodexSettledTraceObservation = ({
   hookCompleted,
   reporterSettled,
@@ -115,17 +133,7 @@ export const classifyCodexStopHookCommand = (input) => {
     if (!/^hook\.event_name=(?:"Stop"|Stop)$/u.test(eventFields[0][0]))
       continue;
     stopLineCount += 1;
-    const outcomeFields = [
-      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
-    ];
-    if (outcomeFields.length !== 1)
-      throw new Error("integration.codex.hook-log");
-    const match =
-      /^hook\.command_outcome=(?:")?(completed|timeout|spawn_error|stdin_error|wait_error)(?:")?$/u.exec(
-        outcomeFields[0][0],
-      );
-    if (match?.[1] === undefined) throw new Error("integration.codex.hook-log");
-    outcomes.push(match[1]);
+    outcomes.push(commandOutcome(line));
   }
   if (stopLineCount === 0) return undefined;
   if (stopLineCount !== 1 || outcomes.length !== 1)
@@ -182,16 +190,8 @@ export const inspectCodexStopHookCommand = (input) => {
     const eventFields = [
       ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
     ];
-    const outcomeFields = [
-      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
-    ];
-    if (eventFields.length !== 1 || outcomeFields.length !== 1)
-      throw new Error("integration.codex.hook-log");
-    const outcome =
-      /^hook\.command_outcome=(?:")?(completed|timeout|spawn_error|stdin_error|wait_error)(?:")?$/u.exec(
-        outcomeFields[0][0],
-      )?.[1];
-    if (outcome === undefined) throw new Error("integration.codex.hook-log");
+    if (eventFields.length !== 1) throw new Error("integration.codex.hook-log");
+    const outcome = commandOutcome(line);
     matches.push(
       Object.freeze({
         outcome,
@@ -230,16 +230,7 @@ export const codexSessionStartMediationUpperBoundMilliseconds = (input) => {
     const eventFields = [
       ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
     ];
-    const outcomeFields = [
-      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
-    ];
-    if (
-      eventFields.length !== 1 ||
-      outcomeFields.length !== 1 ||
-      !/^hook\.command_outcome=(?:")?completed(?:")?$/u.test(
-        outcomeFields[0][0],
-      )
-    )
+    if (eventFields.length !== 1 || commandOutcome(line) !== "completed")
       throw new Error("integration.codex.hook-log");
     matches.push(
       tracingDurationMilliseconds(line, "time\\.busy") +

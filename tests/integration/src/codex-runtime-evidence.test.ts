@@ -89,8 +89,8 @@ describe("Codex bounded native ledgers", () => {
           constants.O_NONBLOCK,
       );
       const path = join(directory, "codex-tui.log");
-      const line = (outcome: string) =>
-        `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="${outcome}"}: close\n`;
+      const line = (outcome: string, repeated = false) =>
+        `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="${outcome}"${repeated ? ` hook.command_outcome="${outcome}"` : ""}}: close\n`;
       try {
         expect(
           classifyCodexStopHookCommand({
@@ -112,8 +112,25 @@ describe("Codex bounded native ledgers", () => {
               directoryPath: directory,
             }),
           ).toBe(outcome);
+          writeFileSync(path, line(outcome, true));
+          expect(
+            classifyCodexStopHookCommand({
+              directoryDescriptor: descriptor,
+              directoryPath: directory,
+            }),
+          ).toBe(outcome);
         }
         writeFileSync(path, `${line("timeout")}${line("completed")}`);
+        expect(() =>
+          classifyCodexStopHookCommand({
+            directoryDescriptor: descriptor,
+            directoryPath: directory,
+          }),
+        ).toThrow("integration.codex.hook-log");
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="completed" hook.command_outcome="completed" hook.command_outcome="completed"}: close\n',
+        );
         expect(() =>
           classifyCodexStopHookCommand({
             directoryDescriptor: descriptor,
@@ -179,9 +196,16 @@ describe("Codex bounded native ledgers", () => {
         });
       const line = (durations = "time.busy=4.75s time.idle=125ms") =>
         `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="completed"}: close ${durations}\n`;
+      const repeatedLine = (durations = "time.busy=4.75s time.idle=125ms") =>
+        `TRACE codex.hooks.command{hook.event_name="Stop" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${durations}\n`;
       try {
         expect(inspect()).toBeUndefined();
         writeFileSync(path, line());
+        expect(inspect()).toEqual({
+          outcome: "completed",
+          durationMilliseconds: 4_875,
+        });
+        writeFileSync(path, repeatedLine());
         expect(inspect()).toEqual({
           outcome: "completed",
           durationMilliseconds: 4_875,
@@ -242,9 +266,13 @@ describe("Codex bounded native ledgers", () => {
         });
       const line = (durations = "time.busy=125ms time.idle=25ms") =>
         `TRACE codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed"}: close ${durations}\n`;
+      const repeatedLine = (durations = "time.busy=125ms time.idle=25ms") =>
+        `TRACE codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${durations}\n`;
       try {
         expect(measure()).toBeUndefined();
         writeFileSync(path, line());
+        expect(measure()).toBe(150);
+        writeFileSync(path, repeatedLine());
         expect(measure()).toBe(150);
         writeFileSync(path, line("time.busy=500us time.idle=0.25s"));
         expect(measure()).toBe(250.5);
