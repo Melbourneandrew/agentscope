@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-2099c580ed66be601f65d118fbe1c16a14ab6ca010af3f8b722c11550ed7c3eb",
+  "manifestIdentity": "sha256-bd3a011bb564f3868b4467a0c15b4d82a61bd0852192fb96c2ba06474de29638",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -77,7 +77,7 @@
       "executionMode": "headless",
       "outputContract": "jsonl",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -165,9 +165,17 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "0b68a33c9c9c60a2291fc4b166912849243a3055cb9d8693f7def2aeeaf2308a"
+        "sha256": "058ad59db3adedd799dd70167552a21da0778f9d37381fef12e2d19d0ca09d77"
       },
       "runtimeArtifacts": [
+        {
+          "source": {
+            "kind": "integration",
+            "path": "gate-mockserver.mjs"
+          },
+          "destination": "gate-mockserver.mjs",
+          "sha256": "d0a43ba8bd6d5cf5567b8a07bdb4d48a5ae81814e2bc4c0a4e68aaba1e7056fe"
+        },
         {
           "source": {
             "kind": "integration",

@@ -318,6 +318,10 @@ const stageBuildContext = (plan) => {
   if (scenario === undefined) throw new Error("integration.isolation.context");
   const evidence = evidenceById.get(scenario.harnessEvidenceId);
   if (evidence === undefined) throw new Error("integration.isolation.context");
+  const gateCapableMockServer =
+    scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes.length === 1 &&
+    scenario.modelRoutes[0] === "codex-tui-responses";
   const harnessMaterial = preparedHarnessMaterials.get(
     scenario.harnessEvidenceId,
   );
@@ -552,32 +556,55 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
-  writeFileSync(
-    resolve(mockServerContext, "mockserver-initialization.json"),
-    `${JSON.stringify(
-      scenario.modelRoutes.map((routeId) => {
-        const index = modelRoutes.routeIds.indexOf(routeId);
-        if (
-          index < 0 ||
-          modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
-          modelRoutes.mockServerInitialization[index] === undefined
-        )
-          throw new Error("integration.isolation.context");
-        return modelRoutes.mockServerInitialization[index];
-      }),
-      undefined,
-      2,
-    )}\n`,
-  );
-  writeFileSync(
-    resolve(mockServerContext, "MockServer.Dockerfile"),
-    [
-      "ARG MOCKSERVER_IMAGE",
-      "FROM ${MOCKSERVER_IMAGE}",
-      "COPY mockserver-initialization.json /config/expectations.json",
-      "",
-    ].join("\n"),
-  );
+  if (gateCapableMockServer) {
+    const gateSource = resolve(context, "runtime/gate-mockserver.mjs");
+    const gateStatus = lstatSync(gateSource);
+    if (!gateStatus.isFile() || gateStatus.isSymbolicLink())
+      throw new Error("integration.isolation.context");
+    cpSync(gateSource, resolve(mockServerContext, "gate-mockserver.mjs"), {
+      errorOnExist: true,
+      force: false,
+    });
+    writeFileSync(
+      resolve(mockServerContext, "MockServer.Dockerfile"),
+      [
+        "ARG MOCKSERVER_IMAGE",
+        "FROM ${MOCKSERVER_IMAGE}",
+        "WORKDIR /opt/agentscope",
+        "COPY --chmod=0555 gate-mockserver.mjs ./gate-mockserver.mjs",
+        "USER node",
+        'CMD ["node", "/opt/agentscope/gate-mockserver.mjs"]',
+        "",
+      ].join("\n"),
+    );
+  } else {
+    writeFileSync(
+      resolve(mockServerContext, "mockserver-initialization.json"),
+      `${JSON.stringify(
+        scenario.modelRoutes.map((routeId) => {
+          const index = modelRoutes.routeIds.indexOf(routeId);
+          if (
+            index < 0 ||
+            modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+            modelRoutes.mockServerInitialization[index] === undefined
+          )
+            throw new Error("integration.isolation.context");
+          return modelRoutes.mockServerInitialization[index];
+        }),
+        undefined,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      resolve(mockServerContext, "MockServer.Dockerfile"),
+      [
+        "ARG MOCKSERVER_IMAGE",
+        "FROM ${MOCKSERVER_IMAGE}",
+        "COPY mockserver-initialization.json /config/expectations.json",
+        "",
+      ].join("\n"),
+    );
+  }
   return Object.freeze({
     context,
     requiresHarnessBuildContextBound: harnessMaterial !== undefined,
