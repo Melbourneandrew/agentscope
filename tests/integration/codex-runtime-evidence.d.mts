@@ -14,6 +14,13 @@ export function classifyCodexSettledTraceObservation(input: {
   tracePresent: boolean;
 }): "accepted" | "missing" | "pending";
 
+export function codexTraceSearchUnavailable(input: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: Buffer;
+  stdout: Buffer;
+}): boolean;
+
 export function classifyCodexStopHookCommand(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

@@ -422,7 +422,7 @@ describe("integration capability manifest", () => {
       source.indexOf("const waitForCodexTurnTerminal ="),
     );
     const joinedSearch = traceSummaryFunction.indexOf(
-      "  const { stdout } = await run(\n",
+      "  const { stdout, traceUnavailable } = await run(\n",
     );
     const exactSessionFilter = traceSummaryFunction.indexOf(
       '      "--session",\n      codexSessionId,\n',
