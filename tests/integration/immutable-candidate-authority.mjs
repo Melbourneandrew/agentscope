@@ -33,6 +33,7 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-hook-delivery-unknown",
   "integration.fixture.codex-hook-accepted-without-trace",
   "integration.fixture.codex-hook-operational-unclassified",
+  "integration.fixture.codex-hook-payload-missing",
   "integration.fixture.codex-hook-payload-shape",
   "integration.fixture.codex-hook-payload-keys",
   "integration.fixture.codex-hook-payload-root",

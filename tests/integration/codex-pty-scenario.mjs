@@ -313,6 +313,7 @@ const interactivePhases = Object.freeze([
   "hook-delivery-unknown",
   "hook-accepted-without-trace",
   "hook-operational-unclassified",
+  "hook-payload-missing",
   "hook-payload-shape",
   "hook-payload-keys",
   "hook-payload-root",
@@ -1082,6 +1083,28 @@ try {
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
   await waitForCodexTurnTerminal(traceDeadline);
+  while (!existsSync(stopPayloadPath)) {
+    if (bootNow() >= traceDeadline) {
+      recordInteractivePhase("hook-payload-missing");
+      throw new Error("integration.codex.hook-payload-missing");
+    }
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 20,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
+  }
+  const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
+  const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
+  recordTerminalObservationBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    record: () => recordInteractivePhase(stopPayloadPhase),
+  });
+  if (process.env.AGENTSCOPE_SCENARIO_ID !== undefined)
+    throw new Error(`integration.codex.${stopPayloadPhase}`);
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1094,15 +1117,6 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
-  const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
-  const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase(stopPayloadPhase),
-  });
-  if (process.env.AGENTSCOPE_SCENARIO_ID !== undefined)
-    throw new Error(`integration.codex.${stopPayloadPhase}`);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,

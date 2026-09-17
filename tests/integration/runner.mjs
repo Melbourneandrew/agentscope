@@ -66,6 +66,7 @@ const interactivePhases = Object.freeze([
   "hook-delivery-unknown",
   "hook-accepted-without-trace",
   "hook-operational-unclassified",
+  "hook-payload-missing",
   "hook-payload-shape",
   "hook-payload-keys",
   "hook-payload-root",
