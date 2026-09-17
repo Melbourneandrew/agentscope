@@ -225,7 +225,7 @@ describe("integration cleanup authority", () => {
       "hook-delivery-unknown",
       "hook-accepted-without-trace",
       "hook-operational-unclassified",
-      ..."shape keys root identity permission fields accepted"
+      ..."missing shape keys root identity permission fields accepted"
         .split(" ")
         .map((classification) => `hook-payload-${classification}`),
     ]) {
@@ -382,7 +382,7 @@ describe("Codex interactive diagnostic order", () => {
       "hook-delivery-unknown",
       "hook-accepted-without-trace",
       "hook-operational-unclassified",
-      ..."shape keys root identity permission fields accepted"
+      ..."missing shape keys root identity permission fields accepted"
         .split(" ")
         .map((classification) => `hook-payload-${classification}`),
       "trace-search-record-count",
