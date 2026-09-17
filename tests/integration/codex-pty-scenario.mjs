@@ -268,7 +268,6 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
-  "hook-direct-probe-start",
   "hook-direct-probe-accepted",
   "hook-direct-probe-failed",
   "hook-no-operational-state",
@@ -408,19 +407,32 @@ const installedLauncher = (hookConfiguration) => {
   return commands[0].slice(1, -1);
 };
 let installedHookCommand;
-const diagnoseMissingOperationalState = async (operationalStatePath) => {
-  recordInteractivePhase("hook-direct-probe-start");
+let directHookProbeSequence = null;
+const readHookOperationalHealth = (operationalStatePath) => {
+  if (!existsSync(operationalStatePath)) return [];
+  const state = lstatSync(operationalStatePath);
+  if (
+    !state.isFile() ||
+    state.isSymbolicLink() ||
+    state.size === 0 ||
+    state.size > 262_144
+  )
+    return [];
+  const parsed = JSON.parse(readFileSync(operationalStatePath, "utf8"));
+  return (Array.isArray(parsed?.health) ? parsed.health : [])
+    .filter((entry) => entry?.scope === "hook" || entry?.scope === "connection")
+    .sort((left, right) => right.sequence - left.sequence);
+};
+const runDirectHookProbe = async (operationalStatePath) => {
   const diagnosticSessionId = `diagnostic-${scenarioId}`;
   const diagnosticInput = JSON.stringify({
     cwd: worktree,
-    hook_event_name: "Stop",
-    last_assistant_message: "Agentscope hook-path diagnostic",
+    hook_event_name: "SessionStart",
     model: "fixture-model",
     permission_mode: "bypassPermissions",
     session_id: diagnosticSessionId,
-    stop_hook_active: false,
+    source: "startup",
     transcript_path: null,
-    turn_id: "diagnostic-turn",
   });
   try {
     await run("/bin/sh", ["-lc", installedHookCommand], {
@@ -433,11 +445,8 @@ const diagnoseMissingOperationalState = async (operationalStatePath) => {
     // The exact operational receipt below is the authority: the installed
     // launcher deliberately keeps its command surface content-free.
   }
-  const classification = existsSync(operationalStatePath)
-    ? "hook-direct-probe-accepted"
-    : "hook-direct-probe-failed";
-  recordInteractivePhase(classification);
-  throw new Error(`integration.codex.${classification}`);
+  const sequence = readHookOperationalHealth(operationalStatePath)[0]?.sequence;
+  directHookProbeSequence = Number.isSafeInteger(sequence) ? sequence : null;
 };
 const readModelRequests = async (signal) =>
   boundedRequestLedger(
@@ -797,39 +806,30 @@ const waitForTraceSummary = async (traceDeadline) => {
         "health",
         "operational-state-v1.json",
       );
-      if (!existsSync(operationalStatePath))
-        await diagnoseMissingOperationalState(operationalStatePath);
-      let classification = "hook-no-operational-state";
-      if (existsSync(operationalStatePath)) {
-        const state = lstatSync(operationalStatePath);
-        if (
-          state.isFile() &&
-          !state.isSymbolicLink() &&
-          state.size > 0 &&
-          state.size <= 262_144
-        ) {
-          const parsed = JSON.parse(readFileSync(operationalStatePath, "utf8"));
-          const health = Array.isArray(parsed?.health) ? parsed.health : [];
-          const latest = health
-            .filter(
-              (entry) =>
-                entry?.scope === "hook" || entry?.scope === "connection",
-            )
-            .sort((left, right) => right.sequence - left.sequence)[0];
-          const key = `${latest?.stage}:${latest?.outcome}`;
-          classification =
-            {
-              "hook-started:suppressed": "hook-start-suppressed",
-              "hook-started:deadline-exceeded": "hook-start-deadline",
-              "capture:suppressed": "hook-capture-suppressed",
-              "routing:no-route": "hook-routing-no-route",
-              "delivery:rejected": "hook-delivery-rejected",
-              "delivery:unavailable": "hook-delivery-unavailable",
-              "delivery:deadline-exceeded": "hook-delivery-deadline",
-              "delivery:outcome-unknown": "hook-delivery-unknown",
-              "remote-acceptance:accepted": "hook-accepted-without-trace",
-            }[key] ?? "hook-operational-unclassified";
-        }
+      let classification;
+      const health = readHookOperationalHealth(operationalStatePath);
+      const latest = health[0];
+      if (directHookProbeSequence === null) {
+        classification = "hook-direct-probe-failed";
+      } else if (
+        !Number.isSafeInteger(latest?.sequence) ||
+        latest.sequence <= directHookProbeSequence
+      ) {
+        classification = "hook-direct-probe-accepted";
+      } else {
+        const key = `${latest?.stage}:${latest?.outcome}`;
+        classification =
+          {
+            "hook-started:suppressed": "hook-start-suppressed",
+            "hook-started:deadline-exceeded": "hook-start-deadline",
+            "capture:suppressed": "hook-capture-suppressed",
+            "routing:no-route": "hook-routing-no-route",
+            "delivery:rejected": "hook-delivery-rejected",
+            "delivery:unavailable": "hook-delivery-unavailable",
+            "delivery:deadline-exceeded": "hook-delivery-deadline",
+            "delivery:outcome-unknown": "hook-delivery-unknown",
+            "remote-acceptance:accepted": "hook-accepted-without-trace",
+          }[key] ?? "hook-operational-unclassified";
       }
       recordInteractivePhase(classification);
       throw new Error(`integration.codex.${classification}`);
@@ -868,18 +868,7 @@ let codexSessionId;
 try {
   recordInteractivePhase("install");
   await cli(["init", "--yes"], "agentscope init");
-  await cli(
-    ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
-    "agentscope destination configure",
-  );
-  await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
-  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  const installedStatus = projectHarnessStatus(
-    await cli(["harness", "status", "codex"], "agentscope harness status"),
-    "unchanged",
-    1,
-  );
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
@@ -893,6 +882,20 @@ try {
     (launcherStatus.mode & 0o111) === 0
   )
     throw new Error("integration.codex.hook-configuration");
+  await runDirectHookProbe(
+    join(agentscopeHome, "health", "operational-state-v1.json"),
+  );
+  await cli(
+    ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
+    "agentscope destination configure",
+  );
+  await cli(["routing", "set", "local"], "agentscope routing set");
+  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
+  const installedStatus = projectHarnessStatus(
+    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    "unchanged",
+    1,
+  );
   modelGateway = await openChallengedModelGateway();
   const configuration = `${createCodexInternalProviderConfiguration({
     baseUrl: `${modelGateway.endpoint}/v1`,

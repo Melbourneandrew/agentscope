@@ -38,7 +38,6 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
-  "hook-direct-probe-start",
   "hook-direct-probe-accepted",
   "hook-direct-probe-failed",
   "hook-no-operational-state",
