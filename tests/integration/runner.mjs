@@ -615,6 +615,7 @@ try {
     } catch {
       // The selected PTY error remains the diagnostic if no fixture record exists.
     }
+    diagnostic = retainedInteractivePhase(ledger) ?? diagnostic;
     process.stderr.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
