@@ -291,6 +291,17 @@ describe("Codex interactive diagnostic order", () => {
       "tui-exit",
       "trace-settlement",
       "trace-search",
+      "hook-no-operational-state",
+      "hook-start-suppressed",
+      "hook-start-deadline",
+      "hook-capture-suppressed",
+      "hook-routing-no-route",
+      "hook-delivery-rejected",
+      "hook-delivery-unavailable",
+      "hook-delivery-deadline",
+      "hook-delivery-unknown",
+      "hook-accepted-without-trace",
+      "hook-operational-unclassified",
       "trace-reporter-settled",
       "trace-acceptance",
       "trace-search-result",
@@ -310,6 +321,7 @@ describe("Codex interactive diagnostic order", () => {
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
+    expect(scenario).toContain("recordInteractivePhase(classification)");
     const modelRequestObservation = scenario.indexOf(
       "await waitForModelRequestBeforeDeadline({",
     );

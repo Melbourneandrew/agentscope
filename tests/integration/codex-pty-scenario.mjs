@@ -257,6 +257,17 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
+  "hook-no-operational-state",
+  "hook-start-suppressed",
+  "hook-start-deadline",
+  "hook-capture-suppressed",
+  "hook-routing-no-route",
+  "hook-delivery-rejected",
+  "hook-delivery-unavailable",
+  "hook-delivery-deadline",
+  "hook-delivery-unknown",
+  "hook-accepted-without-trace",
+  "hook-operational-unclassified",
   "trace-reporter-settled",
   "trace-acceptance",
   "trace-search-result",
@@ -772,7 +783,7 @@ const waitForTraceSummary = async (traceDeadline) => {
             }[key] ?? "hook-operational-unclassified";
         }
       }
-      interactiveFailurePhase = classification;
+      recordInteractivePhase(classification);
       throw new Error(`integration.codex.${classification}`);
     }
     await waitWithinObservationDeadline({
