@@ -1081,11 +1081,6 @@ try {
   recordInteractivePhase("model-request");
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
-  // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
-  // its rollout. Prove the installed hook through the durable trace and exact
-  // rollout session identity below, after the sole challenged turn completes
-  // and Testkit joins Codex so its vendor Stop hook has run.
-  await waitForCodexTurnTerminal(traceDeadline);
   if (diagnosticReplay) {
     while (!existsSync(stopPayloadPath)) {
       if (bootNow() >= traceDeadline) {
@@ -1109,6 +1104,11 @@ try {
     });
     throw new Error(`integration.codex.${stopPayloadPhase}`);
   }
+  // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
+  // its rollout. Prove the installed hook through the durable trace and exact
+  // rollout session identity below, after the sole challenged turn completes
+  // and Testkit joins Codex so its vendor Stop hook has run.
+  await waitForCodexTurnTerminal(traceDeadline);
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
