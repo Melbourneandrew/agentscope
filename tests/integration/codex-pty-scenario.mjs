@@ -865,10 +865,15 @@ try {
       constants.O_NOFOLLOW |
       constants.O_NONBLOCK,
   );
-  const configuration = `${createCodexInternalProviderConfiguration({
-    baseUrl: `${modelGateway.endpoint}/v1`,
-    model: "fixture-model",
-  })}\nlog_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
+  // TOML has no syntax for returning to the root table. Keep every root key
+  // ahead of the first table emitted by the provider configuration; appending
+  // log_dir after it would silently make the key part of model_providers.
+  const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\n${createCodexInternalProviderConfiguration(
+    {
+      baseUrl: `${modelGateway.endpoint}/v1`,
+      model: "fixture-model",
+    },
+  )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
   writeFileSync(join(codexHome, "config.toml"), configuration, {
     flag: "wx",
     mode: 0o600,

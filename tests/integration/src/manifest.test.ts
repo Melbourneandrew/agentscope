@@ -323,6 +323,23 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
     );
+    const rootLogDirectory = source.indexOf(
+      "const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\\n${createCodexInternalProviderConfiguration(",
+    );
+    const providerConfiguration = source.indexOf(
+      "    baseUrl: `${modelGateway.endpoint}/v1`,",
+      rootLogDirectory,
+    );
+    const projectConfiguration = source.indexOf(
+      '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
+      providerConfiguration,
+    );
+    expect(rootLogDirectory).toBeGreaterThan(-1);
+    expect(providerConfiguration).toBeGreaterThan(rootLogDirectory);
+    expect(projectConfiguration).toBeGreaterThan(providerConfiguration);
+    expect(source).not.toContain(
+      "})}\\nlog_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}",
+    );
     const traceTerminalPhase = source.indexOf(
       '  recordInteractivePhase("trace-terminal");\n',
       traceDeadline,
