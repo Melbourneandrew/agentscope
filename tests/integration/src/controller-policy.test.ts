@@ -288,35 +288,21 @@ describe("Codex interactive diagnostic order", () => {
       "destination",
       "routing",
       "install",
-      "hook-direct-probe-setup",
       "installed-status",
       "tui-start",
       "model-request",
       "trace-terminal",
-      "tui-exit",
-      "trace-settlement",
       "trace-search",
       "trace-search-record-count",
       "trace-search-shape",
       "trace-search-ambiguous",
       "trace-search-harness",
       "trace-search-locator",
-      "hook-direct-probe-accepted",
-      "hook-direct-probe-failed",
-      "hook-no-operational-state",
-      "hook-start-suppressed",
-      "hook-start-deadline",
-      "hook-capture-suppressed",
-      "hook-routing-no-route",
-      "hook-delivery-rejected",
-      "hook-delivery-unavailable",
-      "hook-delivery-deadline",
-      "hook-delivery-unknown",
-      "hook-accepted-without-trace",
-      "hook-operational-unclassified",
       "trace-reporter-settled",
       "trace-acceptance",
       "trace-search-result",
+      "tui-exit",
+      "trace-settlement",
       "verify",
     ];
     const phases = (source: string) => {
@@ -333,7 +319,7 @@ describe("Codex interactive diagnostic order", () => {
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
-    expect(scenario).toContain("recordInteractivePhase(classification)");
+    expect(scenario).not.toContain("recordInteractivePhase(classification)");
     const modelRequestObservation = scenario.indexOf(
       "await waitForModelRequestBeforeDeadline({",
     );
@@ -345,9 +331,9 @@ describe("Codex interactive diagnostic order", () => {
       'recordInteractivePhase("trace-settlement")',
       modelRequestPhase,
     );
-    const settlementObservation = scenario.indexOf(
+    const traceObservation = scenario.indexOf(
       "await waitForTraceSummary(traceDeadline)",
-      settlementPhase,
+      modelRequestPhase,
     );
     const terminalLedgerRead = scenario.indexOf(
       "const records = readCodexSessionLedgerRecords(homeDescriptor);",
@@ -370,7 +356,8 @@ describe("Codex interactive diagnostic order", () => {
     expect(terminalObservation).toBeGreaterThan(terminalLedgerRead);
     expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
     expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
-    expect(settlementObservation).toBeGreaterThan(settlementPhase);
+    expect(traceObservation).toBeGreaterThan(terminalObservation);
+    expect(settlementPhase).toBeGreaterThan(traceObservation);
     for (let index = 0; index < expected.length; index += 1)
       expect(expected.slice(0, index + 1).at(-1)).toBe(expected[index]);
   });

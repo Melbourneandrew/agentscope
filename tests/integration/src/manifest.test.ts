@@ -281,9 +281,9 @@ describe("integration capability manifest", () => {
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
       modelRequest,
     );
-    const traceQueryAfterJoin = source.indexOf(
+    const traceQueryBeforeJoin = source.indexOf(
       "  const summary = await waitForTraceSummary(traceDeadline);\n",
-      codexJoin,
+      terminalWait,
     );
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
@@ -339,7 +339,8 @@ describe("integration capability manifest", () => {
     );
     expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
-    expect(terminalWait).toBeLessThan(codexJoin);
+    expect(terminalWait).toBeLessThan(traceQueryBeforeJoin);
+    expect(traceQueryBeforeJoin).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
     expect(traceSearchPhase).toBeGreaterThan(-1);
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
@@ -347,13 +348,9 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
-    const directProbe = source.slice(
-      source.indexOf("const runDirectHookProbe ="),
-      source.indexOf("const readModelRequests ="),
-    );
-    expect(directProbe).toContain('hook_event_name: "Stop"');
-    expect(directProbe).toContain("stop_hook_active: false");
-    expect(directProbe).not.toContain('hook_event_name: "SessionStart"');
+    expect(source).not.toContain("runDirectHookProbe");
+    expect(source).not.toContain("options.input");
+    expect(source).not.toContain("readHookOperationalHealth");
     const terminalObservation = source.indexOf(
       "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
     );
@@ -470,15 +467,15 @@ describe("integration capability manifest", () => {
       "  completed = true;\n",
       guardedEvidenceWrite,
     );
-    expect(evidenceEncoding).toBeGreaterThan(traceQueryAfterJoin);
+    expect(evidenceEncoding).toBeGreaterThan(traceQueryBeforeJoin);
     expect(guardedEvidenceWrite).toBeGreaterThan(evidenceEncoding);
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
     expect(codexJoin).toBeGreaterThan(modelRequest);
-    expect(terminalWait).toBeLessThan(codexJoin);
-    expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
+    expect(terminalWait).toBeLessThan(traceQueryBeforeJoin);
+    expect(traceQueryBeforeJoin).toBeLessThan(codexJoin);
     expect(
       source.indexOf("  await modelGateway.settle();\n", modelRequest),
     ).toBeLessThan(terminalWait);
