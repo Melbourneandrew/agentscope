@@ -970,3 +970,73 @@ export const waitWithinObservationDeadline = async ({
   await wait(Math.min(maximumWaitMilliseconds, remainingMilliseconds));
   if (now() >= deadline) throw new Error("integration.codex.trace-deadline");
 };
+
+/**
+ * @param {{
+ *   deadline: number,
+ *   now: () => number,
+ *   request: (signal: AbortSignal) => Promise<readonly unknown[]>,
+ *   wait: (milliseconds: number) => Promise<void>
+ * }} options
+ * @returns {Promise<readonly unknown[]>}
+ */
+export const waitForModelRequestBeforeDeadline = async ({
+  deadline,
+  now,
+  request,
+  wait,
+}) => {
+  if (
+    !Number.isFinite(deadline) ||
+    typeof now !== "function" ||
+    typeof request !== "function" ||
+    typeof wait !== "function"
+  )
+    throw new Error("integration.codex.diagnostic-deadline");
+  while (true) {
+    const remainingMilliseconds = deadline - now();
+    if (!Number.isFinite(remainingMilliseconds) || remainingMilliseconds <= 0)
+      throw new Error("integration.codex.diagnostic-deadline");
+    const controller = new AbortController();
+    let timer;
+    const pending = Promise.resolve().then(() => request(controller.signal));
+    try {
+      const records = await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error("integration.codex.diagnostic-deadline"));
+          }, Math.ceil(remainingMilliseconds));
+        }),
+      ]);
+      if (now() >= deadline) {
+        controller.abort();
+        throw new Error("integration.codex.diagnostic-deadline");
+      }
+      if (!Array.isArray(records))
+        throw new Error("integration.codex.model-request");
+      if (records.length > 0) return records;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        await pending.catch(() => undefined);
+        throw new Error("integration.codex.diagnostic-deadline", {
+          cause: error,
+        });
+      }
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    try {
+      await waitWithinObservationDeadline({
+        deadline,
+        maximumWaitMilliseconds: 25,
+        now,
+        wait,
+      });
+    } catch {
+      throw new Error("integration.codex.diagnostic-deadline");
+    }
+  }
+};

@@ -256,7 +256,7 @@ describe("integration capability manifest", () => {
       '      "--dangerously-bypass-hook-trust",\n',
     );
     const modelRequest = source.indexOf(
-      "  await observeBeforeDiagnosticDeadline(waitForModelRequest(), traceDeadline);\n",
+      "  await waitForModelRequestBeforeDeadline({\n",
     );
     const traceDeadline = source.indexOf(
       "  const traceDeadline = deadline - 3_000;\n",

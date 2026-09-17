@@ -29,6 +29,7 @@ import {
   readBoundedJsonResponse,
   terminalObservationBeforeDeadline,
   traceSummaryBeforeDeadline,
+  waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
@@ -269,13 +270,26 @@ const cli = async (arguments_, command, options) =>
 
 const prompt = "Reply with one short confirmation and do not use tools.";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
-const requestJson = async (url, options) => {
-  const response = await fetch(url, {
-    ...options,
-    signal: AbortSignal.timeout(Math.min(5_000, remaining())),
-  });
-  if (!response.ok) throw new Error("integration.codex.sidecar");
-  return readBoundedJsonResponse(response, maximumOutput);
+const requestJson = async (url, options = {}) => {
+  const { signal, ...requestOptions } = options;
+  if (signal?.aborted) throw new Error("integration.codex.sidecar");
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(abort, Math.min(5_000, remaining()));
+  try {
+    const response = await fetch(url, {
+      ...requestOptions,
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error("integration.codex.sidecar");
+    return await readBoundedJsonResponse(response, maximumOutput);
+  } catch {
+    throw new Error("integration.codex.sidecar");
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+  }
 };
 const exactKeys = (value, keys) =>
   typeof value === "object" &&
@@ -318,18 +332,15 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const readModelRequests = async () =>
+const readModelRequests = async (signal) =>
   boundedRequestLedger(
     await requestJson(`${modelEndpoint}/mockserver/retrieve?type=REQUESTS`, {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: "{}",
+      signal,
     }),
   );
-const waitForModelRequest = async () => {
-  while ((await readModelRequests()).length === 0)
-    await new Promise((resolve) => setTimeout(resolve, 25));
-};
 const readBoundedResponseText = async (response) => {
   if (!response.body) throw new Error("integration.codex.model-gateway");
   const chunks = [];
@@ -717,7 +728,13 @@ try {
     },
   );
   interactiveFailurePhase = "model-request";
-  await observeBeforeDiagnosticDeadline(waitForModelRequest(), traceDeadline);
+  await waitForModelRequestBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    request: readModelRequests,
+    wait: (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  });
   interactiveFailurePhase = "tui-exit";
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   await modelGateway.settle();

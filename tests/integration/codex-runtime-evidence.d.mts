@@ -97,3 +97,10 @@ export function waitWithinObservationDeadline(input: {
   now: () => number;
   wait: (milliseconds: number) => Promise<void>;
 }): Promise<void>;
+
+export function waitForModelRequestBeforeDeadline(input: {
+  deadline: number;
+  now: () => number;
+  request: (signal: AbortSignal) => Promise<readonly unknown[]>;
+  wait: (milliseconds: number) => Promise<void>;
+}): Promise<readonly unknown[]>;
