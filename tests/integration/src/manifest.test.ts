@@ -443,6 +443,23 @@ describe("integration capability manifest", () => {
     );
     expect(source).not.toContain("  await waitForModelRequest();\n");
     expect(source).toContain("{ monotonicDeadline: traceDeadline },\n");
+    expect(source).toContain(
+      '    await cli(["harness", "status", "codex"], "agentscope harness status", {\n      monotonicDeadline: traceDeadline,\n    }),\n',
+    );
+    const evidenceEncoding = source.indexOf(
+      "  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(\n",
+    );
+    const guardedEvidenceWrite = source.indexOf(
+      '  recordTerminalObservationBeforeDeadline({\n    deadline: traceDeadline,\n    now: bootNow,\n    record: () =>\n      writeFileSync(\n        join(ledger, "fixture-result.json"),\n',
+      evidenceEncoding,
+    );
+    const completed = source.indexOf(
+      "  completed = true;\n",
+      guardedEvidenceWrite,
+    );
+    expect(evidenceEncoding).toBeGreaterThan(traceQueryAfterJoin);
+    expect(guardedEvidenceWrite).toBeGreaterThan(evidenceEncoding);
+    expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(readinessRelease).toBeGreaterThan(-1);
     expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
     expect(modelResponse).toBeGreaterThan(checkpointAcknowledgement);
