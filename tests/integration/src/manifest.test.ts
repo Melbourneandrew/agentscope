@@ -392,6 +392,13 @@ describe("integration capability manifest", () => {
     );
     expect(terminalCompletion).toBeGreaterThan(lifecycleSettlement);
     expect(terminalCompletion).toBeLessThan(codexJoin);
+    const traceSettlementFunction = source.slice(
+      source.indexOf("const waitForTraceSettlement ="),
+      source.indexOf("const waitForTraceSummary ="),
+    );
+    expect(
+      traceSettlementFunction.match(/!terminalObservationBeforeDeadline\(\{/gu),
+    ).toHaveLength(2);
     expect(source).toContain('            child.kill("SIGKILL");\n');
     expect(source).toContain(
       "      if (timer !== undefined) clearTimeout(timer);\n",

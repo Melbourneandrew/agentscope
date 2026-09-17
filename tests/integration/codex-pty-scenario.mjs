@@ -248,24 +248,27 @@ let localSqliteLifecycleDescriptor;
 let localSqliteHealthDescriptor;
 let localSqliteOperationalBaseline;
 let interactiveFailurePhase = "bootstrap";
+let interactiveFailurePhaseIndex = -1;
 const interactivePhases = Object.freeze([
   "bootstrap",
   "install",
   "tui-start",
   "model-request",
-  "tui-exit",
-  "trace-terminal",
   "trace-settlement",
   "trace-acceptance",
   "trace-reporter-settled",
-  "trace-search-result",
+  "tui-exit",
+  "trace-terminal",
   "trace-search",
+  "trace-search-result",
   "verify",
 ]);
 const recordInteractivePhase = (phase) => {
-  if (!interactivePhases.includes(phase))
+  const phaseIndex = interactivePhases.indexOf(phase);
+  if (phaseIndex <= interactiveFailurePhaseIndex)
     throw new Error("integration.codex.failure-phase");
   interactiveFailurePhase = phase;
+  interactiveFailurePhaseIndex = phaseIndex;
   writeFileSync(
     join(ledger, `interactive-phase-${phase}.txt`),
     `integration.fixture.codex-${phase}\n`,
@@ -675,6 +678,14 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-acceptance");
   while (!localSqliteReporterSettled(localSqliteLifecycleDescriptor)) {
     await waitWithinObservationDeadline({
@@ -686,6 +697,14 @@ const waitForTraceSettlement = async (traceDeadline) => {
     });
     remaining();
   }
+  if (
+    !terminalObservationBeforeDeadline({
+      observed: true,
+      deadline: traceDeadline,
+      now: bootNow,
+    })
+  )
+    throw new Error("integration.codex.trace-deadline");
   recordInteractivePhase("trace-reporter-settled");
   await new Promise((resolve, reject) => {
     process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>

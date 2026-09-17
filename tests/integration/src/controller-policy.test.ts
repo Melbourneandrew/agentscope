@@ -268,6 +268,49 @@ describe("integration cleanup authority", () => {
   });
 });
 
+describe("Codex interactive diagnostic order", () => {
+  it("keeps retained phases in the writer's strict lifecycle order", () => {
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    const expected = [
+      "bootstrap",
+      "install",
+      "tui-start",
+      "model-request",
+      "trace-settlement",
+      "trace-acceptance",
+      "trace-reporter-settled",
+      "tui-exit",
+      "trace-terminal",
+      "trace-search",
+      "trace-search-result",
+      "verify",
+    ];
+    const phases = (source: string) => {
+      const declaration = source.slice(
+        source.indexOf("const interactivePhases = Object.freeze(["),
+        source.indexOf("]);", source.indexOf("const interactivePhases")) + 3,
+      );
+      return [...declaration.matchAll(/^ {2}"([a-z-]+)",$/gmu)].map(
+        (match) => match[1],
+      );
+    };
+    expect(phases(scenario)).toEqual(expected);
+    expect(phases(runner)).toEqual(expected);
+    expect(scenario).toContain(
+      "if (phaseIndex <= interactiveFailurePhaseIndex)",
+    );
+    for (let index = 0; index < expected.length; index += 1)
+      expect(expected.slice(0, index + 1).at(-1)).toBe(expected[index]);
+  });
+});
+
 describe("integration controller supervision", () => {
   it("kills and proves absence of descendants after the leader exits", async () => {
     if (process.platform === "win32") return;
