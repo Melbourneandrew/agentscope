@@ -162,9 +162,20 @@ const run = (executable, arguments_, options = {}) => {
     const child = spawn(executable, arguments_, {
       cwd: options.cwd,
       env: options.env ?? process.env,
-      stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
+      stdio: options.inherit
+        ? "inherit"
+        : [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
     childPid = child.pid;
+    if (!options.inherit && options.input !== undefined) {
+      const input = Buffer.from(options.input);
+      if (input.length === 0 || input.length > 65_536) {
+        child.kill("SIGKILL");
+        reject(new Error("integration.codex.child-input"));
+        return;
+      }
+      child.stdin.end(input);
+    }
     let deadlineExpired = false;
     const timer =
       timeoutMilliseconds === undefined
@@ -257,6 +268,9 @@ const interactivePhases = Object.freeze([
   "tui-exit",
   "trace-settlement",
   "trace-search",
+  "hook-direct-probe-start",
+  "hook-direct-probe-accepted",
+  "hook-direct-probe-failed",
   "hook-no-operational-state",
   "hook-start-suppressed",
   "hook-start-deadline",
@@ -392,6 +406,36 @@ const installedLauncher = (hookConfiguration) => {
   )
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
+};
+let installedHookCommand;
+const diagnoseMissingOperationalState = async (
+  operationalStatePath,
+  traceDeadline,
+) => {
+  recordInteractivePhase("hook-direct-probe-start");
+  const diagnosticSessionId = `diagnostic-${scenarioId}`;
+  const diagnosticInput = JSON.stringify({
+    cwd: worktree,
+    hook_event_name: "Stop",
+    last_assistant_message: "Agentscope hook-path diagnostic",
+    model: "fixture-model",
+    permission_mode: "bypassPermissions",
+    session_id: diagnosticSessionId,
+    stop_hook_active: false,
+    transcript_path: null,
+    turn_id: "diagnostic-turn",
+  });
+  await run("/bin/sh", ["-lc", installedHookCommand], {
+    cwd: worktree,
+    env: { ...process.env, CODEX_HOME: codexHome },
+    input: diagnosticInput,
+    monotonicDeadline: traceDeadline,
+  });
+  const classification = existsSync(operationalStatePath)
+    ? "hook-direct-probe-accepted"
+    : "hook-direct-probe-failed";
+  recordInteractivePhase(classification);
+  throw new Error(`integration.codex.${classification}`);
 };
 const readModelRequests = async (signal) =>
   boundedRequestLedger(
@@ -751,6 +795,11 @@ const waitForTraceSummary = async (traceDeadline) => {
         "health",
         "operational-state-v1.json",
       );
+      if (!existsSync(operationalStatePath))
+        await diagnoseMissingOperationalState(
+          operationalStatePath,
+          traceDeadline,
+        );
       let classification = "hook-no-operational-state";
       if (existsSync(operationalStatePath)) {
         const state = lstatSync(operationalStatePath);
@@ -835,6 +884,7 @@ try {
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
+  installedHookCommand = `'${launcher}'`;
   if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))
     throw new Error("integration.codex.hook-deadline");
   const launcherStatus = lstatSync(launcher);
