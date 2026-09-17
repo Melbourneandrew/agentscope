@@ -350,13 +350,11 @@ const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
     workDeadline,
   };
 };
-const armCommandTimeout = (workDeadline, timeoutAfterOutput, fail) =>
-  timeoutAfterOutput === undefined
-    ? setTimeout(
-        () => fail("integration.images.timeout", true),
-        Math.max(1, workDeadline - performance.now()),
-      )
-    : undefined;
+const armCommandTimeout = (workDeadline, fail) =>
+  setTimeout(
+    () => fail("integration.images.timeout", true),
+    Math.max(1, workDeadline - performance.now()),
+  );
 const applyOutputTimeoutForTesting = (output, expected, fail) => {
   if (expected !== undefined && Buffer.concat(output).equals(expected))
     fail("integration.images.timeout", true);
@@ -430,11 +428,7 @@ const runOwnedCommand = async (
   child.stderr.on("data", (chunk) => consume(chunk, false));
   const onAbort = () => fail("integration.images.interrupted");
   signal?.addEventListener("abort", onAbort, { once: true });
-  const timeout = armCommandTimeout(
-    workDeadline,
-    timeoutAfterOutputForTesting,
-    fail,
-  );
+  const timeout = armCommandTimeout(workDeadline, fail);
   const closed = new Promise((resolveClose) => {
     child.once("error", () => fail("integration.images.command"));
     child.once("close", (code, childSignal) =>
