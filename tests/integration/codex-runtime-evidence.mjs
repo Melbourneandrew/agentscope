@@ -20,6 +20,16 @@ const sameFileIdentity = (left, right) =>
   left.mtimeNs === right.mtimeNs &&
   left.ctimeNs === right.ctimeNs;
 
+export const classifyCodexSettledTraceObservation = ({
+  hookCompleted,
+  reporterSettled,
+  tracePresent,
+}) => {
+  if (hookCompleted && reporterSettled && tracePresent) return "accepted";
+  if (hookCompleted && reporterSettled && !tracePresent) return "missing";
+  return "pending";
+};
+
 const readCodexHookLog = ({
   afterRead,
   directoryDescriptor,

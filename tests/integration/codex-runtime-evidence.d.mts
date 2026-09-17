@@ -7,6 +7,12 @@ export function boundedRequestLedger(
   value: unknown,
 ): readonly Readonly<Record<string, unknown>>[];
 
+export function classifyCodexSettledTraceObservation(input: {
+  hookCompleted: boolean;
+  reporterSettled: boolean;
+  tracePresent: boolean;
+}): "accepted" | "missing" | "pending";
+
 export function classifyCodexStopHookCommand(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

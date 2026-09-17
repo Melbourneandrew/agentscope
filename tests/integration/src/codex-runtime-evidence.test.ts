@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
+  classifyCodexSettledTraceObservation,
   classifyCodexStopHookCommand,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -43,6 +44,37 @@ import {
 
 // eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
+  it("requires a fresh post-settlement trace observation", () => {
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: false,
+        reporterSettled: false,
+        tracePresent: false,
+      }),
+    ).toBe("pending");
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: false,
+        reporterSettled: true,
+        tracePresent: true,
+      }),
+    ).toBe("pending");
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: true,
+        reporterSettled: true,
+        tracePresent: true,
+      }),
+    ).toBe("accepted");
+    expect(
+      classifyCodexSettledTraceObservation({
+        hookCompleted: true,
+        reporterSettled: true,
+        tracePresent: false,
+      }),
+    ).toBe("missing");
+  });
+
   it.runIf(process.platform === "linux")(
     "classifies only one descriptor-bound Codex Stop hook outcome",
     () => {
