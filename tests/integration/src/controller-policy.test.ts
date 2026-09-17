@@ -183,9 +183,9 @@ describe("integration cleanup authority", () => {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
-    expect(scenario).toContain("recordInteractivePhase(`hook-${hookStatus}`)");
+    expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
-      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+      expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
@@ -288,9 +288,6 @@ describe("Codex interactive diagnostic order", () => {
       "tui-start",
       "model-request",
       "trace-terminal",
-      "hook-missing",
-      "hook-failed",
-      "hook-completed",
       "tui-exit",
       "trace-settlement",
       "trace-search",
@@ -335,19 +332,19 @@ describe("Codex interactive diagnostic order", () => {
       "if (bootNow() >= traceDeadline)",
       terminalLedgerRead,
     );
-    const hookClassification = scenario.indexOf(
-      "const hookStatus = codexOwnedStopHookStatusAfterBaseline(",
+    const terminalObservation = scenario.indexOf(
+      "await waitForCodexTurnTerminal(traceDeadline)",
       terminalLedgerRead,
     );
-    const hookPhaseGuard = scenario.indexOf(
-      "recordTerminalObservationBeforeDeadline({",
-      hookClassification,
+    const sessionCorrelation = scenario.indexOf(
+      "traceGraph.sessionId !== codexSessionId",
+      terminalObservation,
     );
     expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
     expect(terminalDeadlinePrecheck).toBeGreaterThan(-1);
     expect(terminalLedgerRead).toBeGreaterThan(terminalDeadlinePrecheck);
-    expect(hookClassification).toBeGreaterThan(terminalLedgerRead);
-    expect(hookPhaseGuard).toBeGreaterThan(hookClassification);
+    expect(terminalObservation).toBeGreaterThan(terminalLedgerRead);
+    expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
     expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
     expect(settlementObservation).toBeGreaterThan(settlementPhase);
     for (let index = 0; index < expected.length; index += 1)

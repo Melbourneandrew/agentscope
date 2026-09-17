@@ -19,7 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
-  codexOwnedStopHookStatusAfterBaseline,
+  codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteReporterSettled,
@@ -254,9 +254,6 @@ const interactivePhases = Object.freeze([
   "tui-start",
   "model-request",
   "trace-terminal",
-  "hook-missing",
-  "hook-failed",
-  "hook-completed",
   "tui-exit",
   "trace-settlement",
   "trace-search",
@@ -462,6 +459,7 @@ const openChallengedModelGateway = async () => {
       codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
       if (codexLedgerBaseline.length !== 1)
         throw new Error("integration.codex.session-ledger");
+      codexSessionId = codexSessionIdentity(codexLedgerBaseline);
       if (
         codexTurnTerminalObservedAfterBaseline(
           codexLedgerBaseline,
@@ -766,6 +764,7 @@ const waitForTraceSummary = async (traceDeadline) => {
 let completed = false;
 let modelGateway;
 let codexLedgerBaseline;
+let codexSessionId;
 try {
   recordInteractivePhase("install");
   await cli(["init", "--yes"], "agentscope init");
@@ -834,26 +833,10 @@ try {
   recordInteractivePhase("model-request");
   await modelGateway.settle();
   recordInteractivePhase("trace-terminal");
-  const terminal = await waitForCodexTurnTerminal(traceDeadline);
-  const hookStatus = codexOwnedStopHookStatusAfterBaseline(
-    terminal.records,
-    codexLedgerBaseline,
-    terminal.turnId,
-  );
-  const recordHookStatus = () => recordInteractivePhase(`hook-${hookStatus}`);
-  if (hookStatus !== "completed") {
-    recordTerminalObservationBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      record: recordHookStatus,
-    });
-    throw new Error("integration.codex.hook-terminal");
-  }
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: recordHookStatus,
-  });
+  // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
+  // its rollout. Prove the installed hook through the durable trace and exact
+  // rollout session identity below, after the sole challenged turn completes.
+  await waitForCodexTurnTerminal(traceDeadline);
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -898,6 +881,8 @@ try {
   if (getRecords.length !== 1 || getRecords[0]?.locator?.traceId !== traceId)
     throw new Error("integration.codex.trace-get");
   const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
+  if (codexSessionId === undefined || traceGraph.sessionId !== codexSessionId)
+    throw new Error("integration.codex.trace-correlation");
   const doctor = projectDoctor(
     await cli(["doctor"], "agentscope doctor", {
       monotonicDeadline: traceDeadline,
