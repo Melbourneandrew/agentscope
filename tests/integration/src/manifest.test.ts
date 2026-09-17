@@ -347,6 +347,13 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
     );
+    const directProbe = source.slice(
+      source.indexOf("const runDirectHookProbe ="),
+      source.indexOf("const readModelRequests ="),
+    );
+    expect(directProbe).toContain('hook_event_name: "Stop"');
+    expect(directProbe).toContain("stop_hook_active: false");
+    expect(directProbe).not.toContain('hook_event_name: "SessionStart"');
     const terminalObservation = source.indexOf(
       "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
     );
