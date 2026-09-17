@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   compileCredentialBackendRegistry,
@@ -55,7 +57,7 @@ const runProductCodexHookEvidenceWith = async (
     process.pid,
     `process-start-v1-${randomBytes(32).toString("hex")}`,
   );
-  await runResolvedTraceLifecycle({
+  const result = await runResolvedTraceLifecycle({
     configurationStore: createConfigurationStore(home, registry),
     operationalStateStore: createOperationalStateStore(home, owner),
     credentialBackendRegistry: compileCredentialBackendRegistry([
@@ -81,6 +83,23 @@ const runProductCodexHookEvidenceWith = async (
     hookEntryAuthority: input.hookEntryAuthority,
     capture: (factory) => factory.capture(mapCodexRootHookCapture(hook)),
   });
+  if (environment.AGENTSCOPE_SCENARIO_ID === "codex-tui-trace-smoke") {
+    const classification =
+      result.outcome === "failed-open"
+        ? "code" in result
+          ? `${result.stage}-${result.code}`
+          : `${result.stage}-${result.reason}`
+        : result.outcome === "routing-unselected"
+          ? "routing-unselected"
+          : result.connections.every(({ outcome }) => outcome === "accepted")
+            ? "completed-accepted"
+            : "completed-not-accepted";
+    writeFileSync(
+      join(home.root, ".wth2-hook-diagnostic.json"),
+      `${JSON.stringify({ classification })}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+  }
 };
 
 export const runProductCodexHookEvidence = (
