@@ -346,7 +346,7 @@ describe("integration capability manifest", () => {
     expect(traceSearchResultPhase).toBeGreaterThan(-1);
     expect(source).not.toContain('      "--harness",\n      "codex",\n');
     expect(source).toContain(
-      "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
+      "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))",
     );
     expect(source).not.toContain("runDirectHookProbe");
     expect(source).not.toContain("options.input");

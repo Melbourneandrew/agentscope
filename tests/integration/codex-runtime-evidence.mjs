@@ -20,12 +20,7 @@ const sameFileIdentity = (left, right) =>
   left.mtimeNs === right.mtimeNs &&
   left.ctimeNs === right.ctimeNs;
 
-/**
- * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
- * @returns {"completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error" | undefined}
- */
-/* eslint-disable complexity -- one closed descriptor/read/parser authority validates every hostile edge atomically */
-export const classifyCodexStopHookCommand = ({
+const readCodexHookLog = ({
   afterRead,
   directoryDescriptor,
   directoryPath,
@@ -88,6 +83,16 @@ export const classifyCodexStopHookCommand = ({
     !sameFileIdentity(parentBefore, pathAfter)
   )
     throw new Error("integration.codex.hook-log");
+  return source;
+};
+
+/**
+ * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
+ * @returns {"completed" | "timeout" | "spawn_error" | "stdin_error" | "wait_error" | undefined}
+ */
+export const classifyCodexStopHookCommand = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
   const outcomes = [];
   let stopLineCount = 0;
   for (const line of source.split("\n")) {
@@ -117,7 +122,78 @@ export const classifyCodexStopHookCommand = ({
     throw new Error("integration.codex.hook-log");
   return outcomes[0];
 };
-/* eslint-enable complexity */
+
+const durationUnitMilliseconds = Object.freeze({
+  ns: 0.000_001,
+  us: 0.001,
+  µs: 0.001,
+  μs: 0.001,
+  ms: 1,
+  s: 1_000,
+});
+
+const tracingDurationMilliseconds = (line, field) => {
+  const matches = [
+    ...line.matchAll(
+      new RegExp(
+        `${field}=([0-9]+(?:\\.[0-9]+)?)(ns|us|µs|μs|ms|s)(?:\\s|$)`,
+        "gu",
+      ),
+    ),
+  ];
+  if (matches.length !== 1) throw new Error("integration.codex.hook-log");
+  const magnitude = Number(matches[0]?.[1]);
+  const multiplier = durationUnitMilliseconds[matches[0]?.[2]];
+  const milliseconds = magnitude * multiplier;
+  if (!Number.isFinite(milliseconds) || milliseconds < 0)
+    throw new Error("integration.codex.hook-log");
+  return milliseconds;
+};
+
+/**
+ * Returns the complete observed SessionStart command-span duration. Because the
+ * installed non-Stop launcher exits before capture, this is a conservative
+ * upper bound on vendor mediation before the launcher's first instruction.
+ *
+ * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
+ * @returns {number | undefined}
+ */
+export const codexSessionStartMediationUpperBoundMilliseconds = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return undefined;
+  const matches = [];
+  for (const line of source.split("\n")) {
+    if (
+      !line.includes("codex.hooks.command") ||
+      !/^.*hook\.event_name=(?:"SessionStart"|SessionStart)(?:[\s}]).*$/u.test(
+        line,
+      )
+    )
+      continue;
+    const eventFields = [
+      ...line.matchAll(/hook\.event_name=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    const outcomeFields = [
+      ...line.matchAll(/hook\.command_outcome=(?:"[^"]*"|[^\s}]+)/gu),
+    ];
+    if (
+      eventFields.length !== 1 ||
+      outcomeFields.length !== 1 ||
+      !/^hook\.command_outcome=(?:")?completed(?:")?$/u.test(
+        outcomeFields[0][0],
+      )
+    )
+      throw new Error("integration.codex.hook-log");
+    matches.push(
+      tracingDurationMilliseconds(line, "time\\.busy") +
+        tracingDurationMilliseconds(line, "time\\.idle"),
+    );
+  }
+  if (matches.length === 0) return undefined;
+  if (matches.length !== 1 || matches[0] > 120_000)
+    throw new Error("integration.codex.hook-log");
+  return matches[0];
+};
 
 const plainRecord = (value) =>
   typeof value === "object" &&

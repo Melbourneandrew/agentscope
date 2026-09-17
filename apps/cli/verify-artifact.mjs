@@ -33,8 +33,8 @@ const installRoot = realpathSync(
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
 // This bounds the packed topology proof, not the product hook. The installed
-// scenario and source tests retain and prove the production 2,500 ms authority.
-const packedCodexHookVerifierDeadlineMilliseconds = 2_500;
+// scenario and source tests retain and prove the production 5,000 ms authority.
+const packedCodexHookVerifierDeadlineMilliseconds = 5_000;
 let loopbackServer;
 mkdirSync(artifactDirectory, { recursive: true });
 
@@ -695,7 +695,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     );
     assert.equal(
       JSON.parse(configurationBeforePlan).routing.hookDeadlineMilliseconds,
-      2_500,
+      5_000,
       "the packed product must retain the production default hook deadline",
     );
     const plannedConfigure = run(

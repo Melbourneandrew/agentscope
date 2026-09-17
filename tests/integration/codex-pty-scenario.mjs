@@ -20,6 +20,7 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   classifyCodexStopHookCommand,
+  codexSessionStartMediationUpperBoundMilliseconds,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
@@ -395,7 +396,7 @@ const installedLauncher = (hookConfiguration) => {
       (event === "SessionStart" && group.matcher !== "startup|resume|clear") ||
       !exactKeys(handler, ["command", "statusMessage", "timeout", "type"]) ||
       handler.type !== "command" ||
-      handler.timeout !== 3 ||
+      handler.timeout !== 7 ||
       handler.statusMessage !== "Agentscope trace capture"
     )
       throw new Error("integration.codex.hook-configuration");
@@ -816,7 +817,7 @@ try {
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
-  if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))
+  if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))
     throw new Error("integration.codex.hook-deadline");
   const launcherStatus = lstatSync(launcher);
   if (
@@ -908,6 +909,21 @@ try {
     record: () => recordInteractivePhase("trace-settlement"),
   });
   const summary = await waitForTraceSummary(traceDeadline);
+  const sessionStartCommandDurationMilliseconds =
+    inspectDiagnosticBeforeDeadline({
+      deadline: traceDeadline,
+      now: bootNow,
+      inspect: () =>
+        codexSessionStartMediationUpperBoundMilliseconds({
+          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+          directoryPath: codexDiagnosticLogDirectory,
+        }),
+    });
+  if (
+    sessionStartCommandDurationMilliseconds === undefined ||
+    sessionStartCommandDurationMilliseconds > 1_000
+  )
+    throw new Error("integration.codex.hook-mediation");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -959,6 +975,7 @@ try {
     scenarioId,
     prompt,
     promptSha256,
+    mediation: { sessionStartCommandDurationMilliseconds },
     modelRequests,
     search: {
       completion: "complete",
