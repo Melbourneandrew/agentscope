@@ -1014,7 +1014,7 @@ try {
       { flag: "wx", mode: 0o700 },
     );
     const diagnosticHooks = JSON.parse(originalHooks);
-    diagnosticHooks.hooks.Stop[0].hooks[0].command = `'${stopProbePath}'`;
+    diagnosticHooks.hooks.Stop[0].hooks[0].command = `'${process.execPath}' '${stopProbePath}'`;
     writeFileSync(hookPath, `${JSON.stringify(diagnosticHooks)}\n`, {
       mode: 0o600,
     });
@@ -1086,6 +1086,29 @@ try {
   // and Testkit joins Codex so its vendor Stop hook has run.
   await waitForCodexTurnTerminal(traceDeadline);
   recordInteractivePhase("trace-terminal");
+  if (diagnosticReplay) {
+    while (!existsSync(stopPayloadPath)) {
+      if (bootNow() >= traceDeadline) {
+        recordInteractivePhase("hook-payload-missing");
+        throw new Error("integration.codex.hook-payload-missing");
+      }
+      await waitWithinObservationDeadline({
+        deadline: traceDeadline,
+        maximumWaitMilliseconds: 20,
+        now: bootNow,
+        wait: (milliseconds) =>
+          new Promise((resolve) => setTimeout(resolve, milliseconds)),
+      });
+    }
+    const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
+    const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
+    recordTerminalObservationBeforeDeadline({
+      deadline: traceDeadline,
+      now: bootNow,
+      record: () => recordInteractivePhase(stopPayloadPhase),
+    });
+    throw new Error(`integration.codex.${stopPayloadPhase}`);
+  }
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1098,19 +1121,6 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
-  if (diagnosticReplay) {
-    if (!existsSync(stopPayloadPath)) {
-      recordInteractivePhase("hook-payload-missing");
-      throw new Error("integration.codex.hook-payload-missing");
-    }
-    const stopPayload = JSON.parse(readFileSync(stopPayloadPath, "utf8"));
-    const stopPayloadPhase = `hook-payload-${classifyCodexStopPayload(stopPayload)}`;
-    recordTerminalObservationBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      record: () => recordInteractivePhase(stopPayloadPhase),
-    });
-  }
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
