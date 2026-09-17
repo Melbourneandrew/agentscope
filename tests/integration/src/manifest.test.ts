@@ -335,7 +335,7 @@ describe("integration capability manifest", () => {
       '    record: () => recordInteractivePhase("trace-search"),\n',
     );
     const traceSearchResultPhase = source.indexOf(
-      '  recordInteractivePhase("trace-search-result");\n',
+      '    record: () => recordInteractivePhase("trace-search-result"),\n',
     );
     expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
     expect(traceTerminalPhase).toBeLessThan(terminalWait);
@@ -382,6 +382,24 @@ describe("integration capability manifest", () => {
       '  if (summary === null) throw new Error("integration.codex.trace-search");\n',
       boundedQuery,
     );
+    const traceSummaryFunction = source.slice(
+      source.indexOf("const readTraceSummary ="),
+      source.indexOf("const waitForCodexTurnTerminal ="),
+    );
+    const joinedSearch = traceSummaryFunction.indexOf(
+      '    "agentscope traces search",\n',
+    );
+    const guardedResultPhase = traceSummaryFunction.indexOf(
+      "  recordTerminalObservationBeforeDeadline({\n",
+      joinedSearch,
+    );
+    const resultParsing = traceSummaryFunction.indexOf(
+      "  if (\n    records.length !== 1 ||\n",
+      guardedResultPhase,
+    );
+    const postParseCutoff = traceSummaryFunction.lastIndexOf(
+      "    !terminalObservationBeforeDeadline({\n",
+    );
     expect(acceptanceObservation).toBeGreaterThan(terminalObservation);
     expect(lifecycleSettlement).toBeGreaterThan(acceptanceObservation);
     expect(postReporterDeadline).toBeGreaterThan(lifecycleSettlement);
@@ -394,6 +412,10 @@ describe("integration capability manifest", () => {
     );
     expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
     expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
+    expect(joinedSearch).toBeGreaterThan(-1);
+    expect(guardedResultPhase).toBeGreaterThan(joinedSearch);
+    expect(resultParsing).toBeGreaterThan(guardedResultPhase);
+    expect(postParseCutoff).toBeGreaterThan(resultParsing);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeLessThan(preQueryDeadline);
     const terminalCompletion = source.indexOf(
