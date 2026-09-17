@@ -49,6 +49,12 @@ const codexHookDiagnosticPhases = Object.freeze([
   "hook-diagnostic-sink-cancelled",
   "hook-diagnostic-routing-unselected",
   "hook-diagnostic-completed-not-accepted",
+  "hook-diagnostic-threw-native-unavailable",
+  "hook-diagnostic-threw-lifecycle-unavailable",
+  "hook-diagnostic-threw-local-sqlite",
+  "hook-diagnostic-threw-core",
+  "hook-diagnostic-threw-cli",
+  "hook-diagnostic-threw-other",
 ]);
 const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
