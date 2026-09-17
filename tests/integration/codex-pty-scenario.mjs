@@ -293,6 +293,7 @@ const interactivePhases = Object.freeze([
   "hook-command-spawn-error",
   "hook-command-stdin-error",
   "hook-command-wait-error",
+  "hook-command-missing",
   "hook-command-completed-before-budget-boundary",
   "hook-command-completed-near-budget-boundary",
   "hook-no-operational-state-subsecond",
@@ -1052,6 +1053,19 @@ try {
       }),
   });
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
+  const stopHookCommand = inspectDiagnosticBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    inspect: () =>
+      inspectCodexStopHookCommand({
+        directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+        directoryPath: codexDiagnosticLogDirectory,
+      }),
+  });
+  if (stopHookCommand === undefined) {
+    recordInteractivePhase("hook-command-missing");
+    throw new Error("integration.codex.hook-command-missing");
+  }
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
