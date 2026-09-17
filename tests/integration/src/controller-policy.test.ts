@@ -196,6 +196,17 @@ describe("integration cleanup authority", () => {
     }
     expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
     expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
+    expect(scenario.indexOf("inspectDiagnosticBeforeDeadline({")).toBeLessThan(
+      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
+    );
+    expect(
+      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
+    ).toBeLessThan(
+      scenario.indexOf("summary: await readTraceSummary(traceDeadline)"),
+    );
+    expect(scenario).toContain(
+      "const terminalCut = classifyCodexSettledTraceObservation({",
+    );
     expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);

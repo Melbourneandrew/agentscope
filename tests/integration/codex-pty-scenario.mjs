@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
+  classifyCodexSettledTraceObservation,
   inspectCodexStopHookCommand,
   codexSessionStartMediationUpperBoundMilliseconds,
   classifyTraceSearchRecordsBeforeDeadline,
@@ -740,18 +741,6 @@ const waitForTraceSummary = async (traceDeadline) => {
   });
   let summary;
   while (summary === undefined) {
-    const candidate = traceSummaryBeforeDeadline({
-      summary: await readTraceSummary(traceDeadline),
-      deadline: traceDeadline,
-      now: bootNow,
-    });
-    if (
-      candidate !== null &&
-      localSqliteReporterSettled(localSqliteLifecycleDescriptor)
-    ) {
-      summary = candidate;
-      break;
-    }
     const hookCommandObservation = inspectDiagnosticBeforeDeadline({
       deadline: traceDeadline,
       now: bootNow,
@@ -775,10 +764,24 @@ const waitForTraceSummary = async (traceDeadline) => {
       });
       throw new Error(failure.error);
     }
-    if (
-      hookCommandObservation?.outcome === "completed" &&
-      traceDeadline - bootNow() <= 150
-    ) {
+    const reporterSettled = localSqliteReporterSettled(
+      localSqliteLifecycleDescriptor,
+    );
+    const candidate = traceSummaryBeforeDeadline({
+      summary: await readTraceSummary(traceDeadline),
+      deadline: traceDeadline,
+      now: bootNow,
+    });
+    const terminalCut = classifyCodexSettledTraceObservation({
+      hookCompleted: hookCommandObservation?.outcome === "completed",
+      reporterSettled,
+      tracePresent: candidate !== null,
+    });
+    if (terminalCut === "accepted") {
+      summary = candidate;
+      break;
+    }
+    if (terminalCut === "missing") {
       const nearBudgetBoundary =
         hookCommandObservation.durationMilliseconds >= 4_900;
       const phase = nearBudgetBoundary
