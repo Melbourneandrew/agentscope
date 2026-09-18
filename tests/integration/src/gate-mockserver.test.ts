@@ -159,6 +159,13 @@ const collect = (socket: Socket) =>
       resolvePromise(Buffer.concat(chunks));
     });
   });
+const terminal = (child: ChildProcess) =>
+  new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolvePromise) =>
+      child.once("exit", (code, signal) => {
+        resolvePromise({ code, signal });
+      }),
+  );
 
 afterEach(async () => {
   for (const agent of agents.values()) agent.destroy();
@@ -185,7 +192,8 @@ afterEach(async () => {
 // eslint-disable-next-line max-lines-per-function -- closed adversarial state-machine matrix
 describe("gate-capable exact-build MockServer", () => {
   it("holds the first socket below HTTP parsing until the exact span is armed", async () => {
-    const { controlPort, modelPort } = await startGate();
+    const { child, controlPort, modelPort } = await startGate();
+    const childTerminal = terminal(child);
     expect(await configure(controlPort)).toMatchObject({
       status: 200,
       value: { runId, state: "pending" },
@@ -239,6 +247,7 @@ describe("gate-capable exact-build MockServer", () => {
         state: "draining",
       },
     });
+    expect(await childTerminal).toEqual({ code: 0, signal: null });
   });
 
   it("rejects substituted control authority and duplicate initial sockets", async () => {
@@ -265,7 +274,16 @@ describe("gate-capable exact-build MockServer", () => {
     ).toMatchObject({ status: 409 });
     expect(await request(controlPort, "/deny", { runId })).toMatchObject({
       status: 200,
-      value: { receipt: { state: "denied" } },
+      value: {
+        receipt: {
+          connectionCount: 2,
+          connections: [
+            { admission: "rejected", closed: true },
+            { admission: "rejected", closed: true },
+          ],
+          state: "denied",
+        },
+      },
     });
     first.destroy();
   });
@@ -319,11 +337,17 @@ describe("gate-capable exact-build MockServer", () => {
       value: {
         ledger: [],
         receipt: {
+          connectionCount: 2,
           connections: [
             {
-              admission: "provisional",
+              admission: "canceled",
               closed: true,
               parserOutcome: "rejected",
+            },
+            {
+              admission: "rejected",
+              closed: true,
+              parserOutcome: "not-parsed",
             },
           ],
           state: "denied",
@@ -371,6 +395,53 @@ describe("gate-capable exact-build MockServer", () => {
               parserOutcome: "accepted",
             },
           ],
+          state: "draining",
+        },
+      },
+    });
+  });
+
+  it("rejects an idle later socket when cutoff wins before its request", async () => {
+    const { controlPort, modelPort } = await startGate();
+    await configure(controlPort, bootNow() + 500);
+    const first = await connect(modelPort);
+    const firstCompletion = collect(first);
+    await request(controlPort, "/arm", {
+      runId,
+      sessionStartSpanSha256: "b".repeat(64),
+    });
+    first.write(exactRequest());
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlPort,
+        "/requests",
+        {},
+        challenge,
+        "PUT",
+      );
+      if ((observed.value.ledger as unknown[]).length === 1) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    await request(controlPort, "/release", { runId });
+    await firstCompletion;
+    const idle = await connect(modelPort);
+    const idleCompletion = collect(idle);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 520));
+    await idleCompletion;
+    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        receipt: {
+          connectionCount: 2,
+          connections: [
+            { admission: "admitted", parserOutcome: "accepted" },
+            {
+              admission: "rejected",
+              closed: true,
+              parserOutcome: "not-parsed",
+            },
+          ],
+          ledgerCount: 1,
           state: "draining",
         },
       },

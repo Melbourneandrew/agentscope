@@ -798,6 +798,7 @@ export interface IsolationDriver {
   startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  joinMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   runScenario(
     plan: IsolationPlan,
     signal: AbortSignal,
@@ -1094,6 +1095,7 @@ const failCleanup = (
   );
 };
 
+/* eslint-disable max-lines-per-function -- one closed lifecycle transaction */
 export const executeIsolationPlan = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
@@ -1128,6 +1130,7 @@ export const executeIsolationPlan = async (
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);
     const scenarioResult = await driver.runScenario(plan, signal);
+    await driver.joinMockServer(plan, signal);
     if (plan.executionMode === "interactive")
       ptyTerminalReceipt = ptyTerminalReceiptSchema.parse(
         scenarioResult.receipt,
@@ -1214,3 +1217,4 @@ export const executeIsolationPlan = async (
   }
   return evidence;
 };
+/* eslint-enable max-lines-per-function */
