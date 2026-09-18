@@ -64,6 +64,7 @@ const selectedPtyRequest = () => {
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" as const },
+    readiness: { kind: "semantic-marker" as const },
     interaction: {
       trigger: "semantic-ready" as const,
       actions: [{ action: "eof" as const }],
@@ -149,9 +150,11 @@ describe("selected headless supervisor protocol", () => {
   it("does not create a fresh window after the generic deadline", async () => {
     const request = genericRequest();
     const now = performance.now();
-    request.monotonicStartupDeadlineMs = now + 5;
-    request.monotonicExecutionDeadlineMs = now + 15;
-    request.monotonicShutdownDeadlineMs = now + 30;
+    // Leave a bounded admission window so scheduler contention cannot turn this
+    // reconciliation assertion into an unrelated startup-deadline assertion.
+    request.monotonicStartupDeadlineMs = now + 100;
+    request.monotonicExecutionDeadlineMs = now + 150;
+    request.monotonicShutdownDeadlineMs = now + 250;
     await expect(
       executeScriptedSelectedHeadlessProcessForTest(request, "late"),
     ).rejects.toMatchObject({
@@ -919,6 +922,7 @@ for (const candidate of hostileMatrix) {
 const ptyNow = performance.now();
 const ptyRequest = {
   completion: { kind: "semantic-marker" },
+  readiness: { kind: "semantic-marker" },
   interaction: {
     trigger: "semantic-ready",
     actions: [

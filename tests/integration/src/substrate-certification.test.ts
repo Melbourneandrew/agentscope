@@ -94,10 +94,16 @@ describe("substrate certification request", () => {
       Object.keys(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES).sort(),
     ).toEqual([...SUBSTRATE_CERTIFICATION_CASES].sort());
     expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["wrong-argv"]).toBe(
-      "integration.controller.unsettled-operation",
+      "integration.certification.wrong-argv",
     );
     expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["leaked-child"]).toBe(
-      "integration.controller.unsettled-operation",
+      "integration.certification.leaked-child",
+    );
+    expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["missing-hook"]).toBe(
+      "integration.certification.missing-hook",
+    );
+    expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["unbounded-output"]).toBe(
+      "integration.certification.unbounded-output",
     );
     expect(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["false-success"]).toBe(
       "integration.certification.false-success",
@@ -154,7 +160,7 @@ describe("certification failure cleanup authority", () => {
     certificationCase: "leaked-child",
     certificationPredicate: "containment-intervention",
     certificationReadiness: readiness,
-    primaryFailure: "integration.controller.unsettled-operation",
+    primaryFailure: "integration.certification.leaked-child",
     ...replacement,
   });
 
@@ -177,7 +183,9 @@ describe("certification failure cleanup authority", () => {
     ).toBe(false);
     expect(
       certificationFailureAuthorityIsValid(
-        record({ primaryFailure: "integration.certification.leaked-child" }),
+        record({
+          primaryFailure: "integration.controller.unsettled-operation",
+        }),
       ),
     ).toBe(false);
   });

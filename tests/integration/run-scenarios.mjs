@@ -25,11 +25,13 @@ import {
   compileCapabilityManifest,
   compileHarnessAdmissionCompletion,
   compileHarnessAdmissionSeed,
+  compileInteractivePtyActions,
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
   mapWithConcurrency,
   sanitizeFixtureResult,
+  scenarioContainerTerminalWitness,
   selectCapabilityScenarios,
   verifyManifestEvidence,
   verifyPreparedCandidate,
@@ -47,7 +49,9 @@ import {
   preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
+  registerPreparedDockerNetwork,
   revalidatePreparedImageAdmission,
+  retirePreparedDockerNetwork,
 } from "./image-preparation.mjs";
 import {
   inspectPreparedHarnessMaterial,
@@ -56,12 +60,11 @@ import {
   stagePreparedHarnessMaterial,
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+import { writeExactRegularFile } from "./exact-file.mjs";
 import {
-  compileCandidateInventory,
   compileImmutableCandidateHandoff,
   decodeInteractivePtyReceipt,
-  decodeInstalledPtyFailureReceipt,
-  decodeInstalledCliPtyReceipt,
+  ptyExecutionFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } from "./immutable-candidate-authority.mjs";
@@ -220,7 +223,7 @@ if (cliArtifact === undefined)
 let preparedDockerClient;
 const docker = async (
   arguments_,
-  { mutationCapable = false, ...options } = {},
+  { mutationCapable = false, terminal = false, ...options } = {},
 ) => {
   const invocation = await prepareDockerInvocation(
     preparedDockerClient,
@@ -233,6 +236,7 @@ const docker = async (
       maxBuffer: 16 * 1024 * 1024,
       timeout: remainingIntegrationOperationMilliseconds(
         scenarioTimeoutMilliseconds,
+        terminal,
       ),
       ...options,
       cwd: integrationRoot,
@@ -250,7 +254,8 @@ const ignoreMissing = async (arguments_, signal) => {
   try {
     await docker(arguments_, {
       signal,
-      timeout: remainingIntegrationOperationMilliseconds(30_000),
+      terminal: true,
+      timeout: remainingIntegrationOperationMilliseconds(30_000, true),
     });
   } catch (error) {
     handlePreparedDockerCleanupFailure(preparedDockerClient, error);
@@ -262,10 +267,11 @@ const labelArguments = (plan) => [
   "--label",
   `com.agentscope.integration.run=${plan.runId}`,
 ];
+const tmpfsIsExecutable = (path) => path === "/agentscope-home";
 const tmpfsArguments = (limits, ownership = true) =>
   limits.tmpfs.flatMap(({ path, bytes }) => [
     "--tmpfs",
-    `${path}:rw,noexec,nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
+    `${path}:rw,${tmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
 const confinementArguments = (plan) => [
   "--network",
@@ -290,18 +296,32 @@ const sidecarResourceArguments = (limits) => [
   String(limits.memoryBytes),
 ];
 
+const stageEsmPackageBoundary = (context) => {
+  const packageBoundaryPath = resolve(context, "dist/package.json");
+  const packageBoundaryBytes = Buffer.from('{"type":"module"}\n');
+  writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644);
+};
+
 // The exact staged inventory and Dockerfile are reviewed as one authority.
 // eslint-disable-next-line max-lines-per-function
 const stageBuildContext = (plan) => {
-  const context = resolve(artifactsRoot, "contexts", plan.runId);
-  rmSync(context, { force: true, recursive: true });
+  const runContexts = resolve(artifactsRoot, "contexts", plan.runId);
+  const context = resolve(runContexts, "scenario");
+  const mockServerContext = resolve(runContexts, "mockserver");
+  rmSync(runContexts, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
+  mkdirSync(resolve(context, "runtime"), { recursive: true });
+  mkdirSync(mockServerContext, { recursive: true });
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
   if (scenario === undefined) throw new Error("integration.isolation.context");
   const evidence = evidenceById.get(scenario.harnessEvidenceId);
   if (evidence === undefined) throw new Error("integration.isolation.context");
+  const gateCapableMockServer =
+    scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes.length === 1 &&
+    scenario.modelRoutes[0] === "codex-tui-responses";
   const harnessMaterial = preparedHarnessMaterials.get(
     scenario.harnessEvidenceId,
   );
@@ -315,10 +335,6 @@ const stageBuildContext = (plan) => {
     [
       "immutable-candidate-authority.mjs",
       resolve(integrationRoot, "immutable-candidate-authority.mjs"),
-    ],
-    [
-      "pty-installed-cli-driver.mjs",
-      resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
     ],
     [
       "retained-fixture-result.mjs",
@@ -337,13 +353,19 @@ const stageBuildContext = (plan) => {
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
     ],
+    ["dist/canonical.js", resolve(integrationRoot, "dist/canonical.js")],
+    [
+      "dist/interactive-pty-actions.js",
+      resolve(integrationRoot, "dist/interactive-pty-actions.js"),
+    ],
     [
       "fixtures/substrate-negative-process.mjs",
       resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
     ],
     [
-      "process-platform-oracle.mjs",
-      resolve(integrationRoot, "process-platform-oracle.mjs"),
+      "scenario-oracle.mjs",
+      resolve(integrationRoot, scenario.scenarioOracle.path),
+      scenario.scenarioOracle.sha256,
     ],
     [
       "scenario-adapter.mjs",
@@ -407,6 +429,18 @@ const stageBuildContext = (plan) => {
       ),
     ]);
   }
+  for (const artifact of scenario.runtimeArtifacts) {
+    sources.push([
+      `runtime/${artifact.destination}`,
+      resolve(
+        artifact.source.kind === "integration"
+          ? integrationRoot
+          : workspaceRoot,
+        artifact.source.path,
+      ),
+      artifact.sha256,
+    ]);
+  }
   for (const [destination, source, expectedDigest] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
@@ -439,6 +473,7 @@ const stageBuildContext = (plan) => {
       closeSync(descriptor);
     }
   }
+  stageEsmPackageBoundary(context);
   cpSync(
     candidateDirectory,
     resolve(context, "prepared/candidates", candidate.bundleIdentity),
@@ -474,6 +509,16 @@ const stageBuildContext = (plan) => {
         resolve(context, "harness/package.json"),
         `${JSON.stringify({ name: "agentscope-harness-runtime", version: "1.0.0", private: true, dependencies })}\n`,
       );
+      writeExactRegularFile(
+        resolve(context, "harness/npm-globalconfig"),
+        Buffer.alloc(0),
+        0o600,
+      );
+      writeExactRegularFile(
+        resolve(context, "harness/npm-userconfig"),
+        Buffer.alloc(0),
+        0o600,
+      );
     }
   }
   const harnessAuthority =
@@ -487,7 +532,7 @@ const stageBuildContext = (plan) => {
         ? [
             "COPY harness-material ./harness-material",
             "COPY harness ./harness",
-            'RUN --network=none ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/harness", "--ignore-scripts", "--offline", "--audit=false", "--fund=false", "--package-lock=false", "--userconfig=/dev/null", "--globalconfig=/dev/null", "--cache=/tmp/agentscope-harness-npm-cache"]',
+            'RUN --network=none ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/harness", "--ignore-scripts", "--offline", "--audit=false", "--fund=false", "--package-lock=false", "--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig", "--cache=/tmp/agentscope-harness-npm-cache"]',
           ]
         : [
             `COPY --chmod=0755 harness-material/${harnessAuthority.binary.fileName} /usr/local/bin/${harnessAuthority.binary.executableName}`,
@@ -498,8 +543,10 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
+      "COPY dist ./dist",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       ...harnessInstall,
@@ -509,20 +556,59 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
-  writeFileSync(
-    resolve(context, "mockserver-initialization.json"),
-    `${JSON.stringify(modelRoutes.mockServerInitialization, undefined, 2)}\n`,
-  );
-  writeFileSync(
-    resolve(context, "MockServer.Dockerfile"),
-    [
-      "ARG MOCKSERVER_IMAGE",
-      "FROM ${MOCKSERVER_IMAGE}",
-      "COPY mockserver-initialization.json /config/expectations.json",
-      "",
-    ].join("\n"),
-  );
-  return context;
+  if (gateCapableMockServer) {
+    const gateSource = resolve(context, "runtime/gate-mockserver.mjs");
+    const gateStatus = lstatSync(gateSource);
+    if (!gateStatus.isFile() || gateStatus.isSymbolicLink())
+      throw new Error("integration.isolation.context");
+    cpSync(gateSource, resolve(mockServerContext, "gate-mockserver.mjs"), {
+      errorOnExist: true,
+      force: false,
+    });
+    writeFileSync(
+      resolve(mockServerContext, "MockServer.Dockerfile"),
+      [
+        "ARG MOCKSERVER_IMAGE",
+        "FROM ${MOCKSERVER_IMAGE}",
+        "WORKDIR /opt/agentscope",
+        "COPY --chmod=0555 gate-mockserver.mjs ./gate-mockserver.mjs",
+        "USER node",
+        'CMD ["node", "/opt/agentscope/gate-mockserver.mjs"]',
+        "",
+      ].join("\n"),
+    );
+  } else {
+    writeFileSync(
+      resolve(mockServerContext, "mockserver-initialization.json"),
+      `${JSON.stringify(
+        scenario.modelRoutes.map((routeId) => {
+          const index = modelRoutes.routeIds.indexOf(routeId);
+          if (
+            index < 0 ||
+            modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+            modelRoutes.mockServerInitialization[index] === undefined
+          )
+            throw new Error("integration.isolation.context");
+          return modelRoutes.mockServerInitialization[index];
+        }),
+        undefined,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      resolve(mockServerContext, "MockServer.Dockerfile"),
+      [
+        "ARG MOCKSERVER_IMAGE",
+        "FROM ${MOCKSERVER_IMAGE}",
+        "COPY mockserver-initialization.json /config/expectations.json",
+        "",
+      ].join("\n"),
+    );
+  }
+  return Object.freeze({
+    context,
+    requiresHarnessBuildContextBound: harnessMaterial !== undefined,
+  });
 };
 
 const assertContainer = async (
@@ -544,9 +630,11 @@ const assertContainer = async (
   const expectedPaths = limits.tmpfs.map(({ path }) => path).sort();
   const tmpfsMatches = limits.tmpfs.every(({ path, bytes }) => {
     const options = new Set(String(tmpfs[path] ?? "").split(","));
+    const executable = tmpfsIsExecutable(path);
     return (
       options.has("rw") &&
-      options.has("noexec") &&
+      options.has(executable ? "exec" : "noexec") &&
+      !options.has(executable ? "noexec" : "exec") &&
       options.has("nosuid") &&
       options.has("nodev") &&
       options.has(`size=${bytes}`)
@@ -599,6 +687,11 @@ const assertContainer = async (
     }
   }
   if (
+    !/^[a-f0-9]{64}$/u.test(container?.Id ?? "") ||
+    container?.Name !== `/${name}` ||
+    container?.Config?.Labels?.["com.agentscope.integration"] !== "true" ||
+    container?.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId ||
     container?.HostConfig?.ReadonlyRootfs !== true ||
     container?.HostConfig?.NetworkMode !== plan.networkName ||
     container?.HostConfig?.Memory !== limits.memoryBytes ||
@@ -612,6 +705,7 @@ const assertContainer = async (
     !imageConfigMatches
   )
     throw new Error("integration.isolation.container");
+  return container.Id;
 };
 
 const createImmutableCandidateHandoff = async (plan, signal) => {
@@ -641,6 +735,9 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const scenarioContainerIdentities = new Map();
+const mockServerContainerIdentities = new Map();
+const mockServerJoinDeadlines = new Map();
 const scenarioOutcomes = new Map();
 const observedCertificationRunIds = new Set();
 const observeSubstrateCertificationPredicate = (runId, predicate) => {
@@ -668,7 +765,7 @@ const linuxBootMonotonicMilliseconds = () => {
     throw new Error("integration.isolation.headless-clock");
   return value;
 };
-const expectedHeadlessEnvironment = (plan) => ({
+const expectedHeadlessEnvironment = (plan, outerMonotonicDeadlineMs) => ({
   AGENTSCOPE_HOME: "/agentscope-home",
   AGENTSCOPE_CANDIDATE_ROOT: "/opt/agentscope/prepared",
   AGENTSCOPE_COLLECTOR_URL: "http://collector:4318",
@@ -677,6 +774,9 @@ const expectedHeadlessEnvironment = (plan) => ({
   AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
   AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
   AGENTSCOPE_SCENARIO_ID: plan.scenarioId,
+  AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String(
+    outerMonotonicDeadlineMs - 5_000,
+  ),
   AGENTSCOPE_WORKTREE: "/worktree",
   HARNESS_HOME: "/harness-home",
   HOME: "/home/agentscope",
@@ -691,6 +791,7 @@ const expectedHeadlessEnvironment = (plan) => ({
       ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
       : "/usr/local/bin:/usr/bin:/bin",
   XDG_CONFIG_HOME: "/harness-home",
+  ...(plan.executionMode === "interactive" ? { TERM: "xterm-256color" } : {}),
   ...(testMode === undefined
     ? {}
     : { AGENTSCOPE_INTEGRATION_TEST_MODE: testMode }),
@@ -758,7 +859,10 @@ const expectedHeadlessRequest = (receipt, plan) => ({
     `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
   ],
   cwd: "/opt/agentscope",
-  environment: expectedHeadlessEnvironment(plan),
+  environment: expectedHeadlessEnvironment(
+    plan,
+    receipt.outerMonotonicDeadlineMs,
+  ),
   stdinBase64: "",
   stdoutLimitBytes: 1024 * 1024,
   stderrLimitBytes: 1024 * 1024,
@@ -880,8 +984,27 @@ const captureHeadlessReceipt = (output, plan, expected) => {
     throw new Error("integration.isolation.headless-receipt");
   return Object.freeze(receipt);
 };
+// eslint-disable-next-line complexity -- exact closed receipt predicate
 const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
-  const input = Buffer.from("run\n");
+  const selectedScenario = manifest.scenarios.find(
+    ({ scenarioId }) => scenarioId === plan.scenarioId,
+  );
+  if (selectedScenario === undefined) return false;
+  const challenge =
+    selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+    receipt?.request?.readiness?.kind === "challenge-marker" &&
+    /^[a-f0-9]{64}$/u.test(receipt.request.readiness.challenge ?? "")
+      ? receipt.request.readiness.challenge
+      : undefined;
+  if (
+    selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+    challenge === undefined
+  )
+    return false;
+  const input = Buffer.concat([
+    ...(challenge === undefined ? [] : [Buffer.from(`${challenge}\n`)]),
+    Buffer.from(selectedScenario.terminalInputBase64, "base64"),
+  ]);
   const expectedRequest = {
     runId: plan.runId,
     executable: "/opt/agentscope/scenario-process.mjs",
@@ -890,7 +1013,10 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
       `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
     ],
     cwd: "/opt/agentscope",
-    environment: expectedHeadlessEnvironment(plan),
+    environment: expectedHeadlessEnvironment(
+      plan,
+      receipt.outerMonotonicDeadlineMs,
+    ),
     stdinBase64: input.toString("base64"),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
@@ -911,7 +1037,9 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
       ]) &&
     processRequest?.cwd === "/opt/agentscope" &&
     JSON.stringify(processRequest?.environment) ===
-      JSON.stringify(expectedHeadlessEnvironment(plan)) &&
+      JSON.stringify(
+        expectedHeadlessEnvironment(plan, receipt.outerMonotonicDeadlineMs),
+      ) &&
     processRequest?.inputBytes === input.length &&
     processRequest?.inputSha256 ===
       createHash("sha256").update(input).digest("hex") &&
@@ -928,29 +1056,69 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   );
 };
 const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
-  receipt?.receiptVersion === 1 &&
-  receipt?.transport === "pty" &&
-  receipt?.scenarioId === plan.scenarioId &&
-  receipt?.runId === plan.runId &&
-  receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
-  linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
-  receipt?.request?.completion?.kind === "semantic-marker" &&
-  receipt?.request?.interaction?.trigger === "semantic-ready" &&
-  JSON.stringify(receipt?.request?.interaction?.actions) ===
-    JSON.stringify([
-      { action: "resize", geometry: { columns: 100, rows: 30 } },
-      {
-        action: "input",
-        byteLength: 4,
-        inputSha256:
-          "b5004f26a852b0d60ec1237432c1a33c2307ff2458c374d9d99749d045c7feb9",
-      },
-      { action: "eof" },
-    ]) &&
-  JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
-    JSON.stringify(["resize", "input", "eof"]) &&
-  receipt?.isTTY === true &&
-  receipt?.observedCanonicalMode === true;
+  // eslint-disable-next-line complexity -- exact closed receipt predicate
+  (() => {
+    const selectedScenario = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === plan.scenarioId,
+    );
+    if (selectedScenario === undefined) return false;
+    const challenge = receipt?.request?.readiness?.challenge;
+    const input = Buffer.concat([
+      ...(selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+      typeof challenge === "string"
+        ? [Buffer.from(`${challenge}\n`)]
+        : []),
+      Buffer.from(selectedScenario.terminalInputBase64, "base64"),
+    ]);
+    const expectedActions = compileInteractivePtyActions(
+      selectedScenario,
+      input,
+    );
+    const expectedReadiness =
+      selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+      typeof challenge === "string" &&
+      /^[a-f0-9]{64}$/u.test(challenge)
+        ? { kind: "challenge-marker", challenge }
+        : selectedScenario.nativeReadiness?.kind === "semantic-marker"
+          ? { kind: "semantic-marker" }
+          : selectedScenario.nativeReadiness?.kind === "codex-idle-prompt" &&
+              selectedScenario.harnessEvidenceId === "codex-0-149-1"
+            ? {
+                kind: "styled-text-after-completion",
+                text: "›",
+                bold: true,
+                dim: false,
+              }
+            : null;
+    const requiresCanonicalEof = expectedActions.some(
+      ({ action }) => action === "eof",
+    );
+    return (
+      receipt?.receiptVersion === 1 &&
+      receipt?.transport === "pty" &&
+      receipt?.scenarioId === plan.scenarioId &&
+      receipt?.runId === plan.runId &&
+      receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
+      linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
+      receipt?.request?.completion?.kind === "semantic-marker" &&
+      expectedReadiness !== null &&
+      JSON.stringify(receipt?.request?.readiness) ===
+        JSON.stringify(expectedReadiness) &&
+      receipt?.request?.interaction?.trigger ===
+        (selectedScenario.nativeReadiness?.kind === "challenge-marker"
+          ? "immediate"
+          : "semantic-ready") &&
+      JSON.stringify(receipt?.request?.interaction?.actions) ===
+        JSON.stringify(expectedActions) &&
+      JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
+        JSON.stringify(expectedActions.map(({ action }) => action)) &&
+      receipt?.eofByteWritten ===
+        !selectedScenario.waitForSemanticCompletionBeforeTerminalAction &&
+      receipt?.isTTY === true &&
+      typeof receipt?.observedCanonicalMode === "boolean" &&
+      (!requiresCanonicalEof || receipt.observedCanonicalMode === true)
+    );
+  })();
 const interactivePtyGeometryMatches = (receipt) =>
   JSON.stringify(receipt?.request?.initialGeometry) ===
     JSON.stringify({ columns: 80, rows: 24 }) &&
@@ -981,6 +1149,7 @@ const interactivePtyFingerprintMatches = (receipt) =>
   fingerprintSelectedPtyAuthority({
     processRequestFingerprint: receipt?.processRequestFingerprint,
     completion: receipt?.request?.completion,
+    readiness: receipt?.request?.readiness,
     initialGeometry: receipt?.request?.initialGeometry,
     interaction: {
       actions: receipt?.request?.interaction?.actions,
@@ -1013,20 +1182,6 @@ const captureInteractivePtyReceipt = (output, plan, expected) => {
   )
     throw new Error("integration.isolation.pty-receipt");
   return Object.freeze(receipt);
-};
-const captureInstalledCliPtyReceipt = (output, plan) =>
-  decodeInstalledCliPtyReceipt(output, {
-    candidateBundleIdentity: candidate.bundleIdentity,
-    candidateInventorySha256: compileCandidateInventory(candidate).sha256,
-    runId: plan.runId,
-    scenarioId: plan.scenarioId,
-  });
-const captureInstalledPtyFailure = (output, plan) => {
-  const receipt = decodeInstalledPtyFailureReceipt(output);
-  if (installedPtyFailures.has(plan.runId))
-    throw new Error("integration.isolation.pty-failure-receipt");
-  installedPtyFailures.set(plan.runId, receipt);
-  return receipt;
 };
 const preparedImageFor = async (image, signal) => {
   if (
@@ -1086,7 +1241,7 @@ const inspectDockerRuntimeIdentity = async (signal) => {
 };
 const buildImage = async (plan, signal) => {
   await preparedImageFor(plan.baseImage, signal);
-  const context = stageBuildContext(plan);
+  const { context, requiresHarnessBuildContextBound } = stageBuildContext(plan);
   return buildPreparedDockerImage(preparedDockerClient, {
     buildArguments: { BASE_IMAGE: plan.baseImage },
     context,
@@ -1099,11 +1254,7 @@ const buildImage = async (plan, signal) => {
       scenarioTimeoutMilliseconds,
       IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
     ),
-    maximumBuildContextBytes: preparedHarnessMaterials.has(
-      manifest.scenarios.find(
-        ({ scenarioId }) => scenarioId === plan.scenarioId,
-      )?.harnessEvidenceId,
-    )
+    maximumBuildContextBytes: requiresHarnessBuildContextBound
       ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
       : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
     signal,
@@ -1112,10 +1263,15 @@ const buildImage = async (plan, signal) => {
 };
 const buildMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
-  const context = resolve(artifactsRoot, "contexts", plan.runId);
+  const mockServerContext = resolve(
+    artifactsRoot,
+    "contexts",
+    plan.runId,
+    "mockserver",
+  );
   return buildPreparedDockerImage(preparedDockerClient, {
     buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
-    context,
+    context: mockServerContext,
     dockerfile: "MockServer.Dockerfile",
     labels: {
       "com.agentscope.integration": "true",
@@ -1141,19 +1297,14 @@ const createNetwork = async (plan, signal) => {
     signal,
     { mutationCapable: true },
   );
-  const { stdout } = await dockerWithSignal(
-    ["network", "inspect", plan.networkName],
+  const internal = await registerPreparedDockerNetwork(preparedDockerClient, {
+    deadline:
+      performance.now() + remainingIntegrationOperationMilliseconds(30_000),
+    name: plan.networkName,
+    runId: plan.runId,
     signal,
-  );
-  let network;
-  try {
-    const records = JSON.parse(stdout);
-    if (!Array.isArray(records) || records.length !== 1) throw new Error();
-    [network] = records;
-  } catch {
-    throw new Error("integration.isolation.network");
-  }
-  if (network?.Internal !== true) {
+  });
+  if (!internal) {
     if (substrateCertificationCase === "public-egress") {
       observeSubstrateCertificationPredicate(
         plan.runId,
@@ -1291,7 +1442,7 @@ const startMockServer = async (plan, signal) => {
     signal,
     { mutationCapable: true },
   );
-  await assertContainer(
+  const containerId = await assertContainer(
     plan,
     plan.mockServerName,
     ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
@@ -1300,6 +1451,60 @@ const startMockServer = async (plan, signal) => {
   await dockerWithSignal(["start", plan.mockServerName], signal, {
     mutationCapable: true,
   });
+  mockServerContainerIdentities.set(plan.runId, containerId);
+};
+// eslint-disable-next-line complexity -- exact closed container terminal witness
+const joinMockServer = async (plan, signal) => {
+  if (plan.scenarioId !== "codex-tui-trace-smoke") return;
+  const containerId = mockServerContainerIdentities.get(plan.runId);
+  const deadline = mockServerJoinDeadlines.get(plan.runId);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "") || !Number.isFinite(deadline))
+    throw new Error("integration.isolation.mockserver-terminal");
+  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+  if (remaining <= 0)
+    throw new Error("integration.isolation.mockserver-terminal");
+  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+  const waited = await dockerWithSignal(
+    ["container", "wait", containerId],
+    joinSignal,
+    { terminal: true },
+  );
+  const inspected = await dockerWithSignal(
+    ["container", "inspect", containerId],
+    joinSignal,
+    { terminal: true },
+  );
+  let records;
+  try {
+    records = JSON.parse(inspected.stdout);
+  } catch {
+    throw new Error("integration.isolation.mockserver-terminal");
+  }
+  const container =
+    Array.isArray(records) && records.length === 1 ? records[0] : undefined;
+  const state = container?.State;
+  const labels = container?.Config?.Labels;
+  if (
+    waited.stdout !== "0\n" ||
+    container?.Id !== containerId ||
+    container?.Name !== `/${plan.mockServerName}` ||
+    labels?.["com.agentscope.integration"] !== "true" ||
+    labels?.["com.agentscope.integration.run"] !== plan.runId ||
+    state?.Status !== "exited" ||
+    state?.Running !== false ||
+    state?.Paused !== false ||
+    state?.Restarting !== false ||
+    state?.OOMKilled !== false ||
+    state?.Dead !== false ||
+    state?.Pid !== 0 ||
+    state?.ExitCode !== 0 ||
+    state?.Error !== "" ||
+    typeof state?.FinishedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(
+      state.FinishedAt,
+    )
+  )
+    throw new Error("integration.isolation.mockserver-terminal");
 };
 const createScenarioContainer = async (
   plan,
@@ -1364,7 +1569,7 @@ const createScenarioContainer = async (
     signal,
     { mutationCapable: true },
   );
-  await assertContainer(
+  const containerId = await assertContainer(
     plan,
     plan.scenarioName,
     ISOLATION_EXECUTOR_LIMITS.containers.scenario,
@@ -1372,6 +1577,9 @@ const createScenarioContainer = async (
     undefined,
     immutableCandidate,
   );
+  if (scenarioContainerIdentities.has(plan.runId))
+    throw new Error("integration.isolation.container");
+  scenarioContainerIdentities.set(plan.runId, containerId);
   if (testMode === "sidecar-failure")
     await dockerWithSignal(["stop", plan.collectorName], signal, {
       mutationCapable: true,
@@ -1382,26 +1590,92 @@ const registerScenarioReceipt = (plan, receipt) => {
     registerIntegrationPtyReceipt(receipt, performance.now());
   else registerIntegrationHeadlessReceipt(receipt, performance.now());
 };
-const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
-  ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
-    (plan.executionMode === "interactive" &&
-      receipt.outcome === "completed" &&
-      receipt.finalSnapshot?.semanticState === "completed")) &&
-  receipt.exitCode === 0 &&
-  receipt.signal === null &&
-  receipt.cleanup === "clean" &&
-  receipt.residualProcessCount === 0 &&
-  receipt.processJoined === true &&
-  (plan.executionMode === "interactive" ||
-    (receipt.stdinJoined === true &&
-      receipt.stdoutJoined === true &&
-      receipt.stderrJoined === true)) &&
-  (plan.executionMode === "headless" ||
-    (receipt.eofByteWritten === true &&
-      receipt.terminalInputJoined === true &&
-      receipt.terminalOutputJoined === true &&
-      receipt.terminalTransportClosed === true)) &&
-  installedPtyReceipt.outcome === "completed";
+const scenarioReceiptSucceeded = (plan, receipt) => {
+  return (
+    ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
+      (plan.executionMode === "interactive" &&
+        receipt.outcome === "completed" &&
+        receipt.finalSnapshot?.semanticState === "completed")) &&
+    receipt.exitCode === 0 &&
+    receipt.signal === null &&
+    receipt.cleanup === "clean" &&
+    receipt.residualProcessCount === 0 &&
+    receipt.processJoined === true &&
+    (plan.executionMode === "interactive" ||
+      (receipt.stdinJoined === true &&
+        receipt.stdoutJoined === true &&
+        receipt.stderrJoined === true)) &&
+    (plan.executionMode === "headless" ||
+      (receipt.eofByteWritten === (plan.terminalAction === "eof") &&
+        receipt.terminalInputJoined === true &&
+        receipt.terminalOutputJoined === true &&
+        receipt.terminalTransportClosed === true))
+  );
+};
+const interactiveReceiptFailurePredicate = (plan, receipt, fixtureCaptured) => {
+  if (receipt.outcome !== "completed") return "completion-state";
+  if (receipt.finalSnapshot?.semanticState !== "completed")
+    return "completion-state";
+  if (receipt.exitCode !== 0) return "exit-code";
+  if (receipt.signal !== null) return "signal";
+  if (receipt.cleanup !== "clean") return "cleanup";
+  if (receipt.residualProcessCount !== 0) return "residual-process";
+  if (receipt.processJoined !== true) return "process-join";
+  if (receipt.eofByteWritten !== (plan.terminalAction === "eof"))
+    return "eof-action";
+  if (receipt.terminalInputJoined !== true) return "terminal-input-join";
+  if (receipt.terminalOutputJoined !== true) return "terminal-output-join";
+  if (receipt.terminalTransportClosed !== true) return "transport-close";
+  if (!fixtureCaptured) return "fixture-result";
+  return undefined;
+};
+const recordInteractiveReceiptFailure = (
+  plan,
+  receipt,
+  fixtureCaptured,
+  fallback = "receipt-rejected",
+) => {
+  if (
+    plan.executionMode !== "interactive" ||
+    installedPtyFailures.has(plan.runId)
+  )
+    return;
+  installedPtyFailures.set(plan.runId, {
+    receiptVersion: 1,
+    phase: "pty-receipt",
+    predicate:
+      (receipt === undefined
+        ? undefined
+        : interactiveReceiptFailurePredicate(plan, receipt, fixtureCaptured)) ??
+      fallback,
+  });
+};
+const recordInteractiveExecutionFailure = (plan, error) => {
+  if (plan.executionMode !== "interactive") return;
+  const diagnostic = contentFreeChildFailureCode(error);
+  installedPtyFailures.set(plan.runId, {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate: ptyExecutionFailurePredicates.includes(diagnostic)
+      ? diagnostic
+      : "child-failure",
+  });
+};
+const captureFailedScenarioReceipt = (
+  output,
+  plan,
+  outerMonotonicDeadline,
+  fixtureCaptured,
+) => {
+  const receipt =
+    plan.executionMode === "interactive"
+      ? captureInteractivePtyReceipt(output, plan, { outerMonotonicDeadline })
+      : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  registerScenarioReceipt(plan, receipt);
+  recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
+  return receipt;
+};
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
@@ -1453,15 +1727,122 @@ const contentFreeChildFailureCode = (error) => {
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
-const runScenario = async (plan, signal) => {
+const terminalWitnessDiagnostic = ({
+  container,
+  containerId,
+  error,
+  plan,
+  waitOutput,
+}) => {
+  const record =
+    typeof container === "object" && container !== null ? container : {};
+  const state =
+    typeof record.State === "object" && record.State !== null
+      ? record.State
+      : {};
+  const labels =
+    typeof record.Config?.Labels === "object" && record.Config.Labels !== null
+      ? record.Config.Labels
+      : {};
+  return {
+    attachCode: Number.isSafeInteger(error?.code),
+    attachKilled: error?.killed === false,
+    attachName: error?.name === "Error",
+    attachSignal: error?.signal === null,
+    containerId: record.Id === containerId,
+    containerName: record.Name === `/${plan.scenarioName}`,
+    finishedAt:
+      typeof state.FinishedAt === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(
+        state.FinishedAt,
+      ),
+    labels:
+      labels["com.agentscope.integration"] === "true" &&
+      labels["com.agentscope.integration.run"] === plan.runId,
+    restart: record.RestartCount === 0,
+    state:
+      state.Status === "exited" &&
+      state.Running === false &&
+      state.Paused === false &&
+      state.Restarting === false &&
+      state.OOMKilled === false &&
+      state.Dead === false &&
+      state.Pid === 0 &&
+      state.ExitCode === error?.code &&
+      state.Error === "",
+    wait: waitOutput === `${error?.code}\n`,
+  };
+};
+const proveFailedAttachSettled = async (error, plan, signal) => {
+  const reject = (reason) => {
+    process.stderr.write(
+      `integration.isolation.attach-terminal-diagnostic:${reason}\n`,
+    );
+    return false;
+  };
+  if (signal.aborted) return reject("signal-aborted");
+  const containerId = scenarioContainerIdentities.get(plan.runId);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? ""))
+    return reject("container-identity-missing");
+  let waited;
+  try {
+    waited = await dockerWithSignal(["container", "wait", containerId], signal);
+  } catch {
+    return reject("wait-failed");
+  }
+  let inspected;
+  try {
+    inspected = await dockerWithSignal(
+      ["container", "inspect", containerId],
+      signal,
+    );
+  } catch {
+    return reject("inspect-failed");
+  }
+  let records;
+  try {
+    records = JSON.parse(inspected.stdout);
+  } catch {
+    return reject("inspect-malformed");
+  }
+  try {
+    const container =
+      Array.isArray(records) && records.length === 1 ? records[0] : undefined;
+    const proved = scenarioContainerTerminalWitness({
+      attach: error,
+      container,
+      containerId,
+      runId: plan.runId,
+      scenarioName: plan.scenarioName,
+      waitOutput: waited.stdout,
+    });
+    if (proved) return true;
+    process.stderr.write(
+      `integration.isolation.attach-terminal-shape:${JSON.stringify(
+        terminalWitnessDiagnostic({
+          container,
+          containerId,
+          error,
+          plan,
+          waitOutput: waited.stdout,
+        }),
+      )}\n`,
+    );
+    return reject("witness-rejected");
+  } catch {
+    return reject("witness-error");
+  }
+};
+const runScenario = async (plan, signal, scenarioDeadline) => {
   const remainingOuterMilliseconds = Math.min(
-    scenarioTimeoutMilliseconds,
+    scenarioDeadline - performance.now(),
     capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
   );
   if (remainingOuterMilliseconds < 40_000)
     throw new Error("integration.isolation.headless-authority");
   const outerMonotonicDeadline =
     linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
+  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline);
   const immutableCandidate = await createImmutableCandidateHandoff(
     plan,
     signal,
@@ -1472,75 +1853,98 @@ const runScenario = async (plan, signal) => {
     outerMonotonicDeadline,
     immutableCandidate,
   );
+  let stdout;
   try {
-    const { stdout } = await dockerWithSignal(
+    ({ stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
-      { mutationCapable: true },
-    );
-    const receipt =
-      plan.executionMode === "interactive"
-        ? captureInteractivePtyReceipt(stdout, plan, {
-            outerMonotonicDeadline,
-          })
-        : captureHeadlessReceipt(stdout, plan, {
-            outerMonotonicDeadline,
-          });
-    const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
-    const fixtureCaptured = captureFixtureResult(stdout, plan);
-    observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
-    registerScenarioReceipt(plan, receipt);
-    return {
-      receipt,
-      succeeded:
-        scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
-    };
+    ));
   } catch (error) {
-    if (plan.executionMode === "interactive")
-      process.stderr.write(
-        `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+    let terminalMutationProved = false;
+    try {
+      terminalMutationProved = await proveFailedAttachSettled(
+        error,
+        plan,
+        signal,
       );
-    const output = `${error?.stdout ?? ""}`;
-    const fixtureCaptured = captureFixtureResult(output, plan);
-    if (output.includes("AGENTSCOPE_PTY_FAILURE="))
-      captureInstalledPtyFailure(output, plan);
-    if (
-      substrateCertificationCase === "leaked-child" &&
-      leakedChildReadinessWasObserved({
-        certificationReadiness: fixtureResults.get(plan.runId)
-          ?.certificationReadiness,
-        fixtureCaptured,
-        fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
-      })
-    ) {
-      observeSubstrateCertificationPredicate(
-        plan.runId,
-        SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
-      );
-      throw new Error(
-        `integration.certification.${substrateCertificationCase}`,
-        { cause: error },
-      );
+      if (!terminalMutationProved)
+        throw new Error("integration.isolation.child-failure", {
+          cause: error,
+        });
+      if (plan.executionMode === "interactive")
+        process.stderr.write(
+          `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+        );
+      const output = `${error?.stdout ?? ""}`;
+      const fixtureCaptured = captureFixtureResult(output, plan);
+      recordInteractiveExecutionFailure(plan, error);
+      if (
+        substrateCertificationCase === "leaked-child" &&
+        leakedChildReadinessWasObserved({
+          certificationReadiness: fixtureResults.get(plan.runId)
+            ?.certificationReadiness,
+          fixtureCaptured,
+          fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
+        })
+      ) {
+        observeSubstrateCertificationPredicate(
+          plan.runId,
+          SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+        );
+        throw new Error(
+          `integration.certification.${substrateCertificationCase}`,
+          { cause: error },
+        );
+      }
+      if (
+        output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
+        output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
+      ) {
+        const receipt = captureFailedScenarioReceipt(
+          output,
+          plan,
+          outerMonotonicDeadline,
+          fixtureCaptured,
+        );
+        return { receipt, succeeded: false };
+      }
+      throw error;
+    } catch (handledError) {
+      if (!terminalMutationProved)
+        markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+      throw handledError;
     }
-    if (
-      output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
-      output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
-    ) {
-      const receipt =
-        plan.executionMode === "interactive"
-          ? captureInteractivePtyReceipt(output, plan, {
-              outerMonotonicDeadline,
-            })
-          : captureHeadlessReceipt(output, plan, {
-              outerMonotonicDeadline,
-            });
-      observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
-      registerScenarioReceipt(plan, receipt);
-      return { receipt, succeeded: false };
-    }
-    throw error;
   }
+  const receipt =
+    plan.executionMode === "interactive"
+      ? captureInteractivePtyReceipt(stdout, plan, {
+          outerMonotonicDeadline,
+        })
+      : captureHeadlessReceipt(stdout, plan, {
+          outerMonotonicDeadline,
+        });
+  const fixtureCaptured = captureFixtureResult(stdout, plan);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  registerScenarioReceipt(plan, receipt);
+  if (plan.executionMode === "interactive") {
+    const predicate = interactiveReceiptFailurePredicate(
+      plan,
+      receipt,
+      fixtureCaptured,
+    );
+    if (predicate !== undefined)
+      installedPtyFailures.set(plan.runId, {
+        receiptVersion: 1,
+        phase: "pty-receipt",
+        predicate,
+      });
+  }
+  return {
+    receipt,
+    succeeded: scenarioReceiptSucceeded(plan, receipt) && fixtureCaptured,
+  };
 };
+// eslint-disable-next-line max-lines-per-function -- one atomic retained evidence settlement
 const recordEvidence = async (evidence) => {
   const verifiedEvidence = compileIsolationEvidence(evidence, {
     baseImageIdentity: preparedIdentityFor(evidence.baseImage),
@@ -1575,6 +1979,11 @@ const recordEvidence = async (evidence) => {
       resolve(directory, "destination-ledger.json"),
       `${JSON.stringify(result.destinationLedger, undefined, 2)}\n`,
     );
+    if (result.harnessObservation !== undefined)
+      writeFileSync(
+        resolve(directory, "harness-observation.json"),
+        `${JSON.stringify(result.harnessObservation, undefined, 2)}\n`,
+      );
     writeFileSync(
       resolve(directory, "fixture-lifecycle.json"),
       `${JSON.stringify(
@@ -1685,6 +2094,10 @@ const finalizeControllerFailureEvidence = (
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
+    causalFailure:
+      primaryError?.cause === undefined
+        ? null
+        : failureCode(primaryError.cause),
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
     installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
@@ -1825,11 +2238,15 @@ const countDockerResources = async (kind, plan, signal) => {
       ...(kind === "container" ? ["--all"] : []),
     ],
     signal,
-    { timeout: ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds },
+    {
+      terminal: true,
+      timeout: ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds,
+    },
   );
   return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
 };
 const createDriver = (plan) => {
+  const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;
   let removalSignal;
   let runtimeIdentity;
   const boundedRemovalSignal = () => {
@@ -1861,11 +2278,13 @@ const createDriver = (plan) => {
     startCollector,
     startRetrieval,
     startMockServer,
-    runScenario,
+    joinMockServer,
+    runScenario: (selectedPlan, signal) =>
+      runScenario(selectedPlan, signal, scenarioDeadline),
     recordEvidence,
     removeContainer: (name) =>
       ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
-    removeNetwork: (name) => {
+    removeNetwork: async (name) => {
       if (substrateCertificationCase === "cleanup-failure") {
         observeSubstrateCertificationPredicate(
           plan.runId,
@@ -1875,7 +2294,21 @@ const createDriver = (plan) => {
           `integration.certification.${substrateCertificationCase}`,
         );
       }
-      return ignoreMissing(["network", "rm", name], boundedRemovalSignal());
+      const signal = boundedRemovalSignal();
+      try {
+        await retirePreparedDockerNetwork(preparedDockerClient, {
+          deadline:
+            performance.now() +
+            remainingIntegrationOperationMilliseconds(30_000, true),
+          name,
+          runId: plan.runId,
+          signal,
+        });
+      } catch (error) {
+        throw new Error("integration.isolation.cleanup-network-remove", {
+          cause: error,
+        });
+      }
     },
     removeImage: (tag) =>
       ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
@@ -1887,6 +2320,7 @@ const createDriver = (plan) => {
         recursive: true,
       });
       rmSync(activeMarkerFor(runId), { force: true });
+      scenarioContainerIdentities.delete(runId);
     },
     inspectCleanup: async (plan) => {
       const signal = AbortSignal.timeout(
@@ -2001,7 +2435,8 @@ try {
     );
     if (scenario === undefined || evidence === undefined)
       throw new Error("integration.harness-scenario-admission.invalid");
-    if (preparedMaterial === undefined) continue;
+    if (preparedMaterial === undefined || evidence.admission === undefined)
+      continue;
     const materialAuthority = inspectPreparedHarnessMaterial(preparedMaterial);
     const image = preparedIdentityFor(scenario.image);
     admissionByRunId.set(plan.runId, {
@@ -2085,6 +2520,9 @@ try {
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
   ) {
     retirementRequired = true;
+    process.stderr.write(
+      `integration.controller.causal-diagnostic:${failureCode(error)}\n`,
+    );
     primaryError = new Error("integration.controller.unsettled-operation", {
       cause: error,
     });

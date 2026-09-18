@@ -3,6 +3,97 @@ import { createHash } from "node:crypto";
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
 };
+export const ptyExecutionFailurePredicates = Object.freeze([
+  "child-failure",
+  "integration.fixture.codex-bootstrap",
+  "integration.fixture.codex-destination",
+  "integration.fixture.codex-install",
+  "integration.fixture.codex-installed-status",
+  "integration.fixture.codex-hook-command-spawn-error",
+  "integration.fixture.codex-hook-command-stdin-error",
+  "integration.fixture.codex-hook-command-timeout",
+  "integration.fixture.codex-hook-command-wait-error",
+  "integration.fixture.codex-hook-command-missing",
+  "integration.fixture.codex-hook-command-completed-before-budget-boundary",
+  "integration.fixture.codex-hook-command-completed-near-budget-boundary",
+  "integration.fixture.codex-hook-no-operational-state-subsecond",
+  "integration.fixture.codex-hook-no-operational-state-low-latency",
+  "integration.fixture.codex-hook-no-operational-state-mid-latency",
+  "integration.fixture.codex-hook-no-operational-state-high-latency",
+  "integration.fixture.codex-hook-no-operational-state-near-deadline",
+  "integration.fixture.codex-hook-start-suppressed",
+  "integration.fixture.codex-hook-start-deadline",
+  "integration.fixture.codex-hook-capture-suppressed",
+  "integration.fixture.codex-hook-capture-deadline",
+  "integration.fixture.codex-hook-redaction-suppressed",
+  "integration.fixture.codex-hook-redaction-deadline",
+  "integration.fixture.codex-hook-routing-no-route",
+  "integration.fixture.codex-hook-delivery-rejected",
+  "integration.fixture.codex-hook-delivery-unavailable",
+  "integration.fixture.codex-hook-delivery-deadline",
+  "integration.fixture.codex-hook-delivery-unknown",
+  "integration.fixture.codex-hook-accepted-without-trace",
+  "integration.fixture.codex-hook-operational-unclassified",
+  "integration.fixture.codex-init",
+  "integration.fixture.codex-routing",
+  "integration.fixture.codex-model-request",
+  "integration.fixture.codex-trace-search",
+  "integration.fixture.codex-trace-search-ambiguous",
+  "integration.fixture.codex-trace-search-harness",
+  "integration.fixture.codex-trace-search-locator",
+  "integration.fixture.codex-trace-search-record-count",
+  "integration.fixture.codex-trace-search-shape",
+  "integration.fixture.codex-trace-search-result",
+  "integration.fixture.codex-trace-acceptance",
+  "integration.fixture.codex-trace-reporter-settled",
+  "integration.fixture.codex-trace-settlement",
+  "integration.fixture.codex-trace-terminal",
+  "integration.fixture.codex-tui-exit",
+  "integration.fixture.codex-tui-start",
+  "integration.fixture.codex-verify",
+  "integration.runner.fixture-failed",
+  "integration.runner.fixture-result",
+  "integration.runner.pty-authority",
+  "testkit.headless.kernel.failure",
+  "testkit.pty.geometry",
+  "testkit.pty.immutable-candidate",
+  "testkit.pty.receipt-completion-state",
+  "testkit.pty.receipt-actions",
+  "testkit.pty.receipt-cleanup",
+  "testkit.pty.receipt-identity",
+  "testkit.pty.receipt-input",
+  "testkit.pty.receipt-outcome",
+  "testkit.pty.receipt-output",
+  "testkit.pty.receipt-output-state",
+  "testkit.pty.receipt-readiness",
+  "testkit.pty.receipt-signal",
+  "testkit.pty.receipt-signal-identity",
+  "testkit.pty.receipt-snapshot",
+  "testkit.pty.receipt-terminal",
+  "testkit.pty.receipt-terminal-action",
+  "testkit.pty.receipt-terminal-status",
+  "testkit.pty.request",
+  "testkit.pty.runtime.identity",
+  "testkit.pty.transport",
+  "testkit.pty.transport.exit",
+  "testkit.pty.transport.initialization",
+  "testkit.pty.transport.semantic-credential-prompt",
+  "testkit.pty.transport.semantic-incomplete",
+  "testkit.pty.transport.semantic-malformed-control-limit",
+  "testkit.pty.transport.semantic-malformed-csi-byte",
+  "testkit.pty.transport.semantic-malformed-csi-parameters",
+  "testkit.pty.transport.semantic-malformed-escape",
+  "testkit.pty.transport.semantic-malformed-ground-control",
+  "testkit.pty.transport.semantic-malformed-trailing-control",
+  "testkit.pty.transport.semantic-malformed-unknown",
+  "testkit.pty.transport.semantic-malformed-utf8",
+  "testkit.pty.transport.semantic-missing-readiness",
+  "testkit.pty.transport.semantic-nonzero",
+  "testkit.pty.transport.semantic-unsupported-csi",
+  "testkit.pty.transport.semantic-unsupported-extended-csi",
+  "testkit.pty.transport.semantic-unsupported-osc",
+  "testkit.pty.transport.semantic-unsupported-unknown",
+]);
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
@@ -14,63 +105,22 @@ const exactKeys = (value, expected) =>
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 export const installedPtyFailurePredicates = Object.freeze({
-  "candidate-inventory": Object.freeze(["candidate-rejected"]),
-  "immutable-candidate": Object.freeze(["authority-rejected"]),
-  "installed-cli": Object.freeze([
-    "bin-authority",
-    "cli-authority",
-    "cli-boundary",
-    "driver-input",
-    "execution-rejected",
-    "interpreter-authority",
-    "package-authority",
-    "package-manifest",
+  "pty-receipt": Object.freeze([
+    "cleanup",
+    "completion-state",
+    "eof-action",
+    "exit-code",
+    "fixture-result",
+    "process-join",
     "receipt-rejected",
+    "residual-process",
+    "signal",
+    "terminal-input-join",
+    "terminal-output-join",
+    "transport-close",
   ]),
-  "pty-receipt": Object.freeze(["receipt-rejected"]),
-  "runner-bootstrap": Object.freeze(["runner-rejected"]),
+  "pty-execution": ptyExecutionFailurePredicates,
 });
-const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];
-
-export const compileInstalledPtyFailureReceipt = (value) => {
-  if (
-    !exactKeys(value, installedPtyFailureKeys) ||
-    value.receiptVersion !== 1 ||
-    !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
-    !installedPtyFailurePredicates[value.phase].includes(value.predicate)
-  )
-    return fail();
-  const record = Object.freeze({
-    receiptVersion: value.receiptVersion,
-    phase: value.phase,
-    predicate: value.predicate,
-  });
-  return Object.freeze({
-    record,
-    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
-  });
-};
-
-export const decodeInstalledPtyFailureReceipt = (output) => {
-  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
-    return fail();
-  const prefix = "AGENTSCOPE_PTY_FAILURE=";
-  if (output.includes("AGENTSCOPE_PTY_RECEIPT=")) return fail();
-  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
-  if (lines.length !== 1 || lines[0].length > 1_024) return fail();
-  try {
-    const encoded = lines[0].slice(prefix.length);
-    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
-    const bytes = Buffer.from(encoded, "base64url");
-    if (bytes.toString("base64url") !== encoded) return fail();
-    const serialized = bytes.toString("utf8");
-    const compiled = compileInstalledPtyFailureReceipt(JSON.parse(serialized));
-    if (JSON.stringify(compiled.record) !== serialized) return fail();
-    return compiled.record;
-  } catch {
-    return fail();
-  }
-};
 
 export const decodeInteractivePtyReceipt = (output) => {
   if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
@@ -100,6 +150,7 @@ export const selectedRuntimeFiles = Object.freeze([
   "testkit/headless-supervisor.js",
   "testkit/internal/headless-supervisor-backend.js",
   "testkit/pty-terminal-contract.js",
+  "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
   "testkit/pty-runtime/node127-linux-x64-musl/pty.node",
 ]);
 
@@ -307,191 +358,6 @@ export const validateImmutableScenarioContainer = ({
     container.Mounts.length !== 0 ||
     !plainRecord(container.HostConfig?.Tmpfs) ||
     JSON.stringify(container.HostConfig.Tmpfs) !== JSON.stringify(tmpfs)
-  )
-    return fail();
-  return true;
-};
-
-const ptyReceiptKeys = [
-  "candidateBundleIdentity",
-  "candidateInventorySha256",
-  "caseId",
-  "cleanup",
-  "completionKind",
-  "eofByteWritten",
-  "initialGeometry",
-  "isTTY",
-  "outcome",
-  "outputBytes",
-  "outputSha256",
-  "processJoined",
-  "receiptVersion",
-  "residualProcessCount",
-  "runId",
-  "scenarioId",
-  "semanticState",
-  "terminalInputJoined",
-  "terminalOutputJoined",
-  "terminalTransportClosed",
-];
-
-export const compileInstalledCliPtyReceipt = (value) => {
-  if (
-    !exactKeys(value, ptyReceiptKeys) ||
-    value.receiptVersion !== 1 ||
-    !/^[a-f0-9]{16}$/u.test(value.runId) ||
-    !/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(value.scenarioId) ||
-    !/^sha256-[a-f0-9]{64}$/u.test(value.candidateBundleIdentity) ||
-    !/^[a-f0-9]{64}$/u.test(value.candidateInventorySha256) ||
-    value.caseId !== "installed-cli-version" ||
-    value.completionKind !== "exact-output" ||
-    value.outcome !== "completed" ||
-    value.semanticState !== "active" ||
-    value.cleanup !== "clean" ||
-    value.isTTY !== true ||
-    value.eofByteWritten !== true ||
-    value.processJoined !== true ||
-    value.terminalInputJoined !== true ||
-    value.terminalOutputJoined !== true ||
-    value.terminalTransportClosed !== true ||
-    value.residualProcessCount !== 0 ||
-    !exactKeys(value.initialGeometry, ["columns", "rows"]) ||
-    value.initialGeometry.columns !== 40 ||
-    value.initialGeometry.rows !== 12 ||
-    !Number.isSafeInteger(value.outputBytes) ||
-    value.outputBytes < 1 ||
-    value.outputBytes > 4_096 ||
-    !/^[a-f0-9]{64}$/u.test(value.outputSha256)
-  )
-    return fail();
-  const record = Object.freeze({ ...value });
-  return Object.freeze({
-    record,
-    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
-  });
-};
-
-const selectedPtyExecutionReceiptKeys = [
-  "actions",
-  "cleanup",
-  "eofByte",
-  "eofByteWritten",
-  "exitCode",
-  "finalSnapshot",
-  "initialGeometry",
-  "inputBytes",
-  "inputBytesWritten",
-  "inputSha256",
-  "isTTY",
-  "observedCanonicalMode",
-  "observedGeometry",
-  "outcome",
-  "outputBytes",
-  "outputSha256",
-  "processJoined",
-  "processRequestFingerprint",
-  "processStartIdentity",
-  "readinessObserved",
-  "receiptVersion",
-  "requestFingerprint",
-  "residualProcessCount",
-  "runId",
-  "signal",
-  "terminalInputJoined",
-  "terminalOutputJoined",
-  "terminalTransportClosed",
-];
-
-export const compileInstalledCliPtyReceiptFromExecution = (value) => {
-  if (
-    !exactKeys(value, [
-      "candidateBundleIdentity",
-      "candidateInventorySha256",
-      "receipt",
-      "scenarioId",
-    ]) ||
-    !exactKeys(value.receipt, selectedPtyExecutionReceiptKeys) ||
-    !plainRecord(value.receipt.finalSnapshot)
-  )
-    return fail();
-  return compileInstalledCliPtyReceipt({
-    receiptVersion: 1,
-    runId: value.receipt.runId,
-    scenarioId: value.scenarioId,
-    candidateBundleIdentity: value.candidateBundleIdentity,
-    candidateInventorySha256: value.candidateInventorySha256,
-    caseId: "installed-cli-version",
-    completionKind: "exact-output",
-    outcome: value.receipt.outcome,
-    semanticState: value.receipt.finalSnapshot.semanticState,
-    cleanup: value.receipt.cleanup,
-    isTTY: value.receipt.isTTY,
-    eofByteWritten: value.receipt.eofByteWritten,
-    processJoined: value.receipt.processJoined,
-    terminalInputJoined: value.receipt.terminalInputJoined,
-    terminalOutputJoined: value.receipt.terminalOutputJoined,
-    terminalTransportClosed: value.receipt.terminalTransportClosed,
-    residualProcessCount: value.receipt.residualProcessCount,
-    initialGeometry: value.receipt.initialGeometry,
-    outputBytes: value.receipt.outputBytes,
-    outputSha256: value.receipt.outputSha256,
-  });
-};
-
-export const decodeInstalledCliPtyReceipt = (output, expected) => {
-  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
-    return fail();
-  const prefix = "AGENTSCOPE_PTY_RECEIPT=";
-  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
-  if (lines.length !== 1 || lines[0].length > 8_192) return fail();
-  let value;
-  try {
-    const encoded = lines[0].slice(prefix.length);
-    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
-    const bytes = Buffer.from(encoded, "base64url");
-    if (bytes.toString("base64url") !== encoded) return fail();
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    return fail();
-  }
-  const receipt = compileInstalledCliPtyReceipt(value).record;
-  if (
-    !exactKeys(expected, [
-      "candidateBundleIdentity",
-      "candidateInventorySha256",
-      "runId",
-      "scenarioId",
-    ]) ||
-    Object.entries(expected).some(
-      ([key, expectedValue]) => receipt[key] !== expectedValue,
-    )
-  )
-    return fail();
-  return receipt;
-};
-
-export const validateInstalledCliBoundary = (facts) => {
-  if (
-    !exactKeys(facts, [
-      "argv",
-      "binIsSymlink",
-      "binTarget",
-      "cliDigest",
-      "cliMode",
-      "cliPrefix",
-      "expectedDigest",
-    ]) ||
-    facts.binIsSymlink !== true ||
-    facts.binTarget !== "../agentscope-cli/dist/bin/agentscope.js" ||
-    facts.cliMode !== 0o755 ||
-    facts.cliPrefix !== "#!/usr/bin/env node\n" ||
-    !/^[a-f0-9]{64}$/u.test(facts.expectedDigest) ||
-    facts.cliDigest !== facts.expectedDigest ||
-    JSON.stringify(facts.argv) !==
-      JSON.stringify([
-        "/opt/agentscope/installed/node_modules/.bin/agentscope",
-        "--version",
-      ])
   )
     return fail();
   return true;

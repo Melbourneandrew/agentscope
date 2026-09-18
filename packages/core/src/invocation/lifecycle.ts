@@ -34,15 +34,19 @@ import {
   type RoutingDeliveryResult,
 } from "../routing/delivery.js";
 import {
-  resolveCaptureInvocationSnapshot,
-  resolveCaptureInvocationSnapshotForTesting,
+  prepareCaptureInvocationConfigurationForCore,
+  resolveCaptureInvocationSnapshotAfterConfigurationForCore,
+  resolveCaptureInvocationSnapshotAfterConfigurationForTesting,
   type CaptureInvocationPreparationInput,
   type ContextResolver,
   type InvocationPreparationFailure,
+  type InvocationPreparationResult,
+  type PreparedCaptureInvocationConfigurationForCore,
 } from "./snapshot.js";
 import {
   commitOperationalEvidenceForCore,
   preloadOperationalStateForCore,
+  type OperationalCoordinatorPreloadResult,
 } from "./operational-coordinator.js";
 
 const reporterReasonDiagnosticMapping = Object.freeze({
@@ -97,10 +101,7 @@ type LifecycleOutcome =
 export type ResolvedTraceLifecycleResult = LifecycleOutcome &
   Readonly<{ operationalEvidence: ResolvedLifecycleOperationalEvidence }>;
 
-type Preparation = Extract<
-  Awaited<ReturnType<typeof resolveCaptureInvocationSnapshot>>,
-  { ok: true }
->;
+type Preparation = Extract<InvocationPreparationResult, { ok: true }>;
 
 type CheckpointBoundary = Omit<
   CaptureCheckpointInput,
@@ -654,7 +655,9 @@ const executeCaptureStage = (
 const executePreparedLifecycle = async (
   input: ResolvedTraceLifecycleInput,
   preparation: Preparation,
+  operationalPreload: Promise<OperationalCoordinatorPreloadResult>,
 ): Promise<ResolvedTraceLifecycleResult> => {
+  const preload = await operationalPreload;
   if (preparation.snapshot.configuration.selectedConnectionIds.length === 0) {
     const routing = Object.freeze({
       outcome: "routing-unselected" as const,
@@ -669,23 +672,6 @@ const executePreparedLifecycle = async (
     );
     return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
   }
-  const preloadRemaining = reporterDeadlineRemainingMilliseconds(
-    preparation.snapshot.deadline,
-  );
-  /* v8 ignore next -- an exact final-reserve race is defensive; deadline
-   * consumption after preload is covered at the persistence boundary. */
-  const preload =
-    preloadRemaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
-      ? Object.freeze({ ok: false as const })
-      : await preloadOperationalStateForCore(
-          configurationStoreHomeForCore(input.configurationStore),
-          input.operationalStateStore,
-          Math.floor(
-            preloadRemaining -
-              OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
-          ),
-          input.signal,
-        );
   const { lifecycle, redacted, boundary, checkpointResolution } =
     executeCaptureStage(
       input,
@@ -746,11 +732,15 @@ const executePreparedLifecycle = async (
 
 const runResolvedTraceLifecycleWithResolver = async (
   input: ResolvedTraceLifecycleInput,
-  resolvePreparation: (
+  completePreparation: (
     input: ResolvedTraceLifecycleInput,
-  ) => ReturnType<typeof resolveCaptureInvocationSnapshot>,
+    prepared: PreparedCaptureInvocationConfigurationForCore,
+  ) => Promise<InvocationPreparationResult>,
+  preloadOperationalState: typeof preloadOperationalStateForCore,
 ): Promise<ResolvedTraceLifecycleResult> => {
   let completedPreparation: Preparation | undefined;
+  let operationalPreload:
+    Promise<OperationalCoordinatorPreloadResult> | undefined;
   try {
     const home = configurationStoreHomeForCore(input.configurationStore);
     if (
@@ -762,12 +752,47 @@ const runResolvedTraceLifecycleWithResolver = async (
       const failed = configurationFailure();
       return withEvidence(failed, preparationEvidence(failed));
     }
-    const preparation = await resolvePreparation(input);
-    if (!preparation.ok)
+    const preparedConfiguration =
+      await prepareCaptureInvocationConfigurationForCore(input);
+    if (!preparedConfiguration.ok)
+      return withEvidence(
+        preparedConfiguration,
+        preparationEvidence(preparedConfiguration),
+      );
+    if (preparedConfiguration.configuration.selectedConnectionIds.length > 0) {
+      // Git-context inspection and Operational State preload are independent
+      // isolated reads. Admit both against the same launcher deadline only
+      // after exact routing selection preserves the empty-route fast path.
+      const preloadRemaining = reporterDeadlineRemainingMilliseconds(
+        preparedConfiguration.deadline,
+      );
+      operationalPreload =
+        preloadRemaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
+          ? Promise.resolve(Object.freeze({ ok: false as const }))
+          : preloadOperationalState(
+              home,
+              input.operationalStateStore,
+              Math.floor(
+                preloadRemaining -
+                  OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
+              ),
+              input.signal,
+            );
+    }
+    const preparation = await completePreparation(input, preparedConfiguration);
+    if (!preparation.ok) {
+      await operationalPreload;
       return withEvidence(preparation, preparationEvidence(preparation));
+    }
     completedPreparation = preparation;
-    return await executePreparedLifecycle(input, preparation);
+    return await executePreparedLifecycle(
+      input,
+      preparation,
+      operationalPreload ??
+        Promise.resolve(Object.freeze({ ok: false as const })),
+    );
   } catch {
+    if (operationalPreload !== undefined) await operationalPreload;
     if (completedPreparation) {
       const failed = Object.freeze({
         outcome: "failed-open" as const,
@@ -796,16 +821,24 @@ export const runResolvedTraceLifecycle = async (
 ): Promise<ResolvedTraceLifecycleResult> =>
   runResolvedTraceLifecycleWithResolver(
     input,
-    resolveCaptureInvocationSnapshot,
+    resolveCaptureInvocationSnapshotAfterConfigurationForCore,
+    preloadOperationalStateForCore,
   );
 
 export const runResolvedTraceLifecycleForTesting = async (
   input: ResolvedTraceLifecycleInput &
-    Readonly<{ contextResolver: ContextResolver }>,
+    Readonly<{
+      contextResolver: ContextResolver;
+      operationalPreloadForTesting?: typeof preloadOperationalStateForCore;
+    }>,
 ): Promise<ResolvedTraceLifecycleResult> =>
-  runResolvedTraceLifecycleWithResolver(input, (value) =>
-    resolveCaptureInvocationSnapshotForTesting({
-      ...value,
-      contextResolver: input.contextResolver,
-    }),
+  runResolvedTraceLifecycleWithResolver(
+    input,
+    (value, prepared) =>
+      resolveCaptureInvocationSnapshotAfterConfigurationForTesting(
+        value,
+        prepared,
+        input.contextResolver,
+      ),
+    input.operationalPreloadForTesting ?? preloadOperationalStateForCore,
   );

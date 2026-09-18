@@ -6,6 +6,7 @@ export const createImagePreparationState = () => {
   const uncertainPreparedDockerClients = new WeakSet();
   const preparedDockerClientDiagnostics = new WeakMap();
   const pendingPreparedDockerImageRetirements = new WeakMap();
+  const pendingPreparedDockerNetworkRetirements = new WeakMap();
 
   const clientIsUsable = (client) =>
     preparedDockerClients.has(client) &&
@@ -41,9 +42,12 @@ export const createImagePreparationState = () => {
       clientIsUncertain: (client) => uncertainPreparedDockerClients.has(client),
       completePendingImage: (client, tag) =>
         pendingPreparedDockerImageRetirements.get(client)?.delete(tag),
+      completePendingNetwork: (client, name) =>
+        pendingPreparedDockerNetworkRetirements.get(client)?.delete(name),
       endClose: (client) => closingPreparedDockerClients.delete(client),
       finishClose: (client) => {
         pendingPreparedDockerImageRetirements.delete(client);
+        pendingPreparedDockerNetworkRetirements.delete(client);
         preparedDockerClients.delete(client);
       },
       hasClient: (client) => preparedDockerClients.has(client),
@@ -52,7 +56,17 @@ export const createImagePreparationState = () => {
       pendingCount,
       pendingImageId: (client, tag) =>
         pendingPreparedDockerImageRetirements.get(client)?.get(tag),
+      pendingNetwork: (client, name) =>
+        pendingPreparedDockerNetworkRetirements.get(client)?.get(name),
+      pendingNetworkCount: (client) =>
+        pendingPreparedDockerNetworkRetirements.get(client)?.size ?? 0,
       recordDiagnostic,
+      recordPendingNetwork: (client, name, network) => {
+        const pending =
+          pendingPreparedDockerNetworkRetirements.get(client) ?? new Map();
+        pending.set(name, network);
+        pendingPreparedDockerNetworkRetirements.set(client, pending);
+      },
     }),
   });
 };

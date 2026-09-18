@@ -6,6 +6,7 @@ import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
   type PtyTerminalGeometry,
+  type PtyTerminalReadinessMatcher,
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
 } from "./bounded-terminal-emulator.js";
@@ -17,6 +18,11 @@ export type SelectedPtyExecutionAction =
       geometry: PtyTerminalGeometry;
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-with-contained-process-set";
+    }>
+  | Readonly<{ action: "wait-for-semantic-completion" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{
@@ -38,6 +44,7 @@ export type SelectedPtyExecutionRequest = Readonly<{
   }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
+  readiness: PtyTerminalReadinessMatcher;
   interpreter: Readonly<{ path: string; sha256: string }>;
   scriptSha256: string;
 }>;
@@ -103,6 +110,15 @@ export type PtyTransportAction =
       action: "input";
       byteLength: number;
       inputSha256: string;
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-with-contained-process-set";
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "wait-for-semantic-completion";
       monotonicAtMs: number;
     }>
   | Readonly<{ action: "eof"; monotonicAtMs: number }>

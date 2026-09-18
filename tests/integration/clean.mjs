@@ -19,6 +19,7 @@ import {
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
+import { installedPtyFailurePredicates } from "./immutable-candidate-authority.mjs";
 import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
@@ -181,23 +182,6 @@ const artifactMaximumBytes = Object.freeze({
   "current-selection.json": 16_384,
   "harness-support-evidence.json": 1_048_576,
 });
-const installedPtyFailurePredicates = Object.freeze({
-  "candidate-inventory": Object.freeze(["candidate-rejected"]),
-  "immutable-candidate": Object.freeze(["authority-rejected"]),
-  "installed-cli": Object.freeze([
-    "bin-authority",
-    "cli-authority",
-    "cli-boundary",
-    "driver-input",
-    "execution-rejected",
-    "interpreter-authority",
-    "package-authority",
-    "package-manifest",
-    "receipt-rejected",
-  ]),
-  "pty-receipt": Object.freeze(["receipt-rejected"]),
-  "runner-bootstrap": Object.freeze(["runner-rejected"]),
-});
 const validInstalledPtyFailure = (value) =>
   value === null ||
   (typeof value === "object" &&
@@ -255,6 +239,7 @@ const assertFailureEvidence = (identity) => {
       JSON.stringify(
         [
           "cleanupFailure",
+          "causalFailure",
           "certificationCase",
           "certificationPredicate",
           "certificationReadiness",
@@ -271,6 +256,10 @@ const assertFailureEvidence = (identity) => {
     record.runId !== identity.runId ||
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
+    !(
+      record.causalFailure === null ||
+      /^(?:integration\.[a-z.-]{1,96})$/u.test(record.causalFailure)
+    ) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
     !certificationFailureAuthorityIsValid(record) ||
     !(

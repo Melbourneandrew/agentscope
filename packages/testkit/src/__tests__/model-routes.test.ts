@@ -8,6 +8,7 @@ import {
 describe("model protocol routes", () => {
   it("defines the exact extensible provider inventory", () => {
     expect(MODEL_PROTOCOL_ROUTES.map(({ routeId }) => routeId)).toEqual([
+      "codex-tui-responses",
       "openai-responses",
       "openai-chat-completions",
       "anthropic-messages",
@@ -17,8 +18,9 @@ describe("model protocol routes", () => {
     expect(MODEL_PROTOCOL_ROUTES.every(Object.isFrozen)).toBe(true);
     expect(
       MODEL_PROTOCOL_ROUTES.every(
-        ({ requestBody, responseBody }) =>
-          Object.isFrozen(requestBody) && Object.isFrozen(responseBody),
+        (route) =>
+          (!("requestBody" in route) || Object.isFrozen(route.requestBody)) &&
+          (!("responseBody" in route) || Object.isFrozen(route.responseBody)),
       ),
     ).toBe(true);
   });
@@ -37,5 +39,41 @@ describe("model protocol routes", () => {
           Object.isFrozen(expectation),
       ),
     ).toBe(true);
+  });
+
+  it("keeps the Codex TUI response independent of its runtime prompt", () => {
+    const route = MODEL_PROTOCOL_ROUTES[0];
+    expect(route).toMatchObject({
+      routeId: "codex-tui-responses",
+      headers: { "content-type": "application/json" },
+    });
+    expect("requestBody" in route).toBe(false);
+    const frames = route.responseBodyText.split("\n\n").filter(Boolean);
+    const events = frames.map((frame) => {
+      const [eventLine, dataLine] = frame.split("\n");
+      const event = JSON.parse(dataLine!.slice(6)) as Record<string, unknown>;
+      expect(eventLine).toBe(`event: ${String(event.type)}`);
+      return event;
+    });
+    expect(events.map(({ type }) => type)).toEqual([
+      "response.created",
+      "response.output_item.done",
+      "response.completed",
+    ]);
+    expect(events[1]).toMatchObject({
+      item: {
+        content: [{ type: "output_text", text: "AGENTSCOPE_PTY_COMPLETE" }],
+      },
+    });
+    expect(route.responseBodyText).not.toContain("[DONE]");
+    const expectation = createMockServerInitialization()[0] as {
+      httpRequest: Record<string, unknown>;
+      httpResponse: { headers: Record<string, readonly string[]> };
+    };
+    expect(expectation.httpRequest).not.toHaveProperty("body");
+    expect(expectation.httpRequest).not.toHaveProperty("authorization");
+    expect(expectation.httpResponse.headers["content-type"]).toEqual([
+      "text/event-stream",
+    ]);
   });
 });

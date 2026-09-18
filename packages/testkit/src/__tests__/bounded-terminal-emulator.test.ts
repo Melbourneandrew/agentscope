@@ -10,6 +10,8 @@ import {
 const encoder = new TextEncoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+// These cases share one bounded emulator fixture surface across semantic states.
+// eslint-disable-next-line max-lines-per-function
 describe("bounded semantic terminal emulator", () => {
   it("derives readiness across fragmented ANSI and resize operations", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
@@ -45,6 +47,172 @@ describe("bounded semantic terminal emulator", () => {
     expect(snapshot.cursorVisible).toBe(true);
     expect(snapshot.printableCellCount).toBeGreaterThan(0);
     expect(snapshot.nonEmptyLineCount).toBeGreaterThan(0);
+  });
+
+  it("retains same-write completion after later output leaves the recent window", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumRecentCodePoints: 32,
+      },
+    );
+
+    terminal.write(bytes(`AGENTSCOPE_PTY_COMPLETE\r\n${"x".repeat(64)}`));
+
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
+  it("recognizes fragmented completion without accepting a near marker", () => {
+    const near = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    near.write(bytes("AGENTSCOPE_PTY_COMPLET"));
+    near.write(bytes("X"));
+    expect(near.end().semanticState).toBe("active");
+
+    const fragmented = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    fragmented.write(bytes("AGENTSCOPE_PTY_COM"));
+    fragmented.write(bytes("PLETE"));
+    expect(fragmented.end().semanticState).toBe("completed");
+  });
+
+  it.each([
+    [
+      "readiness then completion",
+      "AGENTSCOPE_PTY_READY\r\nAGENTSCOPE_PTY_COMPLETE",
+    ],
+    [
+      "completion then readiness",
+      "AGENTSCOPE_PTY_COMPLETE\r\nAGENTSCOPE_PTY_READY",
+    ],
+  ])("latches independent semantic markers for %s", (_label, output) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(output));
+
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
+  it("derives selected post-completion readiness from styled text", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "styled-text-after-completion",
+        text: "›",
+        bold: true,
+        dim: false,
+      },
+    );
+
+    terminal.write(bytes("\u001b[1m›\u001b[0m "));
+    expect(terminal.readinessObserved()).toBe(false);
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n\u001b[2m›\u001b[0m "));
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.readinessObserved()).toBe(false);
+
+    terminal.write(bytes("\u001b[1"));
+    terminal.write(bytes("m›\u001b[22m "));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+
+  it("accepts only the exact per-run challenge marker", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+
+    terminal.write(bytes("AGENTSCOPE_PTY_READY"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`:${"b".repeat(64)}`));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\r\nAGENTSCOPE_PTY_READY:${challenge}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+
+  it("does not mistake mismatched styled text for post-completion readiness", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "styled-text-after-completion",
+        text: "›",
+        bold: true,
+        dim: false,
+      },
+    );
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
+    terminal.write(
+      bytes("\u001b[2m›\u001b[1m›\u001b[22m \u001b[1mtext\u001b[0m›"),
+    );
+
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+
+  it("retains a later credential prompt after it leaves the recent window", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumRecentCodePoints: 32,
+      },
+    );
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\r\n"));
+    terminal.write(bytes(`Password: ${"x".repeat(64)}`));
+
+    expect(terminal.end().semanticState).toBe("credential-prompt");
+  });
+
+  it("accepts the exact bounded terminal controls emitted by the pinned Codex TUI", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    terminal.write(
+      bytes(
+        [
+          "\u001b[6n",
+          "\u001b]10;?\u001b\\",
+          "\u001b]11;?\u001b\\",
+          "\u001b[?u",
+          "\u001b[c",
+          "\u001b[?2004h",
+          "\u001b[?1004h",
+          "\u001b[?7l",
+          "\u001b[>7u",
+          "\u001b[?2026h",
+          "\u001b7",
+          "\u001b(B",
+          "\u001bD",
+          "\u001bE",
+          "\u001bM",
+          "\u001b=",
+          "\u001b>",
+          "\u001b[12G",
+          "\u001b[1J",
+          "\u001b[3J",
+          "\u001b[1K",
+          "\u001b[r",
+          "\u001b8",
+          "\u001b[0 q",
+          "\u001b[?2026l",
+          "AGENTSCOPE_PTY_COMPLETE",
+          "\u001b[<u",
+          "\u001b[?7h",
+          "\u001b[?1004l",
+          "\u001b[?2004l",
+        ].join(""),
+      ),
+    );
+
+    expect(terminal.end()).toMatchObject({
+      malformedControlCount: 0,
+      semanticState: "completed",
+      unsupportedControlCount: 0,
+    });
   });
 
   it("classifies credential prompts without retaining their bytes", () => {
@@ -213,22 +381,27 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
   });
 
   it("processes the exact advertised byte ceiling and rejects overflow", async () => {
-    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
-    const payload = bytes(
-      "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes),
+    expect(defaultPtyTerminalEmulatorLimits.maximumOutputBytes).toBe(1_048_576);
+    const exactBoundaryLimits = {
+      ...defaultPtyTerminalEmulatorLimits,
+      maximumOutputBytes: 32_768,
+    };
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 80, rows: 24 },
+      exactBoundaryLimits,
     );
+    const payload = bytes("x".repeat(exactBoundaryLimits.maximumOutputBytes));
     terminal.write(payload);
     const snapshot = terminal.end();
-    expect(snapshot.outputBytes).toBe(
-      defaultPtyTerminalEmulatorLimits.maximumOutputBytes,
-    );
+    expect(snapshot.outputBytes).toBe(exactBoundaryLimits.maximumOutputBytes);
 
-    const overflow = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const overflow = new BoundedTerminalEmulator(
+      { columns: 80, rows: 24 },
+      exactBoundaryLimits,
+    );
     expect(() => {
       overflow.write(
-        bytes(
-          "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes + 1),
-        ),
+        bytes("x".repeat(exactBoundaryLimits.maximumOutputBytes + 1)),
       );
     }).toThrowError(
       new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),

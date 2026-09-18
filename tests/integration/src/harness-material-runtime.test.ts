@@ -69,6 +69,7 @@ describe("authenticated harness material runtime", () => {
           kind: "npm",
           platformIdentity: `sha256-${"9".repeat(64)}`,
           verifierImage: `node@sha256:${"f".repeat(64)}`,
+          verifierNpmVersion: "11.19.1",
           registry: "https://registry.npmjs.org/",
           packages: [],
           provenance: {

@@ -18,12 +18,14 @@ import {
 
 const writeTarText = (header, offset, length, value) => {
   const encoded = Buffer.from(value, "utf8");
-  if (encoded.byteLength > length) throw fixedError("integration.images.build");
+  if (encoded.byteLength > length)
+    throw fixedError("integration.images.build.context-header");
   encoded.copy(header, offset);
 };
 const writeTarOctal = (header, offset, length, value) => {
   const encoded = value.toString(8).padStart(length - 1, "0");
-  if (encoded.length > length - 1) throw fixedError("integration.images.build");
+  if (encoded.length > length - 1)
+    throw fixedError("integration.images.build.context-header");
   writeTarText(header, offset, length, `${encoded}\0`);
 };
 const tarPath = (relative) => {
@@ -39,7 +41,7 @@ const tarPath = (relative) => {
       return { name, prefix };
     index = relative.lastIndexOf("/", index - 1);
   }
-  throw fixedError("integration.images.build");
+  throw fixedError("integration.images.build.context-path");
 };
 const tarHeader = (relative, status, directory) => {
   const header = Buffer.alloc(512);
@@ -71,6 +73,13 @@ const sameFileIdentity = (left, right) =>
   left.size === right.size &&
   left.mtimeNs === right.mtimeNs &&
   left.ctimeNs === right.ctimeNs;
+const buildContextPathClass = (path) => {
+  if (path.includes("/harness-material/")) return "harness-material";
+  if (path.includes("/prepared/candidates/")) return "candidate";
+  if (path.includes("/testkit/")) return "testkit";
+  if (path.includes("/runtime/")) return "runtime";
+  return "controller";
+};
 const assertBuildContextActive = (deadline, signal) => {
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
   if (performance.now() > deadline)
@@ -83,20 +92,22 @@ const readBuildContextFile = (path, expected, state) => {
     const current = fstatSync(descriptor, { bigint: true });
     const size = Number(current.size);
     const padding = (512 - (size % 512)) % 512;
-    if (
-      !current.isFile() ||
-      !sameFileIdentity(expected, current) ||
-      current.size > BigInt(state.maximumBytes()) ||
-      state.total() + 512 + size + padding + 1024 > state.maximumBytes()
-    )
-      throw fixedError("integration.images.build");
+    if (!current.isFile())
+      throw fixedError("integration.images.build.context-file-type");
+    if (!sameFileIdentity(expected, current))
+      throw fixedError("integration.images.build.context-file-identity");
+    if (current.size > BigInt(state.maximumBytes()))
+      throw fixedError(
+        `integration.images.build.context-file-size-${buildContextPathClass(path)}-${state.maximumBytes() === defaultMaximumBuildContextBytes ? "default" : "harness"}`,
+      );
+    if (state.total() + 512 + size + padding + 1024 > state.maximumBytes())
+      throw fixedError("integration.images.build.context-aggregate-size");
     const body = readFileSync(descriptor);
     state.assertActive();
-    if (
-      body.byteLength !== size ||
-      !sameFileIdentity(current, fstatSync(descriptor, { bigint: true }))
-    )
-      throw fixedError("integration.images.build");
+    if (body.byteLength !== size)
+      throw fixedError("integration.images.build.context-file-length");
+    if (!sameFileIdentity(current, fstatSync(descriptor, { bigint: true })))
+      throw fixedError("integration.images.build.context-file-race");
     return body;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
@@ -117,7 +128,7 @@ const visitBuildContextDirectory = (
       lstatSync(directoryPath, { bigint: true }),
     )
   )
-    throw fixedError("integration.images.build");
+    throw fixedError("integration.images.build.context-directory");
   const entries = readdirSync(directoryPath, { withFileTypes: true }).sort(
     (left, right) =>
       left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
@@ -126,7 +137,8 @@ const visitBuildContextDirectory = (
     state.observeEntry();
     const childPath = `${directoryPath}/${entry.name}`;
     const status = lstatSync(childPath, { bigint: true });
-    if (status.isSymbolicLink()) throw fixedError("integration.images.build");
+    if (status.isSymbolicLink())
+      throw fixedError("integration.images.build.context-symlink");
     state.afterEntry();
     const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
     const headerStatus = {
@@ -148,11 +160,11 @@ const visitBuildContextDirectory = (
             lstatSync(directoryPath, { bigint: true }),
           )
         )
-          throw fixedError("integration.images.build");
+          throw fixedError("integration.images.build.context-directory");
         state.append(tarHeader(`${relative}/`, headerStatus, true));
         visitBuildContextDirectory(descriptor, childPath, relative, state);
         if (!sameFileIdentity(current, fstatSync(descriptor, { bigint: true })))
-          throw fixedError("integration.images.build");
+          throw fixedError("integration.images.build.context-directory");
       } finally {
         closeSync(descriptor);
       }
@@ -162,14 +174,14 @@ const visitBuildContextDirectory = (
       state.append(body);
       const padding = (512 - (body.byteLength % 512)) % 512;
       if (padding > 0) state.append(Buffer.alloc(padding));
-    } else throw fixedError("integration.images.build");
+    } else throw fixedError("integration.images.build.context-special");
     if (
       !sameFileIdentity(
         directoryIdentity,
         lstatSync(directoryPath, { bigint: true }),
       )
     )
-      throw fixedError("integration.images.build");
+      throw fixedError("integration.images.build.context-directory");
   }
 };
 const boundedBuildContext = (
@@ -186,19 +198,20 @@ const boundedBuildContext = (
     maximumBytes < 1 ||
     maximumBytes > maximumHarnessBuildContextBytes
   )
-    throw fixedError("integration.images.build");
+    throw fixedError("integration.images.build.context-policy");
   const assertActive = () => assertBuildContextActive(deadline, signal);
   assertActive();
   const rootStatus = lstatSync(root, { bigint: true });
   if (!rootStatus.isDirectory() || rootStatus.isSymbolicLink())
-    throw fixedError("integration.images.build");
+    throw fixedError("integration.images.build.context-root");
   const chunks = [];
   let total = 0;
   let entries = 0;
   const append = (chunk) => {
     assertActive();
     total += chunk.byteLength;
-    if (total > maximumBytes) throw fixedError("integration.images.build");
+    if (total > maximumBytes)
+      throw fixedError("integration.images.build.context-size");
     chunks.push(chunk);
   };
   const state = {
@@ -211,7 +224,8 @@ const boundedBuildContext = (
     observeEntry: () => {
       assertActive();
       entries += 1;
-      if (entries > 8_192) throw fixedError("integration.images.build");
+      if (entries > 8_192)
+        throw fixedError("integration.images.build.context-entries");
     },
     maximumBytes: () => maximumBytes,
     total: () => total,
@@ -223,13 +237,13 @@ const boundedBuildContext = (
   try {
     const openedRoot = fstatSync(rootDescriptor, { bigint: true });
     if (!openedRoot.isDirectory() || !sameFileIdentity(rootStatus, openedRoot))
-      throw fixedError("integration.images.build");
+      throw fixedError("integration.images.build.context-root");
     visitBuildContextDirectory(rootDescriptor, root, "", state);
     assertActive();
     if (
       !sameFileIdentity(openedRoot, fstatSync(rootDescriptor, { bigint: true }))
     )
-      throw fixedError("integration.images.build");
+      throw fixedError("integration.images.build.context-root");
     append(Buffer.alloc(1024));
   } finally {
     closeSync(rootDescriptor);
@@ -247,6 +261,8 @@ export const createBoundedBuildContext = (root, options) => {
       )
     )
       throw error;
-    throw fixedError("integration.images.build");
+    if (/^integration\.images\.build\.context-[a-z-]+$/u.test(error?.message))
+      throw error;
+    throw fixedError("integration.images.build.context-unknown");
   }
 };

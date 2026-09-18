@@ -20,6 +20,7 @@ const fixture = () => ({
       kind: "npm" as const,
       platformIdentity: digest("9"),
       verifierImage: `node@sha256:${"a".repeat(64)}`,
+      verifierNpmVersion: "11.19.1",
       registry: "https://registry.npmjs.org/" as const,
       packages: [
         {
@@ -88,7 +89,14 @@ const fixture = () => ({
     tags: ["actual"],
     destinations: ["local"],
     fixtureAdapter: { path: "fixtures/a.mjs", sha256: "e".repeat(64) },
+    scenarioOracle: { path: "fixtures/oracle.mjs", sha256: "d".repeat(64) },
     scenarioProcess: { path: "fixtures/b.mjs", sha256: "f".repeat(64) },
+    runtimeArtifacts: [],
+    terminalInputBase64: "AA==",
+    postCompletionInputByteLength: 0,
+    postCompletionControl: "none" as const,
+    waitForSemanticCompletionBeforeTerminalAction: false,
+    nativeReadiness: null,
     resourceClass: "small" as const,
     shardWeight: 1,
   },

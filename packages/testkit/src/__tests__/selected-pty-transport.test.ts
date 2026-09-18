@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it } from "vitest";
 
+import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
 import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.js";
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
@@ -16,13 +17,15 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
-
+// eslint-disable-next-line @typescript-eslint/unbound-method -- hostile-prototype test invokes this exact method with Reflect.apply
+const originalTerminalSnapshot = BoundedTerminalEmulator.prototype.snapshot;
 const request = (
   overrides: Partial<HeadlessExecutionRequest> = {},
 ): SelectedPtyExecutionRequest => {
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" },
+    readiness: { kind: "semantic-marker" },
     interaction: {
       trigger: "semantic-ready",
       actions: [
@@ -81,6 +84,257 @@ describe("selected PTY transport", () => {
       "NoNewPrivs:\t1",
       "",
     ].join("\n"),
+  });
+
+  // eslint-disable-next-line max-lines-per-function -- one challenge-gated checkpoint lifecycle
+  it("rejects a fixed readiness marker before the per-run challenge", async () => {
+    const challenge = "a".repeat(64);
+    const challengeInput = new TextEncoder().encode(`${challenge}\n\u0004`);
+    const now = performance.now();
+    const challengeRequest: SelectedPtyExecutionRequest = {
+      ...request({
+        stdin: challengeInput,
+        monotonicStartupDeadlineMs: now + 500,
+        monotonicExecutionDeadlineMs: now + 1_000,
+        monotonicShutdownDeadlineMs: now + 2_000,
+      }),
+      readiness: { kind: "challenge-marker", challenge },
+      interaction: {
+        trigger: "immediate",
+        actions: [
+          {
+            action: "input",
+            byteLength: 65,
+            inputSha256: createHash("sha256")
+              .update(challengeInput.subarray(0, 65))
+              .digest("hex"),
+          },
+          {
+            action: "checkpoint-process-topology",
+            topology: "root-with-contained-process-set",
+          },
+          { action: "wait-for-semantic-completion" },
+          {
+            action: "input",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(challengeInput.subarray(65))
+              .digest("hex"),
+          },
+        ],
+      },
+    };
+    const prompt = new TextEncoder().encode(
+      "Reply with one short confirmation and do not use tools.\n",
+    );
+    const promptInput = new Uint8Array(
+      Buffer.concat([
+        Buffer.from(challengeInput.subarray(0, 65)),
+        Buffer.from(prompt),
+        Buffer.from([4]),
+      ]),
+    );
+    const promptAction = {
+      action: "input" as const,
+      byteLength: prompt.length,
+      inputSha256: createHash("sha256").update(prompt).digest("hex"),
+    };
+    const promptRequest: SelectedPtyExecutionRequest = {
+      ...challengeRequest,
+      process: { ...challengeRequest.process, stdin: promptInput },
+      interaction: {
+        trigger: "immediate",
+        actions: [
+          challengeRequest.interaction.actions[0]!,
+          challengeRequest.interaction.actions[1]!,
+          promptAction,
+          { action: "wait-for-semantic-completion" },
+          {
+            action: "input",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(promptInput.subarray(promptInput.length - 1))
+              .digest("hex"),
+          },
+        ],
+      },
+    };
+
+    await expect(
+      executeSelectedPtyTransportForTest(promptRequest, "clean"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: promptInput.length,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    for (const actions of [
+      [
+        challengeRequest.interaction.actions[0]!,
+        promptAction,
+        challengeRequest.interaction.actions[1]!,
+        { action: "wait-for-semantic-completion" as const },
+        promptRequest.interaction.actions[4]!,
+      ],
+      [
+        challengeRequest.interaction.actions[0]!,
+        challengeRequest.interaction.actions[1]!,
+        { action: "wait-for-semantic-completion" as const },
+        promptAction,
+        promptRequest.interaction.actions[4]!,
+      ],
+    ])
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...promptRequest,
+            interaction: { trigger: "immediate", actions },
+          },
+          "clean",
+        ),
+      ).rejects.toThrow("testkit.pty.request");
+
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "fixed-readiness-spoof",
+      ),
+    ).resolves.toMatchObject({
+      actions: [{ action: "input", byteLength: 65 }],
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "completion-before-readiness",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    for (const seed of ["checkpoint-missing-process"] as const)
+      await expect(
+        executeSelectedPtyTransportForTest(challengeRequest, seed),
+      ).resolves.toMatchObject({
+        actions: [{ action: "input", byteLength: 65 }],
+        inputBytesWritten: 65,
+        outcome: "input-incomplete",
+      });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-process-churn",
+      ),
+    ).resolves.toMatchObject({
+      actions: [{ action: "input", byteLength: 65 }],
+      inputBytesWritten: 65,
+      outcome: "transport-failed",
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-transient-extra-process",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-extra-process",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-owned-sidecar",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        challengeRequest,
+        "checkpoint-owned-descendant",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 66,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    for (const seed of [
+      "checkpoint-observer-delay",
+      "checkpoint-observer-delay-mismatch",
+    ] as const) {
+      const delayedAt = performance.now();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...challengeRequest,
+            process: {
+              ...challengeRequest.process,
+              monotonicStartupDeadlineMs: delayedAt + 50,
+              monotonicExecutionDeadlineMs: delayedAt + 100,
+              monotonicShutdownDeadlineMs: delayedAt + 500,
+            },
+          },
+          seed,
+        ),
+      ).resolves.toMatchObject({
+        actions: [{ action: "input", byteLength: 65 }],
+        cleanup: "clean",
+        inputBytesWritten: 65,
+        outcome: "transport-failed",
+        residualProcessCount: 0,
+      });
+    }
   });
 
   it("causally validates the selected immutable principal record", () => {
@@ -165,6 +419,25 @@ describe("selected PTY transport", () => {
     expect(JSON.stringify(receipt)).not.toContain("ready");
   });
 
+  it("admits a raw-mode TUI when no canonical EOF action is requested", async () => {
+    const base = request();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...base,
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [base.interaction.actions[0]!],
+        },
+      },
+      "mode-substitution",
+    );
+    expect(receipt).toMatchObject({
+      observedCanonicalMode: false,
+      outcome: "completed",
+      terminalInputJoined: true,
+    });
+  });
+
   it.each([
     ["geometry-substitution", "testkit.pty.geometry"],
     ["mode-substitution", "testkit.pty.geometry"],
@@ -196,7 +469,7 @@ describe("selected PTY transport", () => {
     },
   );
 
-  it("admits exact output as completion without a fabricated marker", async () => {
+  it("applies the immediate action before reading fast exact output", async () => {
     const output = Buffer.from("ready");
     const receipt = await executeSelectedPtyTransportForTest(
       {
@@ -209,7 +482,7 @@ describe("selected PTY transport", () => {
         interaction: { trigger: "immediate", actions: [{ action: "eof" }] },
         process: { ...request().process, stdin: new Uint8Array() },
       },
-      "active-terminal",
+      "immediate-output",
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
@@ -264,7 +537,14 @@ describe("selected PTY transport", () => {
     ["active-terminal", "testkit.pty.transport.semantic-missing-readiness"],
     ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
     ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
-    ["malformed-control", "testkit.pty.transport.semantic-malformed-control"],
+    [
+      "malformed-control",
+      "testkit.pty.transport.semantic-malformed-trailing-control",
+    ],
+    [
+      "unsupported-control",
+      "testkit.pty.transport.semantic-unsupported-extended-csi",
+    ],
   ] as const)(
     "rejects terminal semantic state %s as completion",
     async (seed, code) => {
@@ -287,7 +567,36 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("applies a readiness-gated resize before segmented input and EOF", async () => {
+  it("does not accept a completion marker while the preceding input is blocked", async () => {
+    expect(
+      await executeSelectedPtyTransportForTest(
+        {
+          ...request(),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [
+              {
+                action: "input",
+                byteLength: 4,
+                inputSha256:
+                  "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+              },
+              { action: "wait-for-semantic-completion" },
+              { action: "eof" },
+            ],
+          },
+        },
+        "blocked-input-completion",
+      ),
+    ).toMatchObject({
+      actions: [],
+      inputBytesWritten: 0,
+      outcome: "input-incomplete",
+      terminalInputJoined: false,
+    });
+  });
+
+  it("waits for terminal output between readiness-gated input segments", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         ...request(),
@@ -311,7 +620,7 @@ describe("selected PTY transport", () => {
           ],
         },
       },
-      "clean",
+      "paced-input",
     );
     expect(receipt).toMatchObject({
       observedGeometry: { columns: 80, rows: 24 },
@@ -324,6 +633,126 @@ describe("selected PTY transport", () => {
       ],
     });
   });
+
+  it("waits for semantic completion before applying a terminal action", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request(),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 4,
+              inputSha256:
+                "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "eof" },
+          ],
+        },
+      },
+      "post-input-completion",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input" },
+        { action: "wait-for-semantic-completion" },
+        { action: "eof" },
+      ],
+      terminalInputJoined: true,
+    });
+  });
+
+  it("admits one Ctrl-D after independently observing completion then readiness", async () => {
+    const ctrlD = new Uint8Array([4]);
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: ctrlD }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            { action: "wait-for-semantic-completion" },
+            {
+              action: "input",
+              byteLength: 1,
+              inputSha256: createHash("sha256").update(ctrlD).digest("hex"),
+            },
+          ],
+        },
+      },
+      "completion-before-readiness",
+    );
+
+    expect(receipt).toMatchObject({
+      actions: [
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 1,
+      outcome: "completed",
+      readinessObserved: true,
+      terminalInputJoined: true,
+    });
+  });
+
+  it.each([
+    ["readinessObserved", "missing-ready"],
+    ["completionObserved", "missing-completion"],
+    ["snapshot", "missing-completion"],
+  ] as const)(
+    "does not trust caller-substituted emulator %s marker authority",
+    async (method, seed) => {
+      const descriptor = Object.getOwnPropertyDescriptor(
+        BoundedTerminalEmulator.prototype,
+        method,
+      )!;
+      const replacement =
+        method === "snapshot"
+          ? function (this: BoundedTerminalEmulator) {
+              const observed = Reflect.apply(
+                originalTerminalSnapshot,
+                this,
+                [],
+              );
+              return { ...observed, semanticState: "completed" };
+            }
+          : () => true;
+      Object.defineProperty(BoundedTerminalEmulator.prototype, method, {
+        ...descriptor,
+        value: replacement,
+      });
+      try {
+        const selected =
+          method === "readinessObserved"
+            ? request()
+            : {
+                ...request({ stdin: new Uint8Array() }),
+                interaction: {
+                  trigger: "semantic-ready" as const,
+                  actions: [
+                    { action: "wait-for-semantic-completion" as const },
+                  ],
+                },
+              };
+        await expect(
+          executeSelectedPtyTransportForTest(selected, seed),
+        ).rejects.toMatchObject({
+          code:
+            method === "readinessObserved"
+              ? "testkit.pty.transport.semantic-missing-readiness"
+              : "testkit.pty.transport.semantic-incomplete",
+        });
+      } finally {
+        Object.defineProperty(
+          BoundedTerminalEmulator.prototype,
+          method,
+          descriptor,
+        );
+      }
+    },
+  );
 
   it("does not dispatch the validated action plan through ambient array hooks", async () => {
     const now = performance.now();
@@ -410,6 +839,47 @@ describe("selected PTY transport", () => {
       actions: [{ action: "interrupt-byte", byte: 3 }],
     });
     expect(JSON.stringify(receipt)).not.toContain("stdin");
+  });
+
+  it("applies readiness-gated input before a fast completion burst", async () => {
+    const input = new Uint8Array([12]);
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({
+          stdin: input,
+          // This case proves ordering, not deadline expiry. Keep its absolute
+          // authority distinct from the deliberately short deadline cases so
+          // coverage instrumentation cannot turn scheduler delay into a
+          // different semantic test.
+          monotonicStartupDeadlineMs: now + 1_000,
+          monotonicExecutionDeadlineMs: now + 2_000,
+          monotonicShutdownDeadlineMs: now + 4_000,
+        }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 1,
+              inputSha256:
+                "ef6cbd2161eaea7943ce8693b9824d23d1793ffb1c0fca05b600d3899b44c977",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "interrupt-byte", byte: 3 },
+          ],
+        },
+      },
+      "readiness-burst",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input", byteLength: 1 },
+        { action: "wait-for-semantic-completion" },
+        { action: "interrupt-byte", byte: 3 },
+      ],
+    });
   });
 
   it("signals the authenticated selected root from the action plan", async () => {
@@ -653,6 +1123,20 @@ describe("selected PTY transport", () => {
         "clean",
       ),
     ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...valid,
+          readiness: {
+            kind: "styled-text-after-completion",
+            text: "two",
+            bold: true,
+            dim: false,
+          },
+        },
+        "clean",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.request" });
     await expect(
       executeSelectedPtyTransportForTest(
         {

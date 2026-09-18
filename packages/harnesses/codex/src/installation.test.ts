@@ -17,7 +17,7 @@ const decoder = new TextDecoder();
 
 const invocation = (
   agentscopeHome = "/opt/agentscope",
-  deadline = 2_000,
+  deadline = 5_000,
   platform: "posix" | "win32" = "posix",
 ): OwnedHarnessHookInvocation =>
   createOwnedHarnessHookInvocation({
@@ -60,13 +60,19 @@ describe("Codex vendor-mediated hook command", () => {
     expect(ownedInvocation.arguments).toEqual([]);
   });
 
-  it("rejects Windows launchers and deadlines outside the Codex cap", () => {
+  it("rejects Windows launchers and accepts every bounded Core deadline", () => {
     expect(() =>
-      encodeCodexPosixHookCommand(invocation("/opt/scope", 2_000, "win32")),
+      encodeCodexPosixHookCommand(invocation("/opt/scope", 5_000, "win32")),
     ).toThrow(CodexInstallationError);
+    expect(encodeCodexPosixHookCommand(invocation("/opt/scope", 50))).toMatch(
+      /d50'$/u,
+    );
+    expect(
+      encodeCodexPosixHookCommand(invocation("/opt/scope", 60_000)),
+    ).toMatch(/d60000'$/u);
     expect(() =>
-      encodeCodexPosixHookCommand(invocation("/opt/scope", 3_000)),
-    ).toThrow(CodexInstallationError);
+      encodeCodexPosixHookCommand(invocation("/opt/scope", 60_001)),
+    ).toThrow();
   });
 });
 
@@ -84,7 +90,7 @@ describe("Codex owned hook installation", () => {
               {
                 type: "command",
                 command: encodeCodexPosixHookCommand(ownedInvocation),
-                timeout: 3,
+                timeout: 7,
                 statusMessage: "Agentscope trace capture",
               },
             ],
@@ -96,7 +102,7 @@ describe("Codex owned hook installation", () => {
               {
                 type: "command",
                 command: encodeCodexPosixHookCommand(ownedInvocation),
-                timeout: 3,
+                timeout: 7,
                 statusMessage: "Agentscope trace capture",
               },
             ],
@@ -108,7 +114,7 @@ describe("Codex owned hook installation", () => {
               {
                 type: "command",
                 command: encodeCodexPosixHookCommand(ownedInvocation),
-                timeout: 3,
+                timeout: 7,
                 statusMessage: "Agentscope trace capture",
               },
             ],
@@ -123,6 +129,30 @@ describe("Codex owned hook installation", () => {
       kind: "remove",
     });
   });
+
+  it.each([
+    [50, 3],
+    [1_000, 3],
+    [1_001, 4],
+    [5_000, 7],
+    [60_000, 62],
+  ])(
+    "derives the exact enclosing timeout for %i milliseconds",
+    (durationMilliseconds, timeoutSeconds) => {
+      const installed = JSON.parse(
+        replacementText(
+          decide(
+            "install",
+            invocation("/opt/agentscope", durationMilliseconds),
+            null,
+          ),
+        ),
+      ) as {
+        hooks: { Stop: Array<{ hooks: Array<{ timeout: number }> }> };
+      };
+      expect(installed.hooks.Stop[0]?.hooks[0]?.timeout).toBe(timeoutSeconds);
+    },
+  );
 });
 
 describe("Codex owned hook migration and removal", () => {
@@ -176,8 +206,10 @@ describe("Codex owned hook migration and removal", () => {
 
   it("migrates stale owned launchers only within the authenticated owned directory", () => {
     const oldInvocation = invocation("/opt/agentscope", 1_500);
-    const currentInvocation = invocation("/opt/agentscope", 2_000);
-    const stale = replacementText(decide("install", oldInvocation, null));
+    const currentInvocation = invocation("/opt/agentscope", 5_000);
+    const stale = replacementText(
+      decide("install", oldInvocation, null),
+    ).replaceAll('"timeout":4', '"timeout":3');
     const migrated = replacementText(
       decide("migrate", currentInvocation, stale),
     );
@@ -204,9 +236,13 @@ describe("Codex owned hook migration and removal", () => {
     expect(decide("uninstall", ownedInvocation, "not-json")).toEqual({
       kind: "unchanged",
     });
-    expect(decide("install", invocation("/opt/scope", 3_000), null)).toEqual({
-      kind: "unsupported",
-    });
+    const outOfBoundsInvocation = {
+      ...ownedInvocation,
+      hookDeadlineMilliseconds: 60_001,
+    } as OwnedHarnessHookInvocation;
+    expect(() => decide("install", outOfBoundsInvocation, null)).toThrow(
+      CodexInstallationError,
+    );
     expect(
       decide("install", ownedInvocation, "vendor-observability-hook"),
     ).toEqual({
@@ -234,6 +270,27 @@ describe("Codex owned hook migration and removal", () => {
     expect(() => createCodexInstallationPlanner("install", other)).toThrow(
       CodexInstallationError,
     );
+  });
+});
+
+describe("Codex owned hook authority recognition", () => {
+  it("rejects deadline and timeout lookalikes as foreign hook authority", () => {
+    const ownedInvocation = invocation();
+    const installed = replacementText(decide("install", ownedInvocation, null));
+    for (const [lookalike, expectedInstallKind] of [
+      [installed.replaceAll('"timeout":7', '"timeout":7.5'), "unsupported"],
+      [installed.replaceAll('"timeout":7', '"timeout":3'), "replace-overlap"],
+      [installed.replaceAll("-d5000", "-d49"), "replace-overlap"],
+      [installed.replaceAll("-d5000", "-d60001"), "replace-overlap"],
+      [installed.replaceAll("-d5000", "-d05000"), "replace-overlap"],
+    ] as const) {
+      expect(decide("uninstall", ownedInvocation, lookalike)).toEqual({
+        kind: "unchanged",
+      });
+      expect(decide("install", ownedInvocation, lookalike).kind).toBe(
+        expectedInstallKind,
+      );
+    }
   });
 });
 
