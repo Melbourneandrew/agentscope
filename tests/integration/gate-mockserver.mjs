@@ -99,10 +99,11 @@ const modelServer = createHttpServer(async (request, response) => {
   try {
     if (
       connection === undefined ||
-      (!firstRequest && connection.admission !== "admitted") ||
-      (!firstRequest && state !== "admitted" && state !== "draining")
+      (!firstRequest && connection.admission !== "socket-admitted") ||
+      (!firstRequest && state !== "admitted")
     )
       throw new Error("integration.mockserver.state");
+    if (!firstRequest) connection.admission = "admitted";
     connection.parserOutcome = "parsing";
     if (firstRequest) {
       state = "parsing-first";
@@ -172,26 +173,14 @@ modelServer.on("clientError", (_error, socket) => {
   socket.destroy();
 });
 
-const admitSocket = (socket) => {
-  if (
-    state === "parsing-first" ||
-    (state === "armed" && connections.size > 0)
-  ) {
-    socket.destroy();
-    enforceCutoff();
-    return;
-  }
-  if (bootNow() >= cutoff || (state !== "armed" && state !== "admitted")) {
-    socket.destroy();
-    return;
-  }
+const registerSocket = (socket) => {
   const generation = ++connectionGeneration;
   const connection = {
-    admission: state === "admitted" ? "admitted" : "held",
+    admission: "held",
     closed: false,
     eof: false,
     generation,
-    parserOutcome: "none",
+    parserOutcome: "not-parsed",
     socket,
   };
   connections.set(generation, connection);
@@ -205,15 +194,45 @@ const admitSocket = (socket) => {
     mutationGeneration += 1;
   });
   mutationGeneration += 1;
+  return connection;
+};
+const rejectSocket = (connection) => {
+  connection.admission = "rejected";
+  connection.socket.destroy();
+  mutationGeneration += 1;
+};
+const admitSocket = (connection) => {
+  const { socket } = connection;
+  if (
+    state === "parsing-first" ||
+    (state === "armed" &&
+      [...connections.values()].some(
+        (candidate) =>
+          candidate !== connection && candidate.admission !== "rejected",
+      ))
+  ) {
+    rejectSocket(connection);
+    enforceCutoff();
+    return;
+  }
+  if (bootNow() >= cutoff || (state !== "armed" && state !== "admitted")) {
+    rejectSocket(connection);
+    return;
+  }
+  connection.admission = state === "admitted" ? "socket-admitted" : "held";
+  mutationGeneration += 1;
   modelServer.emit("connection", socket);
   socket.resume();
 };
 const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
+  const connection = registerSocket(socket);
   if (state === "pending" || state === "unconfigured") {
     if (initialSocket !== undefined) {
+      const initialConnection = connectionBySocket.get(initialSocket);
+      if (initialConnection !== undefined) rejectSocket(initialConnection);
       initialSocket.destroy();
       initialSocket = undefined;
-      socket.destroy();
+      rejectSocket(connection);
       state = "denied";
       mutationGeneration += 1;
       closeTransportAdmission();
@@ -222,7 +241,7 @@ const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
     initialSocket = socket;
     return;
   }
-  admitSocket(socket);
+  admitSocket(connection);
 });
 const closeTransportAdmission = () => {
   if (transportServer.listening) transportServer.close(() => undefined);
@@ -233,8 +252,19 @@ const enforceCutoff = () => {
     initialSocket?.destroy();
     initialSocket = undefined;
     for (const { socket } of connections.values()) socket.destroy();
-  } else if (state === "admitted") state = "draining";
-  else return;
+  } else if (state === "admitted") {
+    state = "draining";
+    for (const connection of connections.values())
+      if (connection.admission === "socket-admitted") rejectSocket(connection);
+  } else return;
+  for (const connection of connections.values())
+    if (
+      connection.admission !== "admitted" &&
+      connection.admission !== "rejected"
+    ) {
+      connection.admission = "canceled";
+      connection.socket.destroy();
+    }
   mutationGeneration += 1;
   closeTransportAdmission();
 };
@@ -303,7 +333,11 @@ const arm = async (request, response) => {
   mutationGeneration += 1;
   const socket = initialSocket;
   initialSocket = undefined;
-  if (socket !== undefined) admitSocket(socket);
+  if (socket !== undefined) {
+    const connection = connectionBySocket.get(socket);
+    if (connection === undefined) throw new Error("arm");
+    admitSocket(connection);
+  }
   json(response, 200, { runId, state });
 };
 const release = async (request, response) => {
@@ -346,6 +380,7 @@ const seal = async (request, response) => {
     sessionStartSpanSha256,
     state: "draining",
   });
+  response.once("finish", () => selectedControlSocket?.destroy());
   json(response, 200, { ledger, receipt: terminalReceipt });
 };
 const deny = async (request, response) => {
@@ -373,6 +408,7 @@ const deny = async (request, response) => {
     sessionStartSpanSha256: sessionStartSpanSha256 ?? null,
     state,
   });
+  response.once("finish", () => selectedControlSocket?.destroy());
   json(response, 200, { ledger, receipt: terminalReceipt });
 };
 const authorizedRoute = async (request, response, pathname) => {

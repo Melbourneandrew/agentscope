@@ -743,6 +743,10 @@ const driver = () => {
       calls.push("mockserver");
       return Promise.resolve();
     }),
+    joinMockServer: vi.fn(() => {
+      calls.push("mockserver-join");
+      return Promise.resolve();
+    }),
     runScenario,
     recordEvidence,
     removeContainer,
@@ -824,6 +828,7 @@ describe("scenario isolation", () => {
       "retrieval",
       "mockserver",
       "scenario",
+      "mockserver-join",
       "container:agentscope-int-0123456789abcdef-scenario",
       "container:agentscope-int-0123456789abcdef-collector",
       "container:agentscope-int-0123456789abcdef-retrieval",

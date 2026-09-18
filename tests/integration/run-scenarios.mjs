@@ -736,6 +736,8 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 
 const fixtureResults = new Map();
 const scenarioContainerIdentities = new Map();
+const mockServerContainerIdentities = new Map();
+const mockServerJoinDeadlines = new Map();
 const scenarioOutcomes = new Map();
 const observedCertificationRunIds = new Set();
 const observeSubstrateCertificationPredicate = (runId, predicate) => {
@@ -1440,7 +1442,7 @@ const startMockServer = async (plan, signal) => {
     signal,
     { mutationCapable: true },
   );
-  await assertContainer(
+  const containerId = await assertContainer(
     plan,
     plan.mockServerName,
     ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
@@ -1449,6 +1451,60 @@ const startMockServer = async (plan, signal) => {
   await dockerWithSignal(["start", plan.mockServerName], signal, {
     mutationCapable: true,
   });
+  mockServerContainerIdentities.set(plan.runId, containerId);
+};
+// eslint-disable-next-line complexity -- exact closed container terminal witness
+const joinMockServer = async (plan, signal) => {
+  if (plan.scenarioId !== "codex-tui-trace-smoke") return;
+  const containerId = mockServerContainerIdentities.get(plan.runId);
+  const deadline = mockServerJoinDeadlines.get(plan.runId);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "") || !Number.isFinite(deadline))
+    throw new Error("integration.isolation.mockserver-terminal");
+  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+  if (remaining <= 0)
+    throw new Error("integration.isolation.mockserver-terminal");
+  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+  const waited = await dockerWithSignal(
+    ["container", "wait", containerId],
+    joinSignal,
+    { terminal: true },
+  );
+  const inspected = await dockerWithSignal(
+    ["container", "inspect", containerId],
+    joinSignal,
+    { terminal: true },
+  );
+  let records;
+  try {
+    records = JSON.parse(inspected.stdout);
+  } catch {
+    throw new Error("integration.isolation.mockserver-terminal");
+  }
+  const container =
+    Array.isArray(records) && records.length === 1 ? records[0] : undefined;
+  const state = container?.State;
+  const labels = container?.Config?.Labels;
+  if (
+    waited.stdout !== "0\n" ||
+    container?.Id !== containerId ||
+    container?.Name !== `/${plan.mockServerName}` ||
+    labels?.["com.agentscope.integration"] !== "true" ||
+    labels?.["com.agentscope.integration.run"] !== plan.runId ||
+    state?.Status !== "exited" ||
+    state?.Running !== false ||
+    state?.Paused !== false ||
+    state?.Restarting !== false ||
+    state?.OOMKilled !== false ||
+    state?.Dead !== false ||
+    state?.Pid !== 0 ||
+    state?.ExitCode !== 0 ||
+    state?.Error !== "" ||
+    typeof state?.FinishedAt !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(
+      state.FinishedAt,
+    )
+  )
+    throw new Error("integration.isolation.mockserver-terminal");
 };
 const createScenarioContainer = async (
   plan,
@@ -1786,6 +1842,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
     throw new Error("integration.isolation.headless-authority");
   const outerMonotonicDeadline =
     linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
+  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline);
   const immutableCandidate = await createImmutableCandidateHandoff(
     plan,
     signal,
@@ -2221,6 +2278,7 @@ const createDriver = (plan) => {
     startCollector,
     startRetrieval,
     startMockServer,
+    joinMockServer,
     runScenario: (selectedPlan, signal) =>
       runScenario(selectedPlan, signal, scenarioDeadline),
     recordEvidence,
