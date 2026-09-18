@@ -99,11 +99,10 @@ const modelServer = createHttpServer(async (request, response) => {
   try {
     if (
       connection === undefined ||
-      (!firstRequest && connection.admission !== "socket-admitted") ||
-      (!firstRequest && state !== "admitted")
+      (!firstRequest && connection.admission !== "admitted") ||
+      (!firstRequest && state !== "admitted" && state !== "draining")
     )
       throw new Error("integration.mockserver.state");
-    if (!firstRequest) connection.admission = "admitted";
     connection.parserOutcome = "parsing";
     if (firstRequest) {
       state = "parsing-first";
@@ -181,6 +180,7 @@ const registerSocket = (socket) => {
     eof: false,
     generation,
     parserOutcome: "not-parsed",
+    requestReady: undefined,
     socket,
   };
   connections.set(generation, connection);
@@ -197,6 +197,10 @@ const registerSocket = (socket) => {
   return connection;
 };
 const rejectSocket = (connection) => {
+  if (connection.requestReady !== undefined) {
+    connection.socket.off("readable", connection.requestReady);
+    connection.requestReady = undefined;
+  }
   connection.admission = "rejected";
   connection.socket.destroy();
   mutationGeneration += 1;
@@ -219,10 +223,28 @@ const admitSocket = (connection) => {
     rejectSocket(connection);
     return;
   }
-  connection.admission = state === "admitted" ? "socket-admitted" : "held";
+  if (state === "armed") {
+    mutationGeneration += 1;
+    modelServer.emit("connection", socket);
+    socket.resume();
+    return;
+  }
+  connection.admission = "awaiting-request";
+  connection.requestReady = () => {
+    connection.requestReady = undefined;
+    if (state !== "admitted" || bootNow() >= cutoff) {
+      rejectSocket(connection);
+      if (state === "admitted") enforceCutoff();
+      return;
+    }
+    connection.admission = "admitted";
+    connection.parserOutcome = "framing";
+    mutationGeneration += 1;
+    modelServer.emit("connection", socket);
+    socket.resume();
+  };
+  socket.once("readable", connection.requestReady);
   mutationGeneration += 1;
-  modelServer.emit("connection", socket);
-  socket.resume();
 };
 const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
   const connection = registerSocket(socket);
@@ -255,7 +277,7 @@ const enforceCutoff = () => {
   } else if (state === "admitted") {
     state = "draining";
     for (const connection of connections.values())
-      if (connection.admission === "socket-admitted") rejectSocket(connection);
+      if (connection.admission === "awaiting-request") rejectSocket(connection);
   } else return;
   for (const connection of connections.values())
     if (

@@ -447,4 +447,109 @@ describe("gate-capable exact-build MockServer", () => {
       },
     });
   });
+
+  it("accounts for partial framing admitted before cutoff", async () => {
+    const { controlPort, modelPort } = await startGate();
+    await configure(controlPort, bootNow() + 700);
+    const first = await connect(modelPort);
+    const firstCompletion = collect(first);
+    await request(controlPort, "/arm", {
+      runId,
+      sessionStartSpanSha256: "b".repeat(64),
+    });
+    first.write(exactRequest());
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlPort,
+        "/requests",
+        {},
+        challenge,
+        "PUT",
+      );
+      if ((observed.value.ledger as unknown[]).length === 1) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    await request(controlPort, "/release", { runId });
+    await firstCompletion;
+    const partial = await connect(modelPort);
+    const partialCompletion = collect(partial);
+    partial.write("POST /v1/responses HTTP/1.1\r\nHost: model\r\n");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 720));
+    partial.end();
+    await partialCompletion;
+    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        receipt: {
+          connectionCount: 2,
+          connections: [
+            { admission: "admitted", parserOutcome: "accepted" },
+            {
+              admission: "admitted",
+              closed: true,
+              parserOutcome: "rejected",
+            },
+          ],
+          ledgerCount: 1,
+          parserFailures: 1,
+          state: "draining",
+        },
+      },
+    });
+  });
+
+  it("rejects a request-ready callback delayed past cutoff", async () => {
+    const { child, controlPort, modelPort } = await startGate();
+    await configure(controlPort, bootNow() + 1_200);
+    const first = await connect(modelPort);
+    const firstCompletion = collect(first);
+    await request(controlPort, "/arm", {
+      runId,
+      sessionStartSpanSha256: "b".repeat(64),
+    });
+    first.write(exactRequest());
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlPort,
+        "/requests",
+        {},
+        challenge,
+        "PUT",
+      );
+      if ((observed.value.ledger as unknown[]).length === 1) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    await request(controlPort, "/release", { runId });
+    await firstCompletion;
+    const delayed = await connect(modelPort);
+    const delayedCompletion = collect(delayed).then(
+      () => "closed",
+      (error: NodeJS.ErrnoException) => error.code ?? "error",
+    );
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+    expect(child.kill("SIGSTOP")).toBe(true);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    delayed.write("POST /v1/responses HTTP/1.1\r\n");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_220));
+    expect(child.kill("SIGCONT")).toBe(true);
+    expect(["closed", "ECONNRESET"]).toContain(await delayedCompletion);
+    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        receipt: {
+          connectionCount: 2,
+          connections: [
+            { admission: "admitted", parserOutcome: "accepted" },
+            {
+              admission: "rejected",
+              closed: true,
+              parserOutcome: "not-parsed",
+            },
+          ],
+          ledgerCount: 1,
+          state: "draining",
+        },
+      },
+    });
+  });
 });
