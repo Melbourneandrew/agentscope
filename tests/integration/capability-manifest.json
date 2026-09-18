@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-bd3a011bb564f3868b4467a0c15b4d82a61bd0852192fb96c2ba06474de29638",
+  "manifestIdentity": "sha256-21dfbced681d003dd9fc1af1ceb6d9ffb9ad376c9296ee4263cd65ea55230457",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -77,7 +77,7 @@
       "executionMode": "headless",
       "outputContract": "jsonl",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -151,7 +151,7 @@
       "executionMode": "interactive",
       "outputContract": "semantic-pty",
       "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": ["codex-tui-responses"],
       "tags": ["codex", "interactive", "pr"],
       "destinations": ["local-sqlite"],
@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "058ad59db3adedd799dd70167552a21da0778f9d37381fef12e2d19d0ca09d77"
+        "sha256": "474b527c98e05c1d03f4f9f22f9428b072652a9b6862107219705005032eae88"
       },
       "runtimeArtifacts": [
         {
@@ -174,7 +174,7 @@
             "path": "gate-mockserver.mjs"
           },
           "destination": "gate-mockserver.mjs",
-          "sha256": "d0a43ba8bd6d5cf5567b8a07bdb4d48a5ae81814e2bc4c0a4e68aaba1e7056fe"
+          "sha256": "58c7b2811dfca05b106437f19b3443167db9f84f6b7908ef0f44daffba600ef4"
         },
         {
           "source": {

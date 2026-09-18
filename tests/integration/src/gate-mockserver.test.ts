@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { Agent, request as httpRequest } from "node:http";
 import { createConnection, createServer, type Socket } from "node:net";
 import { resolve } from "node:path";
 
@@ -11,6 +12,7 @@ const runId = "gate-test";
 const responseText =
   'data: {"type":"response.completed","response":{"output":[]}}\n\n';
 const children = new Set<ChildProcess>();
+const agents = new Map<number, Agent>();
 
 const bootNow = () => Number(process.hrtime.bigint() / 1_000_000n);
 const availablePort = async () => {
@@ -37,34 +39,50 @@ const request = async (
   token = challenge,
   method = body === undefined ? "GET" : "POST",
 ) => {
-  const options: RequestInit = { method };
-  if (body !== undefined) {
-    options.headers = {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-    };
-    options.body = JSON.stringify(body);
-  }
-  const response = await fetch(
-    `http://127.0.0.1:${controlPort}${path}`,
-    options,
-  );
-  return {
-    status: response.status,
-    value: (await response.json()) as Record<string, unknown>,
-  };
-};
-const waitForHealth = async (controlPort: number) => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    try {
-      const result = await request(controlPort, "/health");
-      if (result.status === 200) return result.value;
-    } catch {
-      // The exact child has not bound its control socket yet.
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
-  }
-  throw new Error("gate-test.health");
+  const agent = agents.get(controlPort);
+  if (agent === undefined) throw new Error("gate-test.agent");
+  return new Promise<{
+    status: number;
+    value: Record<string, unknown>;
+  }>((resolvePromise, reject) => {
+    const bytes = body === undefined ? undefined : JSON.stringify(body);
+    const controlRequest = httpRequest(
+      `http://127.0.0.1:${controlPort}${path}`,
+      {
+        agent,
+        headers:
+          bytes === undefined
+            ? undefined
+            : {
+                authorization: `Bearer ${token}`,
+                "content-type": "application/json",
+              },
+        method,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Uint8Array) =>
+          chunks.push(Buffer.from(chunk)),
+        );
+        response.once("end", () => {
+          try {
+            resolvePromise({
+              status: response.statusCode ?? 0,
+              value: JSON.parse(
+                Buffer.concat(chunks).toString("utf8"),
+              ) as Record<string, unknown>,
+            });
+          } catch (error) {
+            reject(
+              error instanceof Error ? error : new Error("gate-test.json"),
+            );
+          }
+        });
+      },
+    );
+    controlRequest.once("error", reject);
+    controlRequest.end(bytes);
+  });
 };
 const startGate = async () => {
   const modelPort = await availablePort();
@@ -84,16 +102,24 @@ const startGate = async () => {
     },
   );
   children.add(child);
-  expect(await waitForHealth(controlPort)).toEqual({ state: "unconfigured" });
+  agents.set(controlPort, new Agent({ keepAlive: true, maxSockets: 1 }));
   return { child, controlPort, modelPort };
 };
-const configure = (controlPort: number, cutoff = bootNow() + 5_000) =>
-  request(controlPort, "/configure", {
-    challenge,
-    cutoff,
-    responseText,
-    runId,
-  });
+const configure = async (controlPort: number, cutoff = bootNow() + 5_000) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      return await request(controlPort, "/configure", {
+        challenge,
+        cutoff,
+        responseText,
+        runId,
+      });
+    } catch {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+  }
+  throw new Error("gate-test.configure");
+};
 const connect = async (port: number) => {
   const socket = await new Promise<Socket>((resolvePromise, reject) => {
     const value = createConnection({ host: "127.0.0.1", port });
@@ -104,6 +130,17 @@ const connect = async (port: number) => {
   });
   return socket;
 };
+const expectConnectionRefused = (port: number) =>
+  new Promise<void>((resolvePromise, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    socket.once("connect", () => {
+      socket.destroy();
+      reject(new Error("gate-test.control-open"));
+    });
+    socket.once("error", () => {
+      resolvePromise();
+    });
+  });
 const exactRequest = () => {
   const body = Buffer.from('{"model":"fixture"}');
   return Buffer.concat([
@@ -124,6 +161,8 @@ const collect = (socket: Socket) =>
   });
 
 afterEach(async () => {
+  for (const agent of agents.values()) agent.destroy();
+  agents.clear();
   const active = [...children];
   children.clear();
   await Promise.all(
@@ -143,6 +182,7 @@ afterEach(async () => {
   );
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed adversarial state-machine matrix
 describe("gate-capable exact-build MockServer", () => {
   it("holds the first socket below HTTP parsing until the exact span is armed", async () => {
     const { controlPort, modelPort } = await startGate();
@@ -150,6 +190,7 @@ describe("gate-capable exact-build MockServer", () => {
       status: 200,
       value: { runId, state: "pending" },
     });
+    await expectConnectionRefused(controlPort);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     socket.write(exactRequest());
@@ -244,12 +285,94 @@ describe("gate-capable exact-build MockServer", () => {
       "POST /v1/responses HTTP/1.1\r\nHost: model\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
     );
     await completion;
-    expect(await waitForHealth(controlPort)).toEqual({ state: "denied" });
     expect(await request(controlPort, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
         ledger: [],
         receipt: { ledgerCount: 0, state: "denied" },
+      },
+    });
+  });
+
+  it("permanently denies a second socket during provisional parsing", async () => {
+    const { controlPort, modelPort } = await startGate();
+    await configure(controlPort);
+    const first = await connect(modelPort);
+    const firstCompletion = collect(first);
+    await request(controlPort, "/arm", {
+      runId,
+      sessionStartSpanSha256: "b".repeat(64),
+    });
+    first.write(
+      "POST /v1/responses HTTP/1.1\r\nHost: model\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
+    );
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    const second = await connect(modelPort);
+    await collect(second);
+    await firstCompletion;
+    expect(await request(controlPort, "/health")).toMatchObject({
+      status: 200,
+      value: { state: "denied" },
+    });
+    expect(await request(controlPort, "/deny", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        ledger: [],
+        receipt: {
+          connections: [
+            {
+              admission: "provisional",
+              closed: true,
+              parserOutcome: "rejected",
+            },
+          ],
+          state: "denied",
+        },
+      },
+    });
+  });
+
+  it("drains work admitted before cutoff while refusing later admission", async () => {
+    const { controlPort, modelPort } = await startGate();
+    await configure(controlPort, bootNow() + 300);
+    const socket = await connect(modelPort);
+    const completion = collect(socket);
+    await request(controlPort, "/arm", {
+      runId,
+      sessionStartSpanSha256: "b".repeat(64),
+    });
+    socket.write(exactRequest());
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlPort,
+        "/requests",
+        {},
+        challenge,
+        "PUT",
+      );
+      if ((observed.value.ledger as unknown[]).length === 1) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 320));
+    await expectConnectionRefused(modelPort);
+    expect(await request(controlPort, "/release", { runId })).toMatchObject({
+      status: 200,
+      value: { state: "draining" },
+    });
+    expect((await completion).toString("utf8")).toContain(responseText);
+    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        receipt: {
+          connections: [
+            {
+              admission: "admitted",
+              closed: true,
+              parserOutcome: "accepted",
+            },
+          ],
+          state: "draining",
+        },
       },
     });
   });

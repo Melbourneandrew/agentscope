@@ -13,6 +13,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { Agent, request as httpRequest } from "node:http";
+import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
@@ -40,7 +42,6 @@ import {
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
-  readBoundedJsonResponse,
   terminalObservationBeforeDeadline,
   traceSummaryBeforeDeadline,
   waitForModelRequestBeforeDeadline,
@@ -258,6 +259,7 @@ const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
 const ledger = required("AGENTSCOPE_LEDGER");
 const scenarioId = required("AGENTSCOPE_SCENARIO_ID");
+const integrationRunId = required("AGENTSCOPE_INTEGRATION_RUN_ID");
 const modelEndpoint = required("AGENTSCOPE_MODEL_SERVER_URL");
 if (worktree !== "/worktree")
   throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");
@@ -393,27 +395,6 @@ const cli = async (arguments_, command, options) => {
 
 const prompt = "Reply with one short confirmation and do not use tools.";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
-const requestJson = async (url, options = {}) => {
-  const { signal, ...requestOptions } = options;
-  if (signal?.aborted) throw new Error("integration.codex.sidecar");
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  signal?.addEventListener("abort", abort, { once: true });
-  const timer = setTimeout(abort, Math.min(5_000, remaining()));
-  try {
-    const response = await fetch(url, {
-      ...requestOptions,
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error("integration.codex.sidecar");
-    return await readBoundedJsonResponse(response, maximumOutput);
-  } catch {
-    throw new Error("integration.codex.sidecar");
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-  }
-};
 const exactKeys = (value, keys) =>
   typeof value === "object" &&
   value !== null &&
@@ -462,17 +443,57 @@ const modelControlEndpoint = (() => {
   value.port = "1081";
   return value.origin;
 })();
+const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
 const gateHeaders = Object.freeze({
   authorization: `Bearer ${readinessChallenge}`,
   "content-type": "application/json",
 });
-const readModelRequests = async (signal) => {
-  const value = await requestJson(`${modelControlEndpoint}/requests`, {
-    method: "PUT",
-    headers: gateHeaders,
-    body: "{}",
-    signal,
+const controlRequest = (path, method, value, signal) =>
+  new Promise((resolve, reject) => {
+    const body = value === undefined ? undefined : JSON.stringify(value);
+    const request = httpRequest(
+      `${modelControlEndpoint}${path}`,
+      {
+        agent: modelControlAgent,
+        headers:
+          body === undefined
+            ? gateHeaders
+            : { ...gateHeaders, "content-length": Buffer.byteLength(body) },
+        method,
+        signal,
+      },
+      (response) => {
+        const chunks = [];
+        let bytes = 0;
+        response.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > 64 * 1024) request.destroy();
+          else chunks.push(Buffer.from(chunk));
+        });
+        response.once("end", () => {
+          try {
+            if (response.statusCode !== 200)
+              throw new Error("integration.codex.model-gate");
+            resolve(
+              JSON.parse(
+                new TextDecoder("utf-8", { fatal: true }).decode(
+                  Buffer.concat(chunks, bytes),
+                ),
+              ),
+            );
+          } catch {
+            reject(new Error("integration.codex.model-gate"));
+          }
+        });
+      },
+    );
+    request.once("error", () =>
+      reject(new Error("integration.codex.model-gate")),
+    );
+    request.end(body);
   });
+const readModelRequests = async (signal) => {
+  const value = await controlRequest("/requests", "PUT", {}, signal);
   if (!exactKeys(value, ["ledger"]))
     throw new Error("integration.codex.model-gate");
   return boundedRequestLedger(value.ledger);
@@ -486,27 +507,31 @@ const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
   return sessionStartBeforeFirstModelRequestAdmission;
 };
 const gateRequest = (path, value, signal) =>
-  requestJson(`${modelControlEndpoint}${path}`, {
-    method: "POST",
-    headers: gateHeaders,
-    body: JSON.stringify(value),
-    signal,
+  controlRequest(path, "POST", value, signal);
+const proveControlPlaneClosed = async () => {
+  const endpoint = new URL(modelControlEndpoint);
+  await new Promise((resolve, reject) => {
+    const socket = createConnection({
+      host: endpoint.hostname,
+      port: Number(endpoint.port),
+    });
+    const timer = setTimeout(
+      () => {
+        socket.destroy();
+        reject(new Error("integration.codex.model-gate-control-open"));
+      },
+      Math.min(250, remaining()),
+    );
+    socket.once("connect", () => {
+      clearTimeout(timer);
+      socket.destroy();
+      reject(new Error("integration.codex.model-gate-control-open"));
+    });
+    socket.once("error", () => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
-const waitForModelGate = async () => {
-  while (remaining() > 5_000) {
-    try {
-      const response = await requestJson(`${modelControlEndpoint}/health`, {
-        signal: AbortSignal.timeout(Math.min(250, remaining())),
-      });
-      if (exactKeys(response, ["state"]) && response.state === "unconfigured")
-        return;
-    } catch {
-      // The exact-build sidecar may still be starting. The outer deadline is
-      // the sole authority; each probe only consumes its remaining budget.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("integration.codex.model-gate");
 };
 const configureModelGate = async (modelAdmissionCutoff) => {
   const routeAuthority = JSON.parse(
@@ -528,22 +553,23 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     body.includes(expectedAssistantMessage)
   )
     throw new Error("integration.codex.model-gate");
-  const response = await requestJson(`${modelControlEndpoint}/configure`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const response = await controlRequest(
+    "/configure",
+    "POST",
+    {
       challenge: readinessChallenge,
       cutoff: modelAdmissionCutoff,
       responseText: body.replace(
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
       ),
-      runId: scenarioId,
-    }),
-  });
+      runId: integrationRunId,
+    },
+    AbortSignal.timeout(Math.min(1_000, remaining())),
+  );
   if (
     !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== scenarioId ||
+    response.runId !== integrationRunId ||
     response.state !== "pending"
   )
     throw new Error("integration.codex.model-gate");
@@ -553,12 +579,12 @@ const armModelGate = async (modelAdmissionCutoff) => {
     const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
     if (checkpoint !== undefined) {
       const response = await gateRequest("/arm", {
-        runId: scenarioId,
+        runId: integrationRunId,
         sessionStartSpanSha256: checkpoint.spanSha256,
       });
       if (
         !exactKeys(response, ["runId", "state"]) ||
-        response.runId !== scenarioId ||
+        response.runId !== integrationRunId ||
         response.state !== "armed"
       )
         throw new Error("integration.codex.model-gate");
@@ -581,16 +607,16 @@ const releaseModelResponse = async () => {
     )
   )
     throw new Error("integration.codex.session-ledger");
-  const response = await gateRequest("/release", { runId: scenarioId });
+  const response = await gateRequest("/release", { runId: integrationRunId });
   if (
     !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== scenarioId ||
-    response.state !== "admitted"
+    response.runId !== integrationRunId ||
+    (response.state !== "admitted" && response.state !== "draining")
   )
     throw new Error("integration.codex.model-gate");
 };
 const sealModelGate = async (checkpoint) => {
-  const value = await gateRequest("/seal", { runId: scenarioId });
+  const value = await gateRequest("/seal", { runId: integrationRunId });
   if (!exactKeys(value, ["ledger", "receipt"]))
     throw new Error("integration.codex.model-gate");
   const receipt = value.receipt;
@@ -598,6 +624,7 @@ const sealModelGate = async (checkpoint) => {
     !exactKeys(receipt, [
       "challengeSha256",
       "connectionCount",
+      "connections",
       "ledgerCount",
       "mutationGeneration",
       "parserFailures",
@@ -608,11 +635,24 @@ const sealModelGate = async (checkpoint) => {
     receipt.challengeSha256 !==
       createHash("sha256").update(readinessChallenge).digest("hex") ||
     receipt.connectionCount !== 1 ||
+    !Array.isArray(receipt.connections) ||
+    receipt.connections.length !== 1 ||
+    !exactKeys(receipt.connections[0], [
+      "admission",
+      "closed",
+      "eof",
+      "generation",
+      "parserOutcome",
+    ]) ||
+    receipt.connections[0].admission !== "admitted" ||
+    receipt.connections[0].closed !== true ||
+    receipt.connections[0].generation !== 1 ||
+    receipt.connections[0].parserOutcome !== "accepted" ||
     receipt.ledgerCount !== 1 ||
     !Number.isSafeInteger(receipt.mutationGeneration) ||
     receipt.mutationGeneration < 1 ||
     receipt.parserFailures !== 0 ||
-    receipt.runId !== scenarioId ||
+    receipt.runId !== integrationRunId ||
     receipt.sessionStartSpanSha256 !== checkpoint.spanSha256 ||
     receipt.state !== "draining"
   )
@@ -1008,8 +1048,8 @@ try {
   const modelAdmissionCutoff = deadline - 5_000;
   if (modelAdmissionCutoff <= bootNow())
     throw new Error("integration.codex.model-gate");
-  await waitForModelGate();
   await configureModelGate(modelAdmissionCutoff);
+  await proveControlPlaneClosed();
   // TOML has no syntax for returning to the root table. Keep every root key
   // ahead of the first table emitted by the provider configuration; appending
   // log_dir after it would silently make the key part of model_providers.
@@ -1216,7 +1256,7 @@ try {
     try {
       await gateRequest(
         "/deny",
-        { runId: scenarioId },
+        { runId: integrationRunId },
         AbortSignal.timeout(Math.min(1_000, Math.max(1, deadline - bootNow()))),
       );
     } catch {
@@ -1224,6 +1264,7 @@ try {
       // sidecar when the in-container denial receipt cannot be completed.
     }
   }
+  modelControlAgent.destroy();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)
