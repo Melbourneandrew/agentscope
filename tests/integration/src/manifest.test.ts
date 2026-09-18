@@ -624,6 +624,7 @@ describe("integration capability manifest", () => {
     expect(codex.image).toBe(
       "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
     );
+    expect(codex.mockServerImage).toBe(codex.image);
     expect(codex.image).not.toBe(
       manifest.scenarios.find(
         ({ scenarioId }) => scenarioId === "fixture-process-smoke",
@@ -639,7 +640,13 @@ describe("integration capability manifest", () => {
     );
     expect(material.verifierNpmVersion).toBe("11.19.1");
     expect(capabilityScenarioImages(manifest, [codex.scenarioId])).toEqual(
-      [codex.image, codex.mockServerImage, material.verifierImage].sort(),
+      [
+        ...new Set([
+          codex.image,
+          codex.mockServerImage,
+          material.verifierImage,
+        ]),
+      ].sort(),
     );
     for (const scenarioIds of [
       [],

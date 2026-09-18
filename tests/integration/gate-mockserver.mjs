@@ -88,16 +88,26 @@ let releaseResolve;
 let terminalReceipt;
 let cutoffTimer;
 const connections = new Map();
+const connectionBySocket = new WeakMap();
 const ledger = [];
 
 const modelServer = createHttpServer(async (request, response) => {
   const firstRequest = state === "armed";
+  const connection = connectionBySocket.get(request.socket);
   parserWork += 1;
   mutationGeneration += 1;
   try {
-    if (!firstRequest && state !== "admitted")
+    if (
+      connection === undefined ||
+      (!firstRequest && connection.admission !== "admitted") ||
+      (!firstRequest && state !== "admitted" && state !== "draining")
+    )
       throw new Error("integration.mockserver.state");
-    if (firstRequest) state = "parsing-first";
+    connection.parserOutcome = "parsing";
+    if (firstRequest) {
+      state = "parsing-first";
+      connection.admission = "provisional";
+    }
     if (
       request.method !== "POST" ||
       request.url !== "/v1/responses" ||
@@ -130,18 +140,22 @@ const modelServer = createHttpServer(async (request, response) => {
       if (state !== "parsing-first" || bootNow() >= cutoff)
         throw new Error("integration.mockserver.cutoff");
       state = "admitted";
+      connection.admission = "admitted";
     }
     await releasePromise;
-    if (state !== "admitted") throw new Error("integration.mockserver.release");
+    if (state !== "admitted" && state !== "draining")
+      throw new Error("integration.mockserver.release");
     response.writeHead(200, {
       connection: "close",
       "content-type": "text/event-stream",
     });
     response.end(responseText);
+    connection.parserOutcome = "accepted";
   } catch {
     parserFailures += 1;
     mutationGeneration += 1;
-    if (state === "armed" || state === "parsing-first") state = "denied";
+    if (connection !== undefined) connection.parserOutcome = "rejected";
+    if (state === "armed" || state === "parsing-first") enforceCutoff();
     response.statusCode = 502;
     response.end();
   } finally {
@@ -150,21 +164,44 @@ const modelServer = createHttpServer(async (request, response) => {
   }
 });
 modelServer.on("clientError", (_error, socket) => {
+  const connection = connectionBySocket.get(socket);
+  if (connection !== undefined) connection.parserOutcome = "rejected";
   parserFailures += 1;
   mutationGeneration += 1;
+  if (state === "armed" || state === "parsing-first") enforceCutoff();
   socket.destroy();
 });
 
 const admitSocket = (socket) => {
+  if (
+    state === "parsing-first" ||
+    (state === "armed" && connections.size > 0)
+  ) {
+    socket.destroy();
+    enforceCutoff();
+    return;
+  }
   if (bootNow() >= cutoff || (state !== "armed" && state !== "admitted")) {
     socket.destroy();
     return;
   }
   const generation = ++connectionGeneration;
-  connections.set(generation, { closed: false, socket });
+  const connection = {
+    admission: state === "admitted" ? "admitted" : "held",
+    closed: false,
+    eof: false,
+    generation,
+    parserOutcome: "none",
+    socket,
+  };
+  connections.set(generation, connection);
+  connectionBySocket.set(socket, connection);
+  socket.once("end", () => {
+    connection.eof = true;
+    mutationGeneration += 1;
+  });
   socket.once("close", () => {
-    const record = connections.get(generation);
-    if (record !== undefined) record.closed = true;
+    connection.closed = true;
     mutationGeneration += 1;
   });
   mutationGeneration += 1;
@@ -174,9 +211,12 @@ const admitSocket = (socket) => {
 const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
   if (state === "pending" || state === "unconfigured") {
     if (initialSocket !== undefined) {
+      initialSocket.destroy();
+      initialSocket = undefined;
       socket.destroy();
       state = "denied";
       mutationGeneration += 1;
+      closeTransportAdmission();
       return;
     }
     initialSocket = socket;
@@ -198,6 +238,24 @@ const enforceCutoff = () => {
   mutationGeneration += 1;
   closeTransportAdmission();
 };
+const settledConnections = () =>
+  parserWork === 0 && [...connections.values()].every(({ closed }) => closed);
+const waitForSettlement = async () => {
+  const settlementDeadline = cutoff + 5_000;
+  while (!settledConnections() && bootNow() < settlementDeadline)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  if (!settledConnections()) throw new Error("settlement");
+};
+const connectionReceipt = () =>
+  [...connections.values()].map(
+    ({ admission, closed, eof, generation, parserOutcome }) => ({
+      admission,
+      closed,
+      eof,
+      generation,
+      parserOutcome,
+    }),
+  );
 const configure = async (request, response) => {
   if (state !== "unconfigured") throw new Error("state");
   const value = await boundedJson(request);
@@ -253,11 +311,11 @@ const release = async (request, response) => {
   if (
     !exactKeys(value, ["runId"]) ||
     value.runId !== runId ||
-    state !== "admitted" ||
+    (state !== "admitted" && state !== "draining") ||
     releaseResponse !== undefined
   )
     throw new Error("release");
-  releaseResponse = Object.freeze({ runId, state: "admitted" });
+  releaseResponse = Object.freeze({ runId, state });
   releaseResolve();
   json(response, 200, releaseResponse);
 };
@@ -276,11 +334,11 @@ const seal = async (request, response) => {
         error === undefined ? resolve() : reject(error),
       ),
     );
-  if ([...connections.values()].some(({ closed }) => !closed))
-    throw new Error("connections");
+  await waitForSettlement();
   terminalReceipt = Object.freeze({
     challengeSha256: digest(challenge),
     connectionCount: connections.size,
+    connections: connectionReceipt(),
     ledgerCount: ledger.length,
     mutationGeneration,
     parserFailures,
@@ -303,15 +361,17 @@ const deny = async (request, response) => {
   if (cutoffTimer !== undefined) clearTimeout(cutoffTimer);
   releaseResolve?.();
   for (const { socket } of connections.values()) socket.destroy();
+  await waitForSettlement();
   terminalReceipt = Object.freeze({
     challengeSha256: digest(challenge),
     connectionCount: connections.size,
+    connections: connectionReceipt(),
     ledgerCount: ledger.length,
     mutationGeneration,
     parserFailures,
     runId,
     sessionStartSpanSha256: sessionStartSpanSha256 ?? null,
-    state: "denied",
+    state,
   });
   json(response, 200, { ledger, receipt: terminalReceipt });
 };
@@ -336,7 +396,7 @@ const authorizedRoute = async (request, response, pathname) => {
   json(response, 404, { error: "not-found" });
 };
 
-const controlServer = createHttpServer(async (request, response) => {
+const controlApplication = createHttpServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/health") {
@@ -355,6 +415,17 @@ const controlServer = createHttpServer(async (request, response) => {
   } catch {
     json(response, 409, { error: "rejected" });
   }
+});
+let selectedControlSocket;
+const controlServer = createNetServer({ pauseOnConnect: true }, (socket) => {
+  if (selectedControlSocket !== undefined) {
+    socket.destroy();
+    return;
+  }
+  selectedControlSocket = socket;
+  controlServer.close(() => undefined);
+  controlApplication.emit("connection", socket);
+  socket.resume();
 });
 
 transportServer.listen(modelPort, "0.0.0.0");
