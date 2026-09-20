@@ -122,6 +122,25 @@ export const installedPtyFailurePredicates = Object.freeze({
   "pty-execution": ptyExecutionFailurePredicates,
 });
 
+const interactiveFixtureFailurePredicates = Object.freeze(
+  ptyExecutionFailurePredicates.filter((value) =>
+    value.startsWith("integration.fixture.codex-"),
+  ),
+);
+const interactiveFailureExitCodeBase = 64;
+
+export const encodeInteractiveFailureExitCode = (diagnostic) => {
+  const index = interactiveFixtureFailurePredicates.indexOf(diagnostic);
+  return index < 0 ? undefined : interactiveFailureExitCodeBase + index;
+};
+
+export const decodeInteractiveFailureExitCode = (exitCode) => {
+  if (!Number.isSafeInteger(exitCode)) return undefined;
+  return interactiveFixtureFailurePredicates[
+    exitCode - interactiveFailureExitCodeBase
+  ];
+};
+
 export const extractInteractiveChildDiagnostic = (output) => {
   if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
     return undefined;

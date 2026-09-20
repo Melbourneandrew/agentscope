@@ -20,6 +20,7 @@ import {
 import {
   compileCandidateInventory,
   decodeImmutableCandidateHandoff,
+  encodeInteractiveFailureExitCode,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
@@ -343,6 +344,7 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+let interactiveFailureDiagnostic;
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
@@ -652,6 +654,7 @@ try {
       // The selected PTY error remains the diagnostic if no fixture record exists.
     }
     diagnostic = retainedInteractivePhase(ledger) ?? diagnostic;
+    interactiveFailureDiagnostic = diagnostic;
     process.stdout.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
@@ -672,14 +675,22 @@ const fixtureResult = fixtureOutput
   .split("\n")
   .filter((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="))
   .at(-1);
-if (!fixtureResult) throw new Error("integration.runner.fixture-result");
-console.log(fixtureResult);
-if (fixtureFailure !== undefined)
-  throw new Error("integration.runner.fixture-failed");
-
-if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
-  throw new Error("integration.runner.expected-failure");
-if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
-  await new Promise(() => setInterval(() => {}, 1_000));
-writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
-console.log("Integration scenario passed with public egress denied.");
+const interactiveFailureExitCode =
+  scenario.executionMode === "interactive" && fixtureFailure !== undefined
+    ? encodeInteractiveFailureExitCode(interactiveFailureDiagnostic)
+    : undefined;
+if (!fixtureResult && interactiveFailureExitCode === undefined)
+  throw new Error("integration.runner.fixture-result");
+if (fixtureResult) console.log(fixtureResult);
+if (fixtureFailure !== undefined) {
+  if (interactiveFailureExitCode === undefined)
+    throw new Error("integration.runner.fixture-failed");
+  process.exitCode = interactiveFailureExitCode;
+} else {
+  if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
+    throw new Error("integration.runner.expected-failure");
+  if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
+    await new Promise(() => setInterval(() => {}, 1_000));
+  writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
+  console.log("Integration scenario passed with public egress denied.");
+}
