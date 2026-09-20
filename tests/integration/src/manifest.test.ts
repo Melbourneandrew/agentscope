@@ -337,8 +337,10 @@ describe("integration capability manifest", () => {
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
     expect(source).toContain(
-      "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
+      "const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;",
     );
+    expect(source).toContain("`${diagnostic}\\n`");
+    expect(source).toContain("encodeInteractiveFailureExitCode(diagnostic)");
     expect(source).toContain(
       'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
     );

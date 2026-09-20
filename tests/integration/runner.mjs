@@ -19,6 +19,7 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
+  decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
 } from "./immutable-candidate-authority.mjs";
@@ -580,7 +581,9 @@ try {
       !receipt.terminalOutputJoined ||
       !receipt.terminalTransportClosed
     ) {
-      const diagnostic = retainedInteractivePhase(ledger);
+      const diagnostic =
+        decodeInteractiveFailureExitCode(receipt.exitCode) ??
+        retainedInteractivePhase(ledger);
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(

@@ -182,23 +182,24 @@ describe("integration cleanup authority", () => {
       resolve(workspaceRoot, "tests/integration/runner.mjs"),
       "utf8",
     );
-    const receiptFailure = source.slice(
-      source.indexOf("const diagnostic = retainedInteractivePhase(ledger);"),
-      source.indexOf(
-        "} else {",
-        source.indexOf("const diagnostic = retainedInteractivePhase(ledger);"),
-      ),
-    );
-    expect(receiptFailure).toContain(
-      "interactiveFailureDiagnostic = diagnostic;",
-    );
+    expect(source).toContain("interactiveFailureDiagnostic = diagnostic;");
     expect(
-      receiptFailure.indexOf("interactiveFailureDiagnostic = diagnostic;"),
+      source.indexOf("interactiveFailureDiagnostic = diagnostic;"),
     ).toBeLessThan(
-      receiptFailure.indexOf(
+      source.indexOf(
         'fixtureFailure = new Error("integration.runner.fixture-failed")',
       ),
     );
+    expect(source).toContain(
+      "decodeInteractiveFailureExitCode(receipt.exitCode)",
+    );
+
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    expect(scenario).toContain("encodeInteractiveFailureExitCode(diagnostic)");
+    expect(scenario).toContain("process.exit(exitCode)");
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
