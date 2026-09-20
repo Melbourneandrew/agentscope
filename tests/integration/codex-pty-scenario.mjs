@@ -17,6 +17,93 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
+let ledger;
+let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
+let interactiveFailurePhase = "bootstrap";
+let interactiveFailurePhaseIndex = 0;
+const interactivePhases = Object.freeze([
+  "bootstrap",
+  "init",
+  "destination",
+  "routing",
+  "install",
+  "installed-status",
+  "tui-start",
+  "model-request",
+  "trace-terminal",
+  "tui-exit",
+  "trace-settlement",
+  "trace-search",
+  "hook-command-timeout",
+  "hook-command-spawn-error",
+  "hook-command-stdin-error",
+  "hook-command-wait-error",
+  "hook-command-missing",
+  "hook-command-completed-before-budget-boundary",
+  "hook-command-completed-near-budget-boundary",
+  "hook-no-operational-state-subsecond",
+  "hook-no-operational-state-low-latency",
+  "hook-no-operational-state-mid-latency",
+  "hook-no-operational-state-high-latency",
+  "hook-no-operational-state-near-deadline",
+  "hook-start-suppressed",
+  "hook-start-deadline",
+  "hook-capture-suppressed",
+  "hook-capture-deadline",
+  "hook-redaction-suppressed",
+  "hook-redaction-deadline",
+  "hook-routing-no-route",
+  "hook-delivery-rejected",
+  "hook-delivery-unavailable",
+  "hook-delivery-deadline",
+  "hook-delivery-unknown",
+  "hook-accepted-without-trace",
+  "hook-operational-unclassified",
+  "trace-search-record-count",
+  "trace-search-shape",
+  "trace-search-ambiguous",
+  "trace-search-harness",
+  "trace-search-locator",
+  "trace-reporter-settled",
+  "trace-acceptance",
+  "trace-search-result",
+  "verify",
+]);
+if (process.hasUncaughtExceptionCaptureCallback())
+  throw new Error("integration.codex.failure-capture");
+process.setUncaughtExceptionCaptureCallback(() => {
+  let exitCode = 64 + interactiveFailurePhaseIndex;
+  try {
+    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
+    if (ledger !== undefined)
+      writeFileSync(
+        join(ledger, "interactive-failure.txt"),
+        `${diagnostic}\n`,
+        {
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
+  } catch {
+    exitCode = 64;
+  }
+  let settled = false;
+  const settle = (code) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    process.exit(code);
+  };
+  const timer = setTimeout(() => settle(1), 1_000);
+  try {
+    process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
+      settle(error === null || error === undefined ? exitCode : 1),
+    );
+  } catch {
+    settle(1);
+  }
+});
+
 const required = (name) => {
   const value = process.env[name];
   if (!value) throw new Error(`integration.codex.environment-${name}`);
@@ -101,7 +188,7 @@ const readReadinessChallenge = () =>
   });
 const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;
-const terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
+terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
 const waitForCheckpointSignal = () =>
   new Promise((resolve, reject) => {
     let settled = false;
@@ -219,7 +306,7 @@ const home = required("HOME");
 const codexHome = join(home, ".codex");
 const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
-const ledger = required("AGENTSCOPE_LEDGER");
+ledger = required("AGENTSCOPE_LEDGER");
 const scenarioId = required("AGENTSCOPE_SCENARIO_ID");
 const integrationRunId = required("AGENTSCOPE_INTEGRATION_RUN_ID");
 const modelEndpoint = required("AGENTSCOPE_MODEL_SERVER_URL");
@@ -240,56 +327,6 @@ let operationalStateHealthDescriptor;
 let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
 let sessionStartBeforeFirstModelRequestAdmission;
-let interactiveFailurePhase = "bootstrap";
-let interactiveFailurePhaseIndex = -1;
-const interactivePhases = Object.freeze([
-  "bootstrap",
-  "init",
-  "destination",
-  "routing",
-  "install",
-  "installed-status",
-  "tui-start",
-  "model-request",
-  "trace-terminal",
-  "tui-exit",
-  "trace-settlement",
-  "trace-search",
-  "hook-command-timeout",
-  "hook-command-spawn-error",
-  "hook-command-stdin-error",
-  "hook-command-wait-error",
-  "hook-command-missing",
-  "hook-command-completed-before-budget-boundary",
-  "hook-command-completed-near-budget-boundary",
-  "hook-no-operational-state-subsecond",
-  "hook-no-operational-state-low-latency",
-  "hook-no-operational-state-mid-latency",
-  "hook-no-operational-state-high-latency",
-  "hook-no-operational-state-near-deadline",
-  "hook-start-suppressed",
-  "hook-start-deadline",
-  "hook-capture-suppressed",
-  "hook-capture-deadline",
-  "hook-redaction-suppressed",
-  "hook-redaction-deadline",
-  "hook-routing-no-route",
-  "hook-delivery-rejected",
-  "hook-delivery-unavailable",
-  "hook-delivery-deadline",
-  "hook-delivery-unknown",
-  "hook-accepted-without-trace",
-  "hook-operational-unclassified",
-  "trace-search-record-count",
-  "trace-search-shape",
-  "trace-search-ambiguous",
-  "trace-search-harness",
-  "trace-search-locator",
-  "trace-reporter-settled",
-  "trace-acceptance",
-  "trace-search-result",
-  "verify",
-]);
 const recordInteractivePhase = (phase) => {
   const phaseIndex = interactivePhases.indexOf(phase);
   if (phaseIndex <= interactiveFailurePhaseIndex)
@@ -311,38 +348,6 @@ const codexStopHookCommandFailure = (outcome) => {
   else throw new Error("integration.codex.hook-command-outcome");
   return { error: `integration.codex.hook-command-${outcome}`, phase };
 };
-recordInteractivePhase(interactiveFailurePhase);
-if (process.hasUncaughtExceptionCaptureCallback())
-  throw new Error("integration.codex.failure-capture");
-process.setUncaughtExceptionCaptureCallback(() => {
-  let exitCode = 1;
-  try {
-    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
-    writeFileSync(join(ledger, "interactive-failure.txt"), `${diagnostic}\n`, {
-      flag: "wx",
-      mode: 0o600,
-    });
-    exitCode = 64 + interactiveFailurePhaseIndex;
-  } catch {
-    // The reserved nonzero code still distinguishes a bootstrap failure.
-  }
-  let settled = false;
-  const settle = (code) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    process.exit(code);
-  };
-  const timer = setTimeout(() => settle(1), 1_000);
-  try {
-    process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
-      settle(error === null || error === undefined ? exitCode : 1),
-    );
-  } catch {
-    settle(1);
-  }
-});
-
 const [configurationModule, evidenceModule, oracleModule, adapterModule] =
   await Promise.all([
     import("./runtime/codex-configuration.js"),
