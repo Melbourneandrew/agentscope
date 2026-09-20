@@ -1114,7 +1114,7 @@ try {
   const installedStatus = projectHarnessStatus(
     installedStatusRecords,
     "unchanged",
-    2,
+    1,
   );
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
