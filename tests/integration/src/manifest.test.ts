@@ -202,7 +202,14 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(2);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
-    expect(scenario.nativeReadiness).toEqual({ kind: "challenge-marker" });
+    expect(scenario.nativeReadiness).toEqual({
+      kind: "codex-challenge-idle-prompt",
+      harness: "codex",
+      exactHarnessVersion: "0.149.1",
+      text: "›",
+      bold: true,
+      dim: false,
+    });
     expect(
       manifestFixture()
         .scenarios.filter(

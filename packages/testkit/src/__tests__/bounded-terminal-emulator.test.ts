@@ -133,6 +133,28 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(true);
   });
 
+  it("holds challenged input until the exact styled TUI prompt", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        bold: true,
+        dim: false,
+      },
+    );
+
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("[2m›[22m "));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("[1m›[22m "));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },

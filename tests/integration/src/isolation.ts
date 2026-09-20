@@ -455,6 +455,13 @@ const ptyTerminalReceiptSchema = z
           challenge: z.string().regex(/^[a-f\d]{64}$/u),
         }),
         z.strictObject({
+          kind: z.literal("challenge-styled-text"),
+          challenge: z.string().regex(/^[a-f\d]{64}$/u),
+          text: z.string().length(1),
+          bold: z.boolean(),
+          dim: z.boolean(),
+        }),
+        z.strictObject({
           kind: z.literal("styled-text-after-completion"),
           text: z.string().min(1).max(4),
           bold: z.boolean(),

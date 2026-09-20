@@ -18,7 +18,10 @@ export const compileInteractivePtyActions = (
 ) => {
   const staticInput = Buffer.from(scenario.terminalInputBase64, "base64");
   const challengeBytes =
-    scenario.nativeReadiness?.kind === "challenge-marker" ? 65 : 0;
+    scenario.nativeReadiness?.kind === "challenge-marker" ||
+    scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
+      ? 65
+      : 0;
   if (
     scenario.executionMode !== "interactive" ||
     scenario.outputContract !== "semantic-pty" ||
