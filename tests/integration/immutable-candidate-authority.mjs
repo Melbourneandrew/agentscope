@@ -16,6 +16,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-destination",
   "integration.fixture.codex-install",
   "integration.fixture.codex-installed-status",
+  "integration.fixture.codex-installed-status-parse",
+  "integration.fixture.codex-installed-status-project",
   "integration.fixture.codex-hook-command-spawn-error",
   "integration.fixture.codex-hook-command-stdin-error",
   "integration.fixture.codex-hook-command-timeout",

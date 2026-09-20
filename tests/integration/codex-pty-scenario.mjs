@@ -35,6 +35,8 @@ const interactivePhases = Object.freeze([
   "routing",
   "install",
   "installed-status",
+  "installed-status-parse",
+  "installed-status-project",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -1079,8 +1081,21 @@ try {
     operationalStateHealthDescriptor,
   );
   recordInteractivePhase("installed-status");
+  const { stdout: installedStatusOutput } = await run(agentscope, [
+    "harness",
+    "status",
+    "codex",
+    "--output",
+    "json",
+  ]);
+  recordInteractivePhase("installed-status-parse");
+  const installedStatusRecords = parseMachine(
+    installedStatusOutput,
+    "agentscope harness status",
+  );
+  recordInteractivePhase("installed-status-project");
   const installedStatus = projectHarnessStatus(
-    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    installedStatusRecords,
     "unchanged",
     1,
   );
