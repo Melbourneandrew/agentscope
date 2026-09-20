@@ -192,6 +192,24 @@ const compileNativeReadiness = (scenario, challenge) => {
   )
     return Object.freeze({ kind: "challenge-marker", challenge });
   if (
+    readiness?.kind === "codex-challenge-idle-prompt" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge) &&
+    readiness.harness === "codex" &&
+    readiness.exactHarnessVersion === "0.149.1" &&
+    readiness.text === "›" &&
+    readiness.bold === true &&
+    readiness.dim === false
+  )
+    return Object.freeze({
+      kind: "challenge-styled-text",
+      challenge,
+      text: "›",
+      bold: true,
+      dim: false,
+    });
+  if (
     readiness?.kind === "semantic-marker" &&
     JSON.stringify(Object.keys(readiness).sort()) === JSON.stringify(["kind"])
   )
@@ -426,7 +444,8 @@ try {
   ];
   const readinessChallenge =
     scenario.executionMode === "interactive" &&
-    scenario.nativeReadiness?.kind === "challenge-marker"
+    (scenario.nativeReadiness?.kind === "challenge-marker" ||
+      scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt")
       ? randomBytes(32).toString("hex")
       : undefined;
   const terminalInput = Buffer.from(scenario.terminalInputBase64, "base64");
@@ -498,7 +517,10 @@ try {
     const interaction = {
       actions: compileInteractivePtyActions(scenario, request.stdin),
       trigger:
-        readiness.kind === "challenge-marker" ? "immediate" : "semantic-ready",
+        readiness.kind === "challenge-marker" ||
+        readiness.kind === "challenge-styled-text"
+          ? "immediate"
+          : "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
       completion,

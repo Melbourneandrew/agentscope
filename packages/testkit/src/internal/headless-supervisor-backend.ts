@@ -1968,6 +1968,35 @@ const snapshotPtyRequest = (
       { kind: "challenge-marker" as const, challenge },
     ]);
   } else if (
+    readinessKind === "challenge-styled-text" &&
+    readinessKeys === "bold\0challenge\0dim\0kind\0text"
+  ) {
+    const challenge = ownData(readiness, "challenge");
+    const readinessText = ownData(readiness, "text");
+    const readinessBold = ownData(readiness, "bold");
+    const readinessDim = ownData(readiness, "dim");
+    if (
+      typeof challenge !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(challenge) ||
+      typeof readinessText !== "string" ||
+      [...readinessText].length !== 1 ||
+      (readinessText.codePointAt(0) ?? 0) < 0x20 ||
+      readinessText.codePointAt(0) === 0x7f ||
+      typeof readinessBold !== "boolean" ||
+      typeof readinessDim !== "boolean"
+    )
+      return fail("testkit.pty.request");
+    readinessChallenge = challenge;
+    stableReadiness = safeReflectApply(freeze, Object, [
+      {
+        kind: "challenge-styled-text" as const,
+        challenge,
+        text: readinessText,
+        bold: readinessBold,
+        dim: readinessDim,
+      },
+    ]);
+  } else if (
     readinessKind === "styled-text-after-completion" &&
     readinessKeys === "bold\0dim\0kind\0text"
   ) {
@@ -2012,7 +2041,11 @@ const snapshotPtyRequest = (
     actionOwnKeys.length !== actions.length + 1 ||
     (completionKind === "semantic-marker" &&
       trigger !== "semantic-ready" &&
-      !(readinessKind === "challenge-marker" && trigger === "immediate")) ||
+      !(
+        (readinessKind === "challenge-marker" ||
+          readinessKind === "challenge-styled-text") &&
+        trigger === "immediate"
+      )) ||
     (completionKind === "exact-output" && trigger !== "immediate")
   )
     return fail("testkit.pty.request");
@@ -2187,7 +2220,8 @@ const snapshotPtyRequest = (
     describedInputBytes !==
       safeReflectApply(typedArrayByteLength, process_.stdin, []) ||
     eofCount > 1 ||
-    (readinessKind === "challenge-marker" &&
+    ((readinessKind === "challenge-marker" ||
+      readinessKind === "challenge-styled-text") &&
       (trigger !== "immediate" ||
         semanticWaitCount !== 1 ||
         topologyCheckpointCount !== 1 ||
@@ -4641,7 +4675,10 @@ const selectedPtyRuntimeForTest = (
     },
     // eslint-disable-next-line max-lines-per-function, complexity -- closed adversarial fixture matrix
     spawnPty: (request, geometry, interpreter, scriptSha256) => {
-      if (readiness.kind === "challenge-marker") {
+      if (
+        readiness.kind === "challenge-marker" ||
+        readiness.kind === "challenge-styled-text"
+      ) {
         if (seed !== "checkpoint-missing-process") {
           processes.set(checkpointChild.pid, checkpointChild);
           processes.set(checkpointGrandchild.pid, checkpointGrandchild);
@@ -4703,10 +4740,12 @@ const selectedPtyRuntimeForTest = (
                     ? safeBufferFrom("\u001b[?9999h")
                     : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
-        readiness.kind === "challenge-marker" &&
-          seed !== "fixed-readiness-spoof"
-          ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
-          : "AGENTSCOPE_PTY_READY",
+        readiness.kind === "challenge-styled-text"
+          ? "\u001b[1m›\u001b[22m "
+          : readiness.kind === "challenge-marker" &&
+              seed !== "fixed-readiness-spoof"
+            ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
+            : "AGENTSCOPE_PTY_READY",
       );
       const chunks =
         seed === "completion-before-readiness"
@@ -4755,7 +4794,11 @@ const selectedPtyRuntimeForTest = (
         )
           safeSetTimeout(
             () => {
-              if (readiness.kind === "challenge-marker") processes.clear();
+              if (
+                readiness.kind === "challenge-marker" ||
+                readiness.kind === "challenge-styled-text"
+              )
+                processes.clear();
               else processes.delete(root.pid);
               if (seed === "adopted-zombie")
                 processes.set(descendant.pid, {
@@ -4775,7 +4818,8 @@ const selectedPtyRuntimeForTest = (
                       },
               );
             },
-            readiness.kind === "challenge-marker"
+            readiness.kind === "challenge-marker" ||
+              readiness.kind === "challenge-styled-text"
               ? 50
               : seed === "partial-input"
                 ? 25

@@ -277,6 +277,14 @@ const scenarioSchema = z
         z.strictObject({ kind: z.literal("semantic-marker") }),
         z.strictObject({ kind: z.literal("challenge-marker") }),
         z.strictObject({
+          kind: z.literal("codex-challenge-idle-prompt"),
+          harness: z.literal("codex"),
+          exactHarnessVersion: z.literal("0.149.1"),
+          text: z.literal("›"),
+          bold: z.literal(true),
+          dim: z.literal(false),
+        }),
+        z.strictObject({
           kind: z.literal("codex-idle-prompt"),
           harness: z.literal("codex"),
           exactHarnessVersion: z.literal("0.149.1"),
@@ -321,7 +329,8 @@ const scenarioSchema = z
         message: "native readiness harness drift",
       });
     if (
-      value.nativeReadiness?.kind === "challenge-marker" &&
+      (value.nativeReadiness?.kind === "challenge-marker" ||
+        value.nativeReadiness?.kind === "codex-challenge-idle-prompt") &&
       value.harnessEvidenceId !== "codex-0-149-1"
     )
       context.addIssue({

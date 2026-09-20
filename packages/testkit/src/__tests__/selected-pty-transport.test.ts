@@ -142,6 +142,13 @@ describe("selected PTY transport", () => {
     const promptRequest: SelectedPtyExecutionRequest = {
       ...challengeRequest,
       process: { ...challengeRequest.process, stdin: promptInput },
+      readiness: {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        bold: true,
+        dim: false,
+      },
       interaction: {
         trigger: "immediate",
         actions: [

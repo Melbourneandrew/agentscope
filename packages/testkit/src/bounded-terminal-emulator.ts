@@ -10,6 +10,13 @@ export type PtyTerminalReadinessMatcher =
   | Readonly<{ kind: "semantic-marker" }>
   | Readonly<{ kind: "challenge-marker"; challenge: string }>
   | Readonly<{
+      kind: "challenge-styled-text";
+      challenge: string;
+      text: string;
+      bold: boolean;
+      dim: boolean;
+    }>
+  | Readonly<{
       kind: "styled-text-after-completion";
       text: string;
       bold: boolean;
@@ -326,6 +333,33 @@ const validateReadinessMatcher = (
     return freezeAuthority({
       kind: "challenge-marker" as const,
       challenge: record.challenge,
+    });
+  }
+  if (value.kind === "challenge-styled-text") {
+    const record = strictRecord(
+      value,
+      ["bold", "challenge", "dim", "kind", "text"],
+      "testkit.pty.emulator.readiness",
+    );
+    const text = record.text;
+    if (
+      record.kind !== "challenge-styled-text" ||
+      typeof record.challenge !== "string" ||
+      !readinessChallengePattern.test(record.challenge) ||
+      typeof text !== "string" ||
+      [...text].length !== 1 ||
+      (text.codePointAt(0) ?? 0) < 0x20 ||
+      text.codePointAt(0) === 0x7f ||
+      typeof record.bold !== "boolean" ||
+      typeof record.dim !== "boolean"
+    )
+      return fail("testkit.pty.emulator.readiness");
+    return freezeAuthority({
+      kind: "challenge-styled-text" as const,
+      challenge: record.challenge,
+      text,
+      bold: record.bold,
+      dim: record.dim,
     });
   }
   const record = strictRecord(
@@ -677,6 +711,13 @@ export class BoundedTerminalEmulator {
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
       character === this.#readinessMatcher.text &&
       this.#completionObserved &&
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
+    )
+      this.#readinessObserved = true;
+    if (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      character === this.#readinessMatcher.text &&
       this.#bold === this.#readinessMatcher.bold &&
       this.#dim === this.#readinessMatcher.dim
     )

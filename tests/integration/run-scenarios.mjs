@@ -993,13 +993,18 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   );
   if (selectedScenario === undefined) return false;
   const challenge =
-    selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
-    receipt?.request?.readiness?.kind === "challenge-marker" &&
+    (selectedScenario.nativeReadiness?.kind === "challenge-marker" ||
+      selectedScenario.nativeReadiness?.kind ===
+        "codex-challenge-idle-prompt") &&
+    (receipt?.request?.readiness?.kind === "challenge-marker" ||
+      receipt?.request?.readiness?.kind === "challenge-styled-text") &&
     /^[a-f0-9]{64}$/u.test(receipt.request.readiness.challenge ?? "")
       ? receipt.request.readiness.challenge
       : undefined;
   if (
-    selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+    (selectedScenario.nativeReadiness?.kind === "challenge-marker" ||
+      selectedScenario.nativeReadiness?.kind ===
+        "codex-challenge-idle-prompt") &&
     challenge === undefined
   )
     return false;
@@ -1066,7 +1071,9 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
     if (selectedScenario === undefined) return false;
     const challenge = receipt?.request?.readiness?.challenge;
     const input = Buffer.concat([
-      ...(selectedScenario.nativeReadiness?.kind === "challenge-marker" &&
+      ...((selectedScenario.nativeReadiness?.kind === "challenge-marker" ||
+        selectedScenario.nativeReadiness?.kind ===
+          "codex-challenge-idle-prompt") &&
       typeof challenge === "string"
         ? [Buffer.from(`${challenge}\n`)]
         : []),
@@ -1081,17 +1088,28 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       typeof challenge === "string" &&
       /^[a-f0-9]{64}$/u.test(challenge)
         ? { kind: "challenge-marker", challenge }
-        : selectedScenario.nativeReadiness?.kind === "semantic-marker"
-          ? { kind: "semantic-marker" }
-          : selectedScenario.nativeReadiness?.kind === "codex-idle-prompt" &&
-              selectedScenario.harnessEvidenceId === "codex-0-149-1"
-            ? {
-                kind: "styled-text-after-completion",
-                text: "›",
-                bold: true,
-                dim: false,
-              }
-            : null;
+        : selectedScenario.nativeReadiness?.kind ===
+              "codex-challenge-idle-prompt" &&
+            typeof challenge === "string" &&
+            /^[a-f0-9]{64}$/u.test(challenge)
+          ? {
+              kind: "challenge-styled-text",
+              challenge,
+              text: "›",
+              bold: true,
+              dim: false,
+            }
+          : selectedScenario.nativeReadiness?.kind === "semantic-marker"
+            ? { kind: "semantic-marker" }
+            : selectedScenario.nativeReadiness?.kind === "codex-idle-prompt" &&
+                selectedScenario.harnessEvidenceId === "codex-0-149-1"
+              ? {
+                  kind: "styled-text-after-completion",
+                  text: "›",
+                  bold: true,
+                  dim: false,
+                }
+              : null;
     const requiresCanonicalEof = expectedActions.some(
       ({ action }) => action === "eof",
     );
@@ -1107,7 +1125,8 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       JSON.stringify(receipt?.request?.readiness) ===
         JSON.stringify(expectedReadiness) &&
       receipt?.request?.interaction?.trigger ===
-        (selectedScenario.nativeReadiness?.kind === "challenge-marker"
+        (selectedScenario.nativeReadiness?.kind === "challenge-marker" ||
+        selectedScenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
           ? "immediate"
           : "semantic-ready") &&
       JSON.stringify(receipt?.request?.interaction?.actions) ===
