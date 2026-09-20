@@ -2587,7 +2587,8 @@ const armSelectedPty = (
           priorAction?.action === "input" &&
           outputBytes === lastCompletedInputOutputBytes;
         const requiresLiveReadiness =
-          request.readiness.kind === "challenge-styled-text" && actionIndex > 0;
+          request.readiness.kind === "challenge-styled-text" &&
+          inputOffset >= 65;
         const shouldReadBeforeAction =
           !allowInput ||
           pendingActionBeforeRead === undefined ||
