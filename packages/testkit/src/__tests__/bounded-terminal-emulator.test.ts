@@ -173,6 +173,56 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
   });
 
+  it("revokes challenged readiness when resize truncates the live footer", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 4 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "100% context left",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m 100% context left`,
+      ),
+    );
+    expect(terminal.readinessObserved()).toBe(true);
+
+    terminal.resize({ columns: 10, rows: 4 });
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+
+  it("revokes challenged readiness when scrolling removes the live composer", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 2 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "100% context left",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m 100% context left`,
+      ),
+    );
+    expect(terminal.readinessObserved()).toBe(true);
+
+    terminal.write(bytes(`\r\n${"x".repeat(40)}`));
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },

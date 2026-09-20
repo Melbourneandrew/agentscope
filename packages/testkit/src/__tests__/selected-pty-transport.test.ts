@@ -191,6 +191,21 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        promptRequest,
+        "readiness-revoked-after-input",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+      ],
+      inputBytesWritten: 65 + prompt.length,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
     for (const actions of [
       [
         challengeRequest.interaction.actions[0]!,
