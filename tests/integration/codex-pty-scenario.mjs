@@ -37,6 +37,10 @@ const interactivePhases = Object.freeze([
   "installed-status",
   "installed-status-parse",
   "installed-status-project",
+  "installed-status-shape",
+  "installed-status-identity",
+  "installed-status-state",
+  "installed-status-configuration",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -714,14 +718,24 @@ const projectHarnessStatus = (
   configurationPresentCount,
 ) => {
   const value = records?.[0];
+  recordInteractivePhase("installed-status-shape");
+  if (records.length !== 1 || value?.installation !== installation)
+    throw new Error("integration.codex.harness-status");
+  recordInteractivePhase("installed-status-identity");
   if (
-    records.length !== 1 ||
-    value?.installation !== installation ||
     value?.discovery?.harness !== "codex" ||
     value.discovery.harnessType !== "@agentscope/harness-codex" ||
+    value.discovery.version !== "0.149.1"
+  )
+    throw new Error("integration.codex.harness-status");
+  recordInteractivePhase("installed-status-state");
+  if (
     value.discovery.state !== "installed" ||
-    value.discovery.reason !== "compatible" ||
-    value.discovery.version !== "0.149.1" ||
+    value.discovery.reason !== "compatible"
+  )
+    throw new Error("integration.codex.harness-status");
+  recordInteractivePhase("installed-status-configuration");
+  if (
     value.discovery.configurationLocationCount !== 2 ||
     value.discovery.configurationPresentCount !== configurationPresentCount
   )
