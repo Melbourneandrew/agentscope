@@ -411,6 +411,7 @@ export class BoundedTerminalEmulator {
   #ended = false;
   #outputLimitReached = false;
   #readinessObserved = false;
+  #readinessChallengeObserved = false;
   #readinessTail = "";
   #completionObserved = false;
   #completionTail = "";
@@ -691,7 +692,8 @@ export class BoundedTerminalEmulator {
     this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
     this.#appendRecent(character);
     const expectedReadinessMarker =
-      this.#readinessMatcher.kind === "challenge-marker"
+      this.#readinessMatcher.kind === "challenge-marker" ||
+      this.#readinessMatcher.kind === "challenge-styled-text"
         ? `${readyMarker}:${this.#readinessMatcher.challenge}`
         : readyMarker;
     this.#readinessTail = `${this.#readinessTail}${character}`.slice(
@@ -702,6 +704,9 @@ export class BoundedTerminalEmulator {
       this.#readinessMatcher.kind === "challenge-marker"
     )
       this.#readinessObserved ||=
+        this.#readinessTail === expectedReadinessMarker;
+    if (this.#readinessMatcher.kind === "challenge-styled-text")
+      this.#readinessChallengeObserved ||=
         this.#readinessTail === expectedReadinessMarker;
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
@@ -717,6 +722,7 @@ export class BoundedTerminalEmulator {
       this.#readinessObserved = true;
     if (
       this.#readinessMatcher.kind === "challenge-styled-text" &&
+      this.#readinessChallengeObserved &&
       character === this.#readinessMatcher.text &&
       this.#bold === this.#readinessMatcher.bold &&
       this.#dim === this.#readinessMatcher.dim
