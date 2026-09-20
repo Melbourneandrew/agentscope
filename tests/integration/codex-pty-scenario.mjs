@@ -42,6 +42,8 @@ const interactivePhases = Object.freeze([
   "installed-status-state",
   "installed-status-configuration-locations",
   "installed-status-configuration-present",
+  "installed-status-configuration-present-zero",
+  "installed-status-configuration-present-two",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -739,8 +741,13 @@ const projectHarnessStatus = (
   if (value.discovery.configurationLocationCount !== 2)
     throw new Error("integration.codex.harness-status");
   recordInteractivePhase("installed-status-configuration-present");
-  if (value.discovery.configurationPresentCount !== configurationPresentCount)
+  if (value.discovery.configurationPresentCount !== configurationPresentCount) {
+    if (value.discovery.configurationPresentCount === 0)
+      recordInteractivePhase("installed-status-configuration-present-zero");
+    else if (value.discovery.configurationPresentCount === 2)
+      recordInteractivePhase("installed-status-configuration-present-two");
     throw new Error("integration.codex.harness-status");
+  }
   return { installation, configurationPresentCount };
 };
 const projectDoctor = (records) => {

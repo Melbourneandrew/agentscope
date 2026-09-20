@@ -18,6 +18,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-installed-status",
   "integration.fixture.codex-installed-status-configuration-locations",
   "integration.fixture.codex-installed-status-configuration-present",
+  "integration.fixture.codex-installed-status-configuration-present-two",
+  "integration.fixture.codex-installed-status-configuration-present-zero",
   "integration.fixture.codex-installed-status-identity",
   "integration.fixture.codex-installed-status-parse",
   "integration.fixture.codex-installed-status-project",
