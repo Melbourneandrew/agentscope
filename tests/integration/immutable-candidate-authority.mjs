@@ -6,6 +6,13 @@ const fail = () => {
 export const ptyExecutionFailurePredicates = Object.freeze([
   "child-failure",
   "integration.fixture.codex-bootstrap",
+  "integration.fixture.codex-bootstrap-arguments",
+  "integration.fixture.codex-bootstrap-artifact",
+  "integration.fixture.codex-bootstrap-deadline",
+  "integration.fixture.codex-bootstrap-environment",
+  "integration.fixture.codex-bootstrap-modules",
+  "integration.fixture.codex-bootstrap-pty",
+  "integration.fixture.codex-bootstrap-readiness",
   "integration.fixture.codex-destination",
   "integration.fixture.codex-install",
   "integration.fixture.codex-installed-status",

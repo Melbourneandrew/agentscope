@@ -23,6 +23,13 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 const interactivePhases = Object.freeze([
   "bootstrap",
+  "bootstrap-arguments",
+  "bootstrap-deadline",
+  "bootstrap-readiness",
+  "bootstrap-environment",
+  "bootstrap-modules",
+  "bootstrap-artifact",
+  "bootstrap-pty",
   "init",
   "destination",
   "routing",
@@ -69,6 +76,13 @@ const interactivePhases = Object.freeze([
   "trace-search-result",
   "verify",
 ]);
+const advanceInteractivePhase = (phase) => {
+  const phaseIndex = interactivePhases.indexOf(phase);
+  if (phaseIndex <= interactiveFailurePhaseIndex)
+    throw new Error("integration.codex.failure-phase");
+  interactiveFailurePhase = phase;
+  interactiveFailurePhaseIndex = phaseIndex;
+};
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
 process.setUncaughtExceptionCaptureCallback(() => {
@@ -109,6 +123,7 @@ const required = (name) => {
   if (!value) throw new Error(`integration.codex.environment-${name}`);
   return value;
 };
+advanceInteractivePhase("bootstrap-arguments");
 if (process.argv.length !== 4 || process.argv[2] !== "--artifact")
   throw new Error("integration.codex.arguments");
 const artifactPath = process.argv[3];
@@ -119,6 +134,7 @@ const bootNow = () => {
     throw new Error("integration.codex.clock");
   return Number(source.split(/\s/u, 1)[0]) * 1_000;
 };
+advanceInteractivePhase("bootstrap-deadline");
 const deadline = Number(required("AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS"));
 if (!Number.isFinite(deadline) || deadline <= bootNow())
   throw new Error("integration.codex.deadline");
@@ -186,6 +202,7 @@ const readReadinessChallenge = () =>
       Math.min(10_000, remaining()),
     );
   });
+advanceInteractivePhase("bootstrap-readiness");
 const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;
 terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
@@ -302,6 +319,7 @@ const parseMachine = (bytes, command) => {
 
 const agentscope = "/opt/agentscope/installed/node_modules/.bin/agentscope";
 const codex = "/opt/agentscope/harness/node_modules/.bin/codex";
+advanceInteractivePhase("bootstrap-environment");
 const home = required("HOME");
 const codexHome = join(home, ".codex");
 const agentscopeHome = required("AGENTSCOPE_HOME");
@@ -328,11 +346,7 @@ let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
 let sessionStartBeforeFirstModelRequestAdmission;
 const recordInteractivePhase = (phase) => {
-  const phaseIndex = interactivePhases.indexOf(phase);
-  if (phaseIndex <= interactiveFailurePhaseIndex)
-    throw new Error("integration.codex.failure-phase");
-  interactiveFailurePhase = phase;
-  interactiveFailurePhaseIndex = phaseIndex;
+  advanceInteractivePhase(phase);
   writeFileSync(
     join(ledger, `interactive-phase-${phase}.txt`),
     `integration.fixture.codex-${phase}\n`,
@@ -348,6 +362,7 @@ const codexStopHookCommandFailure = (outcome) => {
   else throw new Error("integration.codex.hook-command-outcome");
   return { error: `integration.codex.hook-command-${outcome}`, phase };
 };
+advanceInteractivePhase("bootstrap-modules");
 const [configurationModule, evidenceModule, oracleModule, adapterModule] =
   await Promise.all([
     import("./runtime/codex-configuration.js"),
@@ -388,9 +403,11 @@ const {
 const { correlateCodexPlatformObservations } = oracleModule;
 const { translateCodexPlatformObservations } = adapterModule;
 
+advanceInteractivePhase("bootstrap-artifact");
 const artifactStatus = lstatSync(artifactPath);
 if (!artifactStatus.isFile() || artifactStatus.isSymbolicLink())
   throw new Error("integration.codex.artifact");
+advanceInteractivePhase("bootstrap-pty");
 if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
   throw new Error("integration.codex.pty");
 
