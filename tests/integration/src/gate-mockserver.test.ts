@@ -105,12 +105,22 @@ const startGate = async () => {
   agents.set(controlPort, new Agent({ keepAlive: true, maxSockets: 1 }));
   return { child, controlPort, modelPort };
 };
-const configure = async (controlPort: number, cutoff = bootNow() + 5_000) => {
+const configure = async (controlPort: number, cutoffWindowMs = 5_000) => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      const health = await request(controlPort, "/health");
+      if (health.status === 200) break;
+    } catch {
+      // The fixture owns this bounded startup readiness phase.
+    }
+    if (attempt === 99) throw new Error("gate-test.readiness");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       return await request(controlPort, "/configure", {
         challenge,
-        cutoff,
+        cutoff: bootNow() + cutoffWindowMs,
         responseText,
         runId,
       });
@@ -290,9 +300,7 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("denies a partial request at the absolute cutoff without admitting work", async () => {
     const { controlPort, modelPort } = await startGate();
-    // The cutoff exercises an already-partial request, so leave bounded room for
-    // the child startup, control-plane arm, and socket write under coverage.
-    await configure(controlPort, bootNow() + 2_000);
+    await configure(controlPort, 200);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     expect(
@@ -360,7 +368,7 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("drains work admitted before cutoff while refusing later admission", async () => {
     const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, bootNow() + 300);
+    await configure(controlPort, 300);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     await request(controlPort, "/arm", {
@@ -405,7 +413,7 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("rejects an idle later socket when cutoff wins before its request", async () => {
     const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, bootNow() + 500);
+    await configure(controlPort, 500);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
     await request(controlPort, "/arm", {
@@ -452,7 +460,7 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("accounts for partial framing admitted before cutoff", async () => {
     const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, bootNow() + 700);
+    await configure(controlPort, 700);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
     await request(controlPort, "/arm", {
@@ -502,7 +510,7 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("rejects a request-ready callback delayed past cutoff", async () => {
     const { child, controlPort, modelPort } = await startGate();
-    await configure(controlPort, bootNow() + 1_200);
+    await configure(controlPort, 1_200);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
     await request(controlPort, "/arm", {

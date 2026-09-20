@@ -458,6 +458,7 @@ const ptyTerminalReceiptSchema = z
           kind: z.literal("challenge-styled-text"),
           challenge: z.string().regex(/^[a-f\d]{64}$/u),
           text: z.string().length(1),
+          requiredText: z.string().min(1).max(32),
           bold: z.boolean(),
           dim: z.boolean(),
         }),

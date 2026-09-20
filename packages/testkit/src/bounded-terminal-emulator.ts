@@ -13,6 +13,7 @@ export type PtyTerminalReadinessMatcher =
       kind: "challenge-styled-text";
       challenge: string;
       text: string;
+      requiredText: string;
       bold: boolean;
       dim: boolean;
     }>
@@ -338,10 +339,11 @@ const validateReadinessMatcher = (
   if (value.kind === "challenge-styled-text") {
     const record = strictRecord(
       value,
-      ["bold", "challenge", "dim", "kind", "text"],
+      ["bold", "challenge", "dim", "kind", "requiredText", "text"],
       "testkit.pty.emulator.readiness",
     );
     const text = record.text;
+    const requiredText = record.requiredText;
     if (
       record.kind !== "challenge-styled-text" ||
       typeof record.challenge !== "string" ||
@@ -350,6 +352,14 @@ const validateReadinessMatcher = (
       [...text].length !== 1 ||
       (text.codePointAt(0) ?? 0) < 0x20 ||
       text.codePointAt(0) === 0x7f ||
+      typeof requiredText !== "string" ||
+      requiredText.length < 1 ||
+      requiredText.length > 32 ||
+      [...requiredText].some(
+        (character) =>
+          (character.codePointAt(0) ?? 0) < 0x20 ||
+          character.codePointAt(0) === 0x7f,
+      ) ||
       typeof record.bold !== "boolean" ||
       typeof record.dim !== "boolean"
     )
@@ -358,6 +368,7 @@ const validateReadinessMatcher = (
       kind: "challenge-styled-text" as const,
       challenge: record.challenge,
       text,
+      requiredText,
       bold: record.bold,
       dim: record.dim,
     });
@@ -412,6 +423,8 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessChallengeObserved = false;
+  #readinessStyledTextObserved = false;
+  #readinessRequiredTail = "";
   #readinessTail = "";
   #completionObserved = false;
   #completionTail = "";
@@ -581,6 +594,27 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved;
   }
 
+  #observeChallengeStyledReadiness(character: string): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    if (
+      this.#readinessChallengeObserved &&
+      character === this.#readinessMatcher.text &&
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
+    )
+      this.#readinessStyledTextObserved = true;
+    this.#readinessRequiredTail =
+      `${this.#readinessRequiredTail}${character}`.slice(
+        -this.#readinessMatcher.requiredText.length,
+      );
+    if (
+      this.#readinessChallengeObserved &&
+      this.#readinessStyledTextObserved &&
+      this.#readinessRequiredTail === this.#readinessMatcher.requiredText
+    )
+      this.#readinessObserved = true;
+  }
+
   public completionObserved(): boolean {
     return this.#completionObserved;
   }
@@ -720,14 +754,7 @@ export class BoundedTerminalEmulator {
       this.#dim === this.#readinessMatcher.dim
     )
       this.#readinessObserved = true;
-    if (
-      this.#readinessMatcher.kind === "challenge-styled-text" &&
-      this.#readinessChallengeObserved &&
-      character === this.#readinessMatcher.text &&
-      this.#bold === this.#readinessMatcher.bold &&
-      this.#dim === this.#readinessMatcher.dim
-    )
-      this.#readinessObserved = true;
+    this.#observeChallengeStyledReadiness(character);
     this.#credentialTail = `${this.#credentialTail}${character}`.slice(
       -maximumCredentialTailCodePoints,
     );

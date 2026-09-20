@@ -142,6 +142,7 @@ describe("bounded semantic terminal emulator", () => {
         kind: "challenge-styled-text",
         challenge,
         text: "›",
+        requiredText: "100% context left",
         bold: true,
         dim: false,
       },
@@ -157,6 +158,10 @@ describe("bounded semantic terminal emulator", () => {
     terminal.write(bytes("[2m›[22m "));
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("[1m›[22m "));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("100% context lef"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("t"));
     expect(terminal.readinessObserved()).toBe(true);
   });
 
