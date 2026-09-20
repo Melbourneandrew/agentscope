@@ -4,7 +4,9 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
-  chmodSync,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -42,8 +44,6 @@ const interactivePhases = Object.freeze([
   "installed-status-state",
   "installed-status-configuration-locations",
   "installed-status-configuration-present",
-  "installed-status-configuration-present-zero",
-  "installed-status-configuration-present-two",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -741,13 +741,8 @@ const projectHarnessStatus = (
   if (value.discovery.configurationLocationCount !== 2)
     throw new Error("integration.codex.harness-status");
   recordInteractivePhase("installed-status-configuration-present");
-  if (value.discovery.configurationPresentCount !== configurationPresentCount) {
-    if (value.discovery.configurationPresentCount === 0)
-      recordInteractivePhase("installed-status-configuration-present-zero");
-    else if (value.discovery.configurationPresentCount === 2)
-      recordInteractivePhase("installed-status-configuration-present-two");
+  if (value.discovery.configurationPresentCount !== configurationPresentCount)
     throw new Error("integration.codex.harness-status");
-  }
   return { installation, configurationPresentCount };
 };
 const projectDoctor = (records) => {
@@ -1119,7 +1114,7 @@ try {
   const installedStatus = projectHarnessStatus(
     installedStatusRecords,
     "unchanged",
-    1,
+    2,
   );
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
@@ -1143,11 +1138,28 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
-  writeFileSync(join(codexHome, "config.toml"), configuration, {
-    flag: "wx",
-    mode: 0o600,
-  });
-  chmodSync(join(codexHome, "config.toml"), 0o600);
+  const configurationPath = join(codexHome, "config.toml");
+  const configurationState = lstatSync(configurationPath);
+  if (!configurationState.isFile() || configurationState.isSymbolicLink())
+    throw new Error("integration.codex.hook-configuration");
+  const configurationDescriptor = openSync(
+    configurationPath,
+    constants.O_WRONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const descriptorState = fstatSync(configurationDescriptor);
+    if (
+      !descriptorState.isFile() ||
+      descriptorState.dev !== configurationState.dev ||
+      descriptorState.ino !== configurationState.ino
+    )
+      throw new Error("integration.codex.hook-configuration");
+    ftruncateSync(configurationDescriptor, 0);
+    writeFileSync(configurationDescriptor, configuration);
+    fchmodSync(configurationDescriptor, 0o600);
+  } finally {
+    closeSync(configurationDescriptor);
+  }
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
