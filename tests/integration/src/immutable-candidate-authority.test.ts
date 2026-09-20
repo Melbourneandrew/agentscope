@@ -8,8 +8,10 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   decodeImmutableCandidateHandoff,
+  encodeInteractiveFailureExitCode,
   extractInteractiveChildDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -220,6 +222,30 @@ describe("interactive PTY receipt transport", () => {
 });
 
 describe("interactive PTY failure diagnostic transport", () => {
+  it("round-trips one exact allowlisted runner diagnostic through a reserved exit code", () => {
+    const diagnostic = "integration.fixture.codex-model-request";
+    const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+    expect(exitCode).toEqual(expect.any(Number));
+    expect(exitCode).toBeGreaterThanOrEqual(64);
+    expect(exitCode).toBeLessThanOrEqual(125);
+    expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+  });
+
+  it.each([
+    undefined,
+    "integration.fixture.codex-not-allowlisted",
+    "testkit.pty.transport.semantic-nonzero",
+  ])("refuses to encode an unapproved diagnostic: %s", (diagnostic) => {
+    expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+  });
+
+  it.each([undefined, 1, 63, 126, 1.5])(
+    "refuses to decode an unreserved exit code: %s",
+    (exitCode) => {
+      expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();
+    },
+  );
+
   it("extracts one exact allowlisted runner diagnostic from attach output", () => {
     expect(
       extractInteractiveChildDiagnostic(
