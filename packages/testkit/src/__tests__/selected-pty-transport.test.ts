@@ -125,7 +125,7 @@ describe("selected PTY transport", () => {
       },
     };
     const prompt = new TextEncoder().encode(
-      "Reply with one short confirmation and do not use tools.\n",
+      "Reply with one short confirmation and do not use tools.\r",
     );
     const promptInput = new Uint8Array(
       Buffer.concat([
