@@ -13,6 +13,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-bootstrap-modules",
   "integration.fixture.codex-bootstrap-pty",
   "integration.fixture.codex-bootstrap-readiness",
+  "integration.fixture.codex-configuration-rewrite-complete",
+  "integration.fixture.codex-configuration-rewrite-start",
   "integration.fixture.codex-destination",
   "integration.fixture.codex-install",
   "integration.fixture.codex-installed-status",
