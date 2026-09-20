@@ -2063,6 +2063,9 @@ const snapshotPtyRequest = (
   let firstInputIndex = -1;
   let firstInputByteLength = -1;
   let secondInputIndex = -1;
+  let secondInputByteLength = -1;
+  let thirdInputIndex = -1;
+  let thirdInputByteLength = -1;
   let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
@@ -2100,7 +2103,13 @@ const snapshotPtyRequest = (
         if (inputCountBeforeSemanticWait === 1) {
           firstInputIndex = index;
           firstInputByteLength = byteLength;
-        } else if (inputCountBeforeSemanticWait === 2) secondInputIndex = index;
+        } else if (inputCountBeforeSemanticWait === 2) {
+          secondInputIndex = index;
+          secondInputByteLength = byteLength;
+        } else if (inputCountBeforeSemanticWait === 3) {
+          thirdInputIndex = index;
+          thirdInputByteLength = byteLength;
+        }
       }
       describedInputBytes += byteLength;
       defineArrayIndex(
@@ -2227,13 +2236,24 @@ const snapshotPtyRequest = (
         topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
         inputCountBeforeSemanticWait < 1 ||
-        inputCountBeforeSemanticWait > 2 ||
+        inputCountBeforeSemanticWait >
+          (readinessKind === "challenge-styled-text" ? 3 : 2) ||
         firstInputByteLength !== 65 ||
         topologyCheckpointIndex !== firstInputIndex + 1 ||
-        (inputCountBeforeSemanticWait === 1
-          ? semanticWaitIndex !== topologyCheckpointIndex + 1
-          : secondInputIndex !== topologyCheckpointIndex + 1 ||
-            semanticWaitIndex !== secondInputIndex + 1) ||
+        (readinessKind === "challenge-styled-text"
+          ? inputCountBeforeSemanticWait !== 3 ||
+            secondInputIndex !== topologyCheckpointIndex + 1 ||
+            thirdInputIndex !== secondInputIndex + 1 ||
+            semanticWaitIndex !== thirdInputIndex + 1 ||
+            secondInputByteLength < 1 ||
+            thirdInputByteLength !== 1 ||
+            safeBufferFrom(process_.stdin)[
+              describedInputBytesAtSemanticWait - 1
+            ] !== 0x0d
+          : inputCountBeforeSemanticWait === 1
+            ? semanticWaitIndex !== topologyCheckpointIndex + 1
+            : secondInputIndex !== topologyCheckpointIndex + 1 ||
+              semanticWaitIndex !== secondInputIndex + 1) ||
         describedInputBytesAtSemanticWait < 65 ||
         describedInputBytesAtSemanticWait > 165 ||
         describedInputBytes - describedInputBytesAtSemanticWait > 32 ||
@@ -4748,30 +4768,33 @@ const selectedPtyRuntimeForTest = (
             : "AGENTSCOPE_PTY_READY",
       );
       const chunks =
-        seed === "completion-before-readiness"
-          ? [output, ready]
-          : seed === "fragmented-output"
-            ? [
-                ready.subarray(0, 2),
-                ready.subarray(2),
-                output.subarray(0, 2),
-                output.subarray(2),
-              ]
-            : seed === "readiness-burst"
+        readiness.kind === "challenge-styled-text" && seed === "clean"
+          ? [ready, safeBufferFrom("prompt-rendered"), output]
+          : seed === "completion-before-readiness"
+            ? [output, ready]
+            : seed === "fragmented-output"
               ? [
-                  safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
-                  output,
+                  ready.subarray(0, 2),
+                  ready.subarray(2),
+                  output.subarray(0, 2),
+                  output.subarray(2),
                 ]
-              : seed === "output-limit" || seed === "partial-input-output-limit"
-                ? [output.subarray(0, 4_096), output.subarray(4_096)]
-                : seed === "active-terminal" ||
-                    seed === "immediate-output" ||
-                    seed === "missing-ready" ||
-                    seed === "credential-prompt" ||
-                    seed === "malformed-control" ||
-                    seed === "unsupported-control"
-                  ? [output]
-                  : [ready, output];
+              : seed === "readiness-burst"
+                ? [
+                    safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
+                    output,
+                  ]
+                : seed === "output-limit" ||
+                    seed === "partial-input-output-limit"
+                  ? [output.subarray(0, 4_096), output.subarray(4_096)]
+                  : seed === "active-terminal" ||
+                      seed === "immediate-output" ||
+                      seed === "missing-ready" ||
+                      seed === "credential-prompt" ||
+                      seed === "malformed-control" ||
+                      seed === "unsupported-control"
+                    ? [output]
+                    : [ready, output];
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;

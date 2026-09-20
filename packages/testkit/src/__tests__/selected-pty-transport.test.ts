@@ -125,12 +125,14 @@ describe("selected PTY transport", () => {
       },
     };
     const prompt = new TextEncoder().encode(
-      "Reply with one short confirmation and do not use tools.\r",
+      "\u001b[200~Reply with one short confirmation and do not use tools.\u001b[201~",
     );
+    const enter = new TextEncoder().encode("\r");
     const promptInput = new Uint8Array(
       Buffer.concat([
         Buffer.from(challengeInput.subarray(0, 65)),
         Buffer.from(prompt),
+        Buffer.from(enter),
         Buffer.from([4]),
       ]),
     );
@@ -138,6 +140,11 @@ describe("selected PTY transport", () => {
       action: "input" as const,
       byteLength: prompt.length,
       inputSha256: createHash("sha256").update(prompt).digest("hex"),
+    };
+    const enterAction = {
+      action: "input" as const,
+      byteLength: enter.length,
+      inputSha256: createHash("sha256").update(enter).digest("hex"),
     };
     const promptRequest: SelectedPtyExecutionRequest = {
       ...challengeRequest,
@@ -155,6 +162,7 @@ describe("selected PTY transport", () => {
           challengeRequest.interaction.actions[0]!,
           challengeRequest.interaction.actions[1]!,
           promptAction,
+          enterAction,
           { action: "wait-for-semantic-completion" },
           {
             action: "input",
@@ -174,6 +182,7 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
         { action: "wait-for-semantic-completion" },
         { action: "input", byteLength: 1 },
       ],
@@ -187,7 +196,7 @@ describe("selected PTY transport", () => {
         promptAction,
         challengeRequest.interaction.actions[1]!,
         { action: "wait-for-semantic-completion" as const },
-        promptRequest.interaction.actions[4]!,
+        promptRequest.interaction.actions[5]!,
       ],
       [
         challengeRequest.interaction.actions[0]!,
