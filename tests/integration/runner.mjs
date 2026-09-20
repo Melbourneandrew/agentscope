@@ -580,7 +580,7 @@ try {
     ) {
       const diagnostic = retainedInteractivePhase(ledger);
       if (diagnostic !== undefined)
-        process.stderr.write(
+        process.stdout.write(
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
         );
       fixtureFailure = new Error("integration.runner.fixture-failed");
@@ -652,7 +652,7 @@ try {
       // The selected PTY error remains the diagnostic if no fixture record exists.
     }
     diagnostic = retainedInteractivePhase(ledger) ?? diagnostic;
-    process.stderr.write(
+    process.stdout.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
   }
