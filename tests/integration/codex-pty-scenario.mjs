@@ -4,9 +4,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
-  fchmodSync,
-  fstatSync,
-  ftruncateSync,
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -1149,27 +1147,11 @@ try {
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
   const configurationPath = join(codexHome, "config.toml");
-  const configurationState = lstatSync(configurationPath);
-  if (!configurationState.isFile() || configurationState.isSymbolicLink())
-    throw new Error("integration.codex.hook-configuration");
-  const configurationDescriptor = openSync(
-    configurationPath,
-    constants.O_WRONLY | constants.O_NOFOLLOW,
-  );
-  try {
-    const descriptorState = fstatSync(configurationDescriptor);
-    if (
-      !descriptorState.isFile() ||
-      descriptorState.dev !== configurationState.dev ||
-      descriptorState.ino !== configurationState.ino
-    )
-      throw new Error("integration.codex.hook-configuration");
-    ftruncateSync(configurationDescriptor, 0);
-    writeFileSync(configurationDescriptor, configuration);
-    fchmodSync(configurationDescriptor, 0o600);
-  } finally {
-    closeSync(configurationDescriptor);
-  }
+  writeFileSync(configurationPath, configuration, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  chmodSync(configurationPath, 0o600);
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
