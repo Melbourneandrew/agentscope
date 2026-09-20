@@ -36,10 +36,10 @@ const interactivePhases = Object.freeze([
   "destination",
   "routing",
   "install",
-  "installed-status",
-  "installed-status-parse",
-  "installed-status-project",
   "model-gate-start",
+  "model-gate-routes-read",
+  "model-gate-route-validated",
+  "model-gate-request-complete",
   "model-gate-configured",
   "control-plane-closed",
   "configuration-built",
@@ -595,6 +595,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
   );
+  recordInteractivePhase("model-gate-routes-read");
   const routeIndex = routeAuthority.routeIds?.indexOf("codex-tui-responses");
   const route =
     Number.isInteger(routeIndex) && routeIndex >= 0
@@ -611,6 +612,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     body.includes(expectedAssistantMessage)
   )
     throw new Error("integration.codex.model-gate");
+  recordInteractivePhase("model-gate-route-validated");
   const response = await controlRequest(
     "/configure",
     "POST",
@@ -625,6 +627,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     },
     AbortSignal.timeout(Math.min(1_000, remaining())),
   );
+  recordInteractivePhase("model-gate-request-complete");
   if (
     !exactKeys(response, ["runId", "state"]) ||
     response.runId !== integrationRunId ||
@@ -1094,7 +1097,6 @@ try {
   operationalStateBaseline = localSqliteAcceptanceBaseline(
     operationalStateHealthDescriptor,
   );
-  recordInteractivePhase("installed-status");
   const { stdout: installedStatusOutput } = await run(agentscope, [
     "harness",
     "status",
@@ -1102,12 +1104,10 @@ try {
     "--output",
     "json",
   ]);
-  recordInteractivePhase("installed-status-parse");
   const installedStatusRecords = parseMachine(
     installedStatusOutput,
     "agentscope harness status",
   );
-  recordInteractivePhase("installed-status-project");
   const installedStatus = projectHarnessStatus(
     installedStatusRecords,
     "unchanged",
