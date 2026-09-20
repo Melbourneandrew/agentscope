@@ -1118,7 +1118,6 @@ try {
     "unchanged",
     1,
   );
-  recordInteractivePhase("configuration-rewrite-start");
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
     codexDiagnosticLogDirectory,
@@ -1141,6 +1140,7 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
+  recordInteractivePhase("configuration-rewrite-start");
   const configurationPath = join(codexHome, "config.toml");
   const configurationState = lstatSync(configurationPath);
   if (!configurationState.isFile() || configurationState.isSymbolicLink())
