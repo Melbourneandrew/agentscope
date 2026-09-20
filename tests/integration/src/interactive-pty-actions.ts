@@ -52,6 +52,22 @@ export const compileInteractivePtyActions = (
     { length: scenario.postCompletionInputByteLength },
     (_, offset) => inputAction(postCompletionInputOffset + offset, 1),
   );
+  const preCompletionInputActions =
+    preCompletionInputBytes === 0
+      ? []
+      : scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
+        ? (() => {
+            if (
+              preCompletionInputBytes < 2 ||
+              input[initialInputBytes + preCompletionInputBytes - 1] !== 0x0d
+            )
+              throw new Error("integration.manifest.interaction");
+            return [
+              inputAction(initialInputBytes, preCompletionInputBytes - 1),
+              inputAction(initialInputBytes + preCompletionInputBytes - 1, 1),
+            ];
+          })()
+        : [inputAction(initialInputBytes, preCompletionInputBytes)];
   return deepFreeze([
     { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
     ...(initialInputBytes > 0 ? [inputAction(0, initialInputBytes)] : []),
@@ -61,9 +77,7 @@ export const compileInteractivePtyActions = (
             action: "checkpoint-process-topology" as const,
             topology: "root-with-contained-process-set" as const,
           },
-          ...(preCompletionInputBytes > 0
-            ? [inputAction(initialInputBytes, preCompletionInputBytes)]
-            : []),
+          ...preCompletionInputActions,
         ]
       : []),
     ...(scenario.waitForSemanticCompletionBeforeTerminalAction
