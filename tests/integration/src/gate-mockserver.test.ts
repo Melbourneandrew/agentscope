@@ -290,7 +290,9 @@ describe("gate-capable exact-build MockServer", () => {
 
   it("denies a partial request at the absolute cutoff without admitting work", async () => {
     const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, bootNow() + 200);
+    // The cutoff exercises an already-partial request, so leave bounded room for
+    // the child startup, control-plane arm, and socket write under coverage.
+    await configure(controlPort, bootNow() + 2_000);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     expect(

@@ -194,7 +194,7 @@ describe("integration capability manifest", () => {
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
       Buffer.concat([
         Buffer.from(
-          "Reply with one short confirmation and do not use tools.\r",
+          "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\r",
         ),
         Buffer.from([4, 4]),
       ]),
@@ -247,12 +247,12 @@ describe("integration capability manifest", () => {
     expect(actions[3]).toEqual({
       action: "input",
       byteLength: Buffer.byteLength(
-        "Reply with one short confirmation and do not use tools.\r",
+        "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\r",
       ),
       inputSha256: createHash("sha256")
         .update(
           Buffer.from(
-            "Reply with one short confirmation and do not use tools.\r",
+            "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\r",
           ),
         )
         .digest("hex"),
