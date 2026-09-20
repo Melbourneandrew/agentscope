@@ -122,6 +122,22 @@ export const installedPtyFailurePredicates = Object.freeze({
   "pty-execution": ptyExecutionFailurePredicates,
 });
 
+export const extractInteractiveChildDiagnostic = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const matches = [
+    ...output.matchAll(
+      /^integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})$/gmu,
+    ),
+  ];
+  if (matches.length !== 1) return undefined;
+  const diagnostic = matches[0]?.[1];
+  return diagnostic !== undefined &&
+    ptyExecutionFailurePredicates.includes(diagnostic)
+    ? diagnostic
+    : undefined;
+};
+
 export const decodeInteractivePtyReceipt = (output) => {
   if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
     return fail();
