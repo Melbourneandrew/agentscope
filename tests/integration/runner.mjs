@@ -19,7 +19,6 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
-  decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
 } from "./immutable-candidate-authority.mjs";
@@ -99,6 +98,11 @@ const retainedInteractivePhase = (ledger) => {
     }
   }
   return retained;
+};
+const decodeScenarioFailureExitCode = (exitCode) => {
+  if (!Number.isSafeInteger(exitCode)) return undefined;
+  const phase = interactivePhases[exitCode - 64];
+  return phase === undefined ? undefined : `integration.fixture.codex-${phase}`;
 };
 
 const requiredEnvironment = (name) => {
@@ -582,7 +586,7 @@ try {
       !receipt.terminalTransportClosed
     ) {
       const diagnostic =
-        decodeInteractiveFailureExitCode(receipt.exitCode) ??
+        decodeScenarioFailureExitCode(receipt.exitCode) ??
         retainedInteractivePhase(ledger);
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)

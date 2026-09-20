@@ -17,7 +17,6 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
-import { encodeInteractiveFailureExitCode } from "./immutable-candidate-authority.mjs";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
@@ -361,7 +360,7 @@ process.setUncaughtExceptionCaptureCallback(() => {
       flag: "wx",
       mode: 0o600,
     });
-    exitCode = encodeInteractiveFailureExitCode(diagnostic) ?? 1;
+    exitCode = 64 + interactiveFailurePhaseIndex;
   } finally {
     process.exit(exitCode);
   }

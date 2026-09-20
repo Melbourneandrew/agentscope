@@ -190,15 +190,13 @@ describe("integration cleanup authority", () => {
         'fixtureFailure = new Error("integration.runner.fixture-failed")',
       ),
     );
-    expect(source).toContain(
-      "decodeInteractiveFailureExitCode(receipt.exitCode)",
-    );
+    expect(source).toContain("decodeScenarioFailureExitCode(receipt.exitCode)");
 
     const scenario = readFileSync(
       resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
       "utf8",
     );
-    expect(scenario).toContain("encodeInteractiveFailureExitCode(diagnostic)");
+    expect(scenario).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
     expect(scenario).toContain("process.exit(exitCode)");
   });
 
