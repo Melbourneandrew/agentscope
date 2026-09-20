@@ -208,6 +208,9 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       "const timer = setTimeout(() => settle(1), 1_000)",
     );
+    expect(source).toContain(
+      'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
+    );
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
