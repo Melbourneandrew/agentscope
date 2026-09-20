@@ -147,6 +147,11 @@ describe("bounded semantic terminal emulator", () => {
       },
     );
 
+    terminal.write(bytes("\u001b[1m›\u001b[22m "));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${"b".repeat(64)}\r\n`));
+    terminal.write(bytes("\u001b[1m›\u001b[22m "));
+    expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("[2m›[22m "));

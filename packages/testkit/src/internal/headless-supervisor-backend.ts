@@ -4741,7 +4741,7 @@ const selectedPtyRuntimeForTest = (
                     : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
-          ? "\u001b[1m›\u001b[22m "
+          ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m `
           : readiness.kind === "challenge-marker" &&
               seed !== "fixed-readiness-spoof"
             ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
