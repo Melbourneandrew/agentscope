@@ -1969,12 +1969,13 @@ const snapshotPtyRequest = (
     ]);
   } else if (
     readinessKind === "challenge-styled-text" &&
-    readinessKeys === "bold\0challenge\0dim\0kind\0text"
+    readinessKeys === "bold\0challenge\0dim\0kind\0requiredText\0text"
   ) {
     const challenge = ownData(readiness, "challenge");
     const readinessText = ownData(readiness, "text");
     const readinessBold = ownData(readiness, "bold");
     const readinessDim = ownData(readiness, "dim");
+    const requiredText = ownData(readiness, "requiredText");
     if (
       typeof challenge !== "string" ||
       !/^[a-f0-9]{64}$/u.test(challenge) ||
@@ -1983,7 +1984,15 @@ const snapshotPtyRequest = (
       (readinessText.codePointAt(0) ?? 0) < 0x20 ||
       readinessText.codePointAt(0) === 0x7f ||
       typeof readinessBold !== "boolean" ||
-      typeof readinessDim !== "boolean"
+      typeof readinessDim !== "boolean" ||
+      typeof requiredText !== "string" ||
+      requiredText.length < 1 ||
+      requiredText.length > 32 ||
+      [...requiredText].some(
+        (character) =>
+          (character.codePointAt(0) ?? 0) < 0x20 ||
+          character.codePointAt(0) === 0x7f,
+      )
     )
       return fail("testkit.pty.request");
     readinessChallenge = challenge;
@@ -1992,6 +2001,7 @@ const snapshotPtyRequest = (
         kind: "challenge-styled-text" as const,
         challenge,
         text: readinessText,
+        requiredText,
         bold: readinessBold,
         dim: readinessDim,
       },
@@ -4761,7 +4771,7 @@ const selectedPtyRuntimeForTest = (
                     : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
-          ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m `
+          ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m ${readiness.requiredText}`
           : readiness.kind === "challenge-marker" &&
               seed !== "fixed-readiness-spoof"
             ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
