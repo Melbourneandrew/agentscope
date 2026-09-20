@@ -402,6 +402,8 @@ export class BoundedTerminalEmulator {
   readonly #limits: PtyTerminalEmulatorLimits;
   #geometry: PtyTerminalGeometry;
   #cells: string[];
+  #cellBold: boolean[];
+  #cellDim: boolean[];
   #row = 0;
   #column = 0;
   #alternateScreen = false;
@@ -423,8 +425,6 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessChallengeObserved = false;
-  #readinessStyledTextObserved = false;
-  #readinessRequiredTail = "";
   #readinessTail = "";
   #completionObserved = false;
   #completionTail = "";
@@ -446,6 +446,14 @@ export class BoundedTerminalEmulator {
     this.#cells = filledOwnArray(
       this.#geometry.columns * this.#geometry.rows,
       " ",
+    );
+    this.#cellBold = filledOwnArray(
+      this.#geometry.columns * this.#geometry.rows,
+      false,
+    );
+    this.#cellDim = filledOwnArray(
+      this.#geometry.columns * this.#geometry.rows,
+      false,
     );
     this.#readinessMatcher = validateReadinessMatcher(readinessMatcher);
   }
@@ -496,19 +504,29 @@ export class BoundedTerminalEmulator {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
     const next = validateGeometry(geometry, this.#limits);
     const cells = filledOwnArray(next.columns * next.rows, " ");
+    const cellBold = filledOwnArray(next.columns * next.rows, false);
+    const cellDim = filledOwnArray(next.columns * next.rows, false);
     const rows = Math.min(next.rows, this.#geometry.rows);
     const columns = Math.min(next.columns, this.#geometry.columns);
     for (let row = 0; row < rows; row += 1)
       for (let column = 0; column < columns; column += 1)
-        setOwnIndex(
-          cells,
-          row * next.columns + column,
-          this.#cells[row * this.#geometry.columns + column]!,
-        );
+        for (const [target, source] of [
+          [cells, this.#cells],
+          [cellBold, this.#cellBold],
+          [cellDim, this.#cellDim],
+        ] as const)
+          setOwnIndex(
+            target,
+            row * next.columns + column,
+            source[row * this.#geometry.columns + column]!,
+          );
     this.#geometry = next;
     this.#cells = cells;
+    this.#cellBold = cellBold;
+    this.#cellDim = cellDim;
     this.#row = Math.min(this.#row, next.rows - 1);
     this.#column = Math.min(this.#column, next.columns - 1);
+    this.#refreshChallengeStyledReadiness();
   }
 
   public end(): PtyTerminalSemanticSnapshot {
@@ -594,25 +612,31 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved;
   }
 
-  #observeChallengeStyledReadiness(character: string): void {
+  #refreshChallengeStyledReadiness(): void {
     if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
-    if (
-      this.#readinessChallengeObserved &&
-      character === this.#readinessMatcher.text &&
-      this.#bold === this.#readinessMatcher.bold &&
-      this.#dim === this.#readinessMatcher.dim
-    )
-      this.#readinessStyledTextObserved = true;
-    this.#readinessRequiredTail =
-      `${this.#readinessRequiredTail}${character}`.slice(
-        -this.#readinessMatcher.requiredText.length,
+    let styledTextObserved = false;
+    let requiredTextObserved = false;
+    for (let index = 0; index < this.#cells.length; index += 1)
+      if (
+        this.#cells[index] === this.#readinessMatcher.text &&
+        this.#cellBold[index] === this.#readinessMatcher.bold &&
+        this.#cellDim[index] === this.#readinessMatcher.dim
+      )
+        styledTextObserved = true;
+    for (let row = 0; row < this.#geometry.rows; row += 1) {
+      let line = "";
+      const start = row * this.#geometry.columns;
+      for (let column = 0; column < this.#geometry.columns; column += 1)
+        line += this.#cells[start + column];
+      requiredTextObserved ||= containsText(
+        line,
+        this.#readinessMatcher.requiredText,
       );
-    if (
+    }
+    this.#readinessObserved =
       this.#readinessChallengeObserved &&
-      this.#readinessStyledTextObserved &&
-      this.#readinessRequiredTail === this.#readinessMatcher.requiredText
-    )
-      this.#readinessObserved = true;
+      styledTextObserved &&
+      requiredTextObserved;
   }
 
   public completionObserved(): boolean {
@@ -723,7 +747,10 @@ export class BoundedTerminalEmulator {
       this.#recordMalformedControl("ground-control");
       return;
     }
-    this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
+    const cellIndex = this.#row * this.#geometry.columns + this.#column;
+    this.#cells[cellIndex] = character;
+    this.#cellBold[cellIndex] = this.#bold;
+    this.#cellDim[cellIndex] = this.#dim;
     this.#appendRecent(character);
     const expectedReadinessMarker =
       this.#readinessMatcher.kind === "challenge-marker" ||
@@ -754,7 +781,7 @@ export class BoundedTerminalEmulator {
       this.#dim === this.#readinessMatcher.dim
     )
       this.#readinessObserved = true;
-    this.#observeChallengeStyledReadiness(character);
+    this.#refreshChallengeStyledReadiness();
     this.#credentialTail = `${this.#credentialTail}${character}`.slice(
       -maximumCredentialTailCodePoints,
     );
@@ -972,10 +999,18 @@ export class BoundedTerminalEmulator {
       return;
     }
     const retained = this.#cells.length - this.#geometry.columns;
-    for (let index = 0; index < retained; index += 1)
-      this.#cells[index] = this.#cells[index + this.#geometry.columns]!;
-    for (let index = retained; index < this.#cells.length; index += 1)
+    for (let index = 0; index < retained; index += 1) {
+      const source = index + this.#geometry.columns;
+      this.#cells[index] = this.#cells[source]!;
+      this.#cellBold[index] = this.#cellBold[source]!;
+      this.#cellDim[index] = this.#cellDim[source]!;
+    }
+    for (let index = retained; index < this.#cells.length; index += 1) {
       this.#cells[index] = " ";
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 
   #clearDisplay(mode: number): void {
@@ -983,7 +1018,12 @@ export class BoundedTerminalEmulator {
     const cursor = this.#row * this.#geometry.columns + this.#column;
     const start = mode === 0 ? cursor : 0;
     const end = mode === 1 ? cursor + 1 : this.#cells.length;
-    for (let index = start; index < end; index += 1) this.#cells[index] = " ";
+    for (let index = start; index < end; index += 1) {
+      this.#cells[index] = " ";
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 
   #clearLine(mode: number): void {
@@ -991,7 +1031,12 @@ export class BoundedTerminalEmulator {
     const cursor = rowStart + this.#column;
     const start = mode === 0 ? cursor : rowStart;
     const end = mode === 1 ? cursor + 1 : rowStart + this.#geometry.columns;
-    for (let index = start; index < end; index += 1) this.#cells[index] = " ";
+    for (let index = start; index < end; index += 1) {
+      this.#cells[index] = " ";
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 }
 
