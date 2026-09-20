@@ -39,13 +39,13 @@ const interactivePhases = Object.freeze([
   "installed-status",
   "installed-status-parse",
   "installed-status-project",
-  "installed-status-shape",
-  "installed-status-identity",
-  "installed-status-state",
-  "installed-status-configuration-locations",
-  "installed-status-configuration-present",
-  "diagnostic-directory-start",
-  "diagnostic-directory-complete",
+  "model-gate-start",
+  "model-gate-configured",
+  "control-plane-closed",
+  "configuration-built",
+  "configuration-state",
+  "configuration-opened",
+  "configuration-written",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -723,26 +723,21 @@ const projectHarnessStatus = (
   configurationPresentCount,
 ) => {
   const value = records?.[0];
-  recordInteractivePhase("installed-status-shape");
   if (records.length !== 1 || value?.installation !== installation)
     throw new Error("integration.codex.harness-status");
-  recordInteractivePhase("installed-status-identity");
   if (
     value?.discovery?.harness !== "codex" ||
     value.discovery.harnessType !== "@agentscope/harness-codex" ||
     value.discovery.version !== "0.149.1"
   )
     throw new Error("integration.codex.harness-status");
-  recordInteractivePhase("installed-status-state");
   if (
     value.discovery.state !== "installed" ||
     value.discovery.reason !== "compatible"
   )
     throw new Error("integration.codex.harness-status");
-  recordInteractivePhase("installed-status-configuration-locations");
   if (value.discovery.configurationLocationCount !== 2)
     throw new Error("integration.codex.harness-status");
-  recordInteractivePhase("installed-status-configuration-present");
   if (value.discovery.configurationPresentCount !== configurationPresentCount)
     throw new Error("integration.codex.harness-status");
   return { installation, configurationPresentCount };
@@ -1118,7 +1113,6 @@ try {
     "unchanged",
     1,
   );
-  recordInteractivePhase("diagnostic-directory-start");
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
     codexDiagnosticLogDirectory,
@@ -1127,12 +1121,14 @@ try {
       constants.O_NOFOLLOW |
       constants.O_NONBLOCK,
   );
-  recordInteractivePhase("diagnostic-directory-complete");
+  recordInteractivePhase("model-gate-start");
   const modelAdmissionCutoff = deadline - 5_000;
   if (modelAdmissionCutoff <= bootNow())
     throw new Error("integration.codex.model-gate");
   await configureModelGate(modelAdmissionCutoff);
+  recordInteractivePhase("model-gate-configured");
   await proveControlPlaneClosed();
+  recordInteractivePhase("control-plane-closed");
   // TOML has no syntax for returning to the root table. Keep every root key
   // ahead of the first table emitted by the provider configuration; appending
   // log_dir after it would silently make the key part of model_providers.
@@ -1142,10 +1138,12 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
+  recordInteractivePhase("configuration-built");
   const configurationPath = join(codexHome, "config.toml");
   const configurationState = lstatSync(configurationPath);
   if (!configurationState.isFile() || configurationState.isSymbolicLink())
     throw new Error("integration.codex.hook-configuration");
+  recordInteractivePhase("configuration-state");
   const configurationDescriptor = openSync(
     configurationPath,
     constants.O_WRONLY | constants.O_NOFOLLOW,
@@ -1158,12 +1156,14 @@ try {
       descriptorState.ino !== configurationState.ino
     )
       throw new Error("integration.codex.hook-configuration");
+    recordInteractivePhase("configuration-opened");
     ftruncateSync(configurationDescriptor, 0);
     writeFileSync(configurationDescriptor, configuration);
     fchmodSync(configurationDescriptor, 0o600);
   } finally {
     closeSync(configurationDescriptor);
   }
+  recordInteractivePhase("configuration-written");
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
