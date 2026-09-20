@@ -645,6 +645,20 @@ const armModelGate = async (modelAdmissionCutoff) => {
         throw new Error("integration.codex.model-gate");
       return checkpoint;
     }
+    const health = await controlRequest(
+      "/health",
+      "GET",
+      undefined,
+      AbortSignal.timeout(Math.min(250, remaining())),
+    );
+    if (!exactKeys(health, ["state"]) || typeof health.state !== "string")
+      throw new Error("integration.codex.model-gate");
+    if (health.state === "denied") {
+      recordInteractivePhase("model-request-observed");
+      throw new Error("integration.codex.model-request-before-session-start");
+    }
+    if (health.state !== "pending")
+      throw new Error("integration.codex.model-gate");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("integration.codex.hook-session-start-missing");
