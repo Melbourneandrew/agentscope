@@ -2693,6 +2693,11 @@ const armSelectedPty = (
               requestRequiresCanonicalEof,
             );
             safeReflectApply(emulatorResize, terminal, [action.geometry]);
+            readinessObserved = safeReflectApply(
+              emulatorReadinessObserved,
+              terminal,
+              [],
+            );
             recordAction({
               action: "resize",
               geometry: action.geometry,

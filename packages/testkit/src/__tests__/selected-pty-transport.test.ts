@@ -209,6 +209,33 @@ describe("selected PTY transport", () => {
       outcome: "input-incomplete",
       readinessObserved: false,
     });
+    const resizeRevocationRequest: SelectedPtyExecutionRequest = {
+      ...promptRequest,
+      interaction: {
+        ...promptRequest.interaction,
+        actions: [
+          ...promptRequest.interaction.actions.slice(0, 6),
+          { action: "resize", geometry: { columns: 10, rows: 30 } },
+          promptRequest.interaction.actions[6]!,
+        ],
+      },
+    };
+    await expect(
+      executeSelectedPtyTransportForTest(resizeRevocationRequest, "clean"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
+        { action: "wait-for-semantic-completion" },
+        { action: "resize", geometry: { columns: 10, rows: 30 } },
+      ],
+      inputBytesWritten: promptInput.length - 1,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
     for (const actions of [
       [
         challengeRequest.interaction.actions[0]!,
