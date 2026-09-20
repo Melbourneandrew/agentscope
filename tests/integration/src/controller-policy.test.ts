@@ -177,6 +177,30 @@ describe("integration cleanup authority", () => {
     ).toBeLessThan(recorder.indexOf("installedPtyFailures.set(plan.runId"));
   });
 
+  it("carries a semantically nonzero PTY receipt phase into the authenticated exit channel", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    const receiptFailure = source.slice(
+      source.indexOf("const diagnostic = retainedInteractivePhase(ledger);"),
+      source.indexOf(
+        "} else {",
+        source.indexOf("const diagnostic = retainedInteractivePhase(ledger);"),
+      ),
+    );
+    expect(receiptFailure).toContain(
+      "interactiveFailureDiagnostic = diagnostic;",
+    );
+    expect(
+      receiptFailure.indexOf("interactiveFailureDiagnostic = diagnostic;"),
+    ).toBeLessThan(
+      receiptFailure.indexOf(
+        'fixtureFailure = new Error("integration.runner.fixture-failed")',
+      ),
+    );
+  });
+
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
     const scenario = readFileSync(
       resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
