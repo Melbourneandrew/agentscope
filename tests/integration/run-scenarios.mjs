@@ -64,6 +64,7 @@ import { writeExactRegularFile } from "./exact-file.mjs";
 import {
   compileImmutableCandidateHandoff,
   decodeInteractivePtyReceipt,
+  extractInteractiveChildDiagnostic,
   ptyExecutionFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -1650,9 +1651,9 @@ const recordInteractiveReceiptFailure = (
       fallback,
   });
 };
-const recordInteractiveExecutionFailure = (plan, error) => {
+const recordInteractiveExecutionFailure = (plan, error, output) => {
   if (plan.executionMode !== "interactive") return;
-  const diagnostic = contentFreeChildFailureCode(error);
+  const diagnostic = contentFreeChildFailureCode(error, output);
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
@@ -1718,9 +1719,10 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   );
   throw new Error(`integration.certification.${substrateCertificationCase}`);
 };
-const contentFreeChildFailureCode = (error) => {
+const contentFreeChildFailureCode = (error, output) => {
   const source = `${error?.stderr ?? ""}\n${error?.message ?? ""}`;
   const diagnostic =
+    extractInteractiveChildDiagnostic(output) ??
     source.match(
       /integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})\b/u,
     )?.[1] ??
@@ -1873,11 +1875,11 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         });
       if (plan.executionMode === "interactive")
         process.stderr.write(
-          `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+          `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error, error?.stdout)}\n`,
         );
       const output = `${error?.stdout ?? ""}`;
       const fixtureCaptured = captureFixtureResult(output, plan);
-      recordInteractiveExecutionFailure(plan, error);
+      recordInteractiveExecutionFailure(plan, error, output);
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({

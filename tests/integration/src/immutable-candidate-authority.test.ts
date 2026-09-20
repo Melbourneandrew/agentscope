@@ -10,6 +10,7 @@ const {
   compileImmutableCandidateHandoff,
   decodeInteractivePtyReceipt,
   decodeImmutableCandidateHandoff,
+  extractInteractiveChildDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
@@ -216,4 +217,23 @@ describe("interactive PTY receipt transport", () => {
       );
     },
   );
+});
+
+describe("interactive PTY failure diagnostic transport", () => {
+  it("extracts one exact allowlisted runner diagnostic from attach output", () => {
+    expect(
+      extractInteractiveChildDiagnostic(
+        "prefix\nintegration.runner.interactive-diagnostic:integration.fixture.codex-model-request\nsuffix\n",
+      ),
+    ).toBe("integration.fixture.codex-model-request");
+  });
+
+  it.each([
+    "",
+    "integration.runner.interactive-diagnostic:integration.fixture.codex-model-request\nintegration.runner.interactive-diagnostic:integration.fixture.codex-tui-start\n",
+    "integration.runner.interactive-diagnostic:integration.fixture.codex-not-allowlisted\n",
+    "x:integration.runner.interactive-diagnostic:integration.fixture.codex-model-request\n",
+  ])("rejects missing, duplicate, unapproved, or non-line records", (value) => {
+    expect(extractInteractiveChildDiagnostic(value)).toBeUndefined();
+  });
 });
