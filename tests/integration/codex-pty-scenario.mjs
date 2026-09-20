@@ -35,7 +35,6 @@ const interactivePhases = Object.freeze([
   "routing",
   "install",
   "model-gate-start",
-  "model-gate-request-complete",
   "model-gate-configured",
   "control-plane-closed",
   "tui-start",
@@ -43,8 +42,9 @@ const interactivePhases = Object.freeze([
   "tui-readiness-published",
   "tui-checkpoint",
   "model-gate-arm-start",
-  "model-request-observed",
+  "tui-exit-before-arm",
   "model-gate-arm-complete",
+  "model-request-observed",
   "model-request",
   "trace-terminal",
   "tui-exit",
@@ -622,7 +622,6 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     },
     AbortSignal.timeout(Math.min(1_000, remaining())),
   );
-  recordInteractivePhase("model-gate-request-complete");
   if (
     !exactKeys(response, ["runId", "state"]) ||
     response.runId !== integrationRunId ||
@@ -1184,6 +1183,21 @@ try {
   recordInteractivePhase("tui-checkpoint");
   recordInteractivePhase("model-gate-arm-start");
   const gateArm = armModelGate(modelAdmissionCutoff);
+  const earlyCodexExit = codexRun.then(
+    () => {
+      recordInteractivePhase("tui-exit-before-arm");
+      throw new Error("integration.codex.tui-exit-before-arm");
+    },
+    () => {
+      recordInteractivePhase("tui-exit-before-arm");
+      throw new Error("integration.codex.tui-exit-before-arm");
+    },
+  );
+  sessionStartBeforeFirstModelRequestAdmission = await Promise.race([
+    gateArm,
+    earlyCodexExit,
+  ]);
+  recordInteractivePhase("model-gate-arm-complete");
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1192,8 +1206,6 @@ try {
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
   recordInteractivePhase("model-request-observed");
-  sessionStartBeforeFirstModelRequestAdmission = await gateArm;
-  recordInteractivePhase("model-gate-arm-complete");
   recordInteractivePhase("model-request");
   await releaseModelResponse();
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
