@@ -581,6 +581,7 @@ try {
       !receipt.terminalTransportClosed
     ) {
       const diagnostic = retainedInteractivePhase(ledger);
+      interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
