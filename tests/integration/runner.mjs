@@ -51,8 +51,6 @@ const interactivePhases = Object.freeze([
   "installed-status-state",
   "installed-status-configuration-locations",
   "installed-status-configuration-present",
-  "installed-status-configuration-present-zero",
-  "installed-status-configuration-present-two",
   "tui-start",
   "model-request",
   "trace-terminal",
