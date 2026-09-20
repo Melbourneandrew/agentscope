@@ -109,6 +109,7 @@ const configure = async (
   controlPort: number,
   cutoffWindowMs = 5_000,
   clock: () => number = bootNow,
+  configureRequest: typeof request = request,
 ) => {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
@@ -123,7 +124,7 @@ const configure = async (
   const cutoff = clock() + cutoffWindowMs;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      return await request(controlPort, "/configure", {
+      return await configureRequest(controlPort, "/configure", {
         challenge,
         cutoff,
         responseText,
@@ -209,12 +210,25 @@ describe("gate-capable exact-build MockServer", () => {
   it("fixes one absolute cutoff after health readiness", async () => {
     const { controlPort } = await startGate();
     const clock = vi.fn(bootNow);
+    const observedCutoffs: unknown[] = [];
+    let configureAttempts = 0;
+    const retryingRequest: typeof request = async (...arguments_) => {
+      const body = arguments_[2] as { cutoff?: unknown } | undefined;
+      observedCutoffs.push(body?.cutoff);
+      configureAttempts += 1;
+      if (configureAttempts === 1) throw new Error("gate-test.retry");
+      return request(...arguments_);
+    };
 
-    expect(await configure(controlPort, 5_000, clock)).toMatchObject({
+    expect(
+      await configure(controlPort, 5_000, clock, retryingRequest),
+    ).toMatchObject({
       status: 200,
       value: { runId, state: "pending" },
     });
     expect(clock).toHaveBeenCalledTimes(1);
+    expect(observedCutoffs).toHaveLength(2);
+    expect(observedCutoffs[1]).toBe(observedCutoffs[0]);
   });
 
   it("holds the first socket below HTTP parsing until the exact span is armed", async () => {
