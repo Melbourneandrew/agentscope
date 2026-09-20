@@ -197,6 +197,14 @@ describe("integration cleanup authority", () => {
       "utf8",
     );
     expect(scenario).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
+    expect(scenario).toContain(
+      "writeSync(process.stdout.fd, `${terminalCompletionMarker}\\r\\n`);",
+    );
+    expect(
+      scenario.indexOf(
+        "writeSync(process.stdout.fd, `${terminalCompletionMarker}\\r\\n`);",
+      ),
+    ).toBeLessThan(scenario.indexOf("process.exit(exitCode)"));
     expect(scenario).toContain("process.exit(exitCode)");
   });
 
