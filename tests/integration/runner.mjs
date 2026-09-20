@@ -32,6 +32,13 @@ const substrateCertificationCase = parseSubstrateCertificationCaseValue(
 
 const interactivePhases = Object.freeze([
   "bootstrap",
+  "bootstrap-arguments",
+  "bootstrap-deadline",
+  "bootstrap-readiness",
+  "bootstrap-environment",
+  "bootstrap-modules",
+  "bootstrap-artifact",
+  "bootstrap-pty",
   "init",
   "destination",
   "routing",

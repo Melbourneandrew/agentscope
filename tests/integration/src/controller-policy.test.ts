@@ -366,7 +366,9 @@ describe("integration cleanup authority", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- closed diagnostic phase order
 describe("Codex interactive diagnostic order", () => {
+  // eslint-disable-next-line max-lines-per-function -- closed diagnostic phase order
   it("keeps retained phases in the writer's strict lifecycle order", () => {
     const scenario = readFileSync(
       resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
@@ -378,6 +380,13 @@ describe("Codex interactive diagnostic order", () => {
     );
     const expected = [
       "bootstrap",
+      "bootstrap-arguments",
+      "bootstrap-deadline",
+      "bootstrap-readiness",
+      "bootstrap-environment",
+      "bootstrap-modules",
+      "bootstrap-artifact",
+      "bootstrap-pty",
       "init",
       "destination",
       "routing",
