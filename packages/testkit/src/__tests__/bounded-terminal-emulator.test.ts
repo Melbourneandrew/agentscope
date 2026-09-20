@@ -163,6 +163,14 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("t"));
     expect(terminal.readinessObserved()).toBe(true);
+
+    terminal.write(bytes("\u001b[2J"));
+    expect(terminal.readinessObserved()).toBe(false);
+
+    terminal.write(bytes("\u001b[H\u001b[1m›\u001b[22m 100% context left"));
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\rX"));
+    expect(terminal.readinessObserved()).toBe(false);
   });
 
   it("does not mistake mismatched styled text for post-completion readiness", () => {

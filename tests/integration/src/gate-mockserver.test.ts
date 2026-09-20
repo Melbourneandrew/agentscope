@@ -3,7 +3,7 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection, createServer, type Socket } from "node:net";
 import { resolve } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const integrationRoot = resolve(import.meta.dirname, "..");
 const source = resolve(integrationRoot, "gate-mockserver.mjs");
@@ -105,7 +105,11 @@ const startGate = async () => {
   agents.set(controlPort, new Agent({ keepAlive: true, maxSockets: 1 }));
   return { child, controlPort, modelPort };
 };
-const configure = async (controlPort: number, cutoffWindowMs = 5_000) => {
+const configure = async (
+  controlPort: number,
+  cutoffWindowMs = 5_000,
+  clock: () => number = bootNow,
+) => {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       const health = await request(controlPort, "/health");
@@ -116,11 +120,12 @@ const configure = async (controlPort: number, cutoffWindowMs = 5_000) => {
     if (attempt === 99) throw new Error("gate-test.readiness");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
+  const cutoff = clock() + cutoffWindowMs;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       return await request(controlPort, "/configure", {
         challenge,
-        cutoff: bootNow() + cutoffWindowMs,
+        cutoff,
         responseText,
         runId,
       });
@@ -201,6 +206,17 @@ afterEach(async () => {
 
 // eslint-disable-next-line max-lines-per-function -- closed adversarial state-machine matrix
 describe("gate-capable exact-build MockServer", () => {
+  it("fixes one absolute cutoff after health readiness", async () => {
+    const { controlPort } = await startGate();
+    const clock = vi.fn(bootNow);
+
+    expect(await configure(controlPort, 5_000, clock)).toMatchObject({
+      status: 200,
+      value: { runId, state: "pending" },
+    });
+    expect(clock).toHaveBeenCalledTimes(1);
+  });
+
   it("holds the first socket below HTTP parsing until the exact span is armed", async () => {
     const { child, controlPort, modelPort } = await startGate();
     const childTerminal = terminal(child);
