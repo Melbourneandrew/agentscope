@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-ac3e6657ab4eeb887ad9fe2e7e1cf61c28b6fb27974cf516052d26fe4acbf4aa",
+  "manifestIdentity": "sha256-8265c8a90fc2219a16293330d325ebfb1ce125baec01d2fbdb956de2ffde7587",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "ae27374e7d7ff57233dc3e0f537451d687ba7daa87af84bdf41c68c67a43e8f5"
+        "sha256": "fd7f1baeb5d0a91bc5dd2698f48b309f20017e94259cc8d8b66a9076ffa2a34d"
       },
       "runtimeArtifacts": [
         {

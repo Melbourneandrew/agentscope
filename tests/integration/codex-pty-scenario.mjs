@@ -11,7 +11,6 @@ import {
   openSync,
   readFileSync,
   rmSync,
-  writeSync,
   writeFileSync,
 } from "node:fs";
 import { Agent, request as httpRequest } from "node:http";
@@ -324,9 +323,23 @@ process.setUncaughtExceptionCaptureCallback(() => {
       mode: 0o600,
     });
     exitCode = 64 + interactiveFailurePhaseIndex;
-    writeSync(process.stdout.fd, `${terminalCompletionMarker}\r\n`);
-  } finally {
-    process.exit(exitCode);
+  } catch {
+    // The reserved nonzero code still distinguishes a bootstrap failure.
+  }
+  let settled = false;
+  const settle = (code) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    process.exit(code);
+  };
+  const timer = setTimeout(() => settle(1), 1_000);
+  try {
+    process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
+      settle(error === null || error === undefined ? exitCode : 1),
+    );
+  } catch {
+    settle(1);
   }
 });
 
