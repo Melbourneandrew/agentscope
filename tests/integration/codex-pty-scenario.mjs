@@ -35,16 +35,16 @@ const interactivePhases = Object.freeze([
   "routing",
   "install",
   "model-gate-start",
-  "model-gate-routes-read",
-  "model-gate-route-validated",
-  "model-gate-control-response",
-  "model-gate-control-ended",
-  "model-gate-control-status-ok",
-  "model-gate-control-json",
   "model-gate-request-complete",
   "model-gate-configured",
   "control-plane-closed",
   "tui-start",
+  "tui-run-created",
+  "tui-readiness-published",
+  "tui-checkpoint",
+  "model-gate-arm-start",
+  "model-request-observed",
+  "model-gate-arm-complete",
   "model-request",
   "trace-terminal",
   "tui-exit",
@@ -519,8 +519,6 @@ const controlRequest = (path, method, value, signal) =>
         signal,
       },
       (response) => {
-        if (path === "/configure")
-          recordInteractivePhase("model-gate-control-response");
         const chunks = [];
         let bytes = 0;
         response.on("data", (chunk) => {
@@ -530,19 +528,13 @@ const controlRequest = (path, method, value, signal) =>
         });
         response.once("end", () => {
           try {
-            if (path === "/configure")
-              recordInteractivePhase("model-gate-control-ended");
             if (response.statusCode !== 200)
               throw new Error("integration.codex.model-gate");
-            if (path === "/configure")
-              recordInteractivePhase("model-gate-control-status-ok");
             const decoded = JSON.parse(
               new TextDecoder("utf-8", { fatal: true }).decode(
                 Buffer.concat(chunks, bytes),
               ),
             );
-            if (path === "/configure")
-              recordInteractivePhase("model-gate-control-json");
             resolve(decoded);
           } catch {
             reject(new Error("integration.codex.model-gate"));
@@ -600,7 +592,6 @@ const configureModelGate = async (modelAdmissionCutoff) => {
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
   );
-  recordInteractivePhase("model-gate-routes-read");
   const routeIndex = routeAuthority.routeIds?.indexOf("codex-tui-responses");
   const route =
     Number.isInteger(routeIndex) && routeIndex >= 0
@@ -617,7 +608,6 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     body.includes(expectedAssistantMessage)
   )
     throw new Error("integration.codex.model-gate");
-  recordInteractivePhase("model-gate-route-validated");
   const response = await controlRequest(
     "/configure",
     "POST",
@@ -1180,6 +1170,7 @@ try {
       inherit: true,
     },
   );
+  recordInteractivePhase("tui-run-created");
   const checkpointSignal = waitForCheckpointSignal();
   await new Promise((resolve, reject) => {
     process.stdout.write(
@@ -1188,7 +1179,10 @@ try {
         error === null || error === undefined ? resolve() : reject(error),
     );
   });
+  recordInteractivePhase("tui-readiness-published");
   await checkpointSignal;
+  recordInteractivePhase("tui-checkpoint");
+  recordInteractivePhase("model-gate-arm-start");
   const gateArm = armModelGate(modelAdmissionCutoff);
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,
@@ -1197,7 +1191,9 @@ try {
     wait: (milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)),
   });
+  recordInteractivePhase("model-request-observed");
   sessionStartBeforeFirstModelRequestAdmission = await gateArm;
+  recordInteractivePhase("model-gate-arm-complete");
   recordInteractivePhase("model-request");
   await releaseModelResponse();
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
