@@ -18,39 +18,6 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
-import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
-import {
-  boundedRequestLedger,
-  classifyLocalSqliteOutcomeAfterBaseline,
-  classifyMissingOperationalStateByHookDuration,
-  classifyCodexSettledTraceObservation,
-  codexTraceSearchAttemptDeadlines,
-  codexTraceSearchUnavailable,
-  codexTraceSearchTimedOut,
-  codexSessionStartCheckpointMatchesLifecycle,
-  inspectCodexRootHookLifecycle,
-  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
-  inspectCodexStopHookCommand,
-  classifyTraceSearchRecordsBeforeDeadline,
-  codexSessionIdentity,
-  codexTurnTerminalIdAfterBaseline,
-  codexTurnTerminalObservedAfterBaseline,
-  localSqliteReporterSettled,
-  localSqliteAcceptanceBaseline,
-  openLocalSqliteLifecycle,
-  openOperationalStateHealth,
-  inspectDiagnosticBeforeDeadline,
-  publishTerminalCompletionBeforeDeadline,
-  recordTerminalObservationBeforeDeadline,
-  readCodexSessionLedgerRecords,
-  terminalObservationBeforeDeadline,
-  traceSummaryBeforeDeadline,
-  waitForModelRequestBeforeDeadline,
-  waitWithinObservationDeadline,
-} from "./runtime/codex-runtime-evidence.mjs";
-import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
-import { translateCodexPlatformObservations } from "./scenario-adapter.mjs";
-
 const required = (name) => {
   const value = process.env[name];
   if (!value) throw new Error(`integration.codex.environment-${name}`);
@@ -59,11 +26,6 @@ const required = (name) => {
 if (process.argv.length !== 4 || process.argv[2] !== "--artifact")
   throw new Error("integration.codex.arguments");
 const artifactPath = process.argv[3];
-const artifactStatus = lstatSync(artifactPath);
-if (!artifactStatus.isFile() || artifactStatus.isSymbolicLink())
-  throw new Error("integration.codex.artifact");
-if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
-  throw new Error("integration.codex.pty");
 
 const bootNow = () => {
   const source = readFileSync("/proc/uptime", "utf8");
@@ -367,6 +329,52 @@ process.setUncaughtExceptionCaptureCallback(() => {
     process.exit(exitCode);
   }
 });
+
+const [configurationModule, evidenceModule, oracleModule, adapterModule] =
+  await Promise.all([
+    import("./runtime/codex-configuration.js"),
+    import("./runtime/codex-runtime-evidence.mjs"),
+    import("./scenario-oracle.mjs"),
+    import("./scenario-adapter.mjs"),
+  ]);
+const { createCodexInternalProviderConfiguration } = configurationModule;
+const {
+  boundedRequestLedger,
+  classifyLocalSqliteOutcomeAfterBaseline,
+  classifyMissingOperationalStateByHookDuration,
+  classifyCodexSettledTraceObservation,
+  codexTraceSearchAttemptDeadlines,
+  codexTraceSearchUnavailable,
+  codexTraceSearchTimedOut,
+  codexSessionStartCheckpointMatchesLifecycle,
+  inspectCodexRootHookLifecycle,
+  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
+  inspectCodexStopHookCommand,
+  classifyTraceSearchRecordsBeforeDeadline,
+  codexSessionIdentity,
+  codexTurnTerminalIdAfterBaseline,
+  codexTurnTerminalObservedAfterBaseline,
+  localSqliteReporterSettled,
+  localSqliteAcceptanceBaseline,
+  openLocalSqliteLifecycle,
+  openOperationalStateHealth,
+  inspectDiagnosticBeforeDeadline,
+  publishTerminalCompletionBeforeDeadline,
+  recordTerminalObservationBeforeDeadline,
+  readCodexSessionLedgerRecords,
+  terminalObservationBeforeDeadline,
+  traceSummaryBeforeDeadline,
+  waitForModelRequestBeforeDeadline,
+  waitWithinObservationDeadline,
+} = evidenceModule;
+const { correlateCodexPlatformObservations } = oracleModule;
+const { translateCodexPlatformObservations } = adapterModule;
+
+const artifactStatus = lstatSync(artifactPath);
+if (!artifactStatus.isFile() || artifactStatus.isSymbolicLink())
+  throw new Error("integration.codex.artifact");
+if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
+  throw new Error("integration.codex.pty");
 
 const cli = async (arguments_, command, options) => {
   const { stdout } = await run(
