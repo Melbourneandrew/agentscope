@@ -17,6 +17,7 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
+import { encodeInteractiveFailureExitCode } from "./immutable-candidate-authority.mjs";
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
 import {
   boundedRequestLedger,
@@ -353,14 +354,16 @@ recordInteractivePhase(interactiveFailurePhase);
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
 process.setUncaughtExceptionCaptureCallback(() => {
+  let exitCode = 1;
   try {
-    writeFileSync(
-      join(ledger, "interactive-failure.txt"),
-      `integration.fixture.codex-${interactiveFailurePhase}\n`,
-      { flag: "wx", mode: 0o600 },
-    );
+    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
+    writeFileSync(join(ledger, "interactive-failure.txt"), `${diagnostic}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    exitCode = encodeInteractiveFailureExitCode(diagnostic) ?? 1;
   } finally {
-    process.exit(1);
+    process.exit(exitCode);
   }
 });
 
