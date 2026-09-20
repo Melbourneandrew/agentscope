@@ -11,6 +11,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { Agent, request as httpRequest } from "node:http";
@@ -361,6 +362,7 @@ process.setUncaughtExceptionCaptureCallback(() => {
       mode: 0o600,
     });
     exitCode = 64 + interactiveFailurePhaseIndex;
+    writeSync(process.stdout.fd, `${terminalCompletionMarker}\r\n`);
   } finally {
     process.exit(exitCode);
   }
