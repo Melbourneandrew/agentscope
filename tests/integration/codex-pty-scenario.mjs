@@ -44,6 +44,8 @@ const interactivePhases = Object.freeze([
   "installed-status-state",
   "installed-status-configuration-locations",
   "installed-status-configuration-present",
+  "configuration-rewrite-start",
+  "configuration-rewrite-complete",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -1116,6 +1118,7 @@ try {
     "unchanged",
     1,
   );
+  recordInteractivePhase("configuration-rewrite-start");
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
     codexDiagnosticLogDirectory,
@@ -1160,6 +1163,7 @@ try {
   } finally {
     closeSync(configurationDescriptor);
   }
+  recordInteractivePhase("configuration-rewrite-complete");
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
