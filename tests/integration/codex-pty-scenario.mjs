@@ -44,8 +44,8 @@ const interactivePhases = Object.freeze([
   "installed-status-state",
   "installed-status-configuration-locations",
   "installed-status-configuration-present",
-  "configuration-rewrite-start",
-  "configuration-rewrite-complete",
+  "diagnostic-directory-start",
+  "diagnostic-directory-complete",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -1118,6 +1118,7 @@ try {
     "unchanged",
     1,
   );
+  recordInteractivePhase("diagnostic-directory-start");
   mkdirSync(codexDiagnosticLogDirectory, { mode: 0o700 });
   codexDiagnosticLogDirectoryDescriptor = openSync(
     codexDiagnosticLogDirectory,
@@ -1126,6 +1127,7 @@ try {
       constants.O_NOFOLLOW |
       constants.O_NONBLOCK,
   );
+  recordInteractivePhase("diagnostic-directory-complete");
   const modelAdmissionCutoff = deadline - 5_000;
   if (modelAdmissionCutoff <= bootNow())
     throw new Error("integration.codex.model-gate");
@@ -1140,7 +1142,6 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
-  recordInteractivePhase("configuration-rewrite-start");
   const configurationPath = join(codexHome, "config.toml");
   const configurationState = lstatSync(configurationPath);
   if (!configurationState.isFile() || configurationState.isSymbolicLink())
@@ -1163,7 +1164,6 @@ try {
   } finally {
     closeSync(configurationDescriptor);
   }
-  recordInteractivePhase("configuration-rewrite-complete");
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
