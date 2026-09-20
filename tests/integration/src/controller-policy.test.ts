@@ -198,14 +198,16 @@ describe("integration cleanup authority", () => {
     );
     expect(scenario).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
     expect(scenario).toContain(
-      "writeSync(process.stdout.fd, `${terminalCompletionMarker}\\r\\n`);",
+      "process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error)",
     );
     expect(
       scenario.indexOf(
-        "writeSync(process.stdout.fd, `${terminalCompletionMarker}\\r\\n`);",
+        "process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error)",
       ),
-    ).toBeLessThan(scenario.indexOf("process.exit(exitCode)"));
-    expect(scenario).toContain("process.exit(exitCode)");
+    ).toBeLessThan(scenario.indexOf("settle(error === null"));
+    expect(scenario).toContain(
+      "const timer = setTimeout(() => settle(1), 1_000)",
+    );
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
