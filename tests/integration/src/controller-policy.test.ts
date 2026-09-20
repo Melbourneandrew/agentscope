@@ -177,6 +177,26 @@ describe("integration cleanup authority", () => {
     ).toBeLessThan(recorder.indexOf("installedPtyFailures.set(plan.runId"));
   });
 
+  it("recovers one exact content-free interactive failure record from the authenticated stopped container", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const recovery = source.slice(
+      source.indexOf("const recoverInteractiveFailureDiagnostic ="),
+      source.indexOf("const terminalWitnessDiagnostic ="),
+    );
+    expect(recovery).toContain('"interactive-failure.txt"');
+    expect(recovery).toContain(
+      "`${plan.scenarioName}:/ledger/interactive-failure.txt`",
+    );
+    expect(recovery).toContain("status.isSymbolicLink()");
+    expect(recovery).toContain("status.size > 256");
+    expect(recovery).toContain("ptyExecutionFailurePredicates.includes");
+    expect(recovery).toContain("rmSync(path)");
+    expect(recovery).toContain("rmSync(directory)");
+  });
+
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
     const scenario = readFileSync(
       resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),

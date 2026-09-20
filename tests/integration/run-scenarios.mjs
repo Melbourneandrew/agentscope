@@ -1651,9 +1651,15 @@ const recordInteractiveReceiptFailure = (
       fallback,
   });
 };
-const recordInteractiveExecutionFailure = (plan, error, output) => {
+const recordInteractiveExecutionFailure = (
+  plan,
+  error,
+  output,
+  retainedDiagnostic,
+) => {
   if (plan.executionMode !== "interactive") return;
-  const diagnostic = contentFreeChildFailureCode(error, output);
+  const diagnostic =
+    retainedDiagnostic ?? contentFreeChildFailureCode(error, output);
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
@@ -1728,6 +1734,45 @@ const contentFreeChildFailureCode = (error, output) => {
     )?.[1] ??
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
+};
+const recoverInteractiveFailureDiagnostic = async (plan, signal) => {
+  const directory = resolve(
+    artifactsRoot,
+    "contexts",
+    plan.runId,
+    "interactive-diagnostic",
+  );
+  if (existsSync(directory))
+    throw new Error("integration.isolation.interactive-diagnostic");
+  mkdirSync(directory, { mode: 0o700 });
+  const directoryStatus = lstatSync(directory);
+  if (
+    !directoryStatus.isDirectory() ||
+    directoryStatus.isSymbolicLink() ||
+    (directoryStatus.mode & 0o777) !== 0o700
+  )
+    throw new Error("integration.isolation.interactive-diagnostic");
+  const path = resolve(directory, "interactive-failure.txt");
+  await dockerWithSignal(
+    ["cp", `${plan.scenarioName}:/ledger/interactive-failure.txt`, path],
+    signal,
+  );
+  const status = lstatSync(path);
+  const content = readFileSync(path, "utf8");
+  if (
+    !status.isFile() ||
+    status.isSymbolicLink() ||
+    status.size !== Buffer.byteLength(content) ||
+    status.size > 256 ||
+    !/^integration\.fixture\.codex-[a-z0-9-]{1,96}\n$/u.test(content) ||
+    !ptyExecutionFailurePredicates.includes(content.trim())
+  )
+    throw new Error("integration.isolation.interactive-diagnostic");
+  rmSync(path);
+  rmSync(directory);
+  if (existsSync(directory))
+    throw new Error("integration.isolation.interactive-diagnostic");
+  return content.trim();
 };
 const terminalWitnessDiagnostic = ({
   container,
@@ -1879,7 +1924,16 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         );
       const output = `${error?.stdout ?? ""}`;
       const fixtureCaptured = captureFixtureResult(output, plan);
-      recordInteractiveExecutionFailure(plan, error, output);
+      const retainedDiagnostic =
+        plan.executionMode === "interactive"
+          ? await recoverInteractiveFailureDiagnostic(plan, signal)
+          : undefined;
+      recordInteractiveExecutionFailure(
+        plan,
+        error,
+        output,
+        retainedDiagnostic,
+      );
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({
