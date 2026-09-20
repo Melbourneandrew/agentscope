@@ -176,9 +176,27 @@ describe("selected PTY transport", () => {
         ],
       },
     };
+    const executeChallengeCase = (
+      selected: SelectedPtyExecutionRequest,
+      seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
+    ) => {
+      const caseNow = performance.now();
+      return executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: caseNow + 500,
+            monotonicExecutionDeadlineMs: caseNow + 1_000,
+            monotonicShutdownDeadlineMs: caseNow + 2_000,
+          },
+        },
+        seed,
+      );
+    };
 
     await expect(
-      executeSelectedPtyTransportForTest(promptRequest, "clean"),
+      executeChallengeCase(promptRequest, "clean"),
     ).resolves.toMatchObject({
       actions: [
         { action: "resize", geometry: { columns: 100, rows: 30 } },
@@ -194,10 +212,7 @@ describe("selected PTY transport", () => {
       readinessObserved: true,
     });
     await expect(
-      executeSelectedPtyTransportForTest(
-        promptRequest,
-        "readiness-revoked-after-input",
-      ),
+      executeChallengeCase(promptRequest, "readiness-revoked-after-input"),
     ).resolves.toMatchObject({
       actions: [
         { action: "resize", geometry: { columns: 100, rows: 30 } },
@@ -221,7 +236,7 @@ describe("selected PTY transport", () => {
       },
     };
     await expect(
-      executeSelectedPtyTransportForTest(resizeRevocationRequest, "clean"),
+      executeChallengeCase(resizeRevocationRequest, "clean"),
     ).resolves.toMatchObject({
       actions: [
         { action: "resize", geometry: { columns: 100, rows: 30 } },
@@ -253,7 +268,7 @@ describe("selected PTY transport", () => {
       ],
     ])
       await expect(
-        executeSelectedPtyTransportForTest(
+        executeChallengeCase(
           {
             ...promptRequest,
             interaction: { trigger: "immediate", actions },
@@ -263,10 +278,7 @@ describe("selected PTY transport", () => {
       ).rejects.toThrow("testkit.pty.request");
 
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "fixed-readiness-spoof",
-      ),
+      executeChallengeCase(challengeRequest, "fixed-readiness-spoof"),
     ).resolves.toMatchObject({
       actions: [{ action: "input", byteLength: 65 }],
       inputBytesWritten: 65,
@@ -274,10 +286,7 @@ describe("selected PTY transport", () => {
       readinessObserved: false,
     });
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "completion-before-readiness",
-      ),
+      executeChallengeCase(challengeRequest, "completion-before-readiness"),
     ).resolves.toMatchObject({
       actions: [
         { action: "input", byteLength: 65 },
@@ -291,24 +300,21 @@ describe("selected PTY transport", () => {
     });
     for (const seed of ["checkpoint-missing-process"] as const)
       await expect(
-        executeSelectedPtyTransportForTest(challengeRequest, seed),
+        executeChallengeCase(challengeRequest, seed),
       ).resolves.toMatchObject({
         actions: [{ action: "input", byteLength: 65 }],
         inputBytesWritten: 65,
         outcome: "input-incomplete",
       });
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "checkpoint-process-churn",
-      ),
+      executeChallengeCase(challengeRequest, "checkpoint-process-churn"),
     ).resolves.toMatchObject({
       actions: [{ action: "input", byteLength: 65 }],
       inputBytesWritten: 65,
       outcome: "transport-failed",
     });
     await expect(
-      executeSelectedPtyTransportForTest(
+      executeChallengeCase(
         challengeRequest,
         "checkpoint-transient-extra-process",
       ),
@@ -324,10 +330,7 @@ describe("selected PTY transport", () => {
       readinessObserved: true,
     });
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "checkpoint-extra-process",
-      ),
+      executeChallengeCase(challengeRequest, "checkpoint-extra-process"),
     ).resolves.toMatchObject({
       actions: [
         { action: "input", byteLength: 65 },
@@ -340,10 +343,7 @@ describe("selected PTY transport", () => {
       readinessObserved: true,
     });
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "checkpoint-owned-sidecar",
-      ),
+      executeChallengeCase(challengeRequest, "checkpoint-owned-sidecar"),
     ).resolves.toMatchObject({
       actions: [
         { action: "input", byteLength: 65 },
@@ -356,10 +356,7 @@ describe("selected PTY transport", () => {
       readinessObserved: true,
     });
     await expect(
-      executeSelectedPtyTransportForTest(
-        challengeRequest,
-        "checkpoint-owned-descendant",
-      ),
+      executeChallengeCase(challengeRequest, "checkpoint-owned-descendant"),
     ).resolves.toMatchObject({
       actions: [
         { action: "input", byteLength: 65 },
