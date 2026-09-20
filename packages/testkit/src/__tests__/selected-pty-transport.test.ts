@@ -160,6 +160,7 @@ describe("selected PTY transport", () => {
       interaction: {
         trigger: "immediate",
         actions: [
+          { action: "resize", geometry: { columns: 100, rows: 30 } },
           challengeRequest.interaction.actions[0]!,
           challengeRequest.interaction.actions[1]!,
           promptAction,
@@ -180,6 +181,7 @@ describe("selected PTY transport", () => {
       executeSelectedPtyTransportForTest(promptRequest, "clean"),
     ).resolves.toMatchObject({
       actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
@@ -198,6 +200,7 @@ describe("selected PTY transport", () => {
       ),
     ).resolves.toMatchObject({
       actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
@@ -212,14 +215,14 @@ describe("selected PTY transport", () => {
         promptAction,
         challengeRequest.interaction.actions[1]!,
         { action: "wait-for-semantic-completion" as const },
-        promptRequest.interaction.actions[5]!,
+        promptRequest.interaction.actions[6]!,
       ],
       [
         challengeRequest.interaction.actions[0]!,
         challengeRequest.interaction.actions[1]!,
         { action: "wait-for-semantic-completion" as const },
         promptAction,
-        promptRequest.interaction.actions[4]!,
+        promptRequest.interaction.actions[5]!,
       ],
     ])
       await expect(
