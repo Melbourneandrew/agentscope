@@ -1129,8 +1129,11 @@ try {
       constants.O_NONBLOCK,
   );
   recordInteractivePhase("model-gate-start");
-  const modelAdmissionCutoff = deadline - 5_000;
-  if (modelAdmissionCutoff <= bootNow())
+  const modelAdmissionCutoff = Math.floor(deadline - 5_000);
+  if (
+    !Number.isSafeInteger(modelAdmissionCutoff) ||
+    modelAdmissionCutoff <= bootNow()
+  )
     throw new Error("integration.codex.model-gate");
   await configureModelGate(modelAdmissionCutoff);
   recordInteractivePhase("model-gate-configured");

@@ -211,6 +211,12 @@ describe("integration cleanup authority", () => {
     expect(source).toContain(
       'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
     );
+    expect(scenario).toContain(
+      "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
+    );
+    expect(scenario).toContain(
+      "!Number.isSafeInteger(modelAdmissionCutoff) ||",
+    );
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
