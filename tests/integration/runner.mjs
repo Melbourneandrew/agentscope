@@ -44,6 +44,8 @@ const interactivePhases = Object.freeze([
   "routing",
   "install",
   "installed-status",
+  "installed-status-parse",
+  "installed-status-project",
   "tui-start",
   "model-request",
   "trace-terminal",
