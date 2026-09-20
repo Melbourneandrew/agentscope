@@ -39,13 +39,13 @@ const interactivePhases = Object.freeze([
   "model-gate-start",
   "model-gate-routes-read",
   "model-gate-route-validated",
+  "model-gate-control-response",
+  "model-gate-control-ended",
+  "model-gate-control-status-ok",
+  "model-gate-control-json",
   "model-gate-request-complete",
   "model-gate-configured",
   "control-plane-closed",
-  "configuration-built",
-  "configuration-state",
-  "configuration-opened",
-  "configuration-written",
   "tui-start",
   "model-request",
   "trace-terminal",
@@ -521,6 +521,8 @@ const controlRequest = (path, method, value, signal) =>
         signal,
       },
       (response) => {
+        if (path === "/configure")
+          recordInteractivePhase("model-gate-control-response");
         const chunks = [];
         let bytes = 0;
         response.on("data", (chunk) => {
@@ -530,15 +532,20 @@ const controlRequest = (path, method, value, signal) =>
         });
         response.once("end", () => {
           try {
+            if (path === "/configure")
+              recordInteractivePhase("model-gate-control-ended");
             if (response.statusCode !== 200)
               throw new Error("integration.codex.model-gate");
-            resolve(
-              JSON.parse(
-                new TextDecoder("utf-8", { fatal: true }).decode(
-                  Buffer.concat(chunks, bytes),
-                ),
+            if (path === "/configure")
+              recordInteractivePhase("model-gate-control-status-ok");
+            const decoded = JSON.parse(
+              new TextDecoder("utf-8", { fatal: true }).decode(
+                Buffer.concat(chunks, bytes),
               ),
             );
+            if (path === "/configure")
+              recordInteractivePhase("model-gate-control-json");
+            resolve(decoded);
           } catch {
             reject(new Error("integration.codex.model-gate"));
           }
@@ -1138,12 +1145,10 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
-  recordInteractivePhase("configuration-built");
   const configurationPath = join(codexHome, "config.toml");
   const configurationState = lstatSync(configurationPath);
   if (!configurationState.isFile() || configurationState.isSymbolicLink())
     throw new Error("integration.codex.hook-configuration");
-  recordInteractivePhase("configuration-state");
   const configurationDescriptor = openSync(
     configurationPath,
     constants.O_WRONLY | constants.O_NOFOLLOW,
@@ -1156,14 +1161,12 @@ try {
       descriptorState.ino !== configurationState.ino
     )
       throw new Error("integration.codex.hook-configuration");
-    recordInteractivePhase("configuration-opened");
     ftruncateSync(configurationDescriptor, 0);
     writeFileSync(configurationDescriptor, configuration);
     fchmodSync(configurationDescriptor, 0o600);
   } finally {
     closeSync(configurationDescriptor);
   }
-  recordInteractivePhase("configuration-written");
   const traceDeadline = deadline - 3_000;
   recordInteractivePhase("tui-start");
   const codexRun = run(
