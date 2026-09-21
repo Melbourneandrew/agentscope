@@ -455,6 +455,10 @@ const ptyTerminalReceiptSchema = z
           challenge: z.string().regex(/^[a-f\d]{64}$/u),
         }),
         z.strictObject({
+          kind: z.literal("challenge-process-topology"),
+          challenge: z.string().regex(/^[a-f\d]{64}$/u),
+        }),
+        z.strictObject({
           kind: z.literal("challenge-styled-text"),
           challenge: z.string().regex(/^[a-f\d]{64}$/u),
           text: z.string().length(1),
@@ -513,7 +517,8 @@ const ptyTerminalReceiptSchema = z
   .superRefine((value, context) => {
     const request = value.request.process;
     const challengeReadiness =
-      value.request.readiness.kind === "challenge-marker";
+      value.request.readiness.kind === "challenge-marker" ||
+      value.request.readiness.kind === "challenge-process-topology";
     const finalGeometry = value.request.interaction.actions.reduce(
       (geometry, action) =>
         action.action === "resize" ? action.geometry : geometry,

@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-753e173d0baa952cdaa03cc1ead0cdfa8ebf38c9ba7df390265560e5ede1ffac",
+  "manifestIdentity": "sha256-48f1f6074278c7bb74b47047cc26aa1ca06303dc3a957922129e2261f2f6edcf",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "591033c1349ff024b0f943bb16697824908ecb34e9d653fbccd173f2b58c9d09"
+        "sha256": "735413a9a8855540a3890df0ef13b66790e36fd464e2068a22c996f69d80a613"
       },
       "runtimeArtifacts": [
         {
@@ -198,7 +198,7 @@
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,
       "nativeReadiness": {
-        "kind": "challenge-marker"
+        "kind": "challenge-process-topology"
       },
       "resourceClass": "medium",
       "shardWeight": 220

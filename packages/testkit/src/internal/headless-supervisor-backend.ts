@@ -1963,6 +1963,17 @@ const snapshotPtyRequest = (
       { kind: "semantic-marker" as const },
     ]);
   else if (
+    readinessKind === "challenge-process-topology" &&
+    readinessKeys === "challenge\0kind"
+  ) {
+    const challenge = ownData(readiness, "challenge");
+    if (typeof challenge !== "string" || !/^[a-f0-9]{64}$/u.test(challenge))
+      return fail("testkit.pty.request");
+    readinessChallenge = challenge;
+    stableReadiness = safeReflectApply(freeze, Object, [
+      { kind: "challenge-process-topology" as const, challenge },
+    ]);
+  } else if (
     readinessKind === "challenge-marker" &&
     readinessKeys === "challenge\0kind"
   ) {
@@ -2065,7 +2076,8 @@ const snapshotPtyRequest = (
     (completionKind === "semantic-marker" &&
       trigger !== "semantic-ready" &&
       !(
-        (readinessKind === "challenge-marker" ||
+        (readinessKind === "challenge-process-topology" ||
+          readinessKind === "challenge-marker" ||
           readinessKind === "challenge-styled-text") &&
         trigger === "immediate"
       )) ||
@@ -2252,7 +2264,8 @@ const snapshotPtyRequest = (
     describedInputBytes !==
       safeReflectApply(typedArrayByteLength, process_.stdin, []) ||
     eofCount > 1 ||
-    ((readinessKind === "challenge-marker" ||
+    ((readinessKind === "challenge-process-topology" ||
+      readinessKind === "challenge-marker" ||
       readinessKind === "challenge-styled-text") &&
       (trigger !== "immediate" ||
         semanticWaitCount !== 1 ||
@@ -2621,7 +2634,9 @@ const armSelectedPty = (
         ...defaultPtyTerminalEmulatorLimits,
         maximumOutputBytes: outputLimitBytes,
       },
-      request.readiness,
+      request.readiness.kind === "challenge-process-topology"
+        ? { kind: "semantic-marker" }
+        : request.readiness,
     );
     const input = safeBufferFrom(processRequest.stdin);
     // The PTY pump keeps read, semantic readiness, and the write-closed action
@@ -2751,11 +2766,12 @@ const armSelectedPty = (
               terminal,
               [],
             ).semanticState;
-            readinessObserved = safeReflectApply(
-              emulatorReadinessObserved,
-              terminal,
-              [],
-            );
+            if (request.readiness.kind !== "challenge-process-topology")
+              readinessObserved = safeReflectApply(
+                emulatorReadinessObserved,
+                terminal,
+                [],
+              );
             if (
               !completionWasObserved &&
               safeReflectApply(emulatorCompletionObserved, terminal, [])
@@ -2867,7 +2883,11 @@ const armSelectedPty = (
               actionIndex += 1;
             }
           } else if (action?.action === "checkpoint-process-topology") {
-            if (!readinessObserved) return;
+            if (
+              request.readiness.kind !== "challenge-process-topology" &&
+              !readinessObserved
+            )
+              return;
             if (root === undefined)
               return fail("testkit.headless.observer.root");
             runtime.assertNamespaceIdentity(composition.namespaceIdentity);
@@ -2915,6 +2935,8 @@ const armSelectedPty = (
               topology: action.topology,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
+            if (request.readiness.kind === "challenge-process-topology")
+              readinessObserved = true;
             actionIndex += 1;
           } else if (action?.action === "eof") {
             eofAttempted = true;
@@ -4899,6 +4921,7 @@ const selectedPtyRuntimeForTest = (
     // eslint-disable-next-line max-lines-per-function, complexity -- closed adversarial fixture matrix
     spawnPty: (request, geometry, interpreter, scriptSha256) => {
       if (
+        readiness.kind === "challenge-process-topology" ||
         readiness.kind === "challenge-marker" ||
         readiness.kind === "challenge-styled-text"
       ) {
@@ -5365,6 +5388,7 @@ const selectedPtyRuntimeForTest = (
           safeSetTimeout(
             () => {
               if (
+                readiness.kind === "challenge-process-topology" ||
                 readiness.kind === "challenge-marker" ||
                 readiness.kind === "challenge-styled-text"
               )
@@ -5388,7 +5412,8 @@ const selectedPtyRuntimeForTest = (
                       },
               );
             },
-            readiness.kind === "challenge-marker" ||
+            readiness.kind === "challenge-process-topology" ||
+              readiness.kind === "challenge-marker" ||
               readiness.kind === "challenge-styled-text"
               ? 50
               : seed === "partial-input"

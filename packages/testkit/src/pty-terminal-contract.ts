@@ -44,7 +44,9 @@ export type SelectedPtyExecutionRequest = Readonly<{
   }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
-  readiness: PtyTerminalReadinessMatcher;
+  readiness:
+    | PtyTerminalReadinessMatcher
+    | Readonly<{ kind: "challenge-process-topology"; challenge: string }>;
   interpreter: Readonly<{ path: string; sha256: string }>;
   scriptSha256: string;
 }>;
