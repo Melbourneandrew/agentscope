@@ -456,7 +456,6 @@ export class BoundedTerminalEmulator {
   #row = 0;
   #column = 0;
   #alternateScreen = false;
-  #screenBufferContentsTrusted = true;
   #cursorPositionTrusted = true;
   #autoWrapEnabled = true;
   #scrollRegionCanonical = true;
@@ -821,7 +820,6 @@ export class BoundedTerminalEmulator {
       requiredTextSurvives &&
       this.#characterSetTrusted &&
       this.#renditionTrusted &&
-      this.#screenBufferContentsTrusted &&
       this.#cursorPositionTrusted &&
       this.#autoWrapEnabled &&
       this.#scrollRegionCanonical;
@@ -887,7 +885,6 @@ export class BoundedTerminalEmulator {
       this.#invalidateChallengeSynchronizedOutputFrame();
       if (values.includes(7)) this.#autoWrapEnabled = final === "h";
       if (values.includes(1049)) {
-        this.#screenBufferContentsTrusted = false;
         this.#cursorPositionTrusted = false;
       }
       this.#revokeChallengeScreenAuthority();
@@ -910,8 +907,6 @@ export class BoundedTerminalEmulator {
     if (unmodeledScreenMutation) {
       if (prefix === "?" && values.includes(7))
         this.#autoWrapEnabled = final === "h";
-      if (prefix === "?" && values.includes(1049))
-        this.#screenBufferContentsTrusted = false;
       if (prefix === "?" && values.includes(1049))
         this.#cursorPositionTrusted = false;
       if (prefix === "" && final === "r") {
@@ -1082,7 +1077,6 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (!trustedSingleCellCharacter(character)) {
-      this.#screenBufferContentsTrusted = false;
       this.#cursorPositionTrusted = false;
       this.#revokeChallengeScreenAuthority();
     }
@@ -1436,7 +1430,6 @@ export class BoundedTerminalEmulator {
   #clearDisplay(mode: number): void {
     if (mode === 3) return;
     if (mode === 2) {
-      this.#screenBufferContentsTrusted = true;
       this.#resetChallengeOutputObservation();
     }
     const cursor = this.#row * this.#geometry.columns + this.#column;
