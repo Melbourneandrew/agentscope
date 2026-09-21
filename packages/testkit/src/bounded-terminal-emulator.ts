@@ -821,8 +821,20 @@ export class BoundedTerminalEmulator {
       values.length === 1 &&
       values[0] === 2026;
     if (synchronizedOutputMode) {
-      if (final === "h") this.#beginChallengeSynchronizedOutputFrame();
-      else this.#commitChallengeSynchronizedOutputFrame();
+      if (final === "h") {
+        if (this.#challengeSynchronizedOutputFrameActive)
+          this.#invalidateChallengeSynchronizedOutputFrame();
+        else this.#beginChallengeSynchronizedOutputFrame();
+      } else this.#commitChallengeSynchronizedOutputFrame();
+      return;
+    }
+    if (
+      this.#challengeSynchronizedOutputFrameActive &&
+      prefix === "" &&
+      intermediate === "" &&
+      ["@", "L", "M", "P", "S", "T", "X"].includes(final)
+    ) {
+      this.#invalidateChallengeSynchronizedOutputFrame();
       return;
     }
     if (
