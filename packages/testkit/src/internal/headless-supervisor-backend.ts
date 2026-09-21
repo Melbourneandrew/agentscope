@@ -107,8 +107,8 @@ const emulatorUnsupportedControlReason =
   BoundedTerminalEmulator.prototype.unsupportedControlReason;
 const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
-const emulatorSynchronizedOutputGeneration =
-  BoundedTerminalEmulator.prototype.synchronizedOutputGeneration;
+const emulatorReadinessObservationGeneration =
+  BoundedTerminalEmulator.prototype.readinessObservationGeneration;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -2608,7 +2608,7 @@ const armSelectedPty = (
     let actionInputOffset = 0;
     let actionIndex = 0;
     let lastCompletedInputOutputBytes = -1;
-    let lastCompletedInputSynchronizedOutputGeneration = -1;
+    let lastCompletedInputReadinessGeneration = -1;
     let drainedInputActionIndex = -1;
     let semanticCompletionObservedAtOutputBytes = -1;
     const actionsApplied: PtyTransportAction[] = [];
@@ -2719,17 +2719,13 @@ const armSelectedPty = (
           priorAction?.action === "input" &&
           request.readiness.kind === "challenge-styled-text" &&
           safeReflectApply(
-            emulatorSynchronizedOutputGeneration,
+            emulatorReadinessObservationGeneration,
             terminal,
             [],
-          ) <= lastCompletedInputSynchronizedOutputGeneration;
+          ) <= lastCompletedInputReadinessGeneration;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
-          inputOffset >= 65 &&
-          !(
-            pendingActionBeforeRead?.action === "input" &&
-            priorAction?.action === "input"
-          );
+          inputOffset >= 65;
         const requiresTerminalProtocol =
           request.readiness.kind === "challenge-styled-text" &&
           request.readiness.requiredTerminalProtocol ===
@@ -2864,10 +2860,10 @@ const armSelectedPty = (
             outputBytes > lastCompletedInputOutputBytes) &&
           (!waitingForPriorInputSemanticRedraw ||
             safeReflectApply(
-              emulatorSynchronizedOutputGeneration,
+              emulatorReadinessObservationGeneration,
               terminal,
               [],
-            ) > lastCompletedInputSynchronizedOutputGeneration);
+            ) > lastCompletedInputReadinessGeneration);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
         if (
           inputAdmitted &&
@@ -2919,8 +2915,8 @@ const armSelectedPty = (
                 ),
               });
               lastCompletedInputOutputBytes = outputBytes;
-              lastCompletedInputSynchronizedOutputGeneration = safeReflectApply(
-                emulatorSynchronizedOutputGeneration,
+              lastCompletedInputReadinessGeneration = safeReflectApply(
+                emulatorReadinessObservationGeneration,
                 terminal,
                 [],
               );
