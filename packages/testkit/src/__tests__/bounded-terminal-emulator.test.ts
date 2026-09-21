@@ -202,6 +202,49 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
   });
 
+  it("preserves Codex readiness across bounded color and italic rendition", () => {
+    const challenge = "a".repeat(64);
+    const createTerminal = () =>
+      new BoundedTerminalEmulator(
+        { columns: 100, rows: 30 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text" as const,
+          challenge,
+          text: "›",
+          requiredText: "Ask Codex to do anything",
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1" as const,
+          bold: true,
+          dim: false,
+        },
+      );
+    const terminal = createTerminal();
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[48;5;234m \u001b[3mloading\u001b[23m \u001b[38;5;6;49m/model\u001b[39;49m\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[?2026l",
+      ),
+    );
+
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+
+    const malformedColor = createTerminal();
+    malformedColor.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    malformedColor.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c\u001b[?2026h\u001b[38;5;256m\u001b[1m›\u001b[22m Ask Codex to do anything\u001b[?2026l",
+      ),
+    );
+    expect(malformedColor.readinessObserved()).toBe(false);
+    expect(malformedColor.readinessObservationGeneration()).toBe(0);
+  });
+
   it("rejects readiness matchers without closed one-cell glyphs", () => {
     const challenge = "a".repeat(64);
     expect(

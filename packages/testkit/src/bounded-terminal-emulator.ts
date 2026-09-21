@@ -1229,7 +1229,8 @@ export class BoundedTerminalEmulator {
   }
 
   #applySgr(values: readonly number[]): void {
-    for (const value of values) {
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index]!;
       if (value === 0) {
         this.#bold = false;
         this.#dim = false;
@@ -1241,9 +1242,33 @@ export class BoundedTerminalEmulator {
       } else if (value === 22) {
         this.#bold = false;
         this.#dim = false;
+      } else if (value === 3 || value === 23 || value === 39 || value === 49) {
+        // Italic and color changes cannot change cell width, cursor position,
+        // or the bold/dim properties used by the closed readiness matcher.
+      } else if (
+        (value === 38 || value === 48) &&
+        values[index + 1] === 5 &&
+        Number.isInteger(values[index + 2]) &&
+        values[index + 2]! >= 0 &&
+        values[index + 2]! <= 255
+      ) {
+        index += 2;
+      } else if (
+        (value === 38 || value === 48) &&
+        values[index + 1] === 2 &&
+        values
+          .slice(index + 2, index + 5)
+          .every(
+            (component) =>
+              Number.isInteger(component) && component >= 0 && component <= 255,
+          ) &&
+        values.length >= index + 5
+      ) {
+        index += 4;
       } else {
         this.#renditionTrusted = false;
         this.#revokeChallengeScreenAuthority();
+        return;
       }
     }
   }
