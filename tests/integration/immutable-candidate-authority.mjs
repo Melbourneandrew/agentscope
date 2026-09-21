@@ -17,7 +17,7 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-model-gate-configured",
   "integration.fixture.codex-control-plane-closed",
   "integration.fixture.codex-tui-run-created",
-  "integration.fixture.codex-tui-topology-published",
+  "integration.fixture.codex-tui-readiness-challenge-published",
   "integration.fixture.codex-tui-checkpoint",
   "integration.fixture.codex-model-gate-arm-start",
   "integration.fixture.codex-tui-exit-before-arm",

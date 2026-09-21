@@ -203,7 +203,12 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     expect(scenario.nativeReadiness).toEqual({
-      kind: "challenge-process-topology",
+      kind: "codex-challenge-idle-prompt",
+      harness: "codex",
+      exactHarnessVersion: "0.149.1",
+      text: "›",
+      bold: true,
+      dim: false,
     });
     expect(
       manifestFixture()
@@ -278,8 +283,8 @@ describe("integration capability manifest", () => {
       "const readinessChallenge = await readReadinessChallenge();\n",
     );
     const codexLaunch = source.indexOf("  const codexRun = run(\n");
-    const topologyPublication = source.indexOf(
-      "AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}",
+    const readinessChallengePublication = source.indexOf(
+      "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
     const sessionStartCheckpoint = source.indexOf(
       "    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
@@ -318,8 +323,10 @@ describe("integration capability manifest", () => {
     expect(sessionStartCheckpoint).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
-    expect(topologyPublication).toBeGreaterThan(codexLaunch);
-    expect(checkpointAcknowledgement).toBeGreaterThan(topologyPublication);
+    expect(readinessChallengePublication).toBeGreaterThan(codexLaunch);
+    expect(checkpointAcknowledgement).toBeGreaterThan(
+      readinessChallengePublication,
+    );
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
@@ -559,8 +566,8 @@ describe("integration capability manifest", () => {
     expect(
       source.indexOf("  await releaseModelResponse();\n", modelRequest),
     ).toBeLessThan(terminalWait);
-    expect(source).not.toContain("AGENTSCOPE_PTY_READY");
-    expect(source.match(/AGENTSCOPE_PTY_TOPOLOGY/gu)).toHaveLength(1);
+    expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
+    expect(source).not.toContain("AGENTSCOPE_PTY_TOPOLOGY");
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
   });
