@@ -202,7 +202,9 @@ describe("integration capability manifest", () => {
     expect(scenario.postCompletionInputByteLength).toBe(2);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
-    expect(scenario.nativeReadiness).toEqual({ kind: "challenge-marker" });
+    expect(scenario.nativeReadiness).toEqual({
+      kind: "challenge-process-topology",
+    });
     expect(
       manifestFixture()
         .scenarios.filter(
@@ -296,12 +298,9 @@ describe("integration capability manifest", () => {
       "  await waitForCodexTurnTerminal(traceDeadline);\n",
       traceDeadline,
     );
-    const readinessRelease = source.indexOf(
-      "AGENTSCOPE_PTY_READY:${readinessChallenge}",
-    );
     const checkpointAcknowledgement = source.indexOf(
       "  await checkpointSignal;\n",
-      readinessRelease,
+      codexLaunch,
     );
     const modelResponse = source.indexOf("  await releaseModelResponse();\n");
     const codexJoin = source.indexOf(
@@ -316,8 +315,7 @@ describe("integration capability manifest", () => {
     expect(sessionStartCheckpoint).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
-    expect(codexLaunch).toBeLessThan(readinessRelease);
-    expect(readinessRelease).toBeLessThan(checkpointAcknowledgement);
+    expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
     expect(source).not.toContain("      prompt,\n");
@@ -548,15 +546,15 @@ describe("integration capability manifest", () => {
     expect(evidenceEncoding).toBeGreaterThan(traceQueryAfterJoin);
     expect(guardedEvidenceWrite).toBeGreaterThan(evidenceEncoding);
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
-    expect(readinessRelease).toBeGreaterThan(-1);
-    expect(checkpointAcknowledgement).toBeGreaterThan(readinessRelease);
+    expect(checkpointAcknowledgement).toBeGreaterThan(codexLaunch);
+    expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
     expect(modelResponse).toBeGreaterThan(-1);
     expect(codexJoin).toBeGreaterThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     expect(
       source.indexOf("  await releaseModelResponse();\n", modelRequest),
     ).toBeLessThan(terminalWait);
-    expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
+    expect(source).not.toContain("AGENTSCOPE_PTY_READY");
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
   });

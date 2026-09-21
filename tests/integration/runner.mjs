@@ -180,8 +180,18 @@ const fingerprintSelectedPtyAuthority = (authority) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(authority))
     .digest("hex")}`;
+// eslint-disable-next-line complexity -- closed manifest-to-kernel readiness mapping
 const compileNativeReadiness = (scenario, challenge) => {
   const readiness = scenario.nativeReadiness;
+  if (
+    readiness?.kind === "challenge-process-topology" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify(["kind"]) &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge)
+  )
+    return Object.freeze({ kind: "challenge-process-topology", challenge });
   if (
     readiness?.kind === "challenge-marker" &&
     scenario.harnessEvidenceId === "codex-0-149-1" &&
@@ -446,7 +456,8 @@ try {
   ];
   const readinessChallenge =
     scenario.executionMode === "interactive" &&
-    (scenario.nativeReadiness?.kind === "challenge-marker" ||
+    (scenario.nativeReadiness?.kind === "challenge-process-topology" ||
+      scenario.nativeReadiness?.kind === "challenge-marker" ||
       scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt")
       ? randomBytes(32).toString("hex")
       : undefined;
@@ -519,6 +530,7 @@ try {
     const interaction = {
       actions: compileInteractivePtyActions(scenario, request.stdin),
       trigger:
+        readiness.kind === "challenge-process-topology" ||
         readiness.kind === "challenge-marker" ||
         readiness.kind === "challenge-styled-text"
           ? "immediate"

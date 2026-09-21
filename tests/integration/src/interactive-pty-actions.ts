@@ -18,6 +18,7 @@ export const compileInteractivePtyActions = (
 ) => {
   const staticInput = Buffer.from(scenario.terminalInputBase64, "base64");
   const challengeBytes =
+    scenario.nativeReadiness?.kind === "challenge-process-topology" ||
     scenario.nativeReadiness?.kind === "challenge-marker" ||
     scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
       ? 65

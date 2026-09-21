@@ -276,6 +276,37 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    const topologyPromptRequest: SelectedPtyExecutionRequest = {
+      ...promptRequest,
+      readiness: { kind: "challenge-process-topology", challenge },
+    };
+    await expect(
+      executeChallengeCase(topologyPromptRequest, "challenge-marker-prompt"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: promptInput.length,
+      outcome: "completed",
+      readinessObserved: true,
+    });
+    await expect(
+      executeChallengeCase(topologyPromptRequest, "checkpoint-missing-process"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+      ],
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
     await expect(
       executeChallengeCase(promptRequest, "readiness-revoked-after-input"),
     ).resolves.toMatchObject({
