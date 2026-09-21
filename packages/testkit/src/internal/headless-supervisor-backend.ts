@@ -2620,6 +2620,32 @@ const armSelectedPty = (
       );
     };
     let readinessObserved = false;
+    const topologyReadinessMarker =
+      request.readiness.kind === "challenge-process-topology"
+        ? safeBufferFrom(
+            `AGENTSCOPE_PTY_TOPOLOGY:${request.readiness.challenge}`,
+          )
+        : safeBufferFrom([]);
+    let topologyReadinessMarkerIndex = 0;
+    let topologyReadinessMarkerObserved = false;
+    const observeTopologyReadinessMarker = (captured: Buffer): void => {
+      if (
+        request.readiness.kind !== "challenge-process-topology" ||
+        topologyReadinessMarkerObserved
+      )
+        return;
+      for (const byte of captured) {
+        if (byte === topologyReadinessMarker[topologyReadinessMarkerIndex])
+          topologyReadinessMarkerIndex += 1;
+        else
+          topologyReadinessMarkerIndex =
+            byte === topologyReadinessMarker[0] ? 1 : 0;
+        if (topologyReadinessMarkerIndex === topologyReadinessMarker.length) {
+          topologyReadinessMarkerObserved = true;
+          return;
+        }
+      }
+    };
     let terminalProtocolOrderingRejected = false;
     let pendingTerminalResponse = safeBufferFrom([]);
     let pendingTerminalResponseOffset = 0;
@@ -2744,6 +2770,7 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
+            observeTopologyReadinessMarker(captured);
             const completionWasObserved = safeReflectApply(
               emulatorCompletionObserved,
               terminal,
@@ -2884,8 +2911,10 @@ const armSelectedPty = (
             }
           } else if (action?.action === "checkpoint-process-topology") {
             if (
-              request.readiness.kind !== "challenge-process-topology" &&
-              !readinessObserved
+              (request.readiness.kind === "challenge-process-topology" &&
+                !topologyReadinessMarkerObserved) ||
+              (request.readiness.kind !== "challenge-process-topology" &&
+                !readinessObserved)
             )
               return;
             if (root === undefined)
@@ -4988,10 +5017,13 @@ const selectedPtyRuntimeForTest = (
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
           ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m ${readiness.requiredText}`
-          : readiness.kind === "challenge-marker" &&
+          : readiness.kind === "challenge-process-topology" &&
               seed !== "fixed-readiness-spoof"
-            ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
-            : "AGENTSCOPE_PTY_READY",
+            ? `AGENTSCOPE_PTY_TOPOLOGY:${readiness.challenge}`
+            : readiness.kind === "challenge-marker" &&
+                seed !== "fixed-readiness-spoof"
+              ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
+              : "AGENTSCOPE_PTY_READY",
       );
       const orderedQueries =
         "\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c";
