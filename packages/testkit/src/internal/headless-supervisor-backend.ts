@@ -4676,6 +4676,10 @@ type SelectedPtyTestSeed =
   | "terminal-passive-control-no-redraw"
   | "terminal-framed-bel-stitch"
   | "terminal-framed-clear-stitch"
+  | "terminal-framed-erase-stitch"
+  | "terminal-framed-insert-stitch"
+  | "terminal-framed-delete-stitch"
+  | "terminal-framed-scroll-stitch"
   | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
@@ -4961,7 +4965,21 @@ const selectedPtyRuntimeForTest = (
         seed === "terminal-stale-prebuffer-no-redraw" ||
         seed === "terminal-passive-control-no-redraw" ||
         seed === "terminal-framed-bel-stitch" ||
-        seed === "terminal-framed-clear-stitch";
+        seed === "terminal-framed-clear-stitch" ||
+        seed === "terminal-framed-erase-stitch" ||
+        seed === "terminal-framed-insert-stitch" ||
+        seed === "terminal-framed-delete-stitch" ||
+        seed === "terminal-framed-scroll-stitch";
+      const framedStitchMutator =
+        seed === "terminal-framed-erase-stitch"
+          ? "X"
+          : seed === "terminal-framed-insert-stitch"
+            ? "@"
+            : seed === "terminal-framed-delete-stitch"
+              ? "P"
+              : seed === "terminal-framed-scroll-stitch"
+                ? "S"
+                : undefined;
       const challengedMarker =
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
@@ -5013,11 +5031,15 @@ const selectedPtyRuntimeForTest = (
                           ? safeBufferFrom(
                               `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[2K${readiness.requiredText}\u001b[?2026l`,
                             )
-                          : seed === "terminal-live-completion-no-redraw"
-                            ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
-                            : safeBufferFrom(
-                                `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
-                              ),
+                          : framedStitchMutator !== undefined
+                            ? safeBufferFrom(
+                                `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[1${framedStitchMutator}${readiness.requiredText}\u001b[?2026l`,
+                              )
+                            : seed === "terminal-live-completion-no-redraw"
+                              ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                              : safeBufferFrom(
+                                  `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+                                ),
                   output,
                 ]
           : terminalQueryHandshake
