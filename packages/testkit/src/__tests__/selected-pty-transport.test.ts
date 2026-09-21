@@ -482,6 +482,27 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("does not submit the prompt without a drained live terminal", async () => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 500,
+            monotonicExecutionDeadlineMs: now + 1_000,
+            monotonicShutdownDeadlineMs: now + 2_000,
+          },
+        },
+        "terminal-no-prompt",
+      ),
+    ).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-incomplete",
+    });
+  });
+
   it.each([
     "keyboard-protocol-missing",
     "keyboard-protocol-substituted",
@@ -541,6 +562,40 @@ describe("selected PTY transport", () => {
         { action: "wait-for-semantic-completion" },
         { action: "input", byteLength: 1 },
       ],
+    });
+  });
+
+  it.each([
+    "terminal-stale-prebuffer-no-redraw",
+    "terminal-passive-control-no-redraw",
+  ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 500,
+            monotonicExecutionDeadlineMs: now + 1_000,
+            monotonicShutdownDeadlineMs: now + 2_000,
+          },
+        },
+        seed,
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize" },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: 67 },
+      ],
+      inputBytesWritten: 132,
+      outcome:
+        seed === "terminal-stale-prebuffer-no-redraw"
+          ? "input-incomplete"
+          : "transport-failed",
     });
   });
 

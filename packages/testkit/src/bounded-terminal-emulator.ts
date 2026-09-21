@@ -442,6 +442,7 @@ export class BoundedTerminalEmulator {
   #ended = false;
   #outputLimitReached = false;
   #readinessObserved = false;
+  #readinessObservationGeneration = 0;
   #readinessChallengeObserved = false;
   #readinessTail = "";
   #completionObserved = false;
@@ -634,6 +635,11 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved;
   }
 
+  /** Package-private causal observation used by the selected PTY kernel. */
+  public readinessObservationGeneration(): number {
+    return this.#readinessObservationGeneration;
+  }
+
   public requiredTerminalProtocolReady(): boolean {
     return (
       this.#readinessMatcher.kind === "challenge-styled-text" &&
@@ -701,8 +707,10 @@ export class BoundedTerminalEmulator {
       requiredTextObserved;
     if (candidateReadiness && this.#terminalProtocolPhase !== 6)
       this.#terminalProtocolRejected = true;
-    this.#readinessObserved =
-      candidateReadiness && !this.#terminalProtocolRejected;
+    const nextReadiness = candidateReadiness && !this.#terminalProtocolRejected;
+    if (!this.#readinessObserved && nextReadiness)
+      this.#readinessObservationGeneration += 1;
+    this.#readinessObserved = nextReadiness;
   }
 
   public completionObserved(): boolean {
