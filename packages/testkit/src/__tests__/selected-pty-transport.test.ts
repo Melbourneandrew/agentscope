@@ -296,6 +296,14 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    const fragmentedTopologyReceipt = await executeChallengeCase(
+      topologyPromptRequest,
+      "fragmented-output",
+    );
+    expect(
+      fragmentedTopologyReceipt.actions.map(({ action }) => action),
+    ).toContain("checkpoint-process-topology");
+    expect(fragmentedTopologyReceipt.readinessObserved).toBe(true);
     await expect(
       executeChallengeCase(topologyPromptRequest, "fixed-readiness-spoof"),
     ).resolves.toMatchObject({
