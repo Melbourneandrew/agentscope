@@ -577,6 +577,65 @@ describe("selected PTY transport", () => {
     ).rejects.toThrow("testkit.pty.request");
   });
 
+  it("does not reuse prompt Enter adjacency after semantic completion", async () => {
+    const selected = protocolPromptRequest();
+    const postCompletion = Buffer.concat([
+      Buffer.from("x"),
+      Buffer.from("\u001b[13u"),
+    ]);
+    const stdin = new Uint8Array(
+      Buffer.concat([
+        Buffer.from(selected.process.stdin.subarray(0, -1)),
+        postCompletion,
+      ]),
+    );
+    const inputAction = (bytes: Uint8Array) => ({
+      action: "input" as const,
+      byteLength: bytes.length,
+      inputSha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    const postWaitRequest: SelectedPtyExecutionRequest = {
+      ...selected,
+      process: { ...selected.process, stdin },
+      interaction: {
+        ...selected.interaction,
+        actions: [
+          ...selected.interaction.actions.slice(0, -1),
+          inputAction(postCompletion.subarray(0, 1)),
+          inputAction(postCompletion.subarray(1)),
+        ],
+      },
+    };
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...postWaitRequest,
+          process: {
+            ...postWaitRequest.process,
+            monotonicStartupDeadlineMs: now + 500,
+            monotonicExecutionDeadlineMs: now + 1_000,
+            monotonicShutdownDeadlineMs: now + 2_000,
+          },
+        },
+        "terminal-post-wait-pacing",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize" },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: 67 },
+        { action: "input", byteLength: 5 },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 138,
+      outcome: "input-incomplete",
+      terminalInputJoined: false,
+    });
+  });
+
   it.each([
     ["raw carriage return", Buffer.from("\r")],
     ["substituted CSI-u", Buffer.from("\u001b[13~")],
