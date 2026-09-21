@@ -443,6 +443,7 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessObservationGeneration = 0;
+  #challengeScreenAuthorityRevoked = false;
   #challengeSynchronizedOutputFrameActive = false;
   #challengeStyledTextObservedInOutput = false;
   #challengeStyledTextOutputCellIndex: number | null = null;
@@ -714,7 +715,10 @@ export class BoundedTerminalEmulator {
       requiredTextObserved;
     if (candidateReadiness && this.#terminalProtocolPhase !== 6)
       this.#terminalProtocolRejected = true;
-    const nextReadiness = candidateReadiness && !this.#terminalProtocolRejected;
+    const nextReadiness =
+      candidateReadiness &&
+      !this.#terminalProtocolRejected &&
+      !this.#challengeScreenAuthorityRevoked;
     this.#readinessObserved = nextReadiness;
   }
 
@@ -746,7 +750,6 @@ export class BoundedTerminalEmulator {
       this.#readinessMatcher.kind !== "challenge-styled-text"
     )
       return;
-    this.#refreshChallengeStyledReadiness();
     const styledCell = this.#challengeStyledTextOutputCellIndex;
     const requiredStart = this.#challengeRequiredTextOutputStartCellIndex;
     let requiredTextSurvives = requiredStart !== null;
@@ -759,16 +762,17 @@ export class BoundedTerminalEmulator {
         requiredTextSurvives &&=
           this.#cells[requiredStart + offset] ===
           this.#readinessMatcher.requiredText[offset];
-    if (
-      this.#readinessObserved &&
+    const outputAuthorityValid =
       this.#challengeStyledTextObservedInOutput &&
       styledCell !== null &&
       this.#cells[styledCell] === this.#readinessMatcher.text &&
       this.#cellBold[styledCell] === this.#readinessMatcher.bold &&
       this.#cellDim[styledCell] === this.#readinessMatcher.dim &&
       this.#challengeRequiredTextObservedInOutput &&
-      requiredTextSurvives
-    )
+      requiredTextSurvives;
+    if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
+    this.#refreshChallengeStyledReadiness();
+    if (this.#readinessObserved && outputAuthorityValid)
       this.#readinessObservationGeneration += 1;
     this.#invalidateChallengeSynchronizedOutputFrame();
   }
@@ -820,6 +824,16 @@ export class BoundedTerminalEmulator {
       (final === "h" || final === "l") &&
       values.length === 1 &&
       values[0] === 2026;
+    const combinedSynchronizedOutputMode =
+      prefix === "?" &&
+      intermediate === "" &&
+      (final === "h" || final === "l") &&
+      values.includes(2026) &&
+      !synchronizedOutputMode;
+    if (combinedSynchronizedOutputMode) {
+      this.#invalidateChallengeSynchronizedOutputFrame();
+      return;
+    }
     if (synchronizedOutputMode) {
       if (final === "h") {
         if (this.#challengeSynchronizedOutputFrameActive)
@@ -829,11 +843,12 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (
-      this.#challengeSynchronizedOutputFrameActive &&
       prefix === "" &&
       intermediate === "" &&
       ["@", "L", "M", "P", "S", "T", "X"].includes(final)
     ) {
+      this.#challengeScreenAuthorityRevoked = true;
+      this.#readinessObserved = false;
       this.#invalidateChallengeSynchronizedOutputFrame();
       return;
     }

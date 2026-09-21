@@ -574,6 +574,9 @@ describe("selected PTY transport", () => {
     "terminal-framed-insert-stitch",
     "terminal-framed-delete-stitch",
     "terminal-framed-scroll-stitch",
+    "terminal-framed-combined-begin",
+    "terminal-framed-combined-end",
+    "terminal-post-frame-erase",
     "terminal-live-completion-no-redraw",
   ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
     const selected = protocolPromptRequest();

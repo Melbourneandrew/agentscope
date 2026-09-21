@@ -4680,6 +4680,9 @@ type SelectedPtyTestSeed =
   | "terminal-framed-insert-stitch"
   | "terminal-framed-delete-stitch"
   | "terminal-framed-scroll-stitch"
+  | "terminal-framed-combined-begin"
+  | "terminal-framed-combined-end"
+  | "terminal-post-frame-erase"
   | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
@@ -4969,7 +4972,10 @@ const selectedPtyRuntimeForTest = (
         seed === "terminal-framed-erase-stitch" ||
         seed === "terminal-framed-insert-stitch" ||
         seed === "terminal-framed-delete-stitch" ||
-        seed === "terminal-framed-scroll-stitch";
+        seed === "terminal-framed-scroll-stitch" ||
+        seed === "terminal-framed-combined-begin" ||
+        seed === "terminal-framed-combined-end" ||
+        seed === "terminal-post-frame-erase";
       const framedStitchMutator =
         seed === "terminal-framed-erase-stitch"
           ? "X"
@@ -5035,11 +5041,24 @@ const selectedPtyRuntimeForTest = (
                             ? safeBufferFrom(
                                 `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[1${framedStitchMutator}${readiness.requiredText}\u001b[?2026l`,
                               )
-                            : seed === "terminal-live-completion-no-redraw"
-                              ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
-                              : safeBufferFrom(
-                                  `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
-                                ),
+                            : seed === "terminal-framed-combined-begin"
+                              ? safeBufferFrom(
+                                  `\u001b[?2026;25h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l`,
+                                )
+                              : seed === "terminal-framed-combined-end"
+                                ? safeBufferFrom(
+                                    `\u001b[?2026h${styledPrompt.toString()}\u001b[?2026;25l${readiness.requiredText}\u001b[?2026l`,
+                                  )
+                                : seed === "terminal-post-frame-erase"
+                                  ? safeBufferFrom(
+                                      `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[5;1H\u001b[1X`,
+                                    )
+                                  : seed ===
+                                      "terminal-live-completion-no-redraw"
+                                    ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                                    : safeBufferFrom(
+                                        `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+                                      ),
                   output,
                 ]
           : terminalQueryHandshake
