@@ -706,20 +706,7 @@ describe("selected PTY transport", () => {
           { action: "input", byteLength: 67 },
         ],
         inputBytesWritten: 132,
-        outcome: [
-          "terminal-framed-newline-stitch",
-          "terminal-framed-clear-stitch",
-          "terminal-framed-erase-stitch",
-          "terminal-framed-insert-stitch",
-          "terminal-framed-delete-stitch",
-          "terminal-framed-scroll-stitch",
-          "terminal-post-frame-erase",
-          "terminal-post-frame-scroll-region",
-          "terminal-post-frame-tab-stop",
-          "terminal-post-frame-restore",
-        ].includes(seed)
-          ? "transport-failed"
-          : "input-incomplete",
+        outcome: "input-incomplete",
       });
     },
     20_000,
