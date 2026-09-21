@@ -319,6 +319,41 @@ const passiveCsiIsSupported = (
     values.every((value) => value <= rows)) ||
   (["@", "L", "M", "P", "S", "T", "X"].includes(final) && values.length === 1);
 
+// Ratatui's Codex UI renders this closed set as one-cell glyphs. Any other
+// printable code point may be zero-, two-, or multi-cell and cannot preserve
+// screen-position authority without a complete width oracle.
+const trustedSingleCellCharacter = (character: string): boolean =>
+  /^[\x20-\x7e›·─│╭╮╰╯⚠—]$/u.test(character);
+
+const csiIsPrivateModeControl = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+): boolean =>
+  prefix === "?" && intermediate === "" && (final === "h" || final === "l");
+
+const csiIsExactSynchronizedOutputMode = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+): boolean =>
+  csiIsPrivateModeControl(final, prefix, intermediate) &&
+  values.length === 1 &&
+  values[0] === 2026;
+
+const csiHasUnmodeledScreenMutation = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+): boolean =>
+  (prefix === "" &&
+    intermediate === "" &&
+    (final === "r" || ["@", "L", "M", "P", "S", "T", "X"].includes(final))) ||
+  (csiIsPrivateModeControl(final, prefix, intermediate) &&
+    (values.includes(7) || values.includes(1049)));
+
 const validateReadinessMatcher = (
   value: PtyTerminalReadinessMatcher,
 ): PtyTerminalReadinessMatcher => {
@@ -365,15 +400,12 @@ const validateReadinessMatcher = (
       !readinessChallengePattern.test(record.challenge) ||
       typeof text !== "string" ||
       [...text].length !== 1 ||
-      (text.codePointAt(0) ?? 0) < 0x20 ||
-      text.codePointAt(0) === 0x7f ||
+      !trustedSingleCellCharacter(text) ||
       typeof requiredText !== "string" ||
       requiredText.length < 1 ||
       requiredText.length > 32 ||
       [...requiredText].some(
-        (character) =>
-          (character.codePointAt(0) ?? 0) < 0x20 ||
-          character.codePointAt(0) === 0x7f,
+        (character) => !trustedSingleCellCharacter(character),
       ) ||
       record.requiredTerminalProtocol !== "csi-u-flags-7-query-v1" ||
       typeof record.bold !== "boolean" ||
@@ -400,8 +432,7 @@ const validateReadinessMatcher = (
     record.kind !== "styled-text-after-completion" ||
     typeof text !== "string" ||
     [...text].length !== 1 ||
-    (text.codePointAt(0) ?? 0) < 0x20 ||
-    text.codePointAt(0) === 0x7f ||
+    !trustedSingleCellCharacter(text) ||
     typeof record.bold !== "boolean" ||
     typeof record.dim !== "boolean"
   )
@@ -425,6 +456,10 @@ export class BoundedTerminalEmulator {
   #row = 0;
   #column = 0;
   #alternateScreen = false;
+  #screenBufferContentsTrusted = true;
+  #cursorPositionTrusted = true;
+  #autoWrapEnabled = true;
+  #scrollRegionCanonical = true;
   #cursorVisible = true;
   #savedColumn = 0;
   #savedRow = 0;
@@ -432,6 +467,8 @@ export class BoundedTerminalEmulator {
   #savedDim = false;
   #savedCharacterSetTrusted = true;
   #savedRenditionTrusted = true;
+  #savedAutoWrapEnabled = true;
+  #savedCursorPositionTrusted = true;
   #state: ParserState = "ground";
   #control = "";
   #outputBytes = 0;
@@ -784,7 +821,11 @@ export class BoundedTerminalEmulator {
       this.#challengeRequiredTextObservedInOutput &&
       requiredTextSurvives &&
       this.#characterSetTrusted &&
-      this.#renditionTrusted;
+      this.#renditionTrusted &&
+      this.#screenBufferContentsTrusted &&
+      this.#cursorPositionTrusted &&
+      this.#autoWrapEnabled &&
+      this.#scrollRegionCanonical;
     if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
     this.#refreshChallengeStyledReadiness();
     if (this.#readinessObserved && outputAuthorityValid)
@@ -833,20 +874,24 @@ export class BoundedTerminalEmulator {
     intermediate: "" | " ",
     values: readonly number[],
   ): void {
-    const synchronizedOutputMode =
-      prefix === "?" &&
-      intermediate === "" &&
-      (final === "h" || final === "l") &&
-      values.length === 1 &&
-      values[0] === 2026;
+    const synchronizedOutputMode = csiIsExactSynchronizedOutputMode(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
     const combinedSynchronizedOutputMode =
-      prefix === "?" &&
-      intermediate === "" &&
-      (final === "h" || final === "l") &&
+      csiIsPrivateModeControl(final, prefix, intermediate) &&
       values.includes(2026) &&
       !synchronizedOutputMode;
     if (combinedSynchronizedOutputMode) {
       this.#invalidateChallengeSynchronizedOutputFrame();
+      if (values.includes(7)) this.#autoWrapEnabled = final === "h";
+      if (values.includes(1049)) {
+        this.#screenBufferContentsTrusted = false;
+        this.#cursorPositionTrusted = false;
+      }
+      this.#revokeChallengeScreenAuthority();
       return;
     }
     if (synchronizedOutputMode) {
@@ -857,16 +902,27 @@ export class BoundedTerminalEmulator {
       } else this.#commitChallengeSynchronizedOutputFrame();
       return;
     }
-    const unmodeledScreenMutation =
-      (prefix === "" &&
-        intermediate === "" &&
-        (final === "r" ||
-          ["@", "L", "M", "P", "S", "T", "X"].includes(final))) ||
-      (prefix === "?" &&
-        intermediate === "" &&
-        (final === "h" || final === "l") &&
-        (values.includes(7) || values.includes(1049)));
+    const unmodeledScreenMutation = csiHasUnmodeledScreenMutation(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
     if (unmodeledScreenMutation) {
+      if (prefix === "?" && values.includes(7))
+        this.#autoWrapEnabled = final === "h";
+      if (prefix === "?" && values.includes(1049))
+        this.#screenBufferContentsTrusted = false;
+      if (prefix === "?" && values.includes(1049))
+        this.#cursorPositionTrusted = false;
+      if (prefix === "" && final === "r") {
+        this.#cursorPositionTrusted = false;
+        this.#scrollRegionCanonical =
+          (values.length === 1 && values[0] === 0) ||
+          (values.length === 2 &&
+            (values[0] === 0 || values[0] === 1) &&
+            (values[1] === 0 || values[1] === this.#geometry.rows));
+      }
       this.#revokeChallengeScreenAuthority();
       return;
     }
@@ -907,6 +963,8 @@ export class BoundedTerminalEmulator {
         this.#savedDim = this.#dim;
         this.#savedCharacterSetTrusted = this.#characterSetTrusted;
         this.#savedRenditionTrusted = this.#renditionTrusted;
+        this.#savedAutoWrapEnabled = this.#autoWrapEnabled;
+        this.#savedCursorPositionTrusted = this.#cursorPositionTrusted;
         this.#state = "ground";
       } else if (character === "8") {
         this.#revokeChallengeScreenAuthority();
@@ -916,16 +974,22 @@ export class BoundedTerminalEmulator {
         this.#dim = this.#savedDim;
         this.#characterSetTrusted = this.#savedCharacterSetTrusted;
         this.#renditionTrusted = this.#savedRenditionTrusted;
+        this.#autoWrapEnabled = this.#savedAutoWrapEnabled;
+        this.#cursorPositionTrusted = this.#savedCursorPositionTrusted;
         this.#state = "ground";
       } else if (character === "(" || character === ")") {
         this.#characterSetTarget = character;
         this.#state = "charset";
       } else if (character === "D") {
-        this.#resetChallengeRequiredTextOutputTail();
+        if (this.#challengeSynchronizedOutputFrameActive)
+          this.#revokeChallengeScreenAuthority();
+        else this.#resetChallengeRequiredTextOutputTail();
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "E") {
-        this.#resetChallengeRequiredTextOutputTail();
+        if (this.#challengeSynchronizedOutputFrameActive)
+          this.#revokeChallengeScreenAuthority();
+        else this.#resetChallengeRequiredTextOutputTail();
         this.#column = 0;
         this.#lineFeed();
         this.#state = "ground";
@@ -986,12 +1050,16 @@ export class BoundedTerminalEmulator {
 
   #consumeGround(character: string): void {
     if (character === "\r") {
-      this.#invalidateChallengeSynchronizedOutputFrame();
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#revokeChallengeScreenAuthority();
+      else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = 0;
       return;
     }
     if (character === "\n") {
-      this.#invalidateChallengeSynchronizedOutputFrame();
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#revokeChallengeScreenAuthority();
+      else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#lineFeed();
       return;
     }
@@ -1017,6 +1085,11 @@ export class BoundedTerminalEmulator {
       this.#invalidateChallengeSynchronizedOutputFrame();
       this.#recordMalformedControl("ground-control");
       return;
+    }
+    if (!trustedSingleCellCharacter(character)) {
+      this.#screenBufferContentsTrusted = false;
+      this.#cursorPositionTrusted = false;
+      this.#revokeChallengeScreenAuthority();
     }
     const cellIndex = this.#row * this.#geometry.columns + this.#column;
     this.#cells[cellIndex] = character;
@@ -1116,6 +1189,7 @@ export class BoundedTerminalEmulator {
         this.#geometry.columns - 1,
         Math.max(0, Math.max(1, values[1] ?? 1) - 1),
       );
+      this.#cursorPositionTrusted = true;
     } else if (final === "A") this.#row = Math.max(0, this.#row - amount);
     else if (final === "B")
       this.#row = Math.min(this.#geometry.rows - 1, this.#row + amount);
@@ -1340,7 +1414,10 @@ export class BoundedTerminalEmulator {
 
   #clearDisplay(mode: number): void {
     if (mode === 3) return;
-    if (mode === 2) this.#resetChallengeOutputObservation();
+    if (mode === 2) {
+      this.#screenBufferContentsTrusted = true;
+      this.#resetChallengeOutputObservation();
+    }
     const cursor = this.#row * this.#geometry.columns + this.#column;
     const start = mode === 0 ? cursor : 0;
     const end = mode === 1 ? cursor + 1 : this.#cells.length;

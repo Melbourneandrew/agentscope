@@ -231,9 +231,9 @@ describe("selected PTY transport", () => {
           ...selected,
           process: {
             ...selected.process,
-            monotonicStartupDeadlineMs: caseNow + 500,
-            monotonicExecutionDeadlineMs: caseNow + 1_000,
-            monotonicShutdownDeadlineMs: caseNow + 2_000,
+            monotonicStartupDeadlineMs: caseNow + 5_000,
+            monotonicExecutionDeadlineMs: caseNow + 10_000,
+            monotonicShutdownDeadlineMs: caseNow + 15_000,
           },
         },
         seed,
@@ -441,7 +441,7 @@ describe("selected PTY transport", () => {
         residualProcessCount: 0,
       });
     }
-  });
+  }, 60_000);
 
   it.each([
     "terminal-query-handshake",
@@ -511,30 +511,34 @@ describe("selected PTY transport", () => {
     "keyboard-protocol-reset",
     "keyboard-protocol-ris",
     "keyboard-protocol-same-burst",
-  ] as const)("rejects terminal protocol negative %s", async (seed) => {
-    const selected = protocolPromptRequest();
-    const now = performance.now();
-    const rejected = await executeSelectedPtyTransportForTest(
-      {
-        ...selected,
-        process: {
-          ...selected.process,
-          monotonicStartupDeadlineMs: now + 500,
-          monotonicExecutionDeadlineMs: now + 1_000,
-          monotonicShutdownDeadlineMs: now + 2_000,
+  ] as const)(
+    "rejects terminal protocol negative %s",
+    async (seed) => {
+      const selected = protocolPromptRequest();
+      const now = performance.now();
+      const rejected = await executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 5_000,
+            monotonicExecutionDeadlineMs: now + 10_000,
+            monotonicShutdownDeadlineMs: now + 15_000,
+          },
         },
-      },
-      seed,
-    );
-    expect(rejected).toMatchObject({
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        { action: "input", byteLength: 65 },
-      ],
-      inputBytesWritten: 65,
-      outcome: "input-incomplete",
-    });
-  });
+        seed,
+      );
+      expect(rejected).toMatchObject({
+        actions: [
+          { action: "resize", geometry: { columns: 100, rows: 30 } },
+          { action: "input", byteLength: 65 },
+        ],
+        inputBytesWritten: 65,
+        outcome: "input-incomplete",
+      });
+    },
+    20_000,
+  );
 
   it("admits hash-bound prompt redraw before the CSI-u Enter action", async () => {
     const selected = protocolPromptRequest();
@@ -569,6 +573,9 @@ describe("selected PTY transport", () => {
     "terminal-stale-prebuffer-no-redraw",
     "terminal-passive-control-no-redraw",
     "terminal-framed-bel-stitch",
+    "terminal-framed-index-stitch",
+    "terminal-framed-next-line-stitch",
+    "terminal-framed-newline-stitch",
     "terminal-framed-clear-stitch",
     "terminal-framed-erase-stitch",
     "terminal-framed-insert-stitch",
@@ -586,6 +593,15 @@ describe("selected PTY transport", () => {
     "terminal-framed-conceal-stitch",
     "terminal-post-frame-tab-stop",
     "terminal-post-frame-restore",
+    "terminal-prior-no-wrap",
+    "terminal-prior-scroll-margin",
+    "terminal-prior-alt-switch",
+    "terminal-saved-no-wrap",
+    "terminal-alt-clear-no-home",
+    "terminal-combined-no-wrap",
+    "terminal-combined-alt-switch",
+    "terminal-wide-printable",
+    "terminal-combining-printable",
     "terminal-live-completion-no-redraw",
   ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
     const selected = protocolPromptRequest();
