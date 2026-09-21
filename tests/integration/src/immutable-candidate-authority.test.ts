@@ -254,6 +254,17 @@ describe("interactive PTY failure diagnostic transport", () => {
     ).toBe("integration.fixture.codex-model-request");
   });
 
+  it("transports model-gate arm diagnostics without consuming an exit-code slot", () => {
+    const diagnostic =
+      "integration.fixture.codex-model-gate-arm-session-start-missing";
+    expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+      ),
+    ).toBe(diagnostic);
+  });
+
   it.each([
     "",
     "integration.runner.interactive-diagnostic:integration.fixture.codex-model-request\nintegration.runner.interactive-diagnostic:integration.fixture.codex-tui-start\n",
