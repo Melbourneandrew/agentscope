@@ -39,7 +39,7 @@ const interactivePhases = Object.freeze([
   "control-plane-closed",
   "tui-start",
   "tui-run-created",
-  "tui-readiness-published",
+  "tui-topology-published",
   "tui-checkpoint",
   "model-gate-arm-start",
   "tui-exit-before-arm",
