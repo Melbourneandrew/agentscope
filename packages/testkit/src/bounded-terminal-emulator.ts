@@ -744,6 +744,12 @@ export class BoundedTerminalEmulator {
     this.#resetChallengeOutputObservation();
   }
 
+  #revokeChallengeScreenAuthority(): void {
+    this.#challengeScreenAuthorityRevoked = true;
+    this.#readinessObserved = false;
+    this.#resetChallengeOutputObservation();
+  }
+
   #commitChallengeSynchronizedOutputFrame(): void {
     if (
       !this.#challengeSynchronizedOutputFrameActive ||
@@ -842,14 +848,17 @@ export class BoundedTerminalEmulator {
       } else this.#commitChallengeSynchronizedOutputFrame();
       return;
     }
-    if (
-      prefix === "" &&
-      intermediate === "" &&
-      ["@", "L", "M", "P", "S", "T", "X"].includes(final)
-    ) {
-      this.#challengeScreenAuthorityRevoked = true;
-      this.#readinessObserved = false;
-      this.#invalidateChallengeSynchronizedOutputFrame();
+    const unmodeledScreenMutation =
+      (prefix === "" &&
+        intermediate === "" &&
+        (final === "r" ||
+          ["@", "L", "M", "P", "S", "T", "X"].includes(final))) ||
+      (prefix === "?" &&
+        intermediate === "" &&
+        (final === "h" || final === "l") &&
+        (values.includes(7) || values.includes(1049)));
+    if (unmodeledScreenMutation) {
+      this.#revokeChallengeScreenAuthority();
       return;
     }
     if (
@@ -882,33 +891,33 @@ export class BoundedTerminalEmulator {
         this.#state = "osc";
         this.#control = "";
       } else if (character === "7") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#savedRow = this.#row;
         this.#savedColumn = this.#column;
         this.#state = "ground";
       } else if (character === "8") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#row = this.#savedRow;
         this.#column = this.#savedColumn;
         this.#state = "ground";
       } else if (character === "(" || character === ")") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#state = "charset";
       } else if (character === "D") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "E") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#column = 0;
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "M") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#revokeChallengeScreenAuthority();
         this.#row = Math.max(0, this.#row - 1);
         this.#state = "ground";
       } else if (character === "H" || character === "=" || character === ">") {
-        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#state = "ground";
       } else if (character === "c") {
         this.#invalidateChallengeSynchronizedOutputFrame();
