@@ -1159,7 +1159,7 @@ try {
   const checkpointSignal = waitForCheckpointSignal();
   await new Promise((resolve, reject) => {
     process.stdout.write(
-      `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
+      `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
       (error) =>
         error === null || error === undefined ? resolve() : reject(error),
     );

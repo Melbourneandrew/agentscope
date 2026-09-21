@@ -325,6 +325,12 @@ describe("integration capability manifest", () => {
     expect(challengeRead).toBeLessThan(codexLaunch);
     expect(readinessChallengePublication).toBeGreaterThan(challengeRead);
     expect(readinessChallengePublication).toBeLessThan(codexLaunch);
+    expect(source).toContain(
+      "`AGENTSCOPE_PTY_READY:${readinessChallenge}\\r\\n`",
+    );
+    expect(source).not.toContain(
+      "`\\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}",
+    );
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
