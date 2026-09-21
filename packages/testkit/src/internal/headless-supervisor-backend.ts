@@ -4683,6 +4683,11 @@ type SelectedPtyTestSeed =
   | "terminal-framed-combined-begin"
   | "terminal-framed-combined-end"
   | "terminal-post-frame-erase"
+  | "terminal-framed-alt-enter-stitch"
+  | "terminal-framed-alt-exit-stitch"
+  | "terminal-framed-wrap-stitch"
+  | "terminal-post-frame-alt-exit"
+  | "terminal-post-frame-scroll-region"
   | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
@@ -4975,7 +4980,12 @@ const selectedPtyRuntimeForTest = (
         seed === "terminal-framed-scroll-stitch" ||
         seed === "terminal-framed-combined-begin" ||
         seed === "terminal-framed-combined-end" ||
-        seed === "terminal-post-frame-erase";
+        seed === "terminal-post-frame-erase" ||
+        seed === "terminal-framed-alt-enter-stitch" ||
+        seed === "terminal-framed-alt-exit-stitch" ||
+        seed === "terminal-framed-wrap-stitch" ||
+        seed === "terminal-post-frame-alt-exit" ||
+        seed === "terminal-post-frame-scroll-region";
       const framedStitchMutator =
         seed === "terminal-framed-erase-stitch"
           ? "X"
@@ -5053,12 +5063,36 @@ const selectedPtyRuntimeForTest = (
                                   ? safeBufferFrom(
                                       `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[5;1H\u001b[1X`,
                                     )
-                                  : seed ===
-                                      "terminal-live-completion-no-redraw"
-                                    ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
-                                    : safeBufferFrom(
-                                        `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
-                                      ),
+                                  : seed === "terminal-framed-alt-enter-stitch"
+                                    ? safeBufferFrom(
+                                        `\u001b[?2026h${styledPrompt.toString()}\u001b[?1049h${readiness.requiredText}\u001b[?2026l`,
+                                      )
+                                    : seed === "terminal-framed-alt-exit-stitch"
+                                      ? safeBufferFrom(
+                                          `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}\u001b[?1049l${readiness.requiredText}\u001b[?2026l`,
+                                        )
+                                      : seed === "terminal-framed-wrap-stitch"
+                                        ? safeBufferFrom(
+                                            `\u001b[?2026h${styledPrompt.toString()}\u001b[?7l${readiness.requiredText}\u001b[?2026l`,
+                                          )
+                                        : seed ===
+                                            "terminal-post-frame-alt-exit"
+                                          ? safeBufferFrom(
+                                              `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[?1049l`,
+                                            )
+                                          : seed ===
+                                              "terminal-post-frame-scroll-region"
+                                            ? safeBufferFrom(
+                                                `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[1;8rX`,
+                                              )
+                                            : seed ===
+                                                "terminal-live-completion-no-redraw"
+                                              ? safeBufferFrom(
+                                                  "AGENTSCOPE_PTY_COMPLETE",
+                                                )
+                                              : safeBufferFrom(
+                                                  `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+                                                ),
                   output,
                 ]
           : terminalQueryHandshake

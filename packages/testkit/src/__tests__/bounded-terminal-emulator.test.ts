@@ -292,6 +292,13 @@ describe("bounded semantic terminal emulator", () => {
     );
     expect(terminal.readinessObservationGeneration()).toBe(2);
     expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[H\u001bM\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(3);
+    expect(terminal.readinessObserved()).toBe(true);
   });
 
   it("revokes challenged readiness when resize truncates the live footer", () => {
