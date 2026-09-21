@@ -449,6 +449,7 @@ describe("selected PTY transport", () => {
     "terminal-query-partial",
     "terminal-query-blocked",
     "terminal-adjacent-partial",
+    "terminal-adjacent-enter-fragmented",
   ] as const)("settles terminal reply transport %s", async (seed) => {
     const selected = protocolPromptRequest();
     const now = performance.now();

@@ -2630,16 +2630,17 @@ const armSelectedPty = (
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
+        const pendingActionInputStart = inputOffset - actionInputOffset;
         const requiredAdjacentInput =
           request.readiness.kind === "challenge-styled-text" &&
           pendingActionBeforeRead?.action === "input" &&
           pendingActionBeforeRead.byteLength === 5 &&
           priorAction?.action === "input" &&
-          input[inputOffset] === 0x1b &&
-          input[inputOffset + 1] === 0x5b &&
-          input[inputOffset + 2] === 0x31 &&
-          input[inputOffset + 3] === 0x33 &&
-          input[inputOffset + 4] === 0x75;
+          input[pendingActionInputStart] === 0x1b &&
+          input[pendingActionInputStart + 1] === 0x5b &&
+          input[pendingActionInputStart + 2] === 0x31 &&
+          input[pendingActionInputStart + 3] === 0x33 &&
+          input[pendingActionInputStart + 4] === 0x75;
         const waitingForPriorInputOutput =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
@@ -4643,6 +4644,7 @@ type SelectedPtyTestSeed =
   | "startup-delay"
   | "transport-failure"
   | "timeout"
+  | "terminal-adjacent-enter-fragmented"
   | "terminal-adjacent-partial"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
@@ -4906,6 +4908,7 @@ const selectedPtyRuntimeForTest = (
       );
       const terminalQueryHandshake =
         readiness.kind === "challenge-styled-text" ||
+        seed === "terminal-adjacent-enter-fragmented" ||
         seed === "terminal-adjacent-partial" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
@@ -4919,6 +4922,7 @@ const selectedPtyRuntimeForTest = (
         seed === "keyboard-protocol-ris" ||
         seed === "keyboard-protocol-same-burst";
       const requiresAdjacentReadGuard =
+        seed === "terminal-adjacent-enter-fragmented" ||
         seed === "terminal-adjacent-partial" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
@@ -5009,27 +5013,42 @@ const selectedPtyRuntimeForTest = (
       let terminalResponseOffset = 0;
       let terminalResponseWriteCalls = 0;
       let adjacentPromptStarted = false;
-      let adjacentEnterStarted = false;
-      const observeAdjacentInputWrite = (
-        bytes: Uint8Array,
-        call: number,
-      ): boolean => {
-        if (!requiresAdjacentReadGuard) return false;
+      let adjacentEnterAccepted = 0;
+      let adjacentEnterWriteCalls = 0;
+      const observeAdjacentInputWrite = (bytes: Uint8Array, call: number) => {
+        if (!requiresAdjacentReadGuard) return undefined;
         if (call === 2) {
           adjacentPromptStarted = true;
-          return seed === "terminal-adjacent-partial";
+          if (seed !== "terminal-adjacent-partial") return undefined;
+          const bytesWritten = Math.max(1, Math.floor(bytes.length / 2));
+          return { status: "partial" as const, bytesWritten };
         }
+        const exactEnter = new SafeUint8Array([0x1b, 0x5b, 0x31, 0x33, 0x75]);
+        let enterMatches =
+          bytes.length === exactEnter.length - adjacentEnterAccepted;
+        for (let offset = 0; enterMatches && offset < bytes.length; offset += 1)
+          enterMatches =
+            bytes[offset] === exactEnter[adjacentEnterAccepted + offset];
+        if (!adjacentPromptStarted || !enterMatches) return undefined;
+        adjacentEnterWriteCalls += 1;
         if (
-          adjacentPromptStarted &&
-          bytes.length === 5 &&
-          bytes[0] === 0x1b &&
-          bytes[1] === 0x5b &&
-          bytes[2] === 0x31 &&
-          bytes[3] === 0x33 &&
-          bytes[4] === 0x75
+          seed === "terminal-adjacent-enter-fragmented" &&
+          adjacentEnterWriteCalls === 1
         )
-          adjacentEnterStarted = true;
-        return false;
+          return { status: "would-block" as const, bytesWritten: 0 };
+        const bytesWritten =
+          seed === "terminal-adjacent-enter-fragmented" &&
+          adjacentEnterWriteCalls === 2
+            ? Math.max(1, Math.floor(bytes.length / 2))
+            : bytes.length;
+        adjacentEnterAccepted += bytesWritten;
+        return {
+          status:
+            bytesWritten === bytes.length
+              ? ("complete" as const)
+              : ("partial" as const),
+          bytesWritten,
+        };
       };
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
@@ -5043,6 +5062,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
+          seed !== "terminal-adjacent-enter-fragmented" &&
           seed !== "terminal-adjacent-partial" &&
           seed !== "terminal-query-handshake" &&
           seed !== "terminal-query-partial" &&
@@ -5114,7 +5134,7 @@ const selectedPtyRuntimeForTest = (
           eofByte: 4,
         }),
         read: (maximumBytes) => {
-          if (adjacentPromptStarted && !adjacentEnterStarted)
+          if (adjacentPromptStarted && adjacentEnterAccepted < 5)
             throw new Error("testkit.pty.test-read-between-adjacent-inputs");
           transportReads += 1;
           if (seed === "immediate-output" && !immediateActionApplied)
@@ -5201,7 +5221,8 @@ const selectedPtyRuntimeForTest = (
             };
           }
           inputCalls += 1;
-          const adjacentPartial = observeAdjacentInputWrite(bytes, inputCalls);
+          const adjacentResult = observeAdjacentInputWrite(bytes, inputCalls);
+          if (adjacentResult !== undefined) return adjacentResult;
           if (
             seed === "paced-input" &&
             inputCalls > 1 &&
@@ -5230,11 +5251,10 @@ const selectedPtyRuntimeForTest = (
             }
           }
           const partial =
-            ((seed === "partial-input" ||
+            (seed === "partial-input" ||
               seed === "partial-input-output-limit" ||
               seed === "partial-input-timeout") &&
-              inputCalls === 1) ||
-            adjacentPartial;
+            inputCalls === 1;
           return {
             status: partial ? ("partial" as const) : ("complete" as const),
             bytesWritten: partial
