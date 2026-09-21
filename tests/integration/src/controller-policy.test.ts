@@ -211,6 +211,11 @@ describe("integration cleanup authority", () => {
     expect(source).toContain(
       'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
     );
+    const controller = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(controller).toContain("AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,");
     expect(scenario).toContain(
       "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
     );

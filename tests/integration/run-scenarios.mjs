@@ -772,6 +772,7 @@ const expectedHeadlessEnvironment = (plan, outerMonotonicDeadlineMs) => ({
   AGENTSCOPE_CANDIDATE_ROOT: "/opt/agentscope/prepared",
   AGENTSCOPE_COLLECTOR_URL: "http://collector:4318",
   AGENTSCOPE_INGESTION_URL: "http://collector:4318",
+  AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,
   AGENTSCOPE_LEDGER: "/ledger",
   AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
   AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
@@ -1096,7 +1097,8 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
               kind: "challenge-styled-text",
               challenge,
               text: "›",
-              requiredText: "100% context left",
+              requiredText: "fixture-model default",
+              requiredTerminalProtocol: "csi-u-flags-7-query-v1",
               bold: true,
               dim: false,
             }

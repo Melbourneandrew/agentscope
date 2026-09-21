@@ -65,6 +65,52 @@ const request = (
   };
 };
 
+const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
+  const challenge = "a".repeat(64);
+  const challengeInput = new TextEncoder().encode(`${challenge}\n`);
+  const prompt = new TextEncoder().encode(
+    "\u001b[200~Reply with one short confirmation and do not use tools.\u001b[201~",
+  );
+  const enter = new TextEncoder().encode("\u001b[13u");
+  const submission = new Uint8Array(
+    Buffer.concat([Buffer.from(prompt), Buffer.from(enter)]),
+  );
+  const stdin = new Uint8Array(
+    Buffer.concat([challengeInput, prompt, enter, Buffer.from([4])]),
+  );
+  const inputAction = (bytes: Uint8Array) => ({
+    action: "input" as const,
+    byteLength: bytes.length,
+    inputSha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+  return {
+    ...request({ stdin }),
+    readiness: {
+      kind: "challenge-styled-text",
+      challenge,
+      text: "›",
+      requiredText: "fixture-model default",
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+      bold: true,
+      dim: false,
+    },
+    interaction: {
+      trigger: "immediate",
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        inputAction(challengeInput),
+        {
+          action: "checkpoint-process-topology",
+          topology: "root-with-contained-process-set",
+        },
+        inputAction(submission),
+        { action: "wait-for-semantic-completion" },
+        inputAction(stdin.subarray(stdin.length - 1)),
+      ],
+    },
+  };
+};
+
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
   const principalFacts = () => ({
@@ -127,7 +173,7 @@ describe("selected PTY transport", () => {
     const prompt = new TextEncoder().encode(
       "\u001b[200~Reply with one short confirmation and do not use tools.\u001b[201~",
     );
-    const enter = new TextEncoder().encode("\r");
+    const enter = new TextEncoder().encode("\u001b[13u");
     const promptInput = new Uint8Array(
       Buffer.concat([
         Buffer.from(challengeInput.subarray(0, 65)),
@@ -136,15 +182,13 @@ describe("selected PTY transport", () => {
         Buffer.from([4]),
       ]),
     );
-    const promptAction = {
+    const submission = new Uint8Array(
+      Buffer.concat([Buffer.from(prompt), Buffer.from(enter)]),
+    );
+    const submissionAction = {
       action: "input" as const,
-      byteLength: prompt.length,
-      inputSha256: createHash("sha256").update(prompt).digest("hex"),
-    };
-    const enterAction = {
-      action: "input" as const,
-      byteLength: enter.length,
-      inputSha256: createHash("sha256").update(enter).digest("hex"),
+      byteLength: submission.length,
+      inputSha256: createHash("sha256").update(submission).digest("hex"),
     };
     const promptRequest: SelectedPtyExecutionRequest = {
       ...challengeRequest,
@@ -153,7 +197,8 @@ describe("selected PTY transport", () => {
         kind: "challenge-styled-text",
         challenge,
         text: "›",
-        requiredText: "100% context left",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
       },
@@ -163,8 +208,7 @@ describe("selected PTY transport", () => {
           { action: "resize", geometry: { columns: 100, rows: 30 } },
           challengeRequest.interaction.actions[0]!,
           challengeRequest.interaction.actions[1]!,
-          promptAction,
-          enterAction,
+          submissionAction,
           { action: "wait-for-semantic-completion" },
           {
             action: "input",
@@ -202,8 +246,7 @@ describe("selected PTY transport", () => {
         { action: "resize", geometry: { columns: 100, rows: 30 } },
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: prompt.length },
-        { action: "input", byteLength: enter.length },
+        { action: "input", byteLength: submission.length },
         { action: "wait-for-semantic-completion" },
         { action: "input", byteLength: 1 },
       ],
@@ -218,9 +261,9 @@ describe("selected PTY transport", () => {
         { action: "resize", geometry: { columns: 100, rows: 30 } },
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: submission.length },
       ],
-      inputBytesWritten: 65 + prompt.length,
+      inputBytesWritten: 65 + submission.length,
       outcome: "input-incomplete",
       readinessObserved: false,
     });
@@ -229,9 +272,9 @@ describe("selected PTY transport", () => {
       interaction: {
         ...promptRequest.interaction,
         actions: [
-          ...promptRequest.interaction.actions.slice(0, 6),
+          ...promptRequest.interaction.actions.slice(0, 5),
           { action: "resize", geometry: { columns: 10, rows: 30 } },
-          promptRequest.interaction.actions[6]!,
+          promptRequest.interaction.actions[5]!,
         ],
       },
     };
@@ -242,8 +285,7 @@ describe("selected PTY transport", () => {
         { action: "resize", geometry: { columns: 100, rows: 30 } },
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: prompt.length },
-        { action: "input", byteLength: enter.length },
+        { action: "input", byteLength: submission.length },
         { action: "wait-for-semantic-completion" },
         { action: "resize", geometry: { columns: 10, rows: 30 } },
       ],
@@ -254,16 +296,16 @@ describe("selected PTY transport", () => {
     for (const actions of [
       [
         challengeRequest.interaction.actions[0]!,
-        promptAction,
+        submissionAction,
         challengeRequest.interaction.actions[1]!,
         { action: "wait-for-semantic-completion" as const },
-        promptRequest.interaction.actions[6]!,
+        promptRequest.interaction.actions[5]!,
       ],
       [
         challengeRequest.interaction.actions[0]!,
         challengeRequest.interaction.actions[1]!,
         { action: "wait-for-semantic-completion" as const },
-        promptAction,
+        submissionAction,
         promptRequest.interaction.actions[5]!,
       ],
     ])
@@ -394,6 +436,180 @@ describe("selected PTY transport", () => {
         residualProcessCount: 0,
       });
     }
+  });
+
+  it.each([
+    "terminal-query-handshake",
+    "terminal-query-partial",
+    "terminal-query-blocked",
+  ] as const)("settles terminal reply transport %s", async (seed) => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 500,
+            monotonicExecutionDeadlineMs: now + 1_000,
+            monotonicShutdownDeadlineMs: now + 2_000,
+          },
+        },
+        seed,
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: 72 },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: 138,
+      outcome: "completed",
+      readinessObserved: true,
+      terminalInputJoined: true,
+    });
+  });
+
+  it.each([
+    "keyboard-protocol-missing",
+    "keyboard-protocol-substituted",
+    "keyboard-protocol-out-of-order",
+    "keyboard-protocol-readiness-before",
+    "keyboard-protocol-reset",
+    "keyboard-protocol-ris",
+    "keyboard-protocol-same-burst",
+  ] as const)("rejects terminal protocol negative %s", async (seed) => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    const rejected = await executeSelectedPtyTransportForTest(
+      {
+        ...selected,
+        process: {
+          ...selected.process,
+          monotonicStartupDeadlineMs: now + 500,
+          monotonicExecutionDeadlineMs: now + 1_000,
+          monotonicShutdownDeadlineMs: now + 2_000,
+        },
+      },
+      seed,
+    );
+    expect(rejected).toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+      ],
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
+    });
+  });
+
+  it("admits one adjacent hash-bound prompt and CSI-u Enter action", async () => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 500,
+            monotonicExecutionDeadlineMs: now + 1_000,
+            monotonicShutdownDeadlineMs: now + 2_000,
+          },
+        },
+        "clean",
+      ),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize" },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: 72 },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+    });
+  });
+
+  it("rejects a split prompt and CSI-u Enter request grammar", async () => {
+    const selected = protocolPromptRequest();
+    const combined = selected.interaction.actions[3];
+    expect(combined?.action).toBe("input");
+    if (combined?.action !== "input") throw new Error("test fixture");
+    const promptLength = combined.byteLength - 5;
+    const prompt = selected.process.stdin.subarray(65, 65 + promptLength);
+    const enter = selected.process.stdin.subarray(
+      65 + promptLength,
+      65 + combined.byteLength,
+    );
+    const split = {
+      ...selected,
+      interaction: {
+        ...selected.interaction,
+        actions: [
+          ...selected.interaction.actions.slice(0, 3),
+          {
+            action: "input" as const,
+            byteLength: prompt.length,
+            inputSha256: createHash("sha256").update(prompt).digest("hex"),
+          },
+          {
+            action: "input" as const,
+            byteLength: enter.length,
+            inputSha256: createHash("sha256").update(enter).digest("hex"),
+          },
+          ...selected.interaction.actions.slice(4),
+        ],
+      },
+    };
+    await expect(
+      executeSelectedPtyTransportForTest(split, "clean"),
+    ).rejects.toThrow("testkit.pty.request");
+  });
+
+  it.each([
+    ["raw carriage return", Buffer.from("\r")],
+    ["substituted CSI-u", Buffer.from("\u001b[13~")],
+  ])("rejects %s as the combined submission suffix", async (_name, suffix) => {
+    const selected = protocolPromptRequest();
+    const combined = selected.interaction.actions[3];
+    expect(combined?.action).toBe("input");
+    if (combined?.action !== "input") throw new Error("test fixture");
+    const prompt = selected.process.stdin.subarray(
+      65,
+      65 + combined.byteLength - 5,
+    );
+    const submission = Buffer.concat([Buffer.from(prompt), suffix]);
+    const stdin = new Uint8Array(
+      Buffer.concat([
+        Buffer.from(selected.process.stdin.subarray(0, 65)),
+        submission,
+        Buffer.from(selected.process.stdin.subarray(65 + combined.byteLength)),
+      ]),
+    );
+    const substituted: SelectedPtyExecutionRequest = {
+      ...selected,
+      process: { ...selected.process, stdin },
+      interaction: {
+        ...selected.interaction,
+        actions: [
+          ...selected.interaction.actions.slice(0, 3),
+          {
+            action: "input",
+            byteLength: submission.length,
+            inputSha256: createHash("sha256").update(submission).digest("hex"),
+          },
+          ...selected.interaction.actions.slice(4),
+        ],
+      },
+    };
+    await expect(
+      executeSelectedPtyTransportForTest(substituted, "clean"),
+    ).rejects.toThrow("testkit.pty.request");
   });
 
   it("causally validates the selected immutable principal record", () => {

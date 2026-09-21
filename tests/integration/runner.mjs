@@ -206,7 +206,8 @@ const compileNativeReadiness = (scenario, challenge) => {
       kind: "challenge-styled-text",
       challenge,
       text: "›",
-      requiredText: "100% context left",
+      requiredText: "fixture-model default",
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: true,
       dim: false,
     });

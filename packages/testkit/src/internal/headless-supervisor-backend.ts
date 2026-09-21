@@ -107,8 +107,12 @@ const emulatorUnsupportedControlReason =
   BoundedTerminalEmulator.prototype.unsupportedControlReason;
 const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
+const emulatorRequiredTerminalProtocolReady =
+  BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
   BoundedTerminalEmulator.prototype.completionObserved;
+const emulatorTakeTerminalResponses =
+  BoundedTerminalEmulator.prototype.takeTerminalResponses;
 /* eslint-enable @typescript-eslint/unbound-method */
 const safeSetTimeout = setTimeout;
 const safeClearTimeout = clearTimeout;
@@ -1969,13 +1973,18 @@ const snapshotPtyRequest = (
     ]);
   } else if (
     readinessKind === "challenge-styled-text" &&
-    readinessKeys === "bold\0challenge\0dim\0kind\0requiredText\0text"
+    readinessKeys ===
+      "bold\0challenge\0dim\0kind\0requiredTerminalProtocol\0requiredText\0text"
   ) {
     const challenge = ownData(readiness, "challenge");
     const readinessText = ownData(readiness, "text");
     const readinessBold = ownData(readiness, "bold");
     const readinessDim = ownData(readiness, "dim");
     const requiredText = ownData(readiness, "requiredText");
+    const requiredTerminalProtocol = ownData(
+      readiness,
+      "requiredTerminalProtocol",
+    );
     if (
       typeof challenge !== "string" ||
       !/^[a-f0-9]{64}$/u.test(challenge) ||
@@ -1992,7 +2001,8 @@ const snapshotPtyRequest = (
         (character) =>
           (character.codePointAt(0) ?? 0) < 0x20 ||
           character.codePointAt(0) === 0x7f,
-      )
+      ) ||
+      requiredTerminalProtocol !== "csi-u-flags-7-query-v1"
     )
       return fail("testkit.pty.request");
     readinessChallenge = challenge;
@@ -2002,6 +2012,7 @@ const snapshotPtyRequest = (
         challenge,
         text: readinessText,
         requiredText,
+        requiredTerminalProtocol,
         bold: readinessBold,
         dim: readinessDim,
       },
@@ -2074,8 +2085,6 @@ const snapshotPtyRequest = (
   let firstInputByteLength = -1;
   let secondInputIndex = -1;
   let secondInputByteLength = -1;
-  let thirdInputIndex = -1;
-  let thirdInputByteLength = -1;
   let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
@@ -2116,9 +2125,6 @@ const snapshotPtyRequest = (
         } else if (inputCountBeforeSemanticWait === 2) {
           secondInputIndex = index;
           secondInputByteLength = byteLength;
-        } else if (inputCountBeforeSemanticWait === 3) {
-          thirdInputIndex = index;
-          thirdInputByteLength = byteLength;
         }
       }
       describedInputBytes += byteLength;
@@ -2246,20 +2252,29 @@ const snapshotPtyRequest = (
         topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
         inputCountBeforeSemanticWait < 1 ||
-        inputCountBeforeSemanticWait >
-          (readinessKind === "challenge-styled-text" ? 3 : 2) ||
+        inputCountBeforeSemanticWait > 2 ||
         firstInputByteLength !== 65 ||
         topologyCheckpointIndex !== firstInputIndex + 1 ||
         (readinessKind === "challenge-styled-text"
-          ? inputCountBeforeSemanticWait !== 3 ||
+          ? inputCountBeforeSemanticWait !== 2 ||
             secondInputIndex !== topologyCheckpointIndex + 1 ||
-            thirdInputIndex !== secondInputIndex + 1 ||
-            semanticWaitIndex !== thirdInputIndex + 1 ||
-            secondInputByteLength < 1 ||
-            thirdInputByteLength !== 1 ||
+            semanticWaitIndex !== secondInputIndex + 1 ||
+            secondInputByteLength < 6 ||
+            safeBufferFrom(process_.stdin)[
+              describedInputBytesAtSemanticWait - 5
+            ] !== 0x1b ||
+            safeBufferFrom(process_.stdin)[
+              describedInputBytesAtSemanticWait - 4
+            ] !== 0x5b ||
+            safeBufferFrom(process_.stdin)[
+              describedInputBytesAtSemanticWait - 3
+            ] !== 0x31 ||
+            safeBufferFrom(process_.stdin)[
+              describedInputBytesAtSemanticWait - 2
+            ] !== 0x33 ||
             safeBufferFrom(process_.stdin)[
               describedInputBytesAtSemanticWait - 1
-            ] !== 0x0d
+            ] !== 0x75
           : inputCountBeforeSemanticWait === 1
             ? semanticWaitIndex !== topologyCheckpointIndex + 1
             : secondInputIndex !== topologyCheckpointIndex + 1 ||
@@ -2560,6 +2575,9 @@ const armSelectedPty = (
       );
     };
     let readinessObserved = false;
+    let terminalProtocolOrderingRejected = false;
+    let pendingTerminalResponse = safeBufferFrom([]);
+    let pendingTerminalResponseOffset = 0;
     let eofAttempted = false;
     let eofByteWritten = false;
     let outputTerminal = false;
@@ -2579,6 +2597,29 @@ const armSelectedPty = (
     // eslint-disable-next-line complexity,max-lines-per-function
     const pumpTransport = (allowInput: boolean): void => {
       try {
+        const flushTerminalResponse = (): boolean => {
+          if (pendingTerminalResponseOffset >= pendingTerminalResponse.length)
+            return true;
+          const pending = pendingTerminalResponse.subarray(
+            pendingTerminalResponseOffset,
+          );
+          const written = exactPtyWrite(child.write(pending), pending.length);
+          pendingTerminalResponseOffset += written.bytesWritten;
+          return (
+            pendingTerminalResponseOffset === pendingTerminalResponse.length
+          );
+        };
+        const collectTerminalResponse = (): void => {
+          if (pendingTerminalResponseOffset < pendingTerminalResponse.length)
+            return fail("testkit.pty.transport");
+          const response = safeReflectApply(
+            emulatorTakeTerminalResponses,
+            terminal,
+            [],
+          );
+          pendingTerminalResponse = safeBufferFrom(response);
+          pendingTerminalResponseOffset = 0;
+        };
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
@@ -2589,20 +2630,34 @@ const armSelectedPty = (
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
           inputOffset >= 65;
+        const requiresTerminalProtocol =
+          request.readiness.kind === "challenge-styled-text" &&
+          request.readiness.requiredTerminalProtocol ===
+            "csi-u-flags-7-query-v1" &&
+          inputOffset >= 65 &&
+          semanticCompletionObservedAtOutputBytes < 0;
         const shouldReadBeforeAction =
           !allowInput ||
           pendingActionBeforeRead === undefined ||
           (request.interaction.trigger === "semantic-ready" &&
             !readinessObserved) ||
           (requiresLiveReadiness && !readinessObserved) ||
+          (requiresTerminalProtocol &&
+            !safeReflectApply(
+              emulatorRequiredTerminalProtocolReady,
+              terminal,
+              [],
+            )) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
           pendingActionBeforeRead.action === "checkpoint-process-topology" ||
-          waitingForPriorInputOutput;
+          waitingForPriorInputOutput ||
+          pendingTerminalResponseOffset < pendingTerminalResponse.length;
         for (
           let index = 0;
           shouldReadBeforeAction && index < 64 && !outputTerminal;
           index += 1
         ) {
+          if (!flushTerminalResponse()) break;
           // Keep one complete semantic marker inside the emulator's bounded
           // recent window, then stop at readiness so its gated action cannot
           // be overtaken by a fast child's later completion output.
@@ -2632,6 +2687,13 @@ const armSelectedPty = (
             safeReflectApply(emulatorWrite, terminal, [
               new SafeUint8Array(captured),
             ]);
+            collectTerminalResponse();
+            if (
+              safeReflectApply(emulatorReadinessObserved, terminal, []) &&
+              pendingTerminalResponse.length > 0
+            )
+              terminalProtocolOrderingRejected = true;
+            if (!flushTerminalResponse()) break;
             const semanticState = safeReflectApply(
               emulatorSnapshot,
               terminal,
@@ -2675,6 +2737,14 @@ const armSelectedPty = (
           allowInput &&
           (request.interaction.trigger === "immediate" || readinessObserved) &&
           (!requiresLiveReadiness || readinessObserved) &&
+          (!requiresTerminalProtocol ||
+            safeReflectApply(
+              emulatorRequiredTerminalProtocolReady,
+              terminal,
+              [],
+            )) &&
+          !terminalProtocolOrderingRejected &&
+          pendingTerminalResponseOffset >= pendingTerminalResponse.length &&
           (!waitingForPriorInputOutput ||
             outputBytes > lastCompletedInputOutputBytes);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
@@ -3080,6 +3150,7 @@ const armSelectedPty = (
     const inputJoined =
       actionIndex === request.interaction.actions.length &&
       inputOffset === input.length &&
+      pendingTerminalResponseOffset >= pendingTerminalResponse.length &&
       (!eofAttempted || eofByteWritten);
     const clean = residual.length === 0 && outputTerminal && transportClosed;
     const output = safeBufferConcat(chunks, outputBytes);
@@ -4525,6 +4596,13 @@ type SelectedPtyTestSeed =
   | "immutable-symlink"
   | "late-tail"
   | "kill-escalation"
+  | "keyboard-protocol-missing"
+  | "keyboard-protocol-out-of-order"
+  | "keyboard-protocol-readiness-before"
+  | "keyboard-protocol-reset"
+  | "keyboard-protocol-ris"
+  | "keyboard-protocol-same-burst"
+  | "keyboard-protocol-substituted"
   | "credential-prompt"
   | "malformed-control"
   | "malformed-exit"
@@ -4547,6 +4625,9 @@ type SelectedPtyTestSeed =
   | "startup-delay"
   | "transport-failure"
   | "timeout"
+  | "terminal-query-blocked"
+  | "terminal-query-handshake"
+  | "terminal-query-partial"
   | "unsupported-control"
   | "unsupported-signal";
 
@@ -4788,12 +4869,85 @@ const selectedPtyRuntimeForTest = (
             ? `AGENTSCOPE_PTY_READY:${readiness.challenge}`
             : "AGENTSCOPE_PTY_READY",
       );
+      const orderedQueries =
+        "\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c";
+      const terminalQueries = safeBufferFrom(
+        seed === "keyboard-protocol-missing"
+          ? orderedQueries
+          : seed === "keyboard-protocol-substituted"
+            ? `\u001b[>6u${orderedQueries}`
+            : seed === "keyboard-protocol-out-of-order"
+              ? `${orderedQueries}\u001b[>7u`
+              : seed === "keyboard-protocol-reset"
+                ? `\u001b[>7u${orderedQueries}\u001b[<u`
+                : `\u001b[>7u${orderedQueries}`,
+      );
+      const terminalResponses = safeBufferFrom(
+        "\u001b[2;1R\u001b]10;rgb:ffff/ffff/ffff\u001b\\\u001b]11;rgb:0000/0000/0000\u001b\\\u001b[?0u\u001b[?1;2c",
+      );
+      const terminalQueryHandshake =
+        readiness.kind === "challenge-styled-text" ||
+        seed === "terminal-query-handshake" ||
+        seed === "terminal-query-partial" ||
+        seed === "terminal-query-blocked";
+      const terminalProtocolNegativeSeed =
+        seed === "keyboard-protocol-missing" ||
+        seed === "keyboard-protocol-substituted" ||
+        seed === "keyboard-protocol-out-of-order" ||
+        seed === "keyboard-protocol-readiness-before" ||
+        seed === "keyboard-protocol-reset" ||
+        seed === "keyboard-protocol-ris" ||
+        seed === "keyboard-protocol-same-burst";
+      const challengedMarker =
+        readiness.kind === "challenge-styled-text"
+          ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
+          : ready;
+      const styledPrompt =
+        readiness.kind === "challenge-styled-text"
+          ? safeBufferFrom(`\u001b[1m›\u001b[22m ${readiness.requiredText}`)
+          : ready;
       const chunks =
-        readiness.kind === "challenge-styled-text" &&
-        seed === "readiness-revoked-after-input"
-          ? [ready, safeBufferFrom("\u001b[2J"), output]
-          : readiness.kind === "challenge-styled-text" && seed === "clean"
-            ? [ready, safeBufferFrom("prompt-rendered"), output]
+        readiness.kind === "challenge-styled-text"
+          ? seed === "keyboard-protocol-readiness-before"
+            ? [
+                challengedMarker,
+                safeBufferFrom(
+                  `${styledPrompt.toString()}${terminalQueries.toString()}`,
+                ),
+                safeBufferFrom("prompt-rendered"),
+                output,
+              ]
+            : seed === "keyboard-protocol-same-burst"
+              ? [
+                  challengedMarker,
+                  safeBufferFrom(
+                    `${terminalQueries.toString()}${styledPrompt.toString()}`,
+                  ),
+                  safeBufferFrom("prompt-rendered"),
+                  output,
+                ]
+              : [
+                  challengedMarker,
+                  terminalQueries,
+                  seed === "keyboard-protocol-ris"
+                    ? safeBufferFrom(
+                        `${styledPrompt.toString()}\u001bc${styledPrompt.toString()}`,
+                      )
+                    : styledPrompt,
+                  ...(seed === "readiness-revoked-after-input"
+                    ? [safeBufferFrom("\u001b[2J")]
+                    : []),
+                  safeBufferFrom("prompt-rendered"),
+                  output,
+                ]
+          : terminalQueryHandshake
+            ? [
+                challengedMarker,
+                terminalQueries,
+                styledPrompt,
+                safeBufferFrom("prompt-rendered"),
+                output,
+              ]
             : seed === "completion-before-readiness"
               ? [output, ready]
               : seed === "fragmented-output"
@@ -4826,6 +4980,9 @@ const selectedPtyRuntimeForTest = (
       let priorInputTransportReads = -1;
       let transportReads = 0;
       let currentGeometry = geometry;
+      let terminalQueryAnswered = false;
+      let terminalResponseOffset = 0;
+      let terminalResponseWriteCalls = 0;
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -4917,6 +5074,13 @@ const selectedPtyRuntimeForTest = (
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
           if (
+            terminalQueryHandshake &&
+            seed !== "keyboard-protocol-readiness-before" &&
+            chunkIndex >= 2 &&
+            !terminalQueryAnswered
+          )
+            return { status: "would-block" as const };
+          if (
             seed === "post-input-completion" &&
             chunkIndex === 1 &&
             inputCalls === 0
@@ -4941,6 +5105,11 @@ const selectedPtyRuntimeForTest = (
             }
             return { status: "data" as const, bytes };
           }
+          if (terminalProtocolNegativeSeed && !terminal) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+          }
           return terminal
             ? { status: "eio" as const }
             : { status: "would-block" as const };
@@ -4949,6 +5118,34 @@ const selectedPtyRuntimeForTest = (
           currentGeometry = { columns, rows };
         },
         write: (bytes) => {
+          if (
+            terminalQueryHandshake &&
+            !terminalQueryAnswered &&
+            safeBufferFrom(bytes).equals(
+              terminalResponses.subarray(terminalResponseOffset),
+            )
+          ) {
+            terminalResponseWriteCalls += 1;
+            if (
+              seed === "terminal-query-blocked" &&
+              terminalResponseWriteCalls === 1
+            )
+              return { status: "would-block" as const, bytesWritten: 0 };
+            if (
+              seed === "terminal-query-partial" &&
+              terminalResponseWriteCalls === 1
+            ) {
+              const bytesWritten = Math.max(1, Math.floor(bytes.length / 2));
+              terminalResponseOffset += bytesWritten;
+              return { status: "partial" as const, bytesWritten };
+            }
+            terminalResponseOffset += bytes.length;
+            terminalQueryAnswered = true;
+            return {
+              status: "complete" as const,
+              bytesWritten: bytes.length,
+            };
+          }
           inputCalls += 1;
           if (
             seed === "paced-input" &&
