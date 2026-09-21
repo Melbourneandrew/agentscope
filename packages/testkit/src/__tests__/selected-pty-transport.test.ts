@@ -264,8 +264,9 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
       ],
-      inputBytesWritten: 65 + prompt.length,
+      inputBytesWritten: 65 + prompt.length + enter.length,
       outcome: "input-incomplete",
       readinessObserved: false,
     });
@@ -447,6 +448,7 @@ describe("selected PTY transport", () => {
     "terminal-query-handshake",
     "terminal-query-partial",
     "terminal-query-blocked",
+    "terminal-adjacent-partial",
   ] as const)("settles terminal reply transport %s", async (seed) => {
     const selected = protocolPromptRequest();
     const now = performance.now();

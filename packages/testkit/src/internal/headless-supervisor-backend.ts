@@ -2630,9 +2630,20 @@ const armSelectedPty = (
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
+        const requiredAdjacentInput =
+          request.readiness.kind === "challenge-styled-text" &&
+          pendingActionBeforeRead?.action === "input" &&
+          pendingActionBeforeRead.byteLength === 5 &&
+          priorAction?.action === "input" &&
+          input[inputOffset] === 0x1b &&
+          input[inputOffset + 1] === 0x5b &&
+          input[inputOffset + 2] === 0x31 &&
+          input[inputOffset + 3] === 0x33 &&
+          input[inputOffset + 4] === 0x75;
         const waitingForPriorInputOutput =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
+          !requiredAdjacentInput &&
           outputBytes === lastCompletedInputOutputBytes;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
@@ -4632,6 +4643,7 @@ type SelectedPtyTestSeed =
   | "startup-delay"
   | "transport-failure"
   | "timeout"
+  | "terminal-adjacent-partial"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
   | "terminal-query-partial"
@@ -4894,6 +4906,7 @@ const selectedPtyRuntimeForTest = (
       );
       const terminalQueryHandshake =
         readiness.kind === "challenge-styled-text" ||
+        seed === "terminal-adjacent-partial" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
         seed === "terminal-query-blocked";
@@ -4905,6 +4918,11 @@ const selectedPtyRuntimeForTest = (
         seed === "keyboard-protocol-reset" ||
         seed === "keyboard-protocol-ris" ||
         seed === "keyboard-protocol-same-burst";
+      const requiresAdjacentReadGuard =
+        seed === "terminal-adjacent-partial" ||
+        seed === "terminal-query-handshake" ||
+        seed === "terminal-query-partial" ||
+        seed === "terminal-query-blocked";
       const challengedMarker =
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
@@ -4990,6 +5008,29 @@ const selectedPtyRuntimeForTest = (
       let terminalQueryAnswered = false;
       let terminalResponseOffset = 0;
       let terminalResponseWriteCalls = 0;
+      let adjacentPromptStarted = false;
+      let adjacentEnterStarted = false;
+      const observeAdjacentInputWrite = (
+        bytes: Uint8Array,
+        call: number,
+      ): boolean => {
+        if (!requiresAdjacentReadGuard) return false;
+        if (call === 2) {
+          adjacentPromptStarted = true;
+          return seed === "terminal-adjacent-partial";
+        }
+        if (
+          adjacentPromptStarted &&
+          bytes.length === 5 &&
+          bytes[0] === 0x1b &&
+          bytes[1] === 0x5b &&
+          bytes[2] === 0x31 &&
+          bytes[3] === 0x33 &&
+          bytes[4] === 0x75
+        )
+          adjacentEnterStarted = true;
+        return false;
+      };
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -5002,6 +5043,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
+          seed !== "terminal-adjacent-partial" &&
           seed !== "terminal-query-handshake" &&
           seed !== "terminal-query-partial" &&
           seed !== "terminal-query-blocked"
@@ -5072,6 +5114,8 @@ const selectedPtyRuntimeForTest = (
           eofByte: 4,
         }),
         read: (maximumBytes) => {
+          if (adjacentPromptStarted && !adjacentEnterStarted)
+            throw new Error("testkit.pty.test-read-between-adjacent-inputs");
           transportReads += 1;
           if (seed === "immediate-output" && !immediateActionApplied)
             throw new Error("testkit.pty.test-read-before-immediate-action");
@@ -5157,6 +5201,7 @@ const selectedPtyRuntimeForTest = (
             };
           }
           inputCalls += 1;
+          const adjacentPartial = observeAdjacentInputWrite(bytes, inputCalls);
           if (
             seed === "paced-input" &&
             inputCalls > 1 &&
@@ -5185,10 +5230,11 @@ const selectedPtyRuntimeForTest = (
             }
           }
           const partial =
-            (seed === "partial-input" ||
+            ((seed === "partial-input" ||
               seed === "partial-input-output-limit" ||
               seed === "partial-input-timeout") &&
-            inputCalls === 1;
+              inputCalls === 1) ||
+            adjacentPartial;
           return {
             status: partial ? ("partial" as const) : ("complete" as const),
             bytesWritten: partial
