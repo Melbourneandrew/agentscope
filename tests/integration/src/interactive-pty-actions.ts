@@ -66,7 +66,10 @@ export const compileInteractivePtyActions = (
               input[initialInputBytes + preCompletionInputBytes - 1] !== 0x75
             )
               throw new Error("integration.manifest.interaction");
-            return [inputAction(initialInputBytes, preCompletionInputBytes)];
+            return [
+              inputAction(initialInputBytes, preCompletionInputBytes - 5),
+              inputAction(initialInputBytes + preCompletionInputBytes - 5, 5),
+            ];
           })()
         : [inputAction(initialInputBytes, preCompletionInputBytes)];
   return deepFreeze([
