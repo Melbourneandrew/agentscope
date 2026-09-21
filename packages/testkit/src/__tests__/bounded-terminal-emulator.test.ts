@@ -245,6 +245,38 @@ describe("bounded semantic terminal emulator", () => {
     expect(malformedColor.readinessObservationGeneration()).toBe(0);
   });
 
+  it("derives readiness from an exact synchronized prompt after unrelated Unicode", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 30 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text" as const,
+        challenge,
+        text: "›",
+        requiredText: "Ask Codex to do anything",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1" as const,
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.write(bytes("\u001b[1;1H✓"));
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[24;1H\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[?2026l",
+      ),
+    );
+
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+  });
+
   it("rejects readiness matchers without closed one-cell glyphs", () => {
     const challenge = "a".repeat(64);
     expect(
