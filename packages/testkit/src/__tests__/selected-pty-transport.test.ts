@@ -648,6 +648,27 @@ describe("selected PTY transport", () => {
     });
   }, 20_000);
 
+  it("rejects a synchronized frame begun before prompt input", async () => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 5_000,
+            monotonicExecutionDeadlineMs: now + 10_000,
+            monotonicShutdownDeadlineMs: now + 15_000,
+          },
+        },
+        "terminal-frame-began-before-input",
+      ),
+    ).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-incomplete",
+    });
+  }, 20_000);
+
   it.each([
     "terminal-stale-prebuffer-no-redraw",
     "terminal-passive-control-no-redraw",
