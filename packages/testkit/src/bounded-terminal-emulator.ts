@@ -428,6 +428,10 @@ export class BoundedTerminalEmulator {
   #cursorVisible = true;
   #savedColumn = 0;
   #savedRow = 0;
+  #savedBold = false;
+  #savedDim = false;
+  #savedCharacterSetTrusted = true;
+  #savedRenditionTrusted = true;
   #state: ParserState = "ground";
   #control = "";
   #outputBytes = 0;
@@ -456,6 +460,9 @@ export class BoundedTerminalEmulator {
   #completionTail = "";
   #bold = false;
   #dim = false;
+  #characterSetTarget: "(" | ")" | null = null;
+  #characterSetTrusted = true;
+  #renditionTrusted = true;
   #credentialPromptObserved = false;
   #credentialTail = "";
   #pendingTerminalResponses = "";
@@ -775,7 +782,9 @@ export class BoundedTerminalEmulator {
       this.#cellBold[styledCell] === this.#readinessMatcher.bold &&
       this.#cellDim[styledCell] === this.#readinessMatcher.dim &&
       this.#challengeRequiredTextObservedInOutput &&
-      requiredTextSurvives;
+      requiredTextSurvives &&
+      this.#characterSetTrusted &&
+      this.#renditionTrusted;
     if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
     this.#refreshChallengeStyledReadiness();
     if (this.#readinessObserved && outputAuthorityValid)
@@ -894,14 +903,22 @@ export class BoundedTerminalEmulator {
         this.#resetChallengeRequiredTextOutputTail();
         this.#savedRow = this.#row;
         this.#savedColumn = this.#column;
+        this.#savedBold = this.#bold;
+        this.#savedDim = this.#dim;
+        this.#savedCharacterSetTrusted = this.#characterSetTrusted;
+        this.#savedRenditionTrusted = this.#renditionTrusted;
         this.#state = "ground";
       } else if (character === "8") {
-        this.#resetChallengeRequiredTextOutputTail();
+        this.#revokeChallengeScreenAuthority();
         this.#row = this.#savedRow;
         this.#column = this.#savedColumn;
+        this.#bold = this.#savedBold;
+        this.#dim = this.#savedDim;
+        this.#characterSetTrusted = this.#savedCharacterSetTrusted;
+        this.#renditionTrusted = this.#savedRenditionTrusted;
         this.#state = "ground";
       } else if (character === "(" || character === ")") {
-        this.#resetChallengeRequiredTextOutputTail();
+        this.#characterSetTarget = character;
         this.#state = "charset";
       } else if (character === "D") {
         this.#resetChallengeRequiredTextOutputTail();
@@ -917,7 +934,8 @@ export class BoundedTerminalEmulator {
         this.#row = Math.max(0, this.#row - 1);
         this.#state = "ground";
       } else if (character === "H" || character === "=" || character === ">") {
-        this.#resetChallengeRequiredTextOutputTail();
+        if (character === "H") this.#revokeChallengeScreenAuthority();
+        else this.#resetChallengeRequiredTextOutputTail();
         this.#state = "ground";
       } else if (character === "c") {
         this.#invalidateChallengeSynchronizedOutputFrame();
@@ -941,6 +959,10 @@ export class BoundedTerminalEmulator {
     if (this.#state === "charset") {
       if (character !== "0" && character !== "A" && character !== "B")
         this.#recordMalformedControl("escape");
+      this.#characterSetTrusted =
+        this.#characterSetTarget === "(" && character === "B";
+      this.#characterSetTarget = null;
+      this.#revokeChallengeScreenAuthority();
       this.#state = "ground";
       return;
     }
@@ -979,7 +1001,7 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (character === "\t") {
-      this.#invalidateChallengeSynchronizedOutputFrame();
+      this.#revokeChallengeScreenAuthority();
       this.#column = Math.min(
         this.#geometry.columns - 1,
         Math.ceil((this.#column + 1) / 8) * 8,
@@ -1142,6 +1164,7 @@ export class BoundedTerminalEmulator {
       if (value === 0) {
         this.#bold = false;
         this.#dim = false;
+        this.#renditionTrusted = true;
       } else if (value === 1) {
         this.#bold = true;
       } else if (value === 2) {
@@ -1149,6 +1172,9 @@ export class BoundedTerminalEmulator {
       } else if (value === 22) {
         this.#bold = false;
         this.#dim = false;
+      } else {
+        this.#renditionTrusted = false;
+        this.#revokeChallengeScreenAuthority();
       }
     }
   }
