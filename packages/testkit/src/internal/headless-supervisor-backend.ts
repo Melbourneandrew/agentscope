@@ -2630,24 +2630,9 @@ const armSelectedPty = (
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
-        const pendingActionInputStart = inputOffset - actionInputOffset;
-        const requiredAdjacentInput =
-          request.readiness.kind === "challenge-styled-text" &&
-          pendingActionBeforeRead?.action === "input" &&
-          pendingActionBeforeRead.byteLength === 5 &&
-          request.interaction.actions[actionIndex + 1]?.action ===
-            "wait-for-semantic-completion" &&
-          semanticCompletionObservedAtOutputBytes < 0 &&
-          priorAction?.action === "input" &&
-          input[pendingActionInputStart] === 0x1b &&
-          input[pendingActionInputStart + 1] === 0x5b &&
-          input[pendingActionInputStart + 2] === 0x31 &&
-          input[pendingActionInputStart + 3] === 0x33 &&
-          input[pendingActionInputStart + 4] === 0x75;
         const waitingForPriorInputOutput =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
-          !requiredAdjacentInput &&
           outputBytes === lastCompletedInputOutputBytes;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
@@ -4647,8 +4632,8 @@ type SelectedPtyTestSeed =
   | "startup-delay"
   | "transport-failure"
   | "timeout"
-  | "terminal-adjacent-enter-fragmented"
-  | "terminal-adjacent-partial"
+  | "terminal-redraw-enter-fragmented"
+  | "terminal-prompt-partial"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
@@ -4912,8 +4897,8 @@ const selectedPtyRuntimeForTest = (
       );
       const terminalQueryHandshake =
         readiness.kind === "challenge-styled-text" ||
-        seed === "terminal-adjacent-enter-fragmented" ||
-        seed === "terminal-adjacent-partial" ||
+        seed === "terminal-redraw-enter-fragmented" ||
+        seed === "terminal-prompt-partial" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
         seed === "terminal-query-blocked";
@@ -4925,9 +4910,9 @@ const selectedPtyRuntimeForTest = (
         seed === "keyboard-protocol-reset" ||
         seed === "keyboard-protocol-ris" ||
         seed === "keyboard-protocol-same-burst";
-      const requiresAdjacentReadGuard =
-        seed === "terminal-adjacent-enter-fragmented" ||
-        seed === "terminal-adjacent-partial" ||
+      const requiresSubmissionReadGuard =
+        seed === "terminal-redraw-enter-fragmented" ||
+        seed === "terminal-prompt-partial" ||
         seed === "terminal-post-wait-pacing" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
@@ -4968,10 +4953,7 @@ const selectedPtyRuntimeForTest = (
                         `${styledPrompt.toString()}\u001bc${styledPrompt.toString()}`,
                       )
                     : styledPrompt,
-                  ...(seed === "readiness-revoked-after-input"
-                    ? [safeBufferFrom("\u001b[2J")]
-                    : []),
-                  safeBufferFrom("prompt-rendered"),
+                  safeBufferFrom(`${styledPrompt.toString()} prompt-rendered`),
                   output,
                 ]
           : terminalQueryHandshake
@@ -5017,36 +4999,49 @@ const selectedPtyRuntimeForTest = (
       let terminalQueryAnswered = false;
       let terminalResponseOffset = 0;
       let terminalResponseWriteCalls = 0;
-      let adjacentPromptStarted = false;
-      let adjacentEnterAccepted = 0;
-      let adjacentEnterWriteCalls = 0;
-      const observeAdjacentInputWrite = (bytes: Uint8Array, call: number) => {
-        if (!requiresAdjacentReadGuard) return undefined;
-        if (call === 2) {
-          adjacentPromptStarted = true;
-          if (seed !== "terminal-adjacent-partial") return undefined;
-          const bytesWritten = Math.max(1, Math.floor(bytes.length / 2));
-          return { status: "partial" as const, bytesWritten };
+      let submissionPromptAccepted = 0;
+      let promptAcknowledgedByOutput = false;
+      let submissionEnterAccepted = 0;
+      let submissionEnterWriteCalls = 0;
+      let readinessRevokedAfterInput = false;
+      let promptInputObserved = false;
+      const observeSubmissionInputWrite = (bytes: Uint8Array, call: number) => {
+        if (!requiresSubmissionReadGuard) return undefined;
+        if (call >= 2 && submissionPromptAccepted < 67) {
+          const bytesWritten =
+            seed === "terminal-prompt-partial" && call === 2
+              ? Math.max(1, Math.floor(bytes.length / 2))
+              : bytes.length;
+          submissionPromptAccepted += bytesWritten;
+          return {
+            status:
+              bytesWritten === bytes.length
+                ? ("complete" as const)
+                : ("partial" as const),
+            bytesWritten,
+          };
         }
         const exactEnter = new SafeUint8Array([0x1b, 0x5b, 0x31, 0x33, 0x75]);
         let enterMatches =
-          bytes.length === exactEnter.length - adjacentEnterAccepted;
+          bytes.length === exactEnter.length - submissionEnterAccepted;
         for (let offset = 0; enterMatches && offset < bytes.length; offset += 1)
           enterMatches =
-            bytes[offset] === exactEnter[adjacentEnterAccepted + offset];
-        if (!adjacentPromptStarted || !enterMatches) return undefined;
-        adjacentEnterWriteCalls += 1;
+            bytes[offset] === exactEnter[submissionEnterAccepted + offset];
+        if (!enterMatches) return undefined;
+        if (!promptAcknowledgedByOutput)
+          throw new Error("testkit.pty.test-enter-before-prompt-redraw");
+        submissionEnterWriteCalls += 1;
         if (
-          seed === "terminal-adjacent-enter-fragmented" &&
-          adjacentEnterWriteCalls === 1
+          seed === "terminal-redraw-enter-fragmented" &&
+          submissionEnterWriteCalls === 1
         )
           return { status: "would-block" as const, bytesWritten: 0 };
         const bytesWritten =
-          seed === "terminal-adjacent-enter-fragmented" &&
-          adjacentEnterWriteCalls === 2
+          seed === "terminal-redraw-enter-fragmented" &&
+          submissionEnterWriteCalls === 2
             ? Math.max(1, Math.floor(bytes.length / 2))
             : bytes.length;
-        adjacentEnterAccepted += bytesWritten;
+        submissionEnterAccepted += bytesWritten;
         return {
           status:
             bytesWritten === bytes.length
@@ -5054,6 +5049,33 @@ const selectedPtyRuntimeForTest = (
               : ("partial" as const),
           bytesWritten,
         };
+      };
+      const readReadinessRevocationAfterPrompt = ():
+        PtyReadObservation | undefined => {
+        if (
+          seed === "readiness-revoked-after-input" &&
+          promptInputObserved &&
+          !readinessRevokedAfterInput
+        ) {
+          readinessRevokedAfterInput = true;
+          processes.clear();
+          terminal = true;
+          close({ code: 0, signal: 0 });
+          return {
+            status: "data" as const,
+            bytes: safeBufferFrom("\u001b[2JAGENTSCOPE_PTY_COMPLETE"),
+          };
+        }
+        return readinessRevokedAfterInput && terminal
+          ? { status: "eio" as const }
+          : undefined;
+      };
+      const assertNoReadDuringPartialSubmission = (): void => {
+        if (
+          (submissionPromptAccepted > 0 && submissionPromptAccepted < 67) ||
+          (submissionEnterAccepted > 0 && submissionEnterAccepted < 5)
+        )
+          throw new Error("testkit.pty.test-read-during-partial-input");
       };
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
@@ -5067,8 +5089,8 @@ const selectedPtyRuntimeForTest = (
           seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
-          seed !== "terminal-adjacent-enter-fragmented" &&
-          seed !== "terminal-adjacent-partial" &&
+          seed !== "terminal-redraw-enter-fragmented" &&
+          seed !== "terminal-prompt-partial" &&
           seed !== "terminal-post-wait-pacing" &&
           seed !== "terminal-query-handshake" &&
           seed !== "terminal-query-partial" &&
@@ -5140,8 +5162,7 @@ const selectedPtyRuntimeForTest = (
           eofByte: 4,
         }),
         read: (maximumBytes) => {
-          if (adjacentPromptStarted && adjacentEnterAccepted < 5)
-            throw new Error("testkit.pty.test-read-between-adjacent-inputs");
+          assertNoReadDuringPartialSubmission();
           transportReads += 1;
           if (seed === "immediate-output" && !immediateActionApplied)
             throw new Error("testkit.pty.test-read-before-immediate-action");
@@ -5172,6 +5193,8 @@ const selectedPtyRuntimeForTest = (
             inputCalls === 0
           )
             return { status: "would-block" as const };
+          const readinessRevocation = readReadinessRevocationAfterPrompt();
+          if (readinessRevocation !== undefined) return readinessRevocation;
           if (
             seed === "late-tail" &&
             chunkIndex > 0 &&
@@ -5189,6 +5212,8 @@ const selectedPtyRuntimeForTest = (
               chunkIndex += 1;
               chunkOffset = 0;
             }
+            if (submissionPromptAccepted === 67)
+              promptAcknowledgedByOutput = true;
             return { status: "data" as const, bytes };
           }
           if (terminalProtocolNegativeSeed && !terminal) {
@@ -5233,8 +5258,12 @@ const selectedPtyRuntimeForTest = (
             };
           }
           inputCalls += 1;
-          const adjacentResult = observeAdjacentInputWrite(bytes, inputCalls);
-          if (adjacentResult !== undefined) return adjacentResult;
+          if (inputCalls === 2) promptInputObserved = true;
+          const submissionResult = observeSubmissionInputWrite(
+            bytes,
+            inputCalls,
+          );
+          if (submissionResult !== undefined) return submissionResult;
           if (
             seed === "paced-input" &&
             inputCalls > 1 &&
