@@ -2678,9 +2678,18 @@ const armSelectedPty = (
           );
           const written = exactPtyWrite(child.write(pending), pending.length);
           pendingTerminalResponseOffset += written.bytesWritten;
-          return (
-            pendingTerminalResponseOffset === pendingTerminalResponse.length
-          );
+          const responseFlushed =
+            pendingTerminalResponseOffset === pendingTerminalResponse.length;
+          if (
+            responseFlushed &&
+            request.readiness.kind !== "challenge-process-topology"
+          )
+            readinessObserved = safeReflectApply(
+              emulatorReadinessObserved,
+              terminal,
+              [],
+            );
+          return responseFlushed;
         };
         const collectTerminalResponse = (): void => {
           if (pendingTerminalResponseOffset < pendingTerminalResponse.length)
@@ -4721,6 +4730,7 @@ type SelectedPtyTestSeed =
   | "keyboard-protocol-missing"
   | "keyboard-protocol-out-of-order"
   | "keyboard-protocol-readiness-before"
+  | "keyboard-protocol-readiness-before-blocked"
   | "keyboard-protocol-after-readiness"
   | "keyboard-protocol-reset"
   | "keyboard-protocol-ris"
@@ -5045,7 +5055,7 @@ const selectedPtyRuntimeForTest = (
                 : `\u001b[>7u${orderedQueries}`,
       );
       const terminalResponses = safeBufferFrom(
-        `\u001b[2;${seed === "keyboard-protocol-readiness-before" ? 27 : 1}R\u001b]10;rgb:ffff/ffff/ffff\u001b\\\u001b]11;rgb:0000/0000/0000\u001b\\\u001b[?0u\u001b[?1;2c`,
+        `\u001b[2;${seed === "keyboard-protocol-readiness-before" || seed === "keyboard-protocol-readiness-before-blocked" ? 27 : 1}R\u001b]10;rgb:ffff/ffff/ffff\u001b\\\u001b]11;rgb:0000/0000/0000\u001b\\\u001b[?0u\u001b[?1;2c`,
       );
       const terminalQueryHandshake =
         readiness.kind === "challenge-styled-text" ||
@@ -5122,13 +5132,16 @@ const selectedPtyRuntimeForTest = (
       );
       const chunks =
         readiness.kind === "challenge-styled-text"
-          ? seed === "keyboard-protocol-readiness-before"
+          ? seed === "keyboard-protocol-readiness-before" ||
+            seed === "keyboard-protocol-readiness-before-blocked"
             ? [
                 challengedMarker,
                 safeBufferFrom(
                   `${synchronizedStyledPrompt.toString()}${terminalQueries.toString()}`,
                 ),
-                safeBufferFrom("\u0007"),
+                ...(seed === "keyboard-protocol-readiness-before-blocked"
+                  ? []
+                  : [safeBufferFrom("\u0007")]),
                 synchronizedPromptRendered,
                 output,
               ]
@@ -5433,7 +5446,8 @@ const selectedPtyRuntimeForTest = (
           seed !== "terminal-post-wait-pacing" &&
           seed !== "terminal-query-handshake" &&
           seed !== "terminal-query-partial" &&
-          seed !== "terminal-query-blocked"
+          seed !== "terminal-query-blocked" &&
+          seed !== "keyboard-protocol-readiness-before-blocked"
         )
           safeSetTimeout(
             () => {
@@ -5544,7 +5558,8 @@ const selectedPtyRuntimeForTest = (
           }
           if (
             requiresCausalPromptRedraw &&
-            chunkIndex === 3 &&
+            chunkIndex ===
+              (seed === "keyboard-protocol-readiness-before-blocked" ? 2 : 3) &&
             submissionPromptAccepted < 67 &&
             seed !== "terminal-stale-prebuffer-no-redraw"
           )
@@ -5590,7 +5605,10 @@ const selectedPtyRuntimeForTest = (
             }
             if (
               submissionPromptAccepted === 67 &&
-              chunkIndex > 3 &&
+              chunkIndex >
+                (seed === "keyboard-protocol-readiness-before-blocked"
+                  ? 2
+                  : 3) &&
               !rejectsCausalPromptRedraw &&
               seed !== "terminal-live-completion-no-redraw"
             )
@@ -5639,7 +5657,8 @@ const selectedPtyRuntimeForTest = (
           ) {
             terminalResponseWriteCalls += 1;
             if (
-              seed === "terminal-query-blocked" &&
+              (seed === "terminal-query-blocked" ||
+                seed === "keyboard-protocol-readiness-before-blocked") &&
               terminalResponseWriteCalls === 1
             )
               return { status: "would-block" as const, bytesWritten: 0 };
