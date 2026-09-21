@@ -520,6 +520,7 @@ describe("selected PTY transport", () => {
     "terminal-prompt-partial",
     "terminal-redraw-enter-fragmented",
     "keyboard-protocol-readiness-before",
+    "keyboard-protocol-readiness-before-blocked",
     "keyboard-protocol-same-burst",
   ] as const)(
     "settles terminal reply transport %s",
