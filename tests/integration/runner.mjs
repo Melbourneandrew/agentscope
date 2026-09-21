@@ -216,7 +216,7 @@ const compileNativeReadiness = (scenario, challenge) => {
       kind: "challenge-styled-text",
       challenge,
       text: "›",
-      requiredText: "fixture-model default",
+      requiredText: "Ask Codex to do anything",
       requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: true,
       dim: false,

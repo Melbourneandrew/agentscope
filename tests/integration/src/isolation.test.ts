@@ -453,7 +453,7 @@ const ptyChallengeReceiptFor = () => {
     kind: "challenge-styled-text" as const,
     challenge,
     text: "›",
-    requiredText: "fixture-model default",
+    requiredText: "Ask Codex to do anything",
     requiredTerminalProtocol: "csi-u-flags-7-query-v1" as const,
     bold: true,
     dim: false,
