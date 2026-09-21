@@ -202,6 +202,46 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
   });
 
+  it("rejects readiness matchers without closed one-cell glyphs", () => {
+    const challenge = "a".repeat(64);
+    expect(
+      () =>
+        new BoundedTerminalEmulator(
+          { columns: 40, rows: 8 },
+          defaultPtyTerminalEmulatorLimits,
+          {
+            kind: "challenge-styled-text",
+            challenge,
+            text: "界",
+            requiredText: "fixture-model default",
+            requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+            bold: true,
+            dim: false,
+          },
+        ),
+    ).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.readiness"),
+    );
+    expect(
+      () =>
+        new BoundedTerminalEmulator(
+          { columns: 40, rows: 8 },
+          defaultPtyTerminalEmulatorLimits,
+          {
+            kind: "challenge-styled-text",
+            challenge,
+            text: "›",
+            requiredText: "fixture-model de\u0301fault",
+            requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+            bold: true,
+            dim: false,
+          },
+        ),
+    ).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.readiness"),
+    );
+  });
+
   it("admits CSI-u input only after the required terminal protocol", () => {
     const challenge = "a".repeat(64);
     const terminal = () =>
@@ -298,6 +338,37 @@ describe("bounded semantic terminal emulator", () => {
       ),
     );
     expect(terminal.readinessObservationGeneration()).toBe(3);
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u001b[?7l"));
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[100G\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(3);
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("\u001b[?7h"));
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(4);
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u001b[?1049h\u001b[?1049l"));
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(5);
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(
+      bytes(
+        "\u001b[?2026hstale\r\n\u001b[10;1H\u001b[1m›\u001b[22m \u001b[12;1Hfixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(6);
     expect(terminal.readinessObserved()).toBe(true);
   });
 
