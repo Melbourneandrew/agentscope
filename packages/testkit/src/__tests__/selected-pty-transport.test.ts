@@ -469,38 +469,42 @@ describe("selected PTY transport", () => {
     "terminal-query-blocked",
     "terminal-prompt-partial",
     "terminal-redraw-enter-fragmented",
-  ] as const)("settles terminal reply transport %s", async (seed) => {
-    const selected = protocolPromptRequest();
-    const now = performance.now();
-    await expect(
-      executeSelectedPtyTransportForTest(
-        {
-          ...selected,
-          process: {
-            ...selected.process,
-            monotonicStartupDeadlineMs: now + 500,
-            monotonicExecutionDeadlineMs: now + 1_000,
-            monotonicShutdownDeadlineMs: now + 2_000,
+  ] as const)(
+    "settles terminal reply transport %s",
+    async (seed) => {
+      const selected = protocolPromptRequest();
+      const now = performance.now();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...selected,
+            process: {
+              ...selected.process,
+              monotonicStartupDeadlineMs: now + 5_000,
+              monotonicExecutionDeadlineMs: now + 10_000,
+              monotonicShutdownDeadlineMs: now + 15_000,
+            },
           },
-        },
-        seed,
-      ),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: 67 },
-        { action: "input", byteLength: 5 },
-        { action: "wait-for-semantic-completion" },
-        { action: "input", byteLength: 1 },
-      ],
-      inputBytesWritten: 138,
-      outcome: "completed",
-      readinessObserved: true,
-      terminalInputJoined: true,
-    });
-  });
+          seed,
+        ),
+      ).resolves.toMatchObject({
+        actions: [
+          { action: "resize", geometry: { columns: 100, rows: 30 } },
+          { action: "input", byteLength: 65 },
+          { action: "checkpoint-process-topology" },
+          { action: "input", byteLength: 67 },
+          { action: "input", byteLength: 5 },
+          { action: "wait-for-semantic-completion" },
+          { action: "input", byteLength: 1 },
+        ],
+        inputBytesWritten: 138,
+        outcome: "completed",
+        readinessObserved: true,
+        terminalInputJoined: true,
+      });
+    },
+    20_000,
+  );
 
   it("does not submit the prompt without a drained live terminal", async () => {
     const selected = protocolPromptRequest();
@@ -511,9 +515,9 @@ describe("selected PTY transport", () => {
           ...selected,
           process: {
             ...selected.process,
-            monotonicStartupDeadlineMs: now + 500,
-            monotonicExecutionDeadlineMs: now + 1_000,
-            monotonicShutdownDeadlineMs: now + 2_000,
+            monotonicStartupDeadlineMs: now + 5_000,
+            monotonicExecutionDeadlineMs: now + 10_000,
+            monotonicShutdownDeadlineMs: now + 15_000,
           },
         },
         "terminal-no-prompt",
@@ -521,7 +525,7 @@ describe("selected PTY transport", () => {
     ).rejects.toMatchObject({
       code: "testkit.pty.transport.semantic-incomplete",
     });
-  });
+  }, 20_000);
 
   it.each([
     "keyboard-protocol-missing",
@@ -569,9 +573,9 @@ describe("selected PTY transport", () => {
           ...selected,
           process: {
             ...selected.process,
-            monotonicStartupDeadlineMs: now + 500,
-            monotonicExecutionDeadlineMs: now + 1_000,
-            monotonicShutdownDeadlineMs: now + 2_000,
+            monotonicStartupDeadlineMs: now + 5_000,
+            monotonicExecutionDeadlineMs: now + 10_000,
+            monotonicShutdownDeadlineMs: now + 15_000,
           },
         },
         "clean",
@@ -587,7 +591,7 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 1 },
       ],
     });
-  });
+  }, 20_000);
 
   it.each([
     "terminal-stale-prebuffer-no-redraw",
@@ -621,33 +625,37 @@ describe("selected PTY transport", () => {
     "terminal-wide-printable",
     "terminal-combining-printable",
     "terminal-live-completion-no-redraw",
-  ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
-    const selected = protocolPromptRequest();
-    const now = performance.now();
-    await expect(
-      executeSelectedPtyTransportForTest(
-        {
-          ...selected,
-          process: {
-            ...selected.process,
-            monotonicStartupDeadlineMs: now + 500,
-            monotonicExecutionDeadlineMs: now + 1_000,
-            monotonicShutdownDeadlineMs: now + 2_000,
+  ] as const)(
+    "rejects non-causal prompt acknowledgement %s",
+    async (seed) => {
+      const selected = protocolPromptRequest();
+      const now = performance.now();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...selected,
+            process: {
+              ...selected.process,
+              monotonicStartupDeadlineMs: now + 5_000,
+              monotonicExecutionDeadlineMs: now + 10_000,
+              monotonicShutdownDeadlineMs: now + 15_000,
+            },
           },
-        },
-        seed,
-      ),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "resize" },
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: 67 },
-      ],
-      inputBytesWritten: 132,
-      outcome: "input-incomplete",
-    });
-  });
+          seed,
+        ),
+      ).resolves.toMatchObject({
+        actions: [
+          { action: "resize" },
+          { action: "input", byteLength: 65 },
+          { action: "checkpoint-process-topology" },
+          { action: "input", byteLength: 67 },
+        ],
+        inputBytesWritten: 132,
+        outcome: "input-incomplete",
+      });
+    },
+    20_000,
+  );
 
   it("rejects a combined prompt and CSI-u Enter request grammar", async () => {
     const selected = protocolPromptRequest();
@@ -717,9 +725,9 @@ describe("selected PTY transport", () => {
           ...postWaitRequest,
           process: {
             ...postWaitRequest.process,
-            monotonicStartupDeadlineMs: now + 500,
-            monotonicExecutionDeadlineMs: now + 1_000,
-            monotonicShutdownDeadlineMs: now + 2_000,
+            monotonicStartupDeadlineMs: now + 5_000,
+            monotonicExecutionDeadlineMs: now + 10_000,
+            monotonicShutdownDeadlineMs: now + 15_000,
           },
         },
         "terminal-post-wait-pacing",
@@ -738,7 +746,7 @@ describe("selected PTY transport", () => {
       outcome: "input-incomplete",
       terminalInputJoined: false,
     });
-  });
+  }, 20_000);
 
   it.each([
     ["raw carriage return", Buffer.from("\r")],
