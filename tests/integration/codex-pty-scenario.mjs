@@ -39,7 +39,7 @@ const interactivePhases = Object.freeze([
   "control-plane-closed",
   "tui-start",
   "tui-run-created",
-  "tui-topology-published",
+  "tui-readiness-challenge-published",
   "tui-checkpoint",
   "model-gate-arm-start",
   "tui-exit-before-arm",
@@ -1187,12 +1187,12 @@ try {
   const checkpointSignal = waitForCheckpointSignal();
   await new Promise((resolve, reject) => {
     process.stdout.write(
-      `AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}\r\n`,
+      `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
       (error) =>
         error === null || error === undefined ? resolve() : reject(error),
     );
   });
-  recordInteractivePhase("tui-topology-published");
+  recordInteractivePhase("tui-readiness-challenge-published");
   await checkpointSignal;
   recordInteractivePhase("tui-checkpoint");
   recordInteractivePhase("model-gate-arm-start");
