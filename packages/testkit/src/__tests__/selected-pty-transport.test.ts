@@ -264,9 +264,8 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
-        { action: "input", byteLength: enter.length },
       ],
-      inputBytesWritten: 65 + prompt.length + enter.length,
+      inputBytesWritten: 65 + prompt.length,
       outcome: "input-incomplete",
       readinessObserved: false,
     });
@@ -448,8 +447,8 @@ describe("selected PTY transport", () => {
     "terminal-query-handshake",
     "terminal-query-partial",
     "terminal-query-blocked",
-    "terminal-adjacent-partial",
-    "terminal-adjacent-enter-fragmented",
+    "terminal-prompt-partial",
+    "terminal-redraw-enter-fragmented",
   ] as const)("settles terminal reply transport %s", async (seed) => {
     const selected = protocolPromptRequest();
     const now = performance.now();
@@ -516,7 +515,7 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("admits adjacent hash-bound prompt and CSI-u Enter actions", async () => {
+  it("admits hash-bound prompt redraw before the CSI-u Enter action", async () => {
     const selected = protocolPromptRequest();
     const now = performance.now();
     await expect(
@@ -577,7 +576,7 @@ describe("selected PTY transport", () => {
     ).rejects.toThrow("testkit.pty.request");
   });
 
-  it("does not reuse prompt Enter adjacency after semantic completion", async () => {
+  it("does not reuse prompt Enter pacing after semantic completion", async () => {
     const selected = protocolPromptRequest();
     const postCompletion = Buffer.concat([
       Buffer.from("x"),
