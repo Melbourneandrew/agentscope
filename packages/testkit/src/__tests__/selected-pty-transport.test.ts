@@ -568,6 +568,8 @@ describe("selected PTY transport", () => {
   it.each([
     "terminal-stale-prebuffer-no-redraw",
     "terminal-passive-control-no-redraw",
+    "terminal-framed-bel-stitch",
+    "terminal-framed-clear-stitch",
     "terminal-live-completion-no-redraw",
   ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
     const selected = protocolPromptRequest();

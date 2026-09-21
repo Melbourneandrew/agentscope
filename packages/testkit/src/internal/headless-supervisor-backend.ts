@@ -4674,6 +4674,8 @@ type SelectedPtyTestSeed =
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
+  | "terminal-framed-bel-stitch"
+  | "terminal-framed-clear-stitch"
   | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
@@ -4955,6 +4957,11 @@ const selectedPtyRuntimeForTest = (
       const requiresCausalPromptRedraw =
         readiness.kind === "challenge-styled-text" &&
         !terminalProtocolNegativeSeed;
+      const rejectsCausalPromptRedraw =
+        seed === "terminal-stale-prebuffer-no-redraw" ||
+        seed === "terminal-passive-control-no-redraw" ||
+        seed === "terminal-framed-bel-stitch" ||
+        seed === "terminal-framed-clear-stitch";
       const challengedMarker =
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
@@ -4963,13 +4970,16 @@ const selectedPtyRuntimeForTest = (
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`\u001b[1m›\u001b[22m ${readiness.requiredText}`)
           : ready;
+      const synchronizedStyledPrompt = safeBufferFrom(
+        `\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
+      );
       const chunks =
         readiness.kind === "challenge-styled-text"
           ? seed === "keyboard-protocol-readiness-before"
             ? [
                 challengedMarker,
                 safeBufferFrom(
-                  `${styledPrompt.toString()}${terminalQueries.toString()}`,
+                  `${synchronizedStyledPrompt.toString()}${terminalQueries.toString()}`,
                 ),
                 safeBufferFrom("prompt-rendered"),
                 output,
@@ -4978,7 +4988,7 @@ const selectedPtyRuntimeForTest = (
               ? [
                   challengedMarker,
                   safeBufferFrom(
-                    `${terminalQueries.toString()}${styledPrompt.toString()}`,
+                    `${terminalQueries.toString()}${synchronizedStyledPrompt.toString()}`,
                   ),
                   safeBufferFrom("prompt-rendered"),
                   output,
@@ -4988,18 +4998,26 @@ const selectedPtyRuntimeForTest = (
                   terminalQueries,
                   seed === "keyboard-protocol-ris"
                     ? safeBufferFrom(
-                        `${styledPrompt.toString()}\u001bc${styledPrompt.toString()}`,
+                        `${synchronizedStyledPrompt.toString()}\u001bc${synchronizedStyledPrompt.toString()}`,
                       )
-                    : styledPrompt,
+                    : synchronizedStyledPrompt,
                   seed === "terminal-stale-prebuffer-no-redraw"
                     ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
                     : seed === "terminal-passive-control-no-redraw"
                       ? safeBufferFrom("\u0007")
-                      : seed === "terminal-live-completion-no-redraw"
-                        ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
-                        : safeBufferFrom(
-                            `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered`,
-                          ),
+                      : seed === "terminal-framed-bel-stitch"
+                        ? safeBufferFrom(
+                            `\u001b[?2026h${styledPrompt.toString()}\u0007${readiness.requiredText}\u001b[?2026l`,
+                          )
+                        : seed === "terminal-framed-clear-stitch"
+                          ? safeBufferFrom(
+                              `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[2K${readiness.requiredText}\u001b[?2026l`,
+                            )
+                          : seed === "terminal-live-completion-no-redraw"
+                            ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                            : safeBufferFrom(
+                                `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+                              ),
                   output,
                 ]
           : terminalQueryHandshake
@@ -5288,18 +5306,13 @@ const selectedPtyRuntimeForTest = (
             if (
               submissionPromptAccepted === 67 &&
               chunkIndex > 3 &&
-              seed !== "terminal-stale-prebuffer-no-redraw" &&
-              seed !== "terminal-passive-control-no-redraw" &&
+              !rejectsCausalPromptRedraw &&
               seed !== "terminal-live-completion-no-redraw"
             )
               promptAcknowledgedByOutput = true;
             return { status: "data" as const, bytes };
           }
-          if (
-            submissionPromptAccepted === 67 &&
-            (seed === "terminal-stale-prebuffer-no-redraw" ||
-              seed === "terminal-passive-control-no-redraw")
-          ) {
+          if (submissionPromptAccepted === 67 && rejectsCausalPromptRedraw) {
             processes.clear();
             terminal = true;
             close({ code: 0, signal: 0 });
