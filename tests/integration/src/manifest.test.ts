@@ -287,7 +287,7 @@ describe("integration capability manifest", () => {
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
     const sessionStartCheckpoint = source.indexOf(
-      "    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
+      "      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
     );
     const explicitHookEnablement = source.indexOf(
       '      "--enable",\n      "hooks",\n',

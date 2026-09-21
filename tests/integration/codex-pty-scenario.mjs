@@ -362,6 +362,22 @@ const recordInteractivePhase = (phase) => {
     { flag: "wx", mode: 0o600 },
   );
 };
+const recordModelGateArmFailure = (predicate) => {
+  if (
+    ![
+      "control",
+      "hook-log",
+      "hook-mediation",
+      "session-start-missing",
+    ].includes(predicate)
+  )
+    throw new Error("integration.codex.model-gate-arm-diagnostic");
+  writeFileSync(
+    join(ledger, "interactive-failure.txt"),
+    `integration.fixture.codex-model-gate-arm-${predicate}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
 const codexStopHookCommandFailure = (outcome) => {
   let phase;
   if (outcome === "timeout") phase = "hook-command-timeout";
@@ -631,36 +647,66 @@ const configureModelGate = async (modelAdmissionCutoff) => {
 };
 const armModelGate = async (modelAdmissionCutoff) => {
   while (bootNow() < modelAdmissionCutoff) {
-    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
+    let checkpoint;
+    try {
+      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      recordModelGateArmFailure(
+        message === "integration.codex.hook-mediation"
+          ? "hook-mediation"
+          : "hook-log",
+      );
+      throw error;
+    }
     if (checkpoint !== undefined) {
-      const response = await gateRequest("/arm", {
-        runId: integrationRunId,
-        sessionStartSpanSha256: checkpoint.spanSha256,
-      });
+      let response;
+      try {
+        response = await gateRequest("/arm", {
+          runId: integrationRunId,
+          sessionStartSpanSha256: checkpoint.spanSha256,
+        });
+      } catch (error) {
+        recordModelGateArmFailure("control");
+        throw error;
+      }
       if (
         !exactKeys(response, ["runId", "state"]) ||
         response.runId !== integrationRunId ||
         response.state !== "armed"
-      )
+      ) {
+        recordModelGateArmFailure("control");
         throw new Error("integration.codex.model-gate");
+      }
       return checkpoint;
     }
-    const health = await controlRequest(
-      "/health",
-      "GET",
-      undefined,
-      AbortSignal.timeout(Math.min(250, remaining())),
-    );
-    if (!exactKeys(health, ["state"]) || typeof health.state !== "string")
+    let health;
+    try {
+      health = await controlRequest(
+        "/health",
+        "GET",
+        undefined,
+        AbortSignal.timeout(Math.min(250, remaining())),
+      );
+    } catch (error) {
+      recordModelGateArmFailure("control");
+      throw error;
+    }
+    if (!exactKeys(health, ["state"]) || typeof health.state !== "string") {
+      recordModelGateArmFailure("control");
       throw new Error("integration.codex.model-gate");
+    }
     if (health.state === "denied") {
       recordInteractivePhase("model-request-observed");
       throw new Error("integration.codex.model-request-before-session-start");
     }
-    if (health.state !== "pending")
+    if (health.state !== "pending") {
+      recordModelGateArmFailure("control");
       throw new Error("integration.codex.model-gate");
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  recordModelGateArmFailure("session-start-missing");
   throw new Error("integration.codex.hook-session-start-missing");
 };
 const releaseModelResponse = async () => {

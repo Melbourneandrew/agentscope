@@ -20,6 +20,10 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-tui-readiness-challenge-published",
   "integration.fixture.codex-tui-checkpoint",
   "integration.fixture.codex-model-gate-arm-start",
+  "integration.fixture.codex-model-gate-arm-hook-log",
+  "integration.fixture.codex-model-gate-arm-hook-mediation",
+  "integration.fixture.codex-model-gate-arm-control",
+  "integration.fixture.codex-model-gate-arm-session-start-missing",
   "integration.fixture.codex-tui-exit-before-arm",
   "integration.fixture.codex-model-gate-arm-complete",
   "integration.fixture.codex-model-request-observed",
@@ -139,8 +143,10 @@ export const installedPtyFailurePredicates = Object.freeze({
 });
 
 const interactiveFixtureFailurePredicates = Object.freeze(
-  ptyExecutionFailurePredicates.filter((value) =>
-    value.startsWith("integration.fixture.codex-"),
+  ptyExecutionFailurePredicates.filter(
+    (value) =>
+      value.startsWith("integration.fixture.codex-") &&
+      !value.startsWith("integration.fixture.codex-model-gate-arm-"),
   ),
 );
 const interactiveFailureExitCodeBase = 64;
