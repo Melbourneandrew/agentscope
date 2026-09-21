@@ -4688,6 +4688,10 @@ type SelectedPtyTestSeed =
   | "terminal-framed-wrap-stitch"
   | "terminal-post-frame-alt-exit"
   | "terminal-post-frame-scroll-region"
+  | "terminal-framed-charset-stitch"
+  | "terminal-framed-conceal-stitch"
+  | "terminal-post-frame-tab-stop"
+  | "terminal-post-frame-restore"
   | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
@@ -4985,7 +4989,11 @@ const selectedPtyRuntimeForTest = (
         seed === "terminal-framed-alt-exit-stitch" ||
         seed === "terminal-framed-wrap-stitch" ||
         seed === "terminal-post-frame-alt-exit" ||
-        seed === "terminal-post-frame-scroll-region";
+        seed === "terminal-post-frame-scroll-region" ||
+        seed === "terminal-framed-charset-stitch" ||
+        seed === "terminal-framed-conceal-stitch" ||
+        seed === "terminal-post-frame-tab-stop" ||
+        seed === "terminal-post-frame-restore";
       const framedStitchMutator =
         seed === "terminal-framed-erase-stitch"
           ? "X"
@@ -5086,13 +5094,33 @@ const selectedPtyRuntimeForTest = (
                                                 `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[1;8rX`,
                                               )
                                             : seed ===
-                                                "terminal-live-completion-no-redraw"
+                                                "terminal-framed-charset-stitch"
                                               ? safeBufferFrom(
-                                                  "AGENTSCOPE_PTY_COMPLETE",
+                                                  `\u001b[?2026h${styledPrompt.toString()}\u001b(0${readiness.requiredText}\u001b[?2026l`,
                                                 )
-                                              : safeBufferFrom(
-                                                  `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
-                                                ),
+                                              : seed ===
+                                                  "terminal-framed-conceal-stitch"
+                                                ? safeBufferFrom(
+                                                    `\u001b[?2026h${styledPrompt.toString()}\u001b[8m${readiness.requiredText}\u001b[?2026l`,
+                                                  )
+                                                : seed ===
+                                                    "terminal-post-frame-tab-stop"
+                                                  ? safeBufferFrom(
+                                                      `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001bH`,
+                                                    )
+                                                  : seed ===
+                                                      "terminal-post-frame-restore"
+                                                    ? safeBufferFrom(
+                                                        `\u001b7\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b8`,
+                                                      )
+                                                    : seed ===
+                                                        "terminal-live-completion-no-redraw"
+                                                      ? safeBufferFrom(
+                                                          "AGENTSCOPE_PTY_COMPLETE",
+                                                        )
+                                                      : safeBufferFrom(
+                                                          `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+                                                        ),
                   output,
                 ]
           : terminalQueryHandshake
