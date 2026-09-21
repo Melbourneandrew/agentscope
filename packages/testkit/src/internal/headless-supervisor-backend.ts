@@ -2085,6 +2085,8 @@ const snapshotPtyRequest = (
   let firstInputByteLength = -1;
   let secondInputIndex = -1;
   let secondInputByteLength = -1;
+  let thirdInputIndex = -1;
+  let thirdInputByteLength = -1;
   let controlBeforeSemanticWait = false;
   for (let index = 0; index < actions.length; index += 1) {
     const action = ownData(actions, String(index));
@@ -2125,6 +2127,9 @@ const snapshotPtyRequest = (
         } else if (inputCountBeforeSemanticWait === 2) {
           secondInputIndex = index;
           secondInputByteLength = byteLength;
+        } else if (inputCountBeforeSemanticWait === 3) {
+          thirdInputIndex = index;
+          thirdInputByteLength = byteLength;
         }
       }
       describedInputBytes += byteLength;
@@ -2252,14 +2257,16 @@ const snapshotPtyRequest = (
         topologyCheckpointCount !== 1 ||
         controlBeforeSemanticWait ||
         inputCountBeforeSemanticWait < 1 ||
-        inputCountBeforeSemanticWait > 2 ||
+        inputCountBeforeSemanticWait > 3 ||
         firstInputByteLength !== 65 ||
         topologyCheckpointIndex !== firstInputIndex + 1 ||
         (readinessKind === "challenge-styled-text"
-          ? inputCountBeforeSemanticWait !== 2 ||
+          ? inputCountBeforeSemanticWait !== 3 ||
             secondInputIndex !== topologyCheckpointIndex + 1 ||
-            semanticWaitIndex !== secondInputIndex + 1 ||
-            secondInputByteLength < 6 ||
+            thirdInputIndex !== secondInputIndex + 1 ||
+            semanticWaitIndex !== thirdInputIndex + 1 ||
+            secondInputByteLength < 1 ||
+            thirdInputByteLength !== 5 ||
             safeBufferFrom(process_.stdin)[
               describedInputBytesAtSemanticWait - 5
             ] !== 0x1b ||
@@ -4994,7 +5001,10 @@ const selectedPtyRuntimeForTest = (
           seed !== "partial-input-timeout" &&
           seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
-          seed !== "signal-failure"
+          seed !== "signal-failure" &&
+          seed !== "terminal-query-handshake" &&
+          seed !== "terminal-query-partial" &&
+          seed !== "terminal-query-blocked"
         )
           safeSetTimeout(
             () => {
@@ -5160,6 +5170,11 @@ const selectedPtyRuntimeForTest = (
             return { status: "would-block" as const, bytesWritten: 0 };
           if (seed === "readiness-burst" && inputCalls === 2) {
             processes.delete(root.pid);
+            terminal = true;
+            close({ code: 0, signal: 0 });
+          }
+          if (terminalQueryHandshake && bytes.length === 1 && bytes[0] === 4) {
+            processes.clear();
             terminal = true;
             close({ code: 0, signal: 0 });
           }

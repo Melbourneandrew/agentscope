@@ -233,6 +233,7 @@ describe("integration capability manifest", () => {
       "input",
       "checkpoint-process-topology",
       "input",
+      "input",
       "wait-for-semantic-completion",
       "input",
       "input",
@@ -247,15 +248,20 @@ describe("integration capability manifest", () => {
     expect(actions[3]).toEqual({
       action: "input",
       byteLength: Buffer.byteLength(
-        "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
+        "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~",
       ),
       inputSha256: createHash("sha256")
         .update(
           Buffer.from(
-            "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
+            "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~",
           ),
         )
         .digest("hex"),
+    });
+    expect(actions[4]).toEqual({
+      action: "input",
+      byteLength: 5,
+      inputSha256: createHash("sha256").update("\x1b[13u").digest("hex"),
     });
     expect(actions.at(-1)).toEqual({
       action: "input",
