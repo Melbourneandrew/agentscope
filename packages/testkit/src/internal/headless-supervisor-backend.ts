@@ -2705,18 +2705,52 @@ const armSelectedPty = (
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
+        const currentActionInputStart = inputOffset - actionInputOffset;
         const requiresCausalInputDrain =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "checkpoint-process-topology" &&
           actionInputOffset === 0 &&
           drainedInputActionIndex !== actionIndex;
+        const isBracketedPasteEnter =
+          request.readiness.kind === "challenge-styled-text" &&
+          pendingActionBeforeRead?.action === "input" &&
+          pendingActionBeforeRead.byteLength === 5 &&
+          actionInputOffset >= 0 &&
+          actionInputOffset < pendingActionBeforeRead.byteLength &&
+          priorAction?.action === "input" &&
+          priorAction.byteLength >= 12 &&
+          currentActionInputStart >= priorAction.byteLength &&
+          input[currentActionInputStart - priorAction.byteLength] === 0x1b &&
+          input[currentActionInputStart - priorAction.byteLength + 1] ===
+            0x5b &&
+          input[currentActionInputStart - priorAction.byteLength + 2] ===
+            0x32 &&
+          input[currentActionInputStart - priorAction.byteLength + 3] ===
+            0x30 &&
+          input[currentActionInputStart - priorAction.byteLength + 4] ===
+            0x30 &&
+          input[currentActionInputStart - priorAction.byteLength + 5] ===
+            0x7e &&
+          input[currentActionInputStart - 6] === 0x1b &&
+          input[currentActionInputStart - 5] === 0x5b &&
+          input[currentActionInputStart - 4] === 0x32 &&
+          input[currentActionInputStart - 3] === 0x30 &&
+          input[currentActionInputStart - 2] === 0x31 &&
+          input[currentActionInputStart - 1] === 0x7e &&
+          input[currentActionInputStart] === 0x1b &&
+          input[currentActionInputStart + 1] === 0x5b &&
+          input[currentActionInputStart + 2] === 0x31 &&
+          input[currentActionInputStart + 3] === 0x33 &&
+          input[currentActionInputStart + 4] === 0x75;
         const waitingForPriorInputOutput =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
+          !isBracketedPasteEnter &&
           outputBytes === lastCompletedInputOutputBytes;
         const waitingForPriorInputSemanticRedraw =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
+          !isBracketedPasteEnter &&
           request.readiness.kind === "challenge-styled-text" &&
           safeReflectApply(
             emulatorReadinessObservationGeneration,
@@ -2725,7 +2759,8 @@ const armSelectedPty = (
           ) <= lastCompletedInputReadinessGeneration;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
-          inputOffset >= 65;
+          inputOffset >= 65 &&
+          !isBracketedPasteEnter;
         const requiresTerminalProtocol =
           request.readiness.kind === "challenge-styled-text" &&
           request.readiness.requiredTerminalProtocol ===
@@ -5350,7 +5385,6 @@ const selectedPtyRuntimeForTest = (
       let terminalResponseOffset = 0;
       let terminalResponseWriteCalls = 0;
       let submissionPromptAccepted = 0;
-      let promptAcknowledgedByOutput = false;
       let submissionEnterAccepted = 0;
       let submissionEnterWriteCalls = 0;
       let readinessRevokedAfterInput = false;
@@ -5379,19 +5413,18 @@ const selectedPtyRuntimeForTest = (
           enterMatches =
             bytes[offset] === exactEnter[submissionEnterAccepted + offset];
         if (!enterMatches) return undefined;
-        if (!promptAcknowledgedByOutput)
-          throw new Error("testkit.pty.test-enter-before-prompt-redraw");
+        if (submissionPromptAccepted !== 67)
+          throw new Error("testkit.pty.test-enter-before-complete-prompt");
         submissionEnterWriteCalls += 1;
         if (
           seed === "terminal-redraw-enter-fragmented" &&
           submissionEnterWriteCalls === 1
-        )
-          return { status: "would-block" as const, bytesWritten: 0 };
-        const bytesWritten =
-          seed === "terminal-redraw-enter-fragmented" &&
-          submissionEnterWriteCalls === 2
-            ? Math.max(1, Math.floor(bytes.length / 2))
-            : bytes.length;
+        ) {
+          const bytesWritten = Math.max(1, Math.floor(bytes.length / 2));
+          submissionEnterAccepted += bytesWritten;
+          return { status: "partial" as const, bytesWritten };
+        }
+        const bytesWritten = bytes.length;
         submissionEnterAccepted += bytesWritten;
         return {
           status:
@@ -5516,7 +5549,7 @@ const selectedPtyRuntimeForTest = (
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        // eslint-disable-next-line complexity,max-lines-per-function -- adversarial fixture states are explicit and closed
+        // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
         read: (maximumBytes) => {
           assertNoReadDuringPartialSubmission();
           transportReads += 1;
@@ -5603,16 +5636,6 @@ const selectedPtyRuntimeForTest = (
                 close({ code: 0, signal: 0 });
               }
             }
-            if (
-              submissionPromptAccepted === 67 &&
-              chunkIndex >
-                (seed === "keyboard-protocol-readiness-before-blocked"
-                  ? 2
-                  : 3) &&
-              !rejectsCausalPromptRedraw &&
-              seed !== "terminal-live-completion-no-redraw"
-            )
-              promptAcknowledgedByOutput = true;
             return { status: "data" as const, bytes };
           }
           if (submissionPromptAccepted === 67 && rejectsCausalPromptRedraw) {

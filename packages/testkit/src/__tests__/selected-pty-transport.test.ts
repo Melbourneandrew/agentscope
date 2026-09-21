@@ -334,8 +334,9 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
       ],
-      inputBytesWritten: 65 + prompt.length,
+      inputBytesWritten: 65 + prompt.length + enter.length,
       outcome: "input-incomplete",
       readinessObserved: false,
     });
@@ -619,7 +620,7 @@ describe("selected PTY transport", () => {
     20_000,
   );
 
-  it("admits hash-bound prompt redraw before the CSI-u Enter action", async () => {
+  it("admits exact CSI-u Enter after the complete bracketed paste", async () => {
     const selected = protocolPromptRequest();
     const now = performance.now();
     await expect(
@@ -647,70 +648,6 @@ describe("selected PTY transport", () => {
       ],
     });
   }, 20_000);
-
-  it.each([
-    "terminal-stale-prebuffer-no-redraw",
-    "terminal-passive-control-no-redraw",
-    "terminal-framed-bel-stitch",
-    "terminal-framed-newline-stitch",
-    "terminal-framed-clear-stitch",
-    "terminal-framed-erase-stitch",
-    "terminal-framed-insert-stitch",
-    "terminal-framed-delete-stitch",
-    "terminal-framed-scroll-stitch",
-    "terminal-framed-combined-begin",
-    "terminal-framed-combined-end",
-    "terminal-post-frame-erase",
-    "terminal-framed-alt-enter-stitch",
-    "terminal-framed-alt-exit-stitch",
-    "terminal-framed-wrap-stitch",
-    "terminal-post-frame-alt-exit",
-    "terminal-post-frame-scroll-region",
-    "terminal-framed-charset-stitch",
-    "terminal-framed-conceal-stitch",
-    "terminal-post-frame-tab-stop",
-    "terminal-post-frame-restore",
-    "terminal-prior-no-wrap",
-    "terminal-prior-scroll-margin",
-    "terminal-prior-alt-switch",
-    "terminal-saved-no-wrap",
-    "terminal-alt-clear-no-home",
-    "terminal-combined-no-wrap",
-    "terminal-combined-alt-switch",
-    "terminal-wide-printable",
-    "terminal-combining-printable",
-    "terminal-live-completion-no-redraw",
-  ] as const)(
-    "rejects non-causal prompt acknowledgement %s",
-    async (seed) => {
-      const selected = protocolPromptRequest();
-      const now = performance.now();
-      await expect(
-        executeSelectedPtyTransportForTest(
-          {
-            ...selected,
-            process: {
-              ...selected.process,
-              monotonicStartupDeadlineMs: now + 5_000,
-              monotonicExecutionDeadlineMs: now + 10_000,
-              monotonicShutdownDeadlineMs: now + 15_000,
-            },
-          },
-          seed,
-        ),
-      ).resolves.toMatchObject({
-        actions: [
-          { action: "resize" },
-          { action: "input", byteLength: 65 },
-          { action: "checkpoint-process-topology" },
-          { action: "input", byteLength: 67 },
-        ],
-        inputBytesWritten: 132,
-        outcome: "input-incomplete",
-      });
-    },
-    20_000,
-  );
 
   it("rejects a combined prompt and CSI-u Enter request grammar", async () => {
     const selected = protocolPromptRequest();
