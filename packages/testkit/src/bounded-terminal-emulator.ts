@@ -483,6 +483,7 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessObservationGeneration = 0;
+  #synchronizedOutputFrameGeneration = 0;
   #synchronizedOutputGeneration = 0;
   #challengeScreenAuthorityRevoked = false;
   #challengeSynchronizedOutputFrameActive = false;
@@ -697,6 +698,11 @@ export class BoundedTerminalEmulator {
     return this.#synchronizedOutputGeneration;
   }
 
+  /** Package-private begin epoch used to prove a redraw follows input. */
+  public synchronizedOutputFrameGeneration(): number {
+    return this.#synchronizedOutputFrameGeneration;
+  }
+
   public requiredTerminalProtocolReady(): boolean {
     return (
       this.#readinessMatcher.kind === "challenge-styled-text" &&
@@ -784,6 +790,7 @@ export class BoundedTerminalEmulator {
 
   #beginChallengeSynchronizedOutputFrame(): void {
     this.#resetChallengeOutputObservation();
+    this.#synchronizedOutputFrameGeneration += 1;
     this.#challengeSynchronizedOutputFrameActive = true;
     this.#synchronizedOutputFrameHasPrintable = false;
   }
@@ -826,7 +833,8 @@ export class BoundedTerminalEmulator {
       this.#autoWrapEnabled &&
       this.#scrollRegionCanonical;
     if (synchronizedOutputAuthorityValid)
-      this.#synchronizedOutputGeneration += 1;
+      this.#synchronizedOutputGeneration =
+        this.#synchronizedOutputFrameGeneration;
     const outputAuthorityValid =
       this.#challengeStyledTextObservedInOutput &&
       styledCell !== null &&
