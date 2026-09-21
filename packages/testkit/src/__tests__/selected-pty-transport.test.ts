@@ -297,6 +297,17 @@ describe("selected PTY transport", () => {
       readinessObserved: true,
     });
     await expect(
+      executeChallengeCase(topologyPromptRequest, "fixed-readiness-spoof"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+      ],
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
+      readinessObserved: false,
+    });
+    await expect(
       executeChallengeCase(topologyPromptRequest, "checkpoint-missing-process"),
     ).resolves.toMatchObject({
       actions: [

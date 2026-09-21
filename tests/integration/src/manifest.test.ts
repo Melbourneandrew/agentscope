@@ -278,6 +278,9 @@ describe("integration capability manifest", () => {
       "const readinessChallenge = await readReadinessChallenge();\n",
     );
     const codexLaunch = source.indexOf("  const codexRun = run(\n");
+    const topologyPublication = source.indexOf(
+      "AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}",
+    );
     const sessionStartCheckpoint = source.indexOf(
       "    const checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
     );
@@ -315,6 +318,8 @@ describe("integration capability manifest", () => {
     expect(sessionStartCheckpoint).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
+    expect(topologyPublication).toBeGreaterThan(codexLaunch);
+    expect(checkpointAcknowledgement).toBeGreaterThan(topologyPublication);
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
@@ -555,6 +560,7 @@ describe("integration capability manifest", () => {
       source.indexOf("  await releaseModelResponse();\n", modelRequest),
     ).toBeLessThan(terminalWait);
     expect(source).not.toContain("AGENTSCOPE_PTY_READY");
+    expect(source.match(/AGENTSCOPE_PTY_TOPOLOGY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
   });

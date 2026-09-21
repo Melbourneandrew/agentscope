@@ -1185,6 +1185,14 @@ try {
   );
   recordInteractivePhase("tui-run-created");
   const checkpointSignal = waitForCheckpointSignal();
+  await new Promise((resolve, reject) => {
+    process.stdout.write(
+      `AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}\r\n`,
+      (error) =>
+        error === null || error === undefined ? resolve() : reject(error),
+    );
+  });
+  recordInteractivePhase("tui-topology-published");
   await checkpointSignal;
   recordInteractivePhase("tui-checkpoint");
   recordInteractivePhase("model-gate-arm-start");
