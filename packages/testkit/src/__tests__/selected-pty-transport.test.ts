@@ -519,6 +519,8 @@ describe("selected PTY transport", () => {
     "terminal-query-blocked",
     "terminal-prompt-partial",
     "terminal-redraw-enter-fragmented",
+    "keyboard-protocol-readiness-before",
+    "keyboard-protocol-same-burst",
   ] as const)(
     "settles terminal reply transport %s",
     async (seed) => {
@@ -581,10 +583,9 @@ describe("selected PTY transport", () => {
     "keyboard-protocol-missing",
     "keyboard-protocol-substituted",
     "keyboard-protocol-out-of-order",
-    "keyboard-protocol-readiness-before",
+    "keyboard-protocol-after-readiness",
     "keyboard-protocol-reset",
     "keyboard-protocol-ris",
-    "keyboard-protocol-same-burst",
   ] as const)(
     "rejects terminal protocol negative %s",
     async (seed) => {
@@ -606,6 +607,9 @@ describe("selected PTY transport", () => {
         actions: [
           { action: "resize", geometry: { columns: 100, rows: 30 } },
           { action: "input", byteLength: 65 },
+          ...(seed === "keyboard-protocol-after-readiness"
+            ? [{ action: "checkpoint-process-topology" }]
+            : []),
         ],
         inputBytesWritten: 65,
         outcome: "input-incomplete",
