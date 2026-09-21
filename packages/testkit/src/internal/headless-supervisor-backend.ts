@@ -2647,7 +2647,6 @@ const armSelectedPty = (
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
           request.readiness.kind === "challenge-styled-text" &&
-          semanticCompletionObservedAtOutputBytes < 0 &&
           safeReflectApply(
             emulatorReadinessObservationGeneration,
             terminal,
@@ -4675,6 +4674,7 @@ type SelectedPtyTestSeed =
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
+  | "terminal-live-completion-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
@@ -4995,9 +4995,11 @@ const selectedPtyRuntimeForTest = (
                     ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
                     : seed === "terminal-passive-control-no-redraw"
                       ? safeBufferFrom("\u0007")
-                      : safeBufferFrom(
-                          `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered`,
-                        ),
+                      : seed === "terminal-live-completion-no-redraw"
+                        ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                        : safeBufferFrom(
+                            `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered`,
+                          ),
                   output,
                 ]
           : terminalQueryHandshake
@@ -5049,6 +5051,7 @@ const selectedPtyRuntimeForTest = (
       let submissionEnterWriteCalls = 0;
       let readinessRevokedAfterInput = false;
       let promptInputObserved = false;
+      let liveCompletionWouldBlockObserved = false;
       const observeSubmissionInputWrite = (bytes: Uint8Array, call: number) => {
         if (!requiresCausalPromptRedraw) return undefined;
         if (call >= 2 && submissionPromptAccepted < 67) {
@@ -5278,7 +5281,8 @@ const selectedPtyRuntimeForTest = (
               submissionPromptAccepted === 67 &&
               chunkIndex > 3 &&
               seed !== "terminal-stale-prebuffer-no-redraw" &&
-              seed !== "terminal-passive-control-no-redraw"
+              seed !== "terminal-passive-control-no-redraw" &&
+              seed !== "terminal-live-completion-no-redraw"
             )
               promptAcknowledgedByOutput = true;
             return { status: "data" as const, bytes };
@@ -5288,6 +5292,19 @@ const selectedPtyRuntimeForTest = (
             (seed === "terminal-stale-prebuffer-no-redraw" ||
               seed === "terminal-passive-control-no-redraw")
           ) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+            return { status: "eio" as const };
+          }
+          if (
+            submissionPromptAccepted === 67 &&
+            seed === "terminal-live-completion-no-redraw"
+          ) {
+            if (!liveCompletionWouldBlockObserved) {
+              liveCompletionWouldBlockObserved = true;
+              return { status: "would-block" as const };
+            }
             processes.clear();
             terminal = true;
             close({ code: 0, signal: 0 });

@@ -568,6 +568,7 @@ describe("selected PTY transport", () => {
   it.each([
     "terminal-stale-prebuffer-no-redraw",
     "terminal-passive-control-no-redraw",
+    "terminal-live-completion-no-redraw",
   ] as const)("rejects non-causal prompt acknowledgement %s", async (seed) => {
     const selected = protocolPromptRequest();
     const now = performance.now();
@@ -592,10 +593,7 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 67 },
       ],
       inputBytesWritten: 132,
-      outcome:
-        seed === "terminal-stale-prebuffer-no-redraw"
-          ? "input-incomplete"
-          : "transport-failed",
+      outcome: "input-incomplete",
     });
   });
 
