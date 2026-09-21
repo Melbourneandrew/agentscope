@@ -4839,7 +4839,6 @@ const selectedPtyRuntimeForTest = (
   readiness: SelectedPtyExecutionRequest["readiness"] = {
     kind: "semantic-marker",
   },
-  hasLaterResize = false,
   // eslint-disable-next-line max-lines-per-function
 ): PtyRuntime => {
   const root: ProcessSnapshot = {
@@ -5466,7 +5465,7 @@ const selectedPtyRuntimeForTest = (
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
         if (
-          (!requiresCausalPromptRedraw || hasLaterResize) &&
+          !requiresCausalPromptRedraw &&
           seed !== "timeout" &&
           seed !== "identity-substitution" &&
           seed !== "output-limit" &&
@@ -5670,6 +5669,11 @@ const selectedPtyRuntimeForTest = (
         },
         resize: (columns, rows) => {
           currentGeometry = { columns, rows };
+          if (requiresCausalPromptRedraw && submissionEnterAccepted === 5) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+          }
         },
         // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
         write: (bytes) => {
@@ -5767,15 +5771,7 @@ export const executeSelectedPtyTransportForTest = async (
     maximumShutdownDeadlineMs: stable.process.monotonicShutdownDeadlineMs,
     namespaceIdentity: "pid:[synthetic-selected-pty]",
   };
-  let hasLaterResize = false;
-  for (let index = 1; index < stable.interaction.actions.length; index += 1)
-    if (stable.interaction.actions[index]?.action === "resize")
-      hasLaterResize = true;
-  const runtime = selectedPtyRuntimeForTest(
-    seed,
-    stable.readiness,
-    hasLaterResize,
-  );
+  const runtime = selectedPtyRuntimeForTest(seed, stable.readiness);
   const genericRuntime: SelectedContainerRuntime = {
     assertNamespaceIdentity: runtime.assertNamespaceIdentity,
     listProcesses: runtime.listProcesses,
