@@ -107,6 +107,8 @@ const emulatorUnsupportedControlReason =
   BoundedTerminalEmulator.prototype.unsupportedControlReason;
 const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
+const emulatorReadinessObservationGeneration =
+  BoundedTerminalEmulator.prototype.readinessObservationGeneration;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -2572,6 +2574,8 @@ const armSelectedPty = (
     let actionInputOffset = 0;
     let actionIndex = 0;
     let lastCompletedInputOutputBytes = -1;
+    let lastCompletedInputReadinessGeneration = -1;
+    let drainedInputActionIndex = -1;
     let semanticCompletionObservedAtOutputBytes = -1;
     const actionsApplied: PtyTransportAction[] = [];
     const recordAction = (action: PtyTransportAction): void => {
@@ -2630,10 +2634,25 @@ const armSelectedPty = (
         const pendingActionBeforeRead =
           request.interaction.actions[actionIndex];
         const priorAction = actionsApplied[actionsApplied.length - 1];
+        const requiresCausalInputDrain =
+          pendingActionBeforeRead?.action === "input" &&
+          priorAction?.action === "checkpoint-process-topology" &&
+          actionInputOffset === 0 &&
+          drainedInputActionIndex !== actionIndex;
         const waitingForPriorInputOutput =
           pendingActionBeforeRead?.action === "input" &&
           priorAction?.action === "input" &&
           outputBytes === lastCompletedInputOutputBytes;
+        const waitingForPriorInputSemanticRedraw =
+          pendingActionBeforeRead?.action === "input" &&
+          priorAction?.action === "input" &&
+          request.readiness.kind === "challenge-styled-text" &&
+          semanticCompletionObservedAtOutputBytes < 0 &&
+          safeReflectApply(
+            emulatorReadinessObservationGeneration,
+            terminal,
+            [],
+          ) <= lastCompletedInputReadinessGeneration;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
           inputOffset >= 65;
@@ -2657,8 +2676,11 @@ const armSelectedPty = (
             )) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
           pendingActionBeforeRead.action === "checkpoint-process-topology" ||
+          requiresCausalInputDrain ||
           waitingForPriorInputOutput ||
+          waitingForPriorInputSemanticRedraw ||
           pendingTerminalResponseOffset < pendingTerminalResponse.length;
+        let causalInputDrainObserved = false;
         for (
           let index = 0;
           shouldReadBeforeAction && index < 64 && !outputTerminal;
@@ -2669,7 +2691,10 @@ const armSelectedPty = (
           // recent window, then stop at readiness so its gated action cannot
           // be overtaken by a fast child's later completion output.
           const observation = exactPtyRead(child.read(512));
-          if (observation.status === "would-block") break;
+          if (observation.status === "would-block") {
+            causalInputDrainObserved = requiresCausalInputDrain;
+            break;
+          }
           if (observation.status === "eof" || observation.status === "eio") {
             outputTerminal = true;
             break;
@@ -2721,7 +2746,7 @@ const armSelectedPty = (
               semanticState === "malformed-control"
             )
               transportError = true;
-            else if (readinessObserved) break;
+            else if (readinessObserved && !requiresCausalInputDrain) break;
           }
           if (observation.bytes.length > captured.length) {
             outputLimited = true;
@@ -2740,6 +2765,7 @@ const armSelectedPty = (
             break;
           }
         }
+        if (causalInputDrainObserved) drainedInputActionIndex = actionIndex;
         const inputAdmitted =
           allowInput &&
           (request.interaction.trigger === "immediate" || readinessObserved) &&
@@ -2752,8 +2778,15 @@ const armSelectedPty = (
             )) &&
           !terminalProtocolOrderingRejected &&
           pendingTerminalResponseOffset >= pendingTerminalResponse.length &&
+          !requiresCausalInputDrain &&
           (!waitingForPriorInputOutput ||
-            outputBytes > lastCompletedInputOutputBytes);
+            outputBytes > lastCompletedInputOutputBytes) &&
+          (!waitingForPriorInputSemanticRedraw ||
+            safeReflectApply(
+              emulatorReadinessObservationGeneration,
+              terminal,
+              [],
+            ) > lastCompletedInputReadinessGeneration);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
         if (
           inputAdmitted &&
@@ -2805,6 +2838,11 @@ const armSelectedPty = (
                 ),
               });
               lastCompletedInputOutputBytes = outputBytes;
+              lastCompletedInputReadinessGeneration = safeReflectApply(
+                emulatorReadinessObservationGeneration,
+                terminal,
+                [],
+              );
               actionInputOffset = 0;
               actionIndex += 1;
             }
@@ -4634,6 +4672,9 @@ type SelectedPtyTestSeed =
   | "timeout"
   | "terminal-redraw-enter-fragmented"
   | "terminal-prompt-partial"
+  | "terminal-no-prompt"
+  | "terminal-stale-prebuffer-no-redraw"
+  | "terminal-passive-control-no-redraw"
   | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
@@ -4899,6 +4940,7 @@ const selectedPtyRuntimeForTest = (
         readiness.kind === "challenge-styled-text" ||
         seed === "terminal-redraw-enter-fragmented" ||
         seed === "terminal-prompt-partial" ||
+        seed === "terminal-no-prompt" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
         seed === "terminal-query-blocked";
@@ -4910,13 +4952,9 @@ const selectedPtyRuntimeForTest = (
         seed === "keyboard-protocol-reset" ||
         seed === "keyboard-protocol-ris" ||
         seed === "keyboard-protocol-same-burst";
-      const requiresSubmissionReadGuard =
-        seed === "terminal-redraw-enter-fragmented" ||
-        seed === "terminal-prompt-partial" ||
-        seed === "terminal-post-wait-pacing" ||
-        seed === "terminal-query-handshake" ||
-        seed === "terminal-query-partial" ||
-        seed === "terminal-query-blocked";
+      const requiresCausalPromptRedraw =
+        readiness.kind === "challenge-styled-text" &&
+        !terminalProtocolNegativeSeed;
       const challengedMarker =
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
@@ -4953,7 +4991,13 @@ const selectedPtyRuntimeForTest = (
                         `${styledPrompt.toString()}\u001bc${styledPrompt.toString()}`,
                       )
                     : styledPrompt,
-                  safeBufferFrom(`${styledPrompt.toString()} prompt-rendered`),
+                  seed === "terminal-stale-prebuffer-no-redraw"
+                    ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                    : seed === "terminal-passive-control-no-redraw"
+                      ? safeBufferFrom("\u0007")
+                      : safeBufferFrom(
+                          `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered`,
+                        ),
                   output,
                 ]
           : terminalQueryHandshake
@@ -5006,7 +5050,7 @@ const selectedPtyRuntimeForTest = (
       let readinessRevokedAfterInput = false;
       let promptInputObserved = false;
       const observeSubmissionInputWrite = (bytes: Uint8Array, call: number) => {
-        if (!requiresSubmissionReadGuard) return undefined;
+        if (!requiresCausalPromptRedraw) return undefined;
         if (call >= 2 && submissionPromptAccepted < 67) {
           const bytesWritten =
             seed === "terminal-prompt-partial" && call === 2
@@ -5161,6 +5205,7 @@ const selectedPtyRuntimeForTest = (
               : currentGeometry.rows,
           eofByte: 4,
         }),
+        // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
         read: (maximumBytes) => {
           assertNoReadDuringPartialSubmission();
           transportReads += 1;
@@ -5188,6 +5233,23 @@ const selectedPtyRuntimeForTest = (
           )
             return { status: "would-block" as const };
           if (
+            seed === "terminal-no-prompt" &&
+            chunkIndex === 3 &&
+            submissionPromptAccepted === 0
+          ) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+            return { status: "eio" as const };
+          }
+          if (
+            requiresCausalPromptRedraw &&
+            chunkIndex === 3 &&
+            submissionPromptAccepted < 67 &&
+            seed !== "terminal-stale-prebuffer-no-redraw"
+          )
+            return { status: "would-block" as const };
+          if (
             seed === "post-input-completion" &&
             chunkIndex === 1 &&
             inputCalls === 0
@@ -5212,9 +5274,24 @@ const selectedPtyRuntimeForTest = (
               chunkIndex += 1;
               chunkOffset = 0;
             }
-            if (submissionPromptAccepted === 67)
+            if (
+              submissionPromptAccepted === 67 &&
+              chunkIndex > 3 &&
+              seed !== "terminal-stale-prebuffer-no-redraw" &&
+              seed !== "terminal-passive-control-no-redraw"
+            )
               promptAcknowledgedByOutput = true;
             return { status: "data" as const, bytes };
+          }
+          if (
+            submissionPromptAccepted === 67 &&
+            (seed === "terminal-stale-prebuffer-no-redraw" ||
+              seed === "terminal-passive-control-no-redraw")
+          ) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+            return { status: "eio" as const };
           }
           if (terminalProtocolNegativeSeed && !terminal) {
             processes.clear();
@@ -5228,6 +5305,7 @@ const selectedPtyRuntimeForTest = (
         resize: (columns, rows) => {
           currentGeometry = { columns, rows };
         },
+        // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
         write: (bytes) => {
           if (
             terminalQueryHandshake &&
@@ -5257,6 +5335,8 @@ const selectedPtyRuntimeForTest = (
               bytesWritten: bytes.length,
             };
           }
+          if (seed === "terminal-no-prompt" && inputCalls >= 1)
+            throw new Error("testkit.pty.test-prompt-after-terminal-close");
           inputCalls += 1;
           if (inputCalls === 2) promptInputObserved = true;
           const submissionResult = observeSubmissionInputWrite(
