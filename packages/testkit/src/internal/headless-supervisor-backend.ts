@@ -2635,6 +2635,9 @@ const armSelectedPty = (
           request.readiness.kind === "challenge-styled-text" &&
           pendingActionBeforeRead?.action === "input" &&
           pendingActionBeforeRead.byteLength === 5 &&
+          request.interaction.actions[actionIndex + 1]?.action ===
+            "wait-for-semantic-completion" &&
+          semanticCompletionObservedAtOutputBytes < 0 &&
           priorAction?.action === "input" &&
           input[pendingActionInputStart] === 0x1b &&
           input[pendingActionInputStart + 1] === 0x5b &&
@@ -4646,6 +4649,7 @@ type SelectedPtyTestSeed =
   | "timeout"
   | "terminal-adjacent-enter-fragmented"
   | "terminal-adjacent-partial"
+  | "terminal-post-wait-pacing"
   | "terminal-query-blocked"
   | "terminal-query-handshake"
   | "terminal-query-partial"
@@ -4924,6 +4928,7 @@ const selectedPtyRuntimeForTest = (
       const requiresAdjacentReadGuard =
         seed === "terminal-adjacent-enter-fragmented" ||
         seed === "terminal-adjacent-partial" ||
+        seed === "terminal-post-wait-pacing" ||
         seed === "terminal-query-handshake" ||
         seed === "terminal-query-partial" ||
         seed === "terminal-query-blocked";
@@ -5064,6 +5069,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "signal-failure" &&
           seed !== "terminal-adjacent-enter-fragmented" &&
           seed !== "terminal-adjacent-partial" &&
+          seed !== "terminal-post-wait-pacing" &&
           seed !== "terminal-query-handshake" &&
           seed !== "terminal-query-partial" &&
           seed !== "terminal-query-blocked"
@@ -5147,6 +5153,12 @@ const selectedPtyRuntimeForTest = (
           }
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
+          if (seed === "terminal-post-wait-pacing" && inputCalls >= 4) {
+            processes.clear();
+            terminal = true;
+            close({ code: 0, signal: 0 });
+            return { status: "eio" as const };
+          }
           if (
             terminalQueryHandshake &&
             seed !== "keyboard-protocol-readiness-before" &&
