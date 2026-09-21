@@ -449,7 +449,15 @@ const ptyChallengeReceiptFor = () => {
   const processRequestFingerprint = `sha256:${createHash("sha256")
     .update(JSON.stringify(rawProcessRequest))
     .digest("hex")}` as const;
-  const readiness = { kind: "challenge-marker" as const, challenge };
+  const readiness = {
+    kind: "challenge-styled-text" as const,
+    challenge,
+    text: "›",
+    requiredText: "fixture-model default",
+    requiredTerminalProtocol: "csi-u-flags-7-query-v1" as const,
+    bold: true,
+    dim: false,
+  };
   const initialInputAction = {
     action: "input" as const,
     byteLength: initialInput.length,
@@ -1456,7 +1464,7 @@ describe("selected PTY backend evidence", () => {
     ).toThrow("integration.isolation.evidence");
   });
 
-  it("admits only immediate challenge readiness and rejects trigger substitution", () => {
+  it("admits the exact styled challenge receipt and rejects trigger or kind substitution", () => {
     const { evidence } = compiledEvidenceFixture();
     const receipt = ptyChallengeReceiptFor();
     const interactive = {

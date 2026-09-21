@@ -518,7 +518,8 @@ const ptyTerminalReceiptSchema = z
     const request = value.request.process;
     const challengeReadiness =
       value.request.readiness.kind === "challenge-marker" ||
-      value.request.readiness.kind === "challenge-process-topology";
+      value.request.readiness.kind === "challenge-process-topology" ||
+      value.request.readiness.kind === "challenge-styled-text";
     const finalGeometry = value.request.interaction.actions.reduce(
       (geometry, action) =>
         action.action === "resize" ? action.geometry : geometry,
