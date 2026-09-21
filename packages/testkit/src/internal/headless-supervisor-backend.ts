@@ -5276,6 +5276,14 @@ const selectedPtyRuntimeForTest = (
             if (chunkOffset === chunk.length) {
               chunkIndex += 1;
               chunkOffset = 0;
+              if (
+                terminalProtocolNegativeSeed &&
+                chunkIndex === chunks.length
+              ) {
+                processes.clear();
+                terminal = true;
+                close({ code: 0, signal: 0 });
+              }
             }
             if (
               submissionPromptAccepted === 67 &&
