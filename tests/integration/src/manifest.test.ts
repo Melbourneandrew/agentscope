@@ -323,10 +323,8 @@ describe("integration capability manifest", () => {
     expect(sessionStartCheckpoint).toBeGreaterThan(-1);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
-    expect(readinessChallengePublication).toBeGreaterThan(codexLaunch);
-    expect(checkpointAcknowledgement).toBeGreaterThan(
-      readinessChallengePublication,
-    );
+    expect(readinessChallengePublication).toBeGreaterThan(challengeRead);
+    expect(readinessChallengePublication).toBeLessThan(codexLaunch);
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
