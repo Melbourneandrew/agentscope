@@ -483,8 +483,10 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessObservationGeneration = 0;
+  #synchronizedOutputGeneration = 0;
   #challengeScreenAuthorityRevoked = false;
   #challengeSynchronizedOutputFrameActive = false;
+  #synchronizedOutputFrameHasPrintable = false;
   #challengeStyledTextObservedInOutput = false;
   #challengeStyledTextOutputCellIndex: number | null = null;
   #challengeRequiredTextObservedInOutput = false;
@@ -691,6 +693,10 @@ export class BoundedTerminalEmulator {
     return this.#readinessObservationGeneration;
   }
 
+  public synchronizedOutputGeneration(): number {
+    return this.#synchronizedOutputGeneration;
+  }
+
   public requiredTerminalProtocolReady(): boolean {
     return (
       this.#readinessMatcher.kind === "challenge-styled-text" &&
@@ -779,10 +785,12 @@ export class BoundedTerminalEmulator {
   #beginChallengeSynchronizedOutputFrame(): void {
     this.#resetChallengeOutputObservation();
     this.#challengeSynchronizedOutputFrameActive = true;
+    this.#synchronizedOutputFrameHasPrintable = false;
   }
 
   #invalidateChallengeSynchronizedOutputFrame(): void {
     this.#challengeSynchronizedOutputFrameActive = false;
+    this.#synchronizedOutputFrameHasPrintable = false;
     this.#resetChallengeOutputObservation();
   }
 
@@ -810,6 +818,15 @@ export class BoundedTerminalEmulator {
         requiredTextSurvives &&=
           this.#cells[requiredStart + offset] ===
           this.#readinessMatcher.requiredText[offset];
+    const synchronizedOutputAuthorityValid =
+      this.#synchronizedOutputFrameHasPrintable &&
+      this.#characterSetTrusted &&
+      this.#renditionTrusted &&
+      this.#cursorPositionTrusted &&
+      this.#autoWrapEnabled &&
+      this.#scrollRegionCanonical;
+    if (synchronizedOutputAuthorityValid)
+      this.#synchronizedOutputGeneration += 1;
     const outputAuthorityValid =
       this.#challengeStyledTextObservedInOutput &&
       styledCell !== null &&
@@ -818,11 +835,7 @@ export class BoundedTerminalEmulator {
       this.#cellDim[styledCell] === this.#readinessMatcher.dim &&
       this.#challengeRequiredTextObservedInOutput &&
       requiredTextSurvives &&
-      this.#characterSetTrusted &&
-      this.#renditionTrusted &&
-      this.#cursorPositionTrusted &&
-      this.#autoWrapEnabled &&
-      this.#scrollRegionCanonical;
+      synchronizedOutputAuthorityValid;
     if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
     this.#refreshChallengeStyledReadiness();
     if (this.#readinessObserved && outputAuthorityValid)
@@ -1081,6 +1094,8 @@ export class BoundedTerminalEmulator {
       this.#revokeChallengeScreenAuthority();
     }
     const cellIndex = this.#row * this.#geometry.columns + this.#column;
+    if (this.#challengeSynchronizedOutputFrameActive)
+      this.#synchronizedOutputFrameHasPrintable = true;
     this.#cells[cellIndex] = character;
     this.#cellBold[cellIndex] = this.#bold;
     this.#cellDim[cellIndex] = this.#dim;
