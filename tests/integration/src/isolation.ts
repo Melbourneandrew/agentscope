@@ -459,6 +459,7 @@ const ptyTerminalReceiptSchema = z
           challenge: z.string().regex(/^[a-f\d]{64}$/u),
           text: z.string().length(1),
           requiredText: z.string().min(1).max(32),
+          requiredTerminalProtocol: z.literal("csi-u-flags-7-query-v1"),
           bold: z.boolean(),
           dim: z.boolean(),
         }),

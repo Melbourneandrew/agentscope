@@ -14,6 +14,7 @@ export type PtyTerminalReadinessMatcher =
       challenge: string;
       text: string;
       requiredText: string;
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1";
       bold: boolean;
       dim: boolean;
     }>
@@ -99,6 +100,7 @@ const defaultLimits: PtyTerminalEmulatorLimits = freezeAuthority({
 const credentialPromptPattern =
   /(?:password|passphrase|user[ _-]?name|e[ -]?mail|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
 const maximumCredentialTailCodePoints = 128;
+const maximumTerminalResponseBytes = 4_096;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const readinessChallengePattern = /^[a-f0-9]{64}$/u;
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
@@ -111,8 +113,13 @@ const arrayBufferPrototype = ArrayBuffer.prototype;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const typedArraySet = Uint8Array.prototype.set;
 const TextDecoderAuthority = TextDecoder;
+const TextEncoderAuthority = TextEncoder;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const bufferByteLength = Buffer.byteLength;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const textDecoderDecode = TextDecoder.prototype.decode;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const textEncoderEncode = TextEncoder.prototype.encode;
 const typedArrayPrototype = getPrototypeOf(uint8ArrayPrototype);
 // Capturing the intrinsic getter prevents later prototype replacement from
 // becoming input-validation authority.
@@ -339,7 +346,15 @@ const validateReadinessMatcher = (
   if (value.kind === "challenge-styled-text") {
     const record = strictRecord(
       value,
-      ["bold", "challenge", "dim", "kind", "requiredText", "text"],
+      [
+        "bold",
+        "challenge",
+        "dim",
+        "kind",
+        "requiredTerminalProtocol",
+        "requiredText",
+        "text",
+      ],
       "testkit.pty.emulator.readiness",
     );
     const text = record.text;
@@ -360,6 +375,7 @@ const validateReadinessMatcher = (
           (character.codePointAt(0) ?? 0) < 0x20 ||
           character.codePointAt(0) === 0x7f,
       ) ||
+      record.requiredTerminalProtocol !== "csi-u-flags-7-query-v1" ||
       typeof record.bold !== "boolean" ||
       typeof record.dim !== "boolean"
     )
@@ -369,6 +385,7 @@ const validateReadinessMatcher = (
       challenge: record.challenge,
       text,
       requiredText,
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: record.bold,
       dim: record.dim,
     });
@@ -399,6 +416,7 @@ const validateReadinessMatcher = (
 
 export class BoundedTerminalEmulator {
   readonly #decoder = new TextDecoderAuthority("utf-8", { fatal: true });
+  readonly #encoder = new TextEncoderAuthority();
   readonly #limits: PtyTerminalEmulatorLimits;
   #geometry: PtyTerminalGeometry;
   #cells: string[];
@@ -432,6 +450,10 @@ export class BoundedTerminalEmulator {
   #dim = false;
   #credentialPromptObserved = false;
   #credentialTail = "";
+  #pendingTerminalResponses = "";
+  #terminalResponseBytes = 0;
+  #terminalProtocolPhase = 0;
+  #terminalProtocolRejected = false;
   readonly #readinessMatcher: PtyTerminalReadinessMatcher;
 
   public constructor(
@@ -612,6 +634,46 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved;
   }
 
+  public requiredTerminalProtocolReady(): boolean {
+    return (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      !this.#terminalProtocolRejected &&
+      this.#terminalProtocolPhase === 6
+    );
+  }
+
+  public takeTerminalResponses(): Uint8Array {
+    const expectedBytes = applyFunction(bufferByteLength, Buffer, [
+      this.#pendingTerminalResponses,
+      "utf8",
+    ]);
+    const response = applyFunction(textEncoderEncode, this.#encoder, [
+      this.#pendingTerminalResponses,
+    ]);
+    if (
+      applyFunction(typedArrayByteLengthGetter, response, []) !==
+        expectedBytes ||
+      expectedBytes > maximumTerminalResponseBytes
+    )
+      return fail("testkit.pty.emulator.response-limit");
+    this.#pendingTerminalResponses = "";
+    return response;
+  }
+
+  #enqueueTerminalResponse(response: string): void {
+    const responseBytes = applyFunction(bufferByteLength, Buffer, [
+      response,
+      "utf8",
+    ]);
+    if (
+      this.#terminalResponseBytes + responseBytes >
+      maximumTerminalResponseBytes
+    )
+      return fail("testkit.pty.emulator.response-limit");
+    this.#terminalResponseBytes += responseBytes;
+    this.#pendingTerminalResponses += response;
+  }
+
   #refreshChallengeStyledReadiness(): void {
     if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
     let styledTextObserved = false;
@@ -633,10 +695,14 @@ export class BoundedTerminalEmulator {
         this.#readinessMatcher.requiredText,
       );
     }
-    this.#readinessObserved =
+    const candidateReadiness =
       this.#readinessChallengeObserved &&
       styledTextObserved &&
       requiredTextObserved;
+    if (candidateReadiness && this.#terminalProtocolPhase !== 6)
+      this.#terminalProtocolRejected = true;
+    this.#readinessObserved =
+      candidateReadiness && !this.#terminalProtocolRejected;
   }
 
   public completionObserved(): boolean {
@@ -682,6 +748,7 @@ export class BoundedTerminalEmulator {
       } else if (character === "H" || character === "=" || character === ">") {
         this.#state = "ground";
       } else if (character === "c") {
+        this.#rejectRequiredTerminalProtocol();
         this.#clearDisplay(2);
         this.#row = 0;
         this.#column = 0;
@@ -861,8 +928,17 @@ export class BoundedTerminalEmulator {
       this.#clearDisplay(first);
     else if (final === "K" && first >= 0 && first <= 2) this.#clearLine(first);
     else if (final === "m") this.#applySgr(values);
-    else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
-    else if (passiveCsiIsSupported(final, values, this.#geometry.rows)) return;
+    else if (final === "n" && first === 6) {
+      this.#observeRequiredTerminalProtocolStep(2);
+      this.#sawCursorPositionQuery = true;
+      this.#enqueueTerminalResponse(
+        `\u001b[${this.#row + 1};${this.#column + 1}R`,
+      );
+    } else if (final === "c" && first === 0) {
+      this.#observeRequiredTerminalProtocolStep(6);
+      this.#enqueueTerminalResponse("\u001b[?1;2c");
+    } else if (passiveCsiIsSupported(final, values, this.#geometry.rows))
+      return;
     else if (final === "s") {
       this.#savedRow = this.#row;
       this.#savedColumn = this.#column;
@@ -910,23 +986,34 @@ export class BoundedTerminalEmulator {
       }
       return;
     }
+    if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
     if (
-      (prefix === "?" &&
-        final === "u" &&
-        values.length === 1 &&
-        values[0] === 0) ||
-      ((prefix === ">" || prefix === "<") &&
-        final === "u" &&
-        values.length === 1 &&
-        values[0]! <= 31) ||
-      (prefix === ">" &&
-        final === "m" &&
-        values.length === 2 &&
-        values[0] === 4 &&
-        (values[1] === 0 || values[1] === 2))
+      prefix === ">" &&
+      final === "m" &&
+      values.length === 2 &&
+      values[0] === 4 &&
+      (values[1] === 0 || values[1] === 2)
     )
       return;
     this.#recordUnsupportedControl("extended-csi");
+  }
+
+  #applyRequiredTerminalProtocolCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    values: readonly number[],
+  ): boolean {
+    if (final !== "u" || values.length !== 1) return false;
+    if (prefix === "?" && values[0] === 0) {
+      this.#observeRequiredTerminalProtocolStep(5);
+      this.#enqueueTerminalResponse("\u001b[?0u");
+      return true;
+    }
+    if ((prefix !== ">" && prefix !== "<") || values[0]! > 31) return false;
+    if (prefix === ">" && values[0] === 7)
+      this.#observeRequiredTerminalProtocolStep(1);
+    else this.#rejectRequiredTerminalProtocol();
+    return true;
   }
 
   #appendControl(character: string): void {
@@ -951,6 +1038,23 @@ export class BoundedTerminalEmulator {
     this.#unsupportedControlReason ??= reason;
   }
 
+  #observeRequiredTerminalProtocolStep(step: number): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    if (
+      this.#terminalProtocolRejected ||
+      step !== this.#terminalProtocolPhase + 1
+    ) {
+      this.#terminalProtocolRejected = true;
+      return;
+    }
+    this.#terminalProtocolPhase = step;
+  }
+
+  #rejectRequiredTerminalProtocol(): void {
+    if (this.#readinessMatcher.kind === "challenge-styled-text")
+      this.#terminalProtocolRejected = true;
+  }
+
   #finishOsc(): void {
     const separator = this.#control.indexOf(";");
     const selector = separator < 0 ? "" : this.#control.slice(0, separator);
@@ -963,7 +1067,13 @@ export class BoundedTerminalEmulator {
       Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
     )
       this.#recordUnsupportedControl("osc");
-    else if (selector === "0" || selector === "2")
+    else if (selector === "10" && title === "?") {
+      this.#observeRequiredTerminalProtocolStep(3);
+      this.#enqueueTerminalResponse("\u001b]10;rgb:ffff/ffff/ffff\u001b\\");
+    } else if (selector === "11" && title === "?") {
+      this.#observeRequiredTerminalProtocolStep(4);
+      this.#enqueueTerminalResponse("\u001b]11;rgb:0000/0000/0000\u001b\\");
+    } else if (selector === "0" || selector === "2")
       this.#titleSha256 = hash(title);
     this.#control = "";
     this.#state = "ground";

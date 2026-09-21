@@ -194,7 +194,7 @@ describe("integration capability manifest", () => {
     expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
       Buffer.concat([
         Buffer.from(
-          "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\r",
+          "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
         ),
         Buffer.from([4, 4]),
       ]),
@@ -233,7 +233,6 @@ describe("integration capability manifest", () => {
       "input",
       "checkpoint-process-topology",
       "input",
-      "input",
       "wait-for-semantic-completion",
       "input",
       "input",
@@ -248,20 +247,15 @@ describe("integration capability manifest", () => {
     expect(actions[3]).toEqual({
       action: "input",
       byteLength: Buffer.byteLength(
-        "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~",
+        "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
       ),
       inputSha256: createHash("sha256")
         .update(
           Buffer.from(
-            "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~",
+            "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
           ),
         )
         .digest("hex"),
-    });
-    expect(actions[4]).toEqual({
-      action: "input",
-      byteLength: 1,
-      inputSha256: createHash("sha256").update(Buffer.from("\r")).digest("hex"),
     });
     expect(actions.at(-1)).toEqual({
       action: "input",

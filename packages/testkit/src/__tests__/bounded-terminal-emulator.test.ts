@@ -8,6 +8,7 @@ import {
 } from "../bounded-terminal-emulator.js";
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
 // These cases share one bounded emulator fixture surface across semantic states.
@@ -57,7 +58,6 @@ describe("bounded semantic terminal emulator", () => {
         maximumRecentCodePoints: 32,
       },
     );
-
     terminal.write(bytes(`AGENTSCOPE_PTY_COMPLETE\r\n${"x".repeat(64)}`));
 
     expect(terminal.end().semanticState).toBe("completed");
@@ -104,7 +104,6 @@ describe("bounded semantic terminal emulator", () => {
         dim: false,
       },
     );
-
     terminal.write(bytes("\u001b[1m›\u001b[0m "));
     expect(terminal.readinessObserved()).toBe(false);
 
@@ -142,10 +141,16 @@ describe("bounded semantic terminal emulator", () => {
         kind: "challenge-styled-text",
         challenge,
         text: "›",
-        requiredText: "100% context left",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
       },
+    );
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
     );
 
     terminal.write(bytes("\u001b[1m›\u001b[22m "));
@@ -159,7 +164,7 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("[1m›[22m "));
     expect(terminal.readinessObserved()).toBe(false);
-    terminal.write(bytes("100% context lef"));
+    terminal.write(bytes("fixture-model defaul"));
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("t"));
     expect(terminal.readinessObserved()).toBe(true);
@@ -167,10 +172,69 @@ describe("bounded semantic terminal emulator", () => {
     terminal.write(bytes("\u001b[2J"));
     expect(terminal.readinessObserved()).toBe(false);
 
-    terminal.write(bytes("\u001b[H\u001b[1m›\u001b[22m 100% context left"));
+    terminal.write(
+      bytes("\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default"),
+    );
     expect(terminal.readinessObserved()).toBe(true);
     terminal.write(bytes("\rX"));
     expect(terminal.readinessObserved()).toBe(false);
+  });
+
+  it("admits CSI-u input only after the required terminal protocol", () => {
+    const challenge = "a".repeat(64);
+    const terminal = () =>
+      new BoundedTerminalEmulator(
+        { columns: 40, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+    const queries =
+      "\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c";
+
+    const exact = terminal();
+    exact.write(bytes(`\u001b[>7u${queries}`));
+    expect(exact.requiredTerminalProtocolReady()).toBe(true);
+
+    const earlyReadiness = terminal();
+    earlyReadiness.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[1m›\u001b[22m fixture-model default`,
+      ),
+    );
+    earlyReadiness.write(bytes(`\u001b[>7u${queries}`));
+    expect(earlyReadiness.readinessObserved()).toBe(false);
+    expect(earlyReadiness.requiredTerminalProtocolReady()).toBe(false);
+
+    const resetAfterReady = terminal();
+    resetAfterReady.write(bytes(`\u001b[>7u${queries}`));
+    resetAfterReady.write(bytes("\u001bc"));
+    resetAfterReady.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[1m›\u001b[22m fixture-model default`,
+      ),
+    );
+    expect(resetAfterReady.readinessObserved()).toBe(false);
+    expect(resetAfterReady.requiredTerminalProtocolReady()).toBe(false);
+
+    for (const sequence of [
+      queries,
+      `\u001b[>6u${queries}`,
+      `${queries}\u001b[>7u`,
+      `\u001b[>7u${queries}\u001b[<u`,
+      `\u001b[>7u\u001b[>7u${queries}`,
+    ]) {
+      const rejected = terminal();
+      rejected.write(bytes(sequence));
+      expect(rejected.requiredTerminalProtocolReady()).toBe(false);
+    }
   });
 
   it("revokes challenged readiness when resize truncates the live footer", () => {
@@ -182,14 +246,20 @@ describe("bounded semantic terminal emulator", () => {
         kind: "challenge-styled-text",
         challenge,
         text: "›",
-        requiredText: "100% context left",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
       },
     );
     terminal.write(
       bytes(
-        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m 100% context left`,
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default`,
       ),
     );
     expect(terminal.readinessObserved()).toBe(true);
@@ -207,14 +277,20 @@ describe("bounded semantic terminal emulator", () => {
         kind: "challenge-styled-text",
         challenge,
         text: "›",
-        requiredText: "100% context left",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
       },
     );
     terminal.write(
       bytes(
-        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m 100% context left`,
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[2J\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default`,
       ),
     );
     expect(terminal.readinessObserved()).toBe(true);
@@ -303,6 +379,16 @@ describe("bounded semantic terminal emulator", () => {
       semanticState: "completed",
       unsupportedControlCount: 0,
     });
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      [
+        "\u001b[1;1R",
+        "\u001b]10;rgb:ffff/ffff/ffff\u001b\\",
+        "\u001b]11;rgb:0000/0000/0000\u001b\\",
+        "\u001b[?0u",
+        "\u001b[?1;2c",
+      ].join(""),
+    );
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
   });
 
   it("classifies credential prompts without retaining their bytes", () => {
@@ -381,6 +467,58 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     }).toThrowError(
       new BoundedTerminalEmulatorError("testkit.pty.emulator.ended"),
     );
+  });
+
+  it("bounds generated terminal-query responses across drains", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 10, rows: 2 },
+      { ...defaultPtyTerminalEmulatorLimits, maximumOutputBytes: 16_384 },
+    );
+    for (let index = 0; index < 682; index += 1) {
+      terminal.write(bytes("\u001b[6n"));
+      terminal.takeTerminalResponses();
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[6n"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+
+  it("uses captured response byte and encoding authority", () => {
+    const byteLengthDescriptor = Object.getOwnPropertyDescriptor(
+      Buffer,
+      "byteLength",
+    )!;
+    const encodeDescriptor = Object.getOwnPropertyDescriptor(
+      TextEncoder.prototype,
+      "encode",
+    )!;
+    const query = bytes("\u001b[6n");
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    terminal.write(query);
+    Object.defineProperty(Buffer, "byteLength", {
+      ...byteLengthDescriptor,
+      value: () => 0,
+    });
+    Object.defineProperty(TextEncoder.prototype, "encode", {
+      ...encodeDescriptor,
+      value: () => new Uint8Array(5_000).fill(65),
+    });
+    let response: Uint8Array | undefined;
+    try {
+      response = terminal.takeTerminalResponses();
+      const bounded = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+      expect(() => {
+        for (let index = 0; index < 683; index += 1) bounded.write(query);
+      }).toThrowError(
+        new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+      );
+    } finally {
+      Object.defineProperty(Buffer, "byteLength", byteLengthDescriptor);
+      Object.defineProperty(TextEncoder.prototype, "encode", encodeDescriptor);
+    }
+    expect(decoder.decode(response)).toBe("\u001b[1;1R");
   });
 
   it("rejects geometry, limits, and snapshots outside the closed schema", () => {

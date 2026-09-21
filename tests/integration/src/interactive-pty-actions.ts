@@ -58,14 +58,15 @@ export const compileInteractivePtyActions = (
       : scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
         ? (() => {
             if (
-              preCompletionInputBytes < 2 ||
-              input[initialInputBytes + preCompletionInputBytes - 1] !== 0x0d
+              preCompletionInputBytes < 6 ||
+              input[initialInputBytes + preCompletionInputBytes - 5] !== 0x1b ||
+              input[initialInputBytes + preCompletionInputBytes - 4] !== 0x5b ||
+              input[initialInputBytes + preCompletionInputBytes - 3] !== 0x31 ||
+              input[initialInputBytes + preCompletionInputBytes - 2] !== 0x33 ||
+              input[initialInputBytes + preCompletionInputBytes - 1] !== 0x75
             )
               throw new Error("integration.manifest.interaction");
-            return [
-              inputAction(initialInputBytes, preCompletionInputBytes - 1),
-              inputAction(initialInputBytes + preCompletionInputBytes - 1, 1),
-            ];
+            return [inputAction(initialInputBytes, preCompletionInputBytes)];
           })()
         : [inputAction(initialInputBytes, preCompletionInputBytes)];
   return deepFreeze([
