@@ -981,15 +981,11 @@ export class BoundedTerminalEmulator {
         this.#characterSetTarget = character;
         this.#state = "charset";
       } else if (character === "D") {
-        if (this.#challengeSynchronizedOutputFrameActive)
-          this.#revokeChallengeScreenAuthority();
-        else this.#resetChallengeRequiredTextOutputTail();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "E") {
-        if (this.#challengeSynchronizedOutputFrameActive)
-          this.#revokeChallengeScreenAuthority();
-        else this.#resetChallengeRequiredTextOutputTail();
+        this.#resetChallengeRequiredTextOutputTail();
         this.#column = 0;
         this.#lineFeed();
         this.#state = "ground";

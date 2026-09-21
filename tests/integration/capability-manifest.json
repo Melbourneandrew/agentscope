@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-d7e1cf8ba19c684d72f27bad2ce8371726e3e2f310adf44f32bc5a3ae7754b6d",
+  "manifestIdentity": "sha256-753e173d0baa952cdaa03cc1ead0cdfa8ebf38c9ba7df390265560e5ede1ffac",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -198,12 +198,7 @@
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,
       "nativeReadiness": {
-        "kind": "codex-challenge-idle-prompt",
-        "harness": "codex",
-        "exactHarnessVersion": "0.149.1",
-        "text": "›",
-        "bold": true,
-        "dim": false
+        "kind": "challenge-marker"
       },
       "resourceClass": "medium",
       "shardWeight": 220
