@@ -757,10 +757,9 @@ export class BoundedTerminalEmulator {
       this.#readinessChallengeObserved &&
       styledTextObserved &&
       requiredTextObserved;
-    if (candidateReadiness && this.#terminalProtocolPhase !== 6)
-      this.#terminalProtocolRejected = true;
     const nextReadiness =
       candidateReadiness &&
+      this.#terminalProtocolPhase === 6 &&
       !this.#terminalProtocolRejected &&
       !this.#challengeScreenAuthorityRevoked;
     this.#readinessObserved = nextReadiness;
@@ -1333,6 +1332,7 @@ export class BoundedTerminalEmulator {
       return;
     }
     this.#terminalProtocolPhase = step;
+    this.#refreshChallengeStyledReadiness();
   }
 
   #rejectRequiredTerminalProtocol(): void {

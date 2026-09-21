@@ -271,9 +271,20 @@ describe("bounded semantic terminal emulator", () => {
         `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[1m›\u001b[22m fixture-model default`,
       ),
     );
-    earlyReadiness.write(bytes(`\u001b[>7u${queries}`));
     expect(earlyReadiness.readinessObserved()).toBe(false);
-    expect(earlyReadiness.requiredTerminalProtocolReady()).toBe(false);
+    earlyReadiness.write(bytes(`\u001b[>7u${queries}`));
+    expect(earlyReadiness.readinessObserved()).toBe(true);
+    expect(earlyReadiness.requiredTerminalProtocolReady()).toBe(true);
+
+    const staleEarlyReadiness = terminal();
+    staleEarlyReadiness.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[1m›\u001b[22m fixture-model default\u001b[2J`,
+      ),
+    );
+    staleEarlyReadiness.write(bytes(`\u001b[>7u${queries}`));
+    expect(staleEarlyReadiness.readinessObserved()).toBe(false);
+    expect(staleEarlyReadiness.requiredTerminalProtocolReady()).toBe(true);
 
     const resetAfterReady = terminal();
     resetAfterReady.write(bytes(`\u001b[>7u${queries}`));
