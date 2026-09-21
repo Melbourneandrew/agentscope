@@ -443,9 +443,12 @@ export class BoundedTerminalEmulator {
   #outputLimitReached = false;
   #readinessObserved = false;
   #readinessObservationGeneration = 0;
+  #challengeSynchronizedOutputFrameActive = false;
   #challengeStyledTextObservedInOutput = false;
+  #challengeStyledTextOutputCellIndex: number | null = null;
   #challengeRequiredTextObservedInOutput = false;
   #challengeRequiredTextOutputTail = "";
+  #challengeRequiredTextOutputStartCellIndex: number | null = null;
   #readinessChallengeObserved = false;
   #readinessTail = "";
   #completionObserved = false;
@@ -552,7 +555,7 @@ export class BoundedTerminalEmulator {
     this.#cellDim = cellDim;
     this.#row = Math.min(this.#row, next.rows - 1);
     this.#column = Math.min(this.#column, next.columns - 1);
-    this.#resetChallengeOutputObservation();
+    this.#invalidateChallengeSynchronizedOutputFrame();
     this.#refreshChallengeStyledReadiness();
   }
 
@@ -712,25 +715,121 @@ export class BoundedTerminalEmulator {
     if (candidateReadiness && this.#terminalProtocolPhase !== 6)
       this.#terminalProtocolRejected = true;
     const nextReadiness = candidateReadiness && !this.#terminalProtocolRejected;
-    if (
-      nextReadiness &&
-      this.#challengeStyledTextObservedInOutput &&
-      this.#challengeRequiredTextObservedInOutput
-    ) {
-      this.#readinessObservationGeneration += 1;
-      this.#resetChallengeOutputObservation();
-    }
     this.#readinessObserved = nextReadiness;
   }
 
   #resetChallengeOutputObservation(): void {
     this.#challengeStyledTextObservedInOutput = false;
+    this.#challengeStyledTextOutputCellIndex = null;
     this.#challengeRequiredTextObservedInOutput = false;
     this.#challengeRequiredTextOutputTail = "";
+    this.#challengeRequiredTextOutputStartCellIndex = null;
   }
 
   #resetChallengeRequiredTextOutputTail(): void {
     this.#challengeRequiredTextOutputTail = "";
+  }
+
+  #beginChallengeSynchronizedOutputFrame(): void {
+    this.#resetChallengeOutputObservation();
+    this.#challengeSynchronizedOutputFrameActive = true;
+  }
+
+  #invalidateChallengeSynchronizedOutputFrame(): void {
+    this.#challengeSynchronizedOutputFrameActive = false;
+    this.#resetChallengeOutputObservation();
+  }
+
+  #commitChallengeSynchronizedOutputFrame(): void {
+    if (
+      !this.#challengeSynchronizedOutputFrameActive ||
+      this.#readinessMatcher.kind !== "challenge-styled-text"
+    )
+      return;
+    this.#refreshChallengeStyledReadiness();
+    const styledCell = this.#challengeStyledTextOutputCellIndex;
+    const requiredStart = this.#challengeRequiredTextOutputStartCellIndex;
+    let requiredTextSurvives = requiredStart !== null;
+    if (requiredStart !== null)
+      for (
+        let offset = 0;
+        offset < this.#readinessMatcher.requiredText.length;
+        offset += 1
+      )
+        requiredTextSurvives &&=
+          this.#cells[requiredStart + offset] ===
+          this.#readinessMatcher.requiredText[offset];
+    if (
+      this.#readinessObserved &&
+      this.#challengeStyledTextObservedInOutput &&
+      styledCell !== null &&
+      this.#cells[styledCell] === this.#readinessMatcher.text &&
+      this.#cellBold[styledCell] === this.#readinessMatcher.bold &&
+      this.#cellDim[styledCell] === this.#readinessMatcher.dim &&
+      this.#challengeRequiredTextObservedInOutput &&
+      requiredTextSurvives
+    )
+      this.#readinessObservationGeneration += 1;
+    this.#invalidateChallengeSynchronizedOutputFrame();
+  }
+
+  #observeChallengePrintableOutput(character: string, cellIndex: number): void {
+    if (
+      this.#readinessMatcher.kind !== "challenge-styled-text" ||
+      !this.#challengeSynchronizedOutputFrameActive
+    )
+      return;
+    if (
+      character === this.#readinessMatcher.text &&
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
+    ) {
+      this.#challengeStyledTextObservedInOutput = true;
+      this.#challengeStyledTextOutputCellIndex = cellIndex;
+      this.#challengeRequiredTextObservedInOutput = false;
+      this.#challengeRequiredTextOutputTail = "";
+      this.#challengeRequiredTextOutputStartCellIndex = null;
+    }
+    this.#challengeRequiredTextOutputTail =
+      `${this.#challengeRequiredTextOutputTail}${character}`.slice(
+        -this.#readinessMatcher.requiredText.length,
+      );
+    const requiredTextObservedNow =
+      this.#challengeStyledTextObservedInOutput &&
+      this.#challengeRequiredTextOutputTail ===
+        this.#readinessMatcher.requiredText;
+    this.#challengeRequiredTextObservedInOutput ||= requiredTextObservedNow;
+    if (requiredTextObservedNow) {
+      const requiredStart =
+        cellIndex - this.#readinessMatcher.requiredText.length + 1;
+      const rowStart = this.#row * this.#geometry.columns;
+      this.#challengeRequiredTextOutputStartCellIndex =
+        requiredStart >= rowStart ? requiredStart : null;
+    }
+  }
+
+  #observeChallengeSynchronizedOutputCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
+    values: readonly number[],
+  ): void {
+    const synchronizedOutputMode =
+      prefix === "?" &&
+      intermediate === "" &&
+      (final === "h" || final === "l") &&
+      values.length === 1 &&
+      values[0] === 2026;
+    if (synchronizedOutputMode) {
+      if (final === "h") this.#beginChallengeSynchronizedOutputFrame();
+      else this.#commitChallengeSynchronizedOutputFrame();
+      return;
+    }
+    if (
+      this.#challengeSynchronizedOutputFrameActive &&
+      !(prefix === "" && intermediate === "" && final === "m")
+    )
+      this.#resetChallengeRequiredTextOutputTail();
   }
 
   public completionObserved(): boolean {
@@ -752,37 +851,47 @@ export class BoundedTerminalEmulator {
         this.#state = "csi";
         this.#control = "";
       } else if (character === "]") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#state = "osc";
         this.#control = "";
       } else if (character === "7") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#savedRow = this.#row;
         this.#savedColumn = this.#column;
         this.#state = "ground";
       } else if (character === "8") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#row = this.#savedRow;
         this.#column = this.#savedColumn;
         this.#state = "ground";
       } else if (character === "(" || character === ")") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#state = "charset";
       } else if (character === "D") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "E") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#column = 0;
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "M") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#row = Math.max(0, this.#row - 1);
         this.#state = "ground";
       } else if (character === "H" || character === "=" || character === ">") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#state = "ground";
       } else if (character === "c") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#rejectRequiredTerminalProtocol();
         this.#clearDisplay(2);
         this.#row = 0;
         this.#column = 0;
         this.#state = "ground";
       } else {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#recordMalformedControl("escape");
         this.#state = "ground";
         this.#consumeGround(character);
@@ -819,22 +928,22 @@ export class BoundedTerminalEmulator {
 
   #consumeGround(character: string): void {
     if (character === "\r") {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = 0;
       return;
     }
     if (character === "\n") {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#lineFeed();
       return;
     }
     if (character === "\b") {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = Math.max(0, this.#column - 1);
       return;
     }
     if (character === "\t") {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = Math.min(
         this.#geometry.columns - 1,
         Math.ceil((this.#column + 1) / 8) * 8,
@@ -842,12 +951,12 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (character === "\u0007") {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       return;
     }
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
-      this.#resetChallengeRequiredTextOutputTail();
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#recordMalformedControl("ground-control");
       return;
     }
@@ -856,25 +965,7 @@ export class BoundedTerminalEmulator {
     this.#cellBold[cellIndex] = this.#bold;
     this.#cellDim[cellIndex] = this.#dim;
     this.#appendRecent(character);
-    if (this.#readinessMatcher.kind === "challenge-styled-text") {
-      if (
-        character === this.#readinessMatcher.text &&
-        this.#bold === this.#readinessMatcher.bold &&
-        this.#dim === this.#readinessMatcher.dim
-      ) {
-        this.#challengeStyledTextObservedInOutput = true;
-        this.#challengeRequiredTextObservedInOutput = false;
-        this.#challengeRequiredTextOutputTail = "";
-      }
-      this.#challengeRequiredTextOutputTail =
-        `${this.#challengeRequiredTextOutputTail}${character}`.slice(
-          -this.#readinessMatcher.requiredText.length,
-        );
-      this.#challengeRequiredTextObservedInOutput ||=
-        this.#challengeStyledTextObservedInOutput &&
-        this.#challengeRequiredTextOutputTail ===
-          this.#readinessMatcher.requiredText;
-    }
+    this.#observeChallengePrintableOutput(character, cellIndex);
     const expectedReadinessMarker =
       this.#readinessMatcher.kind === "challenge-marker" ||
       this.#readinessMatcher.kind === "challenge-styled-text"
@@ -951,6 +1042,12 @@ export class BoundedTerminalEmulator {
   ): void {
     const first = values[0] ?? 0;
     const amount = Math.max(1, first);
+    this.#observeChallengeSynchronizedOutputCsi(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
     if (prefix !== "" || intermediate !== "") {
       this.#applyExtendedCsi(final, prefix, intermediate, values);
       return;

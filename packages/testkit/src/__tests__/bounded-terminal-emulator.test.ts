@@ -162,20 +162,28 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("[2m›[22m "));
     expect(terminal.readinessObserved()).toBe(false);
-    terminal.write(bytes("[1m›[22m "));
+    terminal.write(bytes("\u001b[?2026h[1m›[22m "));
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("fixture-model defaul"));
     expect(terminal.readinessObserved()).toBe(false);
-    terminal.write(bytes("t"));
+    terminal.write(bytes("t\u001b[?2026l"));
     expect(terminal.readinessObserved()).toBe(true);
     expect(terminal.readinessObservationGeneration()).toBe(1);
 
-    terminal.write(bytes("\u0007fixture-model default"));
-    expect(terminal.readinessObservationGeneration()).toBe(1);
-    terminal.write(bytes("\u001b[1m›\u001b[22m unrelated"));
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[1m›\u001b[22m \u0007fixture-model default\u001b[?2026l",
+      ),
+    );
     expect(terminal.readinessObservationGeneration()).toBe(1);
     terminal.write(
-      bytes("\u001b[1m›\u001b[22m \u001b[2mfixture-model default\u001b[22m"),
+      bytes("\u001b[?2026h\u001b[1m›\u001b[22m unrelated\u001b[?2026l"),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default\u001b[22m\u001b[?2026l",
+      ),
     );
     expect(terminal.readinessObserved()).toBe(true);
     expect(terminal.readinessObservationGeneration()).toBe(2);
@@ -184,7 +192,9 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
 
     terminal.write(
-      bytes("\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default"),
+      bytes(
+        "\u001b[?2026h\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default\u001b[?2026l",
+      ),
     );
     expect(terminal.readinessObservationGeneration()).toBe(3);
     expect(terminal.readinessObserved()).toBe(true);
@@ -247,6 +257,41 @@ describe("bounded semantic terminal emulator", () => {
       rejected.write(bytes(sequence));
       expect(rejected.requiredTerminalProtocolReady()).toBe(false);
     }
+  });
+
+  it("counts complete synchronized redraws while the ready screen stays live", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 30 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c`,
+      ),
+    );
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default prompt-rendered\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(2);
+    expect(terminal.readinessObserved()).toBe(true);
   });
 
   it("revokes challenged readiness when resize truncates the live footer", () => {
