@@ -168,6 +168,17 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes("t"));
     expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+
+    terminal.write(bytes("\u0007fixture-model default"));
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+    terminal.write(bytes("\u001b[1m›\u001b[22m unrelated"));
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+    terminal.write(
+      bytes("\u001b[1m›\u001b[22m \u001b[2mfixture-model default\u001b[22m"),
+    );
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.readinessObservationGeneration()).toBe(2);
 
     terminal.write(bytes("\u001b[2J"));
     expect(terminal.readinessObserved()).toBe(false);
@@ -175,6 +186,7 @@ describe("bounded semantic terminal emulator", () => {
     terminal.write(
       bytes("\u001b[H\u001b[1m›\u001b[22m \u001b[2mfixture-model default"),
     );
+    expect(terminal.readinessObservationGeneration()).toBe(3);
     expect(terminal.readinessObserved()).toBe(true);
     terminal.write(bytes("\rX"));
     expect(terminal.readinessObserved()).toBe(false);
