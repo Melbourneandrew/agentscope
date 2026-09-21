@@ -37,9 +37,9 @@ const interactivePhases = Object.freeze([
   "model-gate-start",
   "model-gate-configured",
   "control-plane-closed",
+  "tui-readiness-challenge-published",
   "tui-start",
   "tui-run-created",
-  "tui-readiness-challenge-published",
   "tui-checkpoint",
   "model-gate-arm-start",
   "tui-exit-before-arm",
@@ -1156,6 +1156,15 @@ try {
   });
   chmodSync(configurationPath, 0o600);
   const traceDeadline = deadline - 3_000;
+  const checkpointSignal = waitForCheckpointSignal();
+  await new Promise((resolve, reject) => {
+    process.stdout.write(
+      `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
+      (error) =>
+        error === null || error === undefined ? resolve() : reject(error),
+    );
+  });
+  recordInteractivePhase("tui-readiness-challenge-published");
   recordInteractivePhase("tui-start");
   const codexRun = run(
     codex,
@@ -1184,15 +1193,6 @@ try {
     },
   );
   recordInteractivePhase("tui-run-created");
-  const checkpointSignal = waitForCheckpointSignal();
-  await new Promise((resolve, reject) => {
-    process.stdout.write(
-      `\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
-      (error) =>
-        error === null || error === undefined ? resolve() : reject(error),
-    );
-  });
-  recordInteractivePhase("tui-readiness-challenge-published");
   await checkpointSignal;
   recordInteractivePhase("tui-checkpoint");
   recordInteractivePhase("model-gate-arm-start");
