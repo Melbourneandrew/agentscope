@@ -109,8 +109,6 @@ const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
 const emulatorSynchronizedOutputGeneration =
   BoundedTerminalEmulator.prototype.synchronizedOutputGeneration;
-const emulatorSynchronizedOutputFrameGeneration =
-  BoundedTerminalEmulator.prototype.synchronizedOutputFrameGeneration;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -2610,7 +2608,7 @@ const armSelectedPty = (
     let actionInputOffset = 0;
     let actionIndex = 0;
     let lastCompletedInputOutputBytes = -1;
-    let lastCompletedInputSynchronizedOutputFrameGeneration = -1;
+    let lastCompletedInputSynchronizedOutputGeneration = -1;
     let drainedInputActionIndex = -1;
     let semanticCompletionObservedAtOutputBytes = -1;
     const actionsApplied: PtyTransportAction[] = [];
@@ -2724,7 +2722,7 @@ const armSelectedPty = (
             emulatorSynchronizedOutputGeneration,
             terminal,
             [],
-          ) <= lastCompletedInputSynchronizedOutputFrameGeneration;
+          ) <= lastCompletedInputSynchronizedOutputGeneration;
         const requiresLiveReadiness =
           request.readiness.kind === "challenge-styled-text" &&
           inputOffset >= 65 &&
@@ -2869,7 +2867,7 @@ const armSelectedPty = (
               emulatorSynchronizedOutputGeneration,
               terminal,
               [],
-            ) > lastCompletedInputSynchronizedOutputFrameGeneration);
+            ) > lastCompletedInputSynchronizedOutputGeneration);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
         if (
           inputAdmitted &&
@@ -2921,12 +2919,11 @@ const armSelectedPty = (
                 ),
               });
               lastCompletedInputOutputBytes = outputBytes;
-              lastCompletedInputSynchronizedOutputFrameGeneration =
-                safeReflectApply(
-                  emulatorSynchronizedOutputFrameGeneration,
-                  terminal,
-                  [],
-                );
+              lastCompletedInputSynchronizedOutputGeneration = safeReflectApply(
+                emulatorSynchronizedOutputGeneration,
+                terminal,
+                [],
+              );
               actionInputOffset = 0;
               actionIndex += 1;
             }
@@ -4766,7 +4763,6 @@ type SelectedPtyTestSeed =
   | "transport-failure"
   | "timeout"
   | "terminal-redraw-enter-fragmented"
-  | "terminal-frame-began-before-input"
   | "terminal-prompt-partial"
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
@@ -5180,141 +5176,135 @@ const selectedPtyRuntimeForTest = (
                           `${synchronizedStyledPrompt.toString()}\u001bc${synchronizedStyledPrompt.toString()}`,
                         )
                       : synchronizedStyledPrompt,
-                    seed === "terminal-frame-began-before-input"
-                      ? safeBufferFrom(
-                          `${synchronizedStyledPrompt.toString()}\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} pre-input`,
-                        )
-                      : seed === "terminal-stale-prebuffer-no-redraw"
-                        ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
-                        : seed === "terminal-passive-control-no-redraw"
-                          ? safeBufferFrom("\u0007")
-                          : seed === "terminal-framed-bel-stitch"
+                    seed === "terminal-stale-prebuffer-no-redraw"
+                      ? safeBufferFrom("AGENTSCOPE_PTY_COMPLETE")
+                      : seed === "terminal-passive-control-no-redraw"
+                        ? safeBufferFrom("\u0007")
+                        : seed === "terminal-framed-bel-stitch"
+                          ? safeBufferFrom(
+                              `\u001b[?2026h${styledPrompt.toString()}\u0007${readiness.requiredText}\u001b[?2026l`,
+                            )
+                          : seed === "terminal-framed-newline-stitch"
                             ? safeBufferFrom(
-                                `\u001b[?2026h${styledPrompt.toString()}\u0007${readiness.requiredText}\u001b[?2026l`,
+                                `\u001b[?2026h${styledPrompt.toString()}\r\n${readiness.requiredText}\u001b[?2026l`,
                               )
-                            : seed === "terminal-framed-newline-stitch"
+                            : seed === "terminal-framed-clear-stitch"
                               ? safeBufferFrom(
-                                  `\u001b[?2026h${styledPrompt.toString()}\r\n${readiness.requiredText}\u001b[?2026l`,
+                                  `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[2K${readiness.requiredText}\u001b[?2026l`,
                                 )
-                              : seed === "terminal-framed-clear-stitch"
+                              : framedStitchMutator !== undefined
                                 ? safeBufferFrom(
-                                    `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[2K${readiness.requiredText}\u001b[?2026l`,
+                                    `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[1${framedStitchMutator}${readiness.requiredText}\u001b[?2026l`,
                                   )
-                                : framedStitchMutator !== undefined
+                                : seed === "terminal-framed-combined-begin"
                                   ? safeBufferFrom(
-                                      `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}\u001b[1${framedStitchMutator}${readiness.requiredText}\u001b[?2026l`,
+                                      `\u001b[?2026;25h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l`,
                                     )
-                                  : seed === "terminal-framed-combined-begin"
+                                  : seed === "terminal-framed-combined-end"
                                     ? safeBufferFrom(
-                                        `\u001b[?2026;25h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l`,
+                                        `\u001b[?2026h${styledPrompt.toString()}\u001b[?2026;25l${readiness.requiredText}\u001b[?2026l`,
                                       )
-                                    : seed === "terminal-framed-combined-end"
+                                    : seed === "terminal-post-frame-erase"
                                       ? safeBufferFrom(
-                                          `\u001b[?2026h${styledPrompt.toString()}\u001b[?2026;25l${readiness.requiredText}\u001b[?2026l`,
+                                          `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[5;1H\u001b[1X`,
                                         )
-                                      : seed === "terminal-post-frame-erase"
+                                      : seed ===
+                                          "terminal-framed-alt-enter-stitch"
                                         ? safeBufferFrom(
-                                            `\u001b[?2026h\u001b[5;1H${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[5;1H\u001b[1X`,
+                                            `\u001b[?2026h${styledPrompt.toString()}\u001b[?1049h${readiness.requiredText}\u001b[?2026l`,
                                           )
                                         : seed ===
-                                            "terminal-framed-alt-enter-stitch"
+                                            "terminal-framed-alt-exit-stitch"
                                           ? safeBufferFrom(
-                                              `\u001b[?2026h${styledPrompt.toString()}\u001b[?1049h${readiness.requiredText}\u001b[?2026l`,
+                                              `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}\u001b[?1049l${readiness.requiredText}\u001b[?2026l`,
                                             )
                                           : seed ===
-                                              "terminal-framed-alt-exit-stitch"
+                                              "terminal-framed-wrap-stitch"
                                             ? safeBufferFrom(
-                                                `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}\u001b[?1049l${readiness.requiredText}\u001b[?2026l`,
+                                                `\u001b[?2026h${styledPrompt.toString()}\u001b[?7l${readiness.requiredText}\u001b[?2026l`,
                                               )
                                             : seed ===
-                                                "terminal-framed-wrap-stitch"
+                                                "terminal-post-frame-alt-exit"
                                               ? safeBufferFrom(
-                                                  `\u001b[?2026h${styledPrompt.toString()}\u001b[?7l${readiness.requiredText}\u001b[?2026l`,
+                                                  `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[?1049l`,
                                                 )
                                               : seed ===
-                                                  "terminal-post-frame-alt-exit"
+                                                  "terminal-post-frame-scroll-region"
                                                 ? safeBufferFrom(
-                                                    `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[?1049l`,
+                                                    `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[1;8rX`,
                                                   )
                                                 : seed ===
-                                                    "terminal-post-frame-scroll-region"
+                                                    "terminal-framed-charset-stitch"
                                                   ? safeBufferFrom(
-                                                      `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b[1;8rX`,
+                                                      `\u001b[?2026h${styledPrompt.toString()}\u001b(0${readiness.requiredText}\u001b[?2026l`,
                                                     )
                                                   : seed ===
-                                                      "terminal-framed-charset-stitch"
+                                                      "terminal-framed-conceal-stitch"
                                                     ? safeBufferFrom(
-                                                        `\u001b[?2026h${styledPrompt.toString()}\u001b(0${readiness.requiredText}\u001b[?2026l`,
+                                                        `\u001b[?2026h${styledPrompt.toString()}\u001b[8m${readiness.requiredText}\u001b[?2026l`,
                                                       )
                                                     : seed ===
-                                                        "terminal-framed-conceal-stitch"
+                                                        "terminal-post-frame-tab-stop"
                                                       ? safeBufferFrom(
-                                                          `\u001b[?2026h${styledPrompt.toString()}\u001b[8m${readiness.requiredText}\u001b[?2026l`,
+                                                          `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001bH`,
                                                         )
                                                       : seed ===
-                                                          "terminal-post-frame-tab-stop"
+                                                          "terminal-post-frame-restore"
                                                         ? safeBufferFrom(
-                                                            `\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001bH`,
+                                                            `\u001b7\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b8`,
                                                           )
                                                         : seed ===
-                                                            "terminal-post-frame-restore"
+                                                            "terminal-prior-no-wrap"
                                                           ? safeBufferFrom(
-                                                              `\u001b7\u001b[?2026h${styledPrompt.toString()}${readiness.requiredText}\u001b[?2026l\u001b8`,
+                                                              `\u001b[?7l\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
                                                             )
                                                           : seed ===
-                                                              "terminal-prior-no-wrap"
+                                                              "terminal-prior-scroll-margin"
                                                             ? safeBufferFrom(
-                                                                `\u001b[?7l\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
+                                                                `\u001b[2;8r\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
                                                               )
                                                             : seed ===
-                                                                "terminal-prior-scroll-margin"
+                                                                "terminal-prior-alt-switch"
                                                               ? safeBufferFrom(
-                                                                  `\u001b[2;8r\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
+                                                                  `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
                                                                 )
                                                               : seed ===
-                                                                  "terminal-prior-alt-switch"
+                                                                  "terminal-saved-no-wrap"
                                                                 ? safeBufferFrom(
-                                                                    `\u001b[?1049h\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
+                                                                    `\u001b[?7l\u001b7\u001b[?7h\u001b8\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
                                                                   )
                                                                 : seed ===
-                                                                    "terminal-saved-no-wrap"
+                                                                    "terminal-alt-clear-no-home"
                                                                   ? safeBufferFrom(
-                                                                      `\u001b[?7l\u001b7\u001b[?7h\u001b8\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
+                                                                      `\u001b[91G\u001b[?1049h\u001b[H\u001b[?1049l\u001b[?2026h\u001b[2J${styledPrompt.toString()}\u001b[?2026l`,
                                                                     )
                                                                   : seed ===
-                                                                      "terminal-alt-clear-no-home"
+                                                                      "terminal-combined-no-wrap"
                                                                     ? safeBufferFrom(
-                                                                        `\u001b[91G\u001b[?1049h\u001b[H\u001b[?1049l\u001b[?2026h\u001b[2J${styledPrompt.toString()}\u001b[?2026l`,
+                                                                        `\u001b[?2026;7l\u001b[?2026l\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
                                                                       )
                                                                     : seed ===
-                                                                        "terminal-combined-no-wrap"
+                                                                        "terminal-combined-alt-switch"
                                                                       ? safeBufferFrom(
-                                                                          `\u001b[?2026;7l\u001b[?2026l\u001b[?2026h\u001b[100G${styledPrompt.toString()}\u001b[?2026l`,
+                                                                          `\u001b[?2026;1049h\u001b[?2026l\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
                                                                         )
                                                                       : seed ===
-                                                                          "terminal-combined-alt-switch"
+                                                                          "terminal-wide-printable"
                                                                         ? safeBufferFrom(
-                                                                            `\u001b[?2026;1049h\u001b[?2026l\u001b[?2026h${styledPrompt.toString()}\u001b[?2026l`,
+                                                                            `\u001b[?2026h\u001b[77G界${styledPrompt.toString()}\u001b[?2026l`,
                                                                           )
                                                                         : seed ===
-                                                                            "terminal-wide-printable"
+                                                                            "terminal-combining-printable"
                                                                           ? safeBufferFrom(
-                                                                              `\u001b[?2026h\u001b[77G界${styledPrompt.toString()}\u001b[?2026l`,
+                                                                              `\u001b[?2026h\u001b[79Gx\u0301${styledPrompt.toString()}\u001b[?2026l`,
                                                                             )
                                                                           : seed ===
-                                                                              "terminal-combining-printable"
+                                                                              "terminal-live-completion-no-redraw"
                                                                             ? safeBufferFrom(
-                                                                                `\u001b[?2026h\u001b[79Gx\u0301${styledPrompt.toString()}\u001b[?2026l`,
+                                                                                "AGENTSCOPE_PTY_COMPLETE",
                                                                               )
-                                                                            : seed ===
-                                                                                "terminal-live-completion-no-redraw"
-                                                                              ? safeBufferFrom(
-                                                                                  "AGENTSCOPE_PTY_COMPLETE",
-                                                                                )
-                                                                              : synchronizedPromptRendered,
-                    seed === "terminal-frame-began-before-input"
-                      ? safeBufferFrom(" post-input\u001b[?2026l")
-                      : output,
+                                                                            : synchronizedPromptRendered,
+                    output,
                   ]
           : seed === "challenge-marker-prompt"
             ? [ready, safeBufferFrom("prompt-accepted"), output]
