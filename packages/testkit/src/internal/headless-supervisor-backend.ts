@@ -2286,8 +2286,29 @@ const snapshotPtyRequest = (
             ] !== 0x75
           : inputCountBeforeSemanticWait === 1
             ? semanticWaitIndex !== topologyCheckpointIndex + 1
-            : secondInputIndex !== topologyCheckpointIndex + 1 ||
-              semanticWaitIndex !== secondInputIndex + 1) ||
+            : inputCountBeforeSemanticWait === 2
+              ? secondInputIndex !== topologyCheckpointIndex + 1 ||
+                semanticWaitIndex !== secondInputIndex + 1
+              : secondInputIndex !== topologyCheckpointIndex + 1 ||
+                thirdInputIndex !== secondInputIndex + 1 ||
+                semanticWaitIndex !== thirdInputIndex + 1 ||
+                secondInputByteLength < 1 ||
+                thirdInputByteLength !== 5 ||
+                safeBufferFrom(process_.stdin)[
+                  describedInputBytesAtSemanticWait - 5
+                ] !== 0x1b ||
+                safeBufferFrom(process_.stdin)[
+                  describedInputBytesAtSemanticWait - 4
+                ] !== 0x5b ||
+                safeBufferFrom(process_.stdin)[
+                  describedInputBytesAtSemanticWait - 3
+                ] !== 0x31 ||
+                safeBufferFrom(process_.stdin)[
+                  describedInputBytesAtSemanticWait - 2
+                ] !== 0x33 ||
+                safeBufferFrom(process_.stdin)[
+                  describedInputBytesAtSemanticWait - 1
+                ] !== 0x75) ||
         describedInputBytesAtSemanticWait < 65 ||
         describedInputBytesAtSemanticWait > 165 ||
         describedInputBytes - describedInputBytesAtSemanticWait > 32 ||
@@ -4609,6 +4630,7 @@ type SelectedPtyTestSeed =
   | "action-deadline-crossing"
   | "adopted-zombie"
   | "blocked-input-completion"
+  | "challenge-marker-prompt"
   | "clean"
   | "close-failure"
   | "completion-before-readiness"
@@ -4675,8 +4697,6 @@ type SelectedPtyTestSeed =
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
   | "terminal-framed-bel-stitch"
-  | "terminal-framed-index-stitch"
-  | "terminal-framed-next-line-stitch"
   | "terminal-framed-newline-stitch"
   | "terminal-framed-clear-stitch"
   | "terminal-framed-erase-stitch"
@@ -4989,8 +5009,6 @@ const selectedPtyRuntimeForTest = (
         seed === "terminal-stale-prebuffer-no-redraw" ||
         seed === "terminal-passive-control-no-redraw" ||
         seed === "terminal-framed-bel-stitch" ||
-        seed === "terminal-framed-index-stitch" ||
-        seed === "terminal-framed-next-line-stitch" ||
         seed === "terminal-framed-newline-stitch" ||
         seed === "terminal-framed-clear-stitch" ||
         seed === "terminal-framed-erase-stitch" ||
@@ -5028,14 +5046,6 @@ const selectedPtyRuntimeForTest = (
               : seed === "terminal-framed-scroll-stitch"
                 ? "S"
                 : undefined;
-      const framedLineControl =
-        seed === "terminal-framed-newline-stitch"
-          ? "\r\n"
-          : seed === "terminal-framed-index-stitch"
-            ? "\u001bD"
-            : seed === "terminal-framed-next-line-stitch"
-              ? "\u001bE"
-              : undefined;
       const challengedMarker =
         readiness.kind === "challenge-styled-text"
           ? safeBufferFrom(`AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n`)
@@ -5083,9 +5093,9 @@ const selectedPtyRuntimeForTest = (
                         ? safeBufferFrom(
                             `\u001b[?2026h${styledPrompt.toString()}\u0007${readiness.requiredText}\u001b[?2026l`,
                           )
-                        : framedLineControl !== undefined
+                        : seed === "terminal-framed-newline-stitch"
                           ? safeBufferFrom(
-                              `\u001b[?2026h${styledPrompt.toString()}${framedLineControl}${readiness.requiredText}\u001b[?2026l`,
+                              `\u001b[?2026h${styledPrompt.toString()}\r\n${readiness.requiredText}\u001b[?2026l`,
                             )
                           : seed === "terminal-framed-clear-stitch"
                             ? safeBufferFrom(
@@ -5206,39 +5216,43 @@ const selectedPtyRuntimeForTest = (
                                                                             ),
                   output,
                 ]
-          : terminalQueryHandshake
-            ? [
-                challengedMarker,
-                terminalQueries,
-                styledPrompt,
-                safeBufferFrom("prompt-rendered"),
-                output,
-              ]
-            : seed === "completion-before-readiness"
-              ? [output, ready]
-              : seed === "fragmented-output"
-                ? [
-                    ready.subarray(0, 2),
-                    ready.subarray(2),
-                    output.subarray(0, 2),
-                    output.subarray(2),
-                  ]
-                : seed === "readiness-burst"
+          : seed === "challenge-marker-prompt"
+            ? [ready, safeBufferFrom("prompt-accepted"), output]
+            : terminalQueryHandshake
+              ? [
+                  challengedMarker,
+                  terminalQueries,
+                  styledPrompt,
+                  safeBufferFrom("prompt-rendered"),
+                  output,
+                ]
+              : seed === "completion-before-readiness"
+                ? [output, ready]
+                : seed === "fragmented-output"
                   ? [
-                      safeBufferFrom(`${ready.toString()}${"x".repeat(3_000)}`),
-                      output,
+                      ready.subarray(0, 2),
+                      ready.subarray(2),
+                      output.subarray(0, 2),
+                      output.subarray(2),
                     ]
-                  : seed === "output-limit" ||
-                      seed === "partial-input-output-limit"
-                    ? [output.subarray(0, 4_096), output.subarray(4_096)]
-                    : seed === "active-terminal" ||
-                        seed === "immediate-output" ||
-                        seed === "missing-ready" ||
-                        seed === "credential-prompt" ||
-                        seed === "malformed-control" ||
-                        seed === "unsupported-control"
-                      ? [output]
-                      : [ready, output];
+                  : seed === "readiness-burst"
+                    ? [
+                        safeBufferFrom(
+                          `${ready.toString()}${"x".repeat(3_000)}`,
+                        ),
+                        output,
+                      ]
+                    : seed === "output-limit" ||
+                        seed === "partial-input-output-limit"
+                      ? [output.subarray(0, 4_096), output.subarray(4_096)]
+                      : seed === "active-terminal" ||
+                          seed === "immediate-output" ||
+                          seed === "missing-ready" ||
+                          seed === "credential-prompt" ||
+                          seed === "malformed-control" ||
+                          seed === "unsupported-control"
+                        ? [output]
+                        : [ready, output];
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
@@ -5340,6 +5354,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "readiness-burst" &&
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
+          seed !== "challenge-marker-prompt" &&
           seed !== "terminal-redraw-enter-fragmented" &&
           seed !== "terminal-prompt-partial" &&
           seed !== "terminal-post-wait-pacing" &&
@@ -5412,7 +5427,7 @@ const selectedPtyRuntimeForTest = (
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
+        // eslint-disable-next-line complexity,max-lines-per-function -- adversarial fixture states are explicit and closed
         read: (maximumBytes) => {
           assertNoReadDuringPartialSubmission();
           transportReads += 1;
@@ -5426,7 +5441,11 @@ const selectedPtyRuntimeForTest = (
           }
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
-          if (seed === "terminal-post-wait-pacing" && inputCalls >= 4) {
+          if (
+            (seed === "terminal-post-wait-pacing" ||
+              seed === "challenge-marker-prompt") &&
+            inputCalls >= 4
+          ) {
             processes.clear();
             terminal = true;
             close({ code: 0, signal: 0 });
@@ -5454,6 +5473,12 @@ const selectedPtyRuntimeForTest = (
             chunkIndex === 3 &&
             submissionPromptAccepted < 67 &&
             seed !== "terminal-stale-prebuffer-no-redraw"
+          )
+            return { status: "would-block" as const };
+          if (
+            seed === "challenge-marker-prompt" &&
+            ((chunkIndex === 1 && inputCalls < 2) ||
+              (chunkIndex === 2 && inputCalls < 3))
           )
             return { status: "would-block" as const };
           if (

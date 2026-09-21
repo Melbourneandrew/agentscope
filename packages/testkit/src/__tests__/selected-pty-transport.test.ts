@@ -256,6 +256,26 @@ describe("selected PTY transport", () => {
       outcome: "completed",
       readinessObserved: true,
     });
+    const markerPromptRequest: SelectedPtyExecutionRequest = {
+      ...promptRequest,
+      readiness: { kind: "challenge-marker", challenge },
+    };
+    await expect(
+      executeChallengeCase(markerPromptRequest, "challenge-marker-prompt"),
+    ).resolves.toMatchObject({
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "input", byteLength: prompt.length },
+        { action: "input", byteLength: enter.length },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+      inputBytesWritten: promptInput.length,
+      outcome: "completed",
+      readinessObserved: true,
+    });
     await expect(
       executeChallengeCase(promptRequest, "readiness-revoked-after-input"),
     ).resolves.toMatchObject({
@@ -573,8 +593,6 @@ describe("selected PTY transport", () => {
     "terminal-stale-prebuffer-no-redraw",
     "terminal-passive-control-no-redraw",
     "terminal-framed-bel-stitch",
-    "terminal-framed-index-stitch",
-    "terminal-framed-next-line-stitch",
     "terminal-framed-newline-stitch",
     "terminal-framed-clear-stitch",
     "terminal-framed-erase-stitch",

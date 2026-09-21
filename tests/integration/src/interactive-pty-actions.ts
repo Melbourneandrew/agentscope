@@ -55,7 +55,7 @@ export const compileInteractivePtyActions = (
   const preCompletionInputActions =
     preCompletionInputBytes === 0
       ? []
-      : scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
+      : challengeBytes === 65
         ? (() => {
             if (
               preCompletionInputBytes < 6 ||
