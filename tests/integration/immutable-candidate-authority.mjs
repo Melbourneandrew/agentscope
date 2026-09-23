@@ -118,6 +118,17 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-unsupported-osc",
   "testkit.pty.transport.semantic-unsupported-unknown",
 ]);
+
+export const selectInteractiveFailureDiagnostic = (
+  fixtureFailure,
+  retainedPhase,
+  selectedError,
+) =>
+  [fixtureFailure, retainedPhase, selectedError].find(
+    (value) =>
+      typeof value === "string" &&
+      ptyExecutionFailurePredicates.includes(value),
+  );
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&

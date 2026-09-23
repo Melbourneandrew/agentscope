@@ -21,6 +21,7 @@ import {
   compileCandidateInventory,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  selectInteractiveFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
@@ -701,9 +702,10 @@ try {
   }
 } catch (error) {
   if (scenario.executionMode === "interactive") {
-    let diagnostic = `${error?.message ?? ""}`.match(
+    const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
+    let fixtureFailure;
     const failurePath = join(ledger, "interactive-failure.txt");
     try {
       const status = lstatSync(failurePath);
@@ -714,11 +716,15 @@ try {
         status.size === Buffer.byteLength(content) &&
         /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
       )
-        diagnostic = content.trim();
+        fixtureFailure = content.trim();
     } catch {
       // The selected PTY error remains the diagnostic if no fixture record exists.
     }
-    diagnostic = retainedInteractivePhase(ledger) ?? diagnostic;
+    const diagnostic = selectInteractiveFailureDiagnostic(
+      fixtureFailure,
+      retainedInteractivePhase(ledger),
+      selectedError,
+    );
     interactiveFailureDiagnostic = diagnostic;
     process.stdout.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
