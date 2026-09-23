@@ -1,4 +1,13 @@
 import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+} from "node:fs";
+import { join } from "node:path";
 
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
@@ -133,6 +142,77 @@ export const selectInteractiveFailureDiagnostic = (
       typeof value === "string" &&
       ptyExecutionFailurePredicates.includes(value),
   );
+const joinFailurePredicates = Object.freeze([
+  "integration.fixture.codex-tui-join-deadline",
+  "integration.fixture.codex-tui-child-rejected",
+]);
+export const isInteractiveJoinFailurePredicate = (value) =>
+  joinFailurePredicates.includes(value);
+export const readInteractiveFailureMarker = (ledger) => {
+  const path = join(ledger, "interactive-failure.txt");
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const before = fstatSync(descriptor, { bigint: true });
+    if (
+      !before.isFile() ||
+      before.size < 1n ||
+      before.size > 128n ||
+      (before.mode & 0o777n) !== 0o600n ||
+      before.uid !== BigInt(process.getuid())
+    )
+      throw new Error("integration.immutable-candidate.authority");
+    const bytes = Buffer.alloc(Number(before.size) + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const pathAfter = lstatSync(path, { bigint: true });
+    if (
+      offset !== Number(before.size) ||
+      ["dev", "ino", "mode", "uid", "gid", "size", "mtimeNs", "ctimeNs"].some(
+        (key) => before[key] !== after[key] || before[key] !== pathAfter[key],
+      )
+    )
+      throw new Error("integration.immutable-candidate.authority");
+    const content = bytes.subarray(0, offset).toString("utf8");
+    if (!/^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content))
+      throw new Error("integration.immutable-candidate.authority");
+    return content.trim();
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+export const selectInteractiveReceiptFailureDiagnostic = ({
+  decoded,
+  marker,
+  retained,
+}) => {
+  if (isInteractiveJoinFailurePredicate(marker)) {
+    if (
+      decoded !== "integration.fixture.codex-tui-exit-published" ||
+      retained !== decoded
+    )
+      throw new Error("integration.immutable-candidate.authority");
+    return marker;
+  }
+  return decoded ?? retained;
+};
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&

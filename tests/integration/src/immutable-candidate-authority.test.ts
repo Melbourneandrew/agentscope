@@ -1,4 +1,13 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+import {
+  chmodSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // The authority is deliberately private integration JavaScript, not a package API.
@@ -13,7 +22,9 @@ const {
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   extractInteractiveChildDiagnostic,
+  readInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
+  selectInteractiveReceiptFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
@@ -293,6 +304,64 @@ describe("interactive PTY failure diagnostic transport", () => {
     },
   );
 
+  it("binds join marker precedence to the published phase and reserved exit code", () => {
+    const published = "integration.fixture.codex-tui-exit-published";
+    const joinDeadline = "integration.fixture.codex-tui-join-deadline";
+    expect(
+      selectInteractiveReceiptFailureDiagnostic({
+        decoded: published,
+        marker: joinDeadline,
+        retained: published,
+      }),
+    ).toBe(joinDeadline);
+    expect(
+      selectInteractiveReceiptFailureDiagnostic({
+        decoded: published,
+        marker: undefined,
+        retained: published,
+      }),
+    ).toBe(published);
+    for (const [decoded, retained] of [
+      ["integration.fixture.codex-bootstrap", published],
+      [published, "integration.fixture.codex-tui-exit"],
+      [undefined, published],
+    ])
+      expect(() =>
+        selectInteractiveReceiptFailureDiagnostic({
+          decoded,
+          marker: joinDeadline,
+          retained,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+  });
+
+  it("reads only one exact owned regular failure marker", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-join-marker-"));
+    const path = join(root, "interactive-failure.txt");
+    try {
+      expect(readInteractiveFailureMarker(root)).toBeUndefined();
+      writeFileSync(path, "integration.fixture.codex-tui-child-rejected\n", {
+        flag: "wx",
+        mode: 0o600,
+      });
+      expect(readInteractiveFailureMarker(root)).toBe(
+        "integration.fixture.codex-tui-child-rejected",
+      );
+      chmodSync(path, 0o644);
+      expect(() => readInteractiveFailureMarker(root)).toThrow();
+      rmSync(path);
+      writeFileSync(path, "x".repeat(129), { flag: "wx", mode: 0o600 });
+      expect(() => readInteractiveFailureMarker(root)).toThrow();
+      rmSync(path);
+      symlinkSync(root, path);
+      expect(() => readInteractiveFailureMarker(root)).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("interactive PTY failure exit-code transport", () => {
   it("round-trips one exact allowlisted runner diagnostic through a reserved exit code", () => {
     const diagnostic = "integration.fixture.codex-model-request";
     const exitCode = encodeInteractiveFailureExitCode(diagnostic);

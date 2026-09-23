@@ -228,6 +228,14 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       'else if (message === "integration.codex.child")\n      recordTuiJoinFailure("tui-child-rejected");',
     );
+    expect(scenario).toContain(
+      "if (ledger !== undefined && !joinFailureRecorded)",
+    );
+    expect(scenario).toContain("joinFailureRecorded = true;");
+    expect(source).toContain(
+      "const diagnostic = selectInteractiveReceiptFailureDiagnostic({",
+    );
+    expect(source).toContain("marker: readInteractiveFailureMarker(ledger)");
     expect(codexJoined).toBeGreaterThan(completionPublished);
     expect(codexJoined).toBeLessThan(
       scenario.indexOf(
