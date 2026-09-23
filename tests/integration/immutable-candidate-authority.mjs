@@ -133,6 +133,17 @@ export const selectInteractiveFailureDiagnostic = (
       value !== "integration.fixture.codex-tui-join-deadline" &&
       value !== "integration.fixture.codex-tui-child-rejected",
   );
+export const interactivePtyReceiptFailed = (receipt) =>
+  receipt.outcome !== "completed" ||
+  receipt.finalSnapshot.semanticState !== "completed" ||
+  receipt.exitCode !== 0 ||
+  receipt.signal !== null ||
+  receipt.cleanup !== "clean" ||
+  receipt.residualProcessCount !== 0 ||
+  !receipt.processJoined ||
+  !receipt.terminalInputJoined ||
+  !receipt.terminalOutputJoined ||
+  !receipt.terminalTransportClosed;
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&

@@ -21,6 +21,7 @@ import {
   compileCandidateInventory,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  interactivePtyReceiptFailed,
   selectInteractiveFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
@@ -634,17 +635,7 @@ try {
     console.log(
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
-    fixtureOutput = recoverRetainedFixtureOutput();
-    if (
-      receipt.outcome !== "completed" ||
-      receipt.finalSnapshot.semanticState !== "completed" ||
-      receipt.cleanup !== "clean" ||
-      receipt.residualProcessCount !== 0 ||
-      !receipt.processJoined ||
-      !receipt.terminalInputJoined ||
-      !receipt.terminalOutputJoined ||
-      !receipt.terminalTransportClosed
-    ) {
+    if (interactivePtyReceiptFailed(receipt)) {
       const diagnostic =
         decodeScenarioFailureExitCode(receipt.exitCode) ??
         retainedInteractivePhase(ledger);
@@ -654,7 +645,8 @@ try {
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
         );
       fixtureFailure = new Error("integration.runner.fixture-failed");
-    }
+      fixtureOutput = "";
+    } else fixtureOutput = recoverRetainedFixtureOutput();
   } else {
     if (
       scenario.executionMode !== "headless" ||

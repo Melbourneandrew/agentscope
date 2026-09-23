@@ -191,6 +191,20 @@ describe("integration cleanup authority", () => {
       ),
     );
     expect(source).toContain("decodeScenarioFailureExitCode(receipt.exitCode)");
+    expect(source).toContain("if (interactivePtyReceiptFailed(receipt)) {");
+    expect(source).toContain(
+      "} else fixtureOutput = recoverRetainedFixtureOutput();",
+    );
+    expect(
+      source.indexOf("if (interactivePtyReceiptFailed(receipt)) {"),
+    ).toBeLessThan(
+      source.indexOf("} else fixtureOutput = recoverRetainedFixtureOutput();"),
+    );
+    expect(
+      source.indexOf("decodeScenarioFailureExitCode(receipt.exitCode)"),
+    ).toBeLessThan(
+      source.indexOf("} else fixtureOutput = recoverRetainedFixtureOutput();"),
+    );
 
     const scenario = readFileSync(
       resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),

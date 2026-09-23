@@ -42,6 +42,17 @@ afterEach(() => {
 });
 
 describe("retained fixture-result authority", () => {
+  it("rejects absent or malformed success evidence", () => {
+    const path = join(createRoot(), "fixture-result.json");
+    expect(() => readRetainedFixtureOutput(path, scenarioId)).toThrow(
+      "integration.runner.fixture-result",
+    );
+    writeResult(path, '{"evidenceVersion":1}\n');
+    expect(() => readRetainedFixtureOutput(path, scenarioId)).toThrow(
+      "integration.runner.fixture-result",
+    );
+  });
+
   it("reads exact bounded evidence through one authenticated descriptor", () => {
     const path = join(createRoot(), "fixture-result.json");
     writeResult(path);
