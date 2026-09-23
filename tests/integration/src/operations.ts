@@ -65,6 +65,11 @@ const harnessObservation = z.strictObject({
   parentLinked: z.literal(true),
   doctorErrors: z.literal(0),
   uninstallDisposition: z.literal("committed"),
+  sessionStartCommandDurationMilliseconds: z
+    .number()
+    .finite()
+    .min(0)
+    .max(1_000),
 });
 const fixtureResult = z
   .strictObject({
