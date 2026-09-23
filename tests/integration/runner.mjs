@@ -51,6 +51,8 @@ const interactivePhases = Object.freeze([
   "tui-run-created",
   "tui-checkpoint",
   "model-gate-arm-start",
+  "model-gate-arm-health-pending",
+  "model-gate-arm-session-start",
   "tui-exit-before-arm",
   "model-gate-arm-complete",
   "model-request-observed",

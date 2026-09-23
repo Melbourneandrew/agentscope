@@ -42,6 +42,8 @@ const interactivePhases = Object.freeze([
   "tui-run-created",
   "tui-checkpoint",
   "model-gate-arm-start",
+  "model-gate-arm-health-pending",
+  "model-gate-arm-session-start",
   "tui-exit-before-arm",
   "model-gate-arm-complete",
   "model-request-observed",
@@ -646,6 +648,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     throw new Error("integration.codex.model-gate");
 };
 const armModelGate = async (modelAdmissionCutoff) => {
+  let observedPendingHealth = false;
   while (bootNow() < modelAdmissionCutoff) {
     let checkpoint;
     try {
@@ -660,6 +663,7 @@ const armModelGate = async (modelAdmissionCutoff) => {
       throw error;
     }
     if (checkpoint !== undefined) {
+      recordInteractivePhase("model-gate-arm-session-start");
       let response;
       try {
         response = await gateRequest("/arm", {
@@ -703,6 +707,10 @@ const armModelGate = async (modelAdmissionCutoff) => {
     if (health.state !== "pending") {
       recordModelGateArmFailure("control");
       throw new Error("integration.codex.model-gate");
+    }
+    if (!observedPendingHealth) {
+      recordInteractivePhase("model-gate-arm-health-pending");
+      observedPendingHealth = true;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
