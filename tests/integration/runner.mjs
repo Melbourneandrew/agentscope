@@ -21,10 +21,7 @@ import {
   compileCandidateInventory,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
-  isInteractiveJoinFailurePredicate,
-  readInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
-  selectInteractiveReceiptFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
@@ -62,8 +59,9 @@ const interactivePhases = Object.freeze([
   "model-request-observed",
   "model-request",
   "trace-terminal",
-  "tui-exit",
   "tui-exit-published",
+  "tui-join-deadline",
+  "tui-child-rejected",
   "tui-joined",
   "trace-settlement",
   "trace-search",
@@ -98,7 +96,6 @@ const interactivePhases = Object.freeze([
   "trace-search-harness",
   "trace-search-locator",
   "trace-reporter-settled",
-  "trace-acceptance",
   "trace-search-result",
   "verify",
 ]);
@@ -648,11 +645,9 @@ try {
       !receipt.terminalOutputJoined ||
       !receipt.terminalTransportClosed
     ) {
-      const diagnostic = selectInteractiveReceiptFailureDiagnostic({
-        decoded: decodeScenarioFailureExitCode(receipt.exitCode),
-        marker: readInteractiveFailureMarker(ledger),
-        retained: retainedInteractivePhase(ledger),
-      });
+      const diagnostic =
+        decodeScenarioFailureExitCode(receipt.exitCode) ??
+        retainedInteractivePhase(ledger);
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
@@ -721,8 +716,7 @@ try {
         status.isFile() &&
         !status.isSymbolicLink() &&
         status.size === Buffer.byteLength(content) &&
-        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content) &&
-        !isInteractiveJoinFailurePredicate(content.trim())
+        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
       )
         fixtureFailure = content.trim();
     } catch {

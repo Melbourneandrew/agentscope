@@ -18,7 +18,6 @@ import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
 let ledger;
-let joinFailureRecorded = false;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
@@ -50,8 +49,9 @@ const interactivePhases = Object.freeze([
   "model-request-observed",
   "model-request",
   "trace-terminal",
-  "tui-exit",
   "tui-exit-published",
+  "tui-join-deadline",
+  "tui-child-rejected",
   "tui-joined",
   "trace-settlement",
   "trace-search",
@@ -86,7 +86,6 @@ const interactivePhases = Object.freeze([
   "trace-search-harness",
   "trace-search-locator",
   "trace-reporter-settled",
-  "trace-acceptance",
   "trace-search-result",
   "verify",
 ]);
@@ -103,7 +102,7 @@ process.setUncaughtExceptionCaptureCallback(() => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
   try {
     const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
-    if (ledger !== undefined && !joinFailureRecorded)
+    if (ledger !== undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
         `${diagnostic}\n`,
@@ -382,16 +381,6 @@ const recordModelGateArmFailure = (predicate) => {
     `integration.fixture.codex-model-gate-arm-${predicate}\n`,
     { flag: "wx", mode: 0o600 },
   );
-};
-const recordTuiJoinFailure = (predicate) => {
-  if (!["tui-join-deadline", "tui-child-rejected"].includes(predicate))
-    throw new Error("integration.codex.tui-join-diagnostic");
-  writeFileSync(
-    join(ledger, "interactive-failure.txt"),
-    `integration.fixture.codex-${predicate}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
-  joinFailureRecorded = true;
 };
 const codexStopHookCommandFailure = (outcome) => {
   let phase;
@@ -1130,11 +1119,6 @@ const waitForTraceSummary = async (traceDeadline) => {
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
-    record: () => recordInteractivePhase("trace-acceptance"),
-  });
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
     record: () => recordInteractivePhase("trace-search-result"),
   });
   return summary;
@@ -1298,7 +1282,7 @@ try {
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
-    record: () => recordInteractivePhase("tui-exit"),
+    record: () => remaining(),
     publish: () =>
       new Promise((resolve, reject) => {
         process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
@@ -1312,9 +1296,9 @@ try {
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (message === "integration.codex.diagnostic-deadline")
-      recordTuiJoinFailure("tui-join-deadline");
+      recordInteractivePhase("tui-join-deadline");
     else if (message === "integration.codex.child")
-      recordTuiJoinFailure("tui-child-rejected");
+      recordInteractivePhase("tui-child-rejected");
     throw error;
   }
   recordInteractivePhase("tui-joined");
