@@ -129,7 +129,9 @@ export const selectInteractiveFailureDiagnostic = (
   [fixtureFailure, retainedPhase, selectedError].find(
     (value) =>
       typeof value === "string" &&
-      ptyExecutionFailurePredicates.includes(value),
+      ptyExecutionFailurePredicates.includes(value) &&
+      value !== "integration.fixture.codex-tui-join-deadline" &&
+      value !== "integration.fixture.codex-tui-child-rejected",
   );
 const plainRecord = (value) =>
   typeof value === "object" &&
