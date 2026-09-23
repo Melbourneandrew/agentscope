@@ -50,6 +50,8 @@ const interactivePhases = Object.freeze([
   "model-request",
   "trace-terminal",
   "tui-exit",
+  "tui-exit-published",
+  "tui-joined",
   "trace-settlement",
   "trace-search",
   "hook-command-timeout",
@@ -1293,7 +1295,9 @@ try {
         );
       }),
   });
+  recordInteractivePhase("tui-exit-published");
   await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
+  recordInteractivePhase("tui-joined");
   const rootHookLifecycle = inspectDiagnosticBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,

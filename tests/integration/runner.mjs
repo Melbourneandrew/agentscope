@@ -60,6 +60,8 @@ const interactivePhases = Object.freeze([
   "model-request",
   "trace-terminal",
   "tui-exit",
+  "tui-exit-published",
+  "tui-joined",
   "trace-settlement",
   "trace-search",
   "hook-command-timeout",
