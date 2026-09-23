@@ -271,6 +271,28 @@ describe("interactive PTY failure diagnostic transport", () => {
     ).toBe(diagnostic);
   });
 
+  it.each([
+    "integration.fixture.codex-tui-join-deadline",
+    "integration.fixture.codex-tui-child-rejected",
+  ])(
+    "transports a join failure without consuming an exit-code slot: %s",
+    (diagnostic) => {
+      expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+      expect(
+        selectInteractiveFailureDiagnostic(
+          diagnostic,
+          "integration.fixture.codex-tui-exit-published",
+          "testkit.pty.receipt-terminal",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        extractInteractiveChildDiagnostic(
+          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+        ),
+      ).toBe(diagnostic);
+    },
+  );
+
   it("round-trips one exact allowlisted runner diagnostic through a reserved exit code", () => {
     const diagnostic = "integration.fixture.codex-model-request";
     const exitCode = encodeInteractiveFailureExitCode(diagnostic);

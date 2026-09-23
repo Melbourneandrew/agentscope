@@ -382,6 +382,15 @@ const recordModelGateArmFailure = (predicate) => {
     { flag: "wx", mode: 0o600 },
   );
 };
+const recordTuiJoinFailure = (predicate) => {
+  if (!["tui-join-deadline", "tui-child-rejected"].includes(predicate))
+    throw new Error("integration.codex.tui-join-diagnostic");
+  writeFileSync(
+    join(ledger, "interactive-failure.txt"),
+    `integration.fixture.codex-${predicate}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
 const codexStopHookCommandFailure = (outcome) => {
   let phase;
   if (outcome === "timeout") phase = "hook-command-timeout";
@@ -1296,7 +1305,16 @@ try {
       }),
   });
   recordInteractivePhase("tui-exit-published");
-  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
+  try {
+    await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "integration.codex.diagnostic-deadline")
+      recordTuiJoinFailure("tui-join-deadline");
+    else if (message === "integration.codex.child")
+      recordTuiJoinFailure("tui-child-rejected");
+    throw error;
+  }
   recordInteractivePhase("tui-joined");
   const rootHookLifecycle = inspectDiagnosticBeforeDeadline({
     deadline: traceDeadline,

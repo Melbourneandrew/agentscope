@@ -72,6 +72,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-trace-terminal",
   "integration.fixture.codex-tui-exit",
   "integration.fixture.codex-tui-exit-published",
+  "integration.fixture.codex-tui-join-deadline",
+  "integration.fixture.codex-tui-child-rejected",
   "integration.fixture.codex-tui-joined",
   "integration.fixture.codex-tui-start",
   "integration.fixture.codex-verify",
@@ -163,7 +165,9 @@ const interactiveFixtureFailurePredicates = Object.freeze(
   ptyExecutionFailurePredicates.filter(
     (value) =>
       value.startsWith("integration.fixture.codex-") &&
-      !value.startsWith("integration.fixture.codex-model-gate-arm-"),
+      !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
+      value !== "integration.fixture.codex-tui-join-deadline" &&
+      value !== "integration.fixture.codex-tui-child-rejected",
   ),
 );
 const interactiveFailureExitCodeBase = 64;
