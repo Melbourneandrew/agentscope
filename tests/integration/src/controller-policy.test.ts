@@ -215,7 +215,7 @@ describe("integration cleanup authority", () => {
       'recordInteractivePhase("tui-joined");',
     );
     expect(completionPublished).toBeGreaterThan(
-      scenario.indexOf('record: () => recordInteractivePhase("tui-exit")'),
+      scenario.indexOf("await publishTerminalCompletionBeforeDeadline({"),
     );
     expect(completionPublished).toBeLessThan(
       scenario.indexOf(
@@ -223,19 +223,11 @@ describe("integration cleanup authority", () => {
       ),
     );
     expect(scenario).toContain(
-      'if (message === "integration.codex.diagnostic-deadline")\n      recordTuiJoinFailure("tui-join-deadline");',
+      'if (message === "integration.codex.diagnostic-deadline")\n      recordInteractivePhase("tui-join-deadline");',
     );
     expect(scenario).toContain(
-      'else if (message === "integration.codex.child")\n      recordTuiJoinFailure("tui-child-rejected");',
+      'else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
     );
-    expect(scenario).toContain(
-      "if (ledger !== undefined && !joinFailureRecorded)",
-    );
-    expect(scenario).toContain("joinFailureRecorded = true;");
-    expect(source).toContain(
-      "const diagnostic = selectInteractiveReceiptFailureDiagnostic({",
-    );
-    expect(source).toContain("marker: readInteractiveFailureMarker(ledger)");
     expect(codexJoined).toBeGreaterThan(completionPublished);
     expect(codexJoined).toBeLessThan(
       scenario.indexOf(
@@ -273,7 +265,6 @@ describe("integration cleanup authority", () => {
     for (const phase of [
       "trace-terminal",
       "trace-settlement",
-      "trace-acceptance",
       "trace-reporter-settled",
       "trace-search",
       "trace-search-result",
@@ -454,8 +445,9 @@ describe("Codex interactive diagnostic order", () => {
       "model-request-observed",
       "model-request",
       "trace-terminal",
-      "tui-exit",
       "tui-exit-published",
+      "tui-join-deadline",
+      "tui-child-rejected",
       "tui-joined",
       "trace-settlement",
       "trace-search",
@@ -490,7 +482,6 @@ describe("Codex interactive diagnostic order", () => {
       "trace-search-harness",
       "trace-search-locator",
       "trace-reporter-settled",
-      "trace-acceptance",
       "trace-search-result",
       "verify",
     ];

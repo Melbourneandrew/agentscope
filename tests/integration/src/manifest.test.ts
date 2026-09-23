@@ -472,8 +472,8 @@ describe("integration capability manifest", () => {
       '    record: () => recordInteractivePhase("trace-reporter-settled"),\n',
       source.indexOf("const waitForTraceSummary ="),
     );
-    const acceptancePhase = source.indexOf(
-      '    record: () => recordInteractivePhase("trace-acceptance"),\n',
+    const postReporterResultPhase = source.indexOf(
+      '    record: () => recordInteractivePhase("trace-search-result"),\n',
       reporterSettledPhase,
     );
     const traceSummaryFunction = source.slice(
@@ -507,8 +507,8 @@ describe("integration capability manifest", () => {
     expect(boundedQuery).toBeGreaterThan(lifecycleSettlement);
     expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
     expect(reporterSettledPhase).toBeGreaterThan(lifecycleSettlement);
-    expect(acceptancePhase).toBeGreaterThan(reporterSettledPhase);
-    expect(traceSearchResultPhase).toBeGreaterThan(acceptancePhase);
+    expect(postReporterResultPhase).toBeGreaterThan(reporterSettledPhase);
+    expect(traceSearchResultPhase).toBe(postReporterResultPhase);
     expect(joinedSearch).toBeGreaterThan(-1);
     expect(exactHarnessFilter).toBeGreaterThan(joinedSearch);
     expect(guardedRawResult).toBeGreaterThan(exactHarnessFilter);
