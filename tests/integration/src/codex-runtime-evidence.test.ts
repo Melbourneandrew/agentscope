@@ -512,6 +512,21 @@ describe("Codex bounded native ledgers", () => {
         directoryPath: directory,
       };
       try {
+        writeFileSync(path, "TRACE codex.startup: ready\n");
+        expect(
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
+        ).toBe(undefined);
+        writeFileSync(path, "");
+        expect(
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
+        ).toBe(undefined);
+        writeFileSync(
+          path,
+          'TRACE codex.hooks.command{hook.event_name="SessionStart"}: unfinished\n',
+        );
+        expect(() =>
+          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
+        ).toThrow("integration.codex.hook-log");
         writeFileSync(
           path,
           sessionStart.slice(0, sessionStart.indexOf("\n") + 1),

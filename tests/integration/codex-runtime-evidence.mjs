@@ -131,7 +131,7 @@ const readCodexHookLog = ({
   let source;
   try {
     const before = fstatSync(descriptor, { bigint: true });
-    if (!before.isFile() || before.size <= 0n || before.size > 1_048_576n)
+    if (!before.isFile() || before.size > 1_048_576n)
       throw new Error("integration.codex.hook-log");
     const bytes = Buffer.alloc(Number(before.size) + 1);
     let offset = 0;
@@ -166,6 +166,7 @@ const readCodexHookLog = ({
     !sameFileIdentity(parentBefore, pathAfter)
   )
     throw new Error("integration.codex.hook-log");
+  if (source.length === 0) return undefined;
   return source;
 };
 
@@ -265,6 +266,12 @@ export const inspectCodexSessionStartBeforeFirstModelRequestAdmission = (
   const source = readCodexHookLog(input);
   if (source === undefined) return undefined;
   const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  if (
+    spans.length === 0 &&
+    activeEventName === undefined &&
+    activeOpen === undefined
+  )
+    return undefined;
   if (
     spans.length === 0 &&
     activeEventName === "SessionStart" &&
