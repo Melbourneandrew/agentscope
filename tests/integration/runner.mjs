@@ -21,7 +21,10 @@ import {
   compileCandidateInventory,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  isInteractiveJoinFailurePredicate,
+  readInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
+  selectInteractiveReceiptFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
@@ -645,9 +648,11 @@ try {
       !receipt.terminalOutputJoined ||
       !receipt.terminalTransportClosed
     ) {
-      const diagnostic =
-        decodeScenarioFailureExitCode(receipt.exitCode) ??
-        retainedInteractivePhase(ledger);
+      const diagnostic = selectInteractiveReceiptFailureDiagnostic({
+        decoded: decodeScenarioFailureExitCode(receipt.exitCode),
+        marker: readInteractiveFailureMarker(ledger),
+        retained: retainedInteractivePhase(ledger),
+      });
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
@@ -716,7 +721,8 @@ try {
         status.isFile() &&
         !status.isSymbolicLink() &&
         status.size === Buffer.byteLength(content) &&
-        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content) &&
+        !isInteractiveJoinFailurePredicate(content.trim())
       )
         fixtureFailure = content.trim();
     } catch {

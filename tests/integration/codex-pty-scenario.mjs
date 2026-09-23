@@ -18,6 +18,7 @@ import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 
 let ledger;
+let joinFailureRecorded = false;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
@@ -102,7 +103,7 @@ process.setUncaughtExceptionCaptureCallback(() => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
   try {
     const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
-    if (ledger !== undefined)
+    if (ledger !== undefined && !joinFailureRecorded)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
         `${diagnostic}\n`,
@@ -390,6 +391,7 @@ const recordTuiJoinFailure = (predicate) => {
     `integration.fixture.codex-${predicate}\n`,
     { flag: "wx", mode: 0o600 },
   );
+  joinFailureRecorded = true;
 };
 const codexStopHookCommandFailure = (outcome) => {
   let phase;
