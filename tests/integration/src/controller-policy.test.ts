@@ -208,6 +208,26 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       "const timer = setTimeout(() => settle(1), 1_000)",
     );
+    const completionPublished = scenario.indexOf(
+      'recordInteractivePhase("tui-exit-published");',
+    );
+    const codexJoined = scenario.indexOf(
+      'recordInteractivePhase("tui-joined");',
+    );
+    expect(completionPublished).toBeGreaterThan(
+      scenario.indexOf('record: () => recordInteractivePhase("tui-exit")'),
+    );
+    expect(completionPublished).toBeLessThan(
+      scenario.indexOf(
+        "await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);",
+      ),
+    );
+    expect(codexJoined).toBeGreaterThan(completionPublished);
+    expect(codexJoined).toBeLessThan(
+      scenario.indexOf(
+        "const rootHookLifecycle = inspectDiagnosticBeforeDeadline",
+      ),
+    );
     expect(source).toContain(
       'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
     );
@@ -421,6 +441,8 @@ describe("Codex interactive diagnostic order", () => {
       "model-request",
       "trace-terminal",
       "tui-exit",
+      "tui-exit-published",
+      "tui-joined",
       "trace-settlement",
       "trace-search",
       "hook-command-timeout",
