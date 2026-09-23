@@ -108,6 +108,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-malformed-unknown",
   "testkit.pty.transport.semantic-malformed-utf8",
   "testkit.pty.transport.semantic-missing-readiness",
+  "testkit.pty.transport.semantic-missing-readiness-no-output",
+  "testkit.pty.transport.semantic-missing-readiness-with-output",
   "testkit.pty.transport.semantic-nonzero",
   "testkit.pty.transport.semantic-unsupported-csi",
   "testkit.pty.transport.semantic-unsupported-extended-csi",

@@ -3338,7 +3338,11 @@ const armSelectedPty = (
         request.interaction.trigger === "semantic-ready" &&
         !readinessObserved
       )
-        return fail("testkit.pty.transport.semantic-missing-readiness");
+        return fail(
+          outputBytes === 0
+            ? "testkit.pty.transport.semantic-missing-readiness-no-output"
+            : "testkit.pty.transport.semantic-missing-readiness-with-output",
+        );
       if (
         (trigger === "closed" || trigger === undefined) &&
         finalSnapshot.semanticState !== "completed" &&
@@ -4790,6 +4794,7 @@ type SelectedPtyTestSeed =
   | "residual"
   | "root-missing"
   | "signal-failure"
+  | "silent-terminal"
   | "startup-delay"
   | "transport-failure"
   | "timeout"
@@ -5373,7 +5378,9 @@ const selectedPtyRuntimeForTest = (
                           seed === "malformed-control" ||
                           seed === "unsupported-control"
                         ? [output]
-                        : [ready, output];
+                        : seed === "silent-terminal"
+                          ? []
+                          : [ready, output];
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;

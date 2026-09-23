@@ -982,8 +982,18 @@ describe("selected PTY transport", () => {
   });
 
   it.each([
-    ["active-terminal", "testkit.pty.transport.semantic-missing-readiness"],
-    ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
+    [
+      "active-terminal",
+      "testkit.pty.transport.semantic-missing-readiness-with-output",
+    ],
+    [
+      "missing-ready",
+      "testkit.pty.transport.semantic-missing-readiness-with-output",
+    ],
+    [
+      "silent-terminal",
+      "testkit.pty.transport.semantic-missing-readiness-no-output",
+    ],
     ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
     [
       "malformed-control",
@@ -1189,7 +1199,7 @@ describe("selected PTY transport", () => {
         ).rejects.toMatchObject({
           code:
             method === "readinessObserved"
-              ? "testkit.pty.transport.semantic-missing-readiness"
+              ? "testkit.pty.transport.semantic-missing-readiness-with-output"
               : "testkit.pty.transport.semantic-incomplete",
         });
       } finally {
