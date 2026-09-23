@@ -249,6 +249,28 @@ describe("interactive PTY receipt transport", () => {
 });
 
 describe("interactive PTY failure diagnostic transport", () => {
+  it.each([
+    "integration.fixture.codex-tui-exit-published",
+    "integration.fixture.codex-tui-joined",
+  ])("preserves one post-completion failure witness: %s", (diagnostic) => {
+    expect(
+      selectInteractiveFailureDiagnostic(
+        undefined,
+        diagnostic,
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe(diagnostic);
+    const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+    expect(exitCode).toEqual(expect.any(Number));
+    expect(exitCode).toBeLessThanOrEqual(125);
+    expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+      ),
+    ).toBe(diagnostic);
+  });
+
   it("round-trips one exact allowlisted runner diagnostic through a reserved exit code", () => {
     const diagnostic = "integration.fixture.codex-model-request";
     const exitCode = encodeInteractiveFailureExitCode(diagnostic);
