@@ -788,7 +788,11 @@ export class BoundedTerminalEmulator {
 
   #revokeChallengeScreenAuthority(): void {
     this.#challengeScreenAuthorityRevoked = true;
-    this.#readinessObserved = false;
+    // A semantic marker is historical readiness evidence, not a live screen
+    // assertion. Exiting an alternate screen after completion must not erase
+    // the marker that authorized the earlier input.
+    if (this.#readinessMatcher.kind !== "semantic-marker")
+      this.#readinessObserved = false;
     this.#resetChallengeOutputObservation();
   }
 
