@@ -222,6 +222,12 @@ describe("integration cleanup authority", () => {
         "await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);",
       ),
     );
+    expect(scenario).toContain(
+      'if (message === "integration.codex.diagnostic-deadline")\n      recordTuiJoinFailure("tui-join-deadline");',
+    );
+    expect(scenario).toContain(
+      'else if (message === "integration.codex.child")\n      recordTuiJoinFailure("tui-child-rejected");',
+    );
     expect(codexJoined).toBeGreaterThan(completionPublished);
     expect(codexJoined).toBeLessThan(
       scenario.indexOf(
