@@ -287,7 +287,17 @@ describe("interactive PTY failure diagnostic transport", () => {
           diagnostic,
           "testkit.pty.receipt-terminal",
         ),
-      ).toBe(diagnostic);
+      ).toBe("testkit.pty.receipt-terminal");
+      expect(
+        selectInteractiveFailureDiagnostic(
+          diagnostic,
+          "integration.fixture.codex-tui-exit-published",
+          "testkit.pty.receipt-terminal",
+        ),
+      ).toBe("integration.fixture.codex-tui-exit-published");
+      expect(
+        selectInteractiveFailureDiagnostic(undefined, undefined, diagnostic),
+      ).toBeUndefined();
       expect(
         extractInteractiveChildDiagnostic(
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
