@@ -93,6 +93,16 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.end().semanticState).toBe("completed");
   });
 
+  it("retains observed semantic readiness across fixture alternate-screen exit", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    terminal.write(bytes("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n"));
+    expect(terminal.readinessObserved()).toBe(true);
+
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n"));
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
   it("derives selected post-completion readiness from styled text", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
