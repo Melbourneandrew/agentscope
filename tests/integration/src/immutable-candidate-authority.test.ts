@@ -13,12 +13,52 @@ const {
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   extractInteractiveChildDiagnostic,
+  interactivePtyReceiptFailed,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
 
 const hex = (character: string): string => character.repeat(64);
+
+describe("interactive PTY receipt settlement", () => {
+  const completed = {
+    outcome: "completed",
+    finalSnapshot: { semanticState: "completed" },
+    exitCode: 0,
+    signal: null,
+    cleanup: "clean",
+    residualProcessCount: 0,
+    processJoined: true,
+    terminalInputJoined: true,
+    terminalOutputJoined: true,
+    terminalTransportClosed: true,
+  };
+
+  it("admits retained success evidence only for an exact completed receipt", () => {
+    expect(interactivePtyReceiptFailed(completed)).toBe(false);
+  });
+
+  it.each([92, 93])(
+    "classifies a semantically complete fixture exit %i as failure before success evidence",
+    (exitCode) => {
+      expect(
+        interactivePtyReceiptFailed({
+          ...completed,
+          outcome: "exited-nonzero",
+          exitCode,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("rejects conflicting terminal status despite semantic completion", () => {
+    expect(interactivePtyReceiptFailed({ ...completed, exitCode: 92 })).toBe(
+      true,
+    );
+    expect(interactivePtyReceiptFailed({ ...completed, signal: 9 })).toBe(true);
+  });
+});
 
 describe("interactive failure diagnostic precedence", () => {
   it("retains an exact fixture cause ahead of the last progress phase", () => {
