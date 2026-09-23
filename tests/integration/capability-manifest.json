@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-5a974757356402c737f50f754629280fead692fd19c194e0c1fcaf0cd4e5951b",
+  "manifestIdentity": "sha256-96efa223c8fa66648b2030566941d8ba18e3e22495cea479a38e053317adffe0",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -193,8 +193,8 @@
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
         }
       ],
-      "terminalInputBase64": "G1syMDB+UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLhtbMjAxfhtbMTN1BAQ=",
-      "postCompletionInputByteLength": 2,
+      "terminalInputBase64": "G1syMDB+UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLhtbMjAxfhtbMTN1L2V4aXQbWzEzdQ==",
+      "postCompletionInputByteLength": 10,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,
       "nativeReadiness": {
