@@ -13,11 +13,38 @@ const {
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   extractInteractiveChildDiagnostic,
+  selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
 
 const hex = (character: string): string => character.repeat(64);
+
+describe("interactive failure diagnostic precedence", () => {
+  it("retains an exact fixture cause ahead of the last progress phase", () => {
+    expect(
+      selectInteractiveFailureDiagnostic(
+        "integration.fixture.codex-model-gate-arm-control",
+        "integration.fixture.codex-model-gate-arm-start",
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe("integration.fixture.codex-model-gate-arm-control");
+    expect(
+      selectInteractiveFailureDiagnostic(
+        "integration.fixture.codex-not-allowlisted",
+        "integration.fixture.codex-model-gate-arm-health-pending",
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe("integration.fixture.codex-model-gate-arm-health-pending");
+    expect(
+      selectInteractiveFailureDiagnostic(
+        undefined,
+        undefined,
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe("testkit.pty.receipt-terminal");
+  });
+});
 const candidate = () => ({
   evidenceVersion: 1,
   bundleIdentity: `sha256-${hex("a")}`,
