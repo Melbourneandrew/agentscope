@@ -49,10 +49,24 @@ export const compileInteractivePtyActions = (
       .update(input.subarray(start, start + byteLength))
       .digest("hex"),
   });
-  const postCompletionInputActions = Array.from(
-    { length: scenario.postCompletionInputByteLength },
-    (_, offset) => inputAction(postCompletionInputOffset + offset, 1),
-  );
+  const postCompletionInputActions =
+    scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
+      ? (() => {
+          const command = Buffer.from("/exit\x1b[13u");
+          if (
+            scenario.postCompletionInputByteLength !== command.byteLength ||
+            !Buffer.from(input.subarray(postCompletionInputOffset)).equals(
+              command,
+            )
+          )
+            throw new Error("integration.manifest.interaction");
+          // One PTY write keeps the keyboard-enhanced Enter sequence intact.
+          return [inputAction(postCompletionInputOffset, command.byteLength)];
+        })()
+      : Array.from(
+          { length: scenario.postCompletionInputByteLength },
+          (_, offset) => inputAction(postCompletionInputOffset + offset, 1),
+        );
   const preCompletionInputActions =
     preCompletionInputBytes === 0
       ? []

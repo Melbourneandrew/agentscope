@@ -196,10 +196,10 @@ describe("integration capability manifest", () => {
         Buffer.from(
           "\x1b[200~Reply with one short confirmation and do not use tools.\x1b[201~\x1b[13u",
         ),
-        Buffer.from([4, 4]),
+        Buffer.from("/exit\x1b[13u"),
       ]),
     );
-    expect(scenario.postCompletionInputByteLength).toBe(2);
+    expect(scenario.postCompletionInputByteLength).toBe(10);
     expect(scenario.postCompletionControl).toBe("none");
     expect(scenario.waitForSemanticCompletionBeforeTerminalAction).toBe(true);
     expect(scenario.nativeReadiness).toEqual({
@@ -236,7 +236,6 @@ describe("integration capability manifest", () => {
       "input",
       "wait-for-semantic-completion",
       "input",
-      "input",
     ]);
     expect(actions[1]).toEqual({
       action: "input",
@@ -265,12 +264,27 @@ describe("integration capability manifest", () => {
     });
     expect(actions.at(-1)).toEqual({
       action: "input",
-      byteLength: 1,
+      byteLength: 10,
       inputSha256: createHash("sha256")
-        .update(Buffer.from([4]))
+        .update(Buffer.from("/exit\x1b[13u"))
         .digest("hex"),
     });
-    expect(actions.at(-2)).toEqual(actions.at(-1));
+    for (const wrongTail of [Buffer.from([4, 4]), Buffer.from("/exit\r")]) {
+      const wrongExitInput = Buffer.concat([
+        Buffer.from(scenario.terminalInputBase64, "base64").subarray(0, -10),
+        wrongTail,
+      ]);
+      expect(() =>
+        compileInteractivePtyActions(
+          {
+            ...scenario,
+            terminalInputBase64: wrongExitInput.toString("base64"),
+            postCompletionInputByteLength: wrongTail.byteLength,
+          },
+          Buffer.concat([Buffer.from(`${challenge}\n`), wrongExitInput]),
+        ),
+      ).toThrow("integration.manifest.interaction");
+    }
     expect(actions[2]).toEqual({
       action: "checkpoint-process-topology",
       topology: "root-with-contained-process-set",
