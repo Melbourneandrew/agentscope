@@ -57,7 +57,12 @@ export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
 
 type ChallengeScreenRevocationKind =
   | "combined-sync"
-  | "unmodeled-csi"
+  | "alternate-screen-enter"
+  | "alternate-screen-exit"
+  | "autowrap-enable"
+  | "autowrap-disable"
+  | "scroll-region"
+  | "screen-edit"
   | "cursor-restore"
   | "reverse-index"
   | "tab-stop-set"
@@ -374,6 +379,19 @@ const csiHasUnmodeledScreenMutation = (
     (final === "r" || ["@", "L", "M", "P", "S", "T", "X"].includes(final))) ||
   (csiIsPrivateModeControl(final, prefix, intermediate) &&
     (values.includes(7) || values.includes(1049)));
+
+const classifyUnmodeledScreenMutation = (
+  final: string,
+  prefix: string,
+  values: readonly number[],
+): ChallengeScreenRevocationKind => {
+  if (prefix === "?" && values.includes(1049))
+    return final === "h" ? "alternate-screen-enter" : "alternate-screen-exit";
+  if (prefix === "?" && values.includes(7))
+    return final === "h" ? "autowrap-enable" : "autowrap-disable";
+  if (final === "r") return "scroll-region";
+  return "screen-edit";
+};
 
 /* eslint-disable complexity -- closed challenged-response fields add fail-closed validation */
 const validateReadinessMatcher = (
@@ -1039,7 +1057,9 @@ export class BoundedTerminalEmulator {
             (values[0] === 0 || values[0] === 1) &&
             (values[1] === 0 || values[1] === this.#geometry.rows));
       }
-      this.#revokeChallengeScreenAuthority("unmodeled-csi");
+      this.#revokeChallengeScreenAuthority(
+        classifyUnmodeledScreenMutation(final, prefix, values),
+      );
       return;
     }
     if (

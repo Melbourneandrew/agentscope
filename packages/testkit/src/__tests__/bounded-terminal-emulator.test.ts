@@ -661,7 +661,12 @@ describe("bounded semantic terminal emulator", () => {
         "\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l",
         "idle-revoked-screen",
       ],
-      ["\u001b[?1049l", "idle-revoked-unmodeled-csi"],
+      ["\u001b[?1049h", "idle-revoked-alternate-screen-enter"],
+      ["\u001b[?1049l", "idle-revoked-alternate-screen-exit"],
+      ["\u001b[?7h", "idle-revoked-autowrap-enable"],
+      ["\u001b[?7l", "idle-revoked-autowrap-disable"],
+      ["\u001b[r", "idle-revoked-scroll-region"],
+      ["\u001b[@", "idle-revoked-screen-edit"],
     ] as const) {
       const terminal = new BoundedTerminalEmulator(
         { columns: 100, rows: 8 },

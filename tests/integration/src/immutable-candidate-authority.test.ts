@@ -231,7 +231,12 @@ describe("interactive PTY action prefix diagnostics", () => {
     );
     for (const category of [
       "idle-revoked-screen",
-      "idle-revoked-unmodeled-csi",
+      "idle-revoked-alternate-screen-enter",
+      "idle-revoked-alternate-screen-exit",
+      "idle-revoked-autowrap-enable",
+      "idle-revoked-autowrap-disable",
+      "idle-revoked-scroll-region",
+      "idle-revoked-screen-edit",
     ])
       expect(
         interactivePtyIdleAtTitleDiagnostic({
