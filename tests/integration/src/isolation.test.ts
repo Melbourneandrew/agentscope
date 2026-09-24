@@ -12,11 +12,26 @@ import {
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
   scenarioContainerTerminalWitness,
+  SCENARIO_HOME,
+  SCENARIO_TMPFS_MOUNTS,
+  scenarioTmpfsIsExecutable,
   type IsolationDriver,
 } from "./isolation.js";
 import { compileCapabilityManifest } from "./manifest.js";
 
 const integrationRoot = resolve(import.meta.dirname, "..");
+
+describe("scenario writable mount execution policy", () => {
+  it("allows executable files only in the candidate HOME that owns the installed hook", () => {
+    expect(SCENARIO_HOME).toBe("/home/agentscope");
+    expect(SCENARIO_TMPFS_MOUNTS.filter(scenarioTmpfsIsExecutable)).toEqual([
+      SCENARIO_HOME,
+    ]);
+    expect(scenarioTmpfsIsExecutable("/agentscope-home")).toBe(false);
+    expect(scenarioTmpfsIsExecutable("/home/agentscope-other")).toBe(false);
+  });
+});
+
 const manifest = compileCapabilityManifest(
   JSON.parse(
     readFileSync(resolve(integrationRoot, "capability-manifest.json"), "utf8"),

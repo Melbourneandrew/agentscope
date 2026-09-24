@@ -29,8 +29,15 @@ const productName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .()_-]{0,95}$/u);
 const runtimeName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
 const boundedCount = z.number().int().min(0).max(256);
 
+export const SCENARIO_HOME = "/home/agentscope" as const;
+
+// Production CLI ignores ambient AGENTSCOPE_HOME. Its owned hook launcher is
+// installed under HOME/.agentscope/bin and must be executable in this guest.
+export const scenarioTmpfsIsExecutable = (path: string): boolean =>
+  path === SCENARIO_HOME;
+
 export const SCENARIO_TMPFS_MOUNTS = deepFreeze([
-  "/home/agentscope",
+  SCENARIO_HOME,
   "/harness-home",
   "/agentscope-home",
   "/worktree",
