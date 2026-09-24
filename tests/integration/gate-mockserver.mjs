@@ -36,6 +36,29 @@ const parsePorts = () => {
 };
 const [modelPort, controlPort] = parsePorts();
 const digest = (value) => createHash("sha256").update(value).digest("hex");
+const promptOccurrences = (value, promptSha256) => {
+  const pending = [value];
+  let visited = 0;
+  let matches = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    visited += 1;
+    if (visited > 8_192) throw new Error("integration.mockserver.request");
+    if (typeof current === "string") {
+      if (digest(current) === promptSha256) matches += 1;
+    } else if (Array.isArray(current)) {
+      if (pending.length + current.length > 8_192)
+        throw new Error("integration.mockserver.request");
+      for (const child of current) pending.push(child);
+    } else if (current !== null && typeof current === "object") {
+      const children = Object.values(current);
+      if (pending.length + children.length > 8_192)
+        throw new Error("integration.mockserver.request");
+      for (const child of children) pending.push(child);
+    }
+  }
+  return matches;
+};
 const boundedJson = async (request, maximum = 16 * 1024) => {
   const chunks = [];
   let length = 0;
@@ -76,6 +99,7 @@ let challenge;
 let runId;
 let cutoff;
 let responseText;
+let promptSha256;
 let sessionStartSpanSha256;
 let initialSocket;
 let connectionGeneration = 0;
@@ -124,15 +148,26 @@ const modelServer = createHttpServer(async (request, response) => {
       chunks.push(value);
     }
     const body = Buffer.concat(chunks, length);
-    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    const parsedBody = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(body),
+    );
     if (ledger.length >= maximumLedgerEntries)
       throw new Error("integration.mockserver.ledger");
+    const occurrenceCount = promptOccurrences(parsedBody, promptSha256);
     ledger.push(
       Object.freeze({
         bodyBytes: body.length,
         bodySha256: digest(body),
+        credentialHeaderCount: Object.keys(request.headers).filter((name) =>
+          /^(?:authorization|api-key|x-api-key)$/iu.test(name),
+        ).length,
         method: request.method,
+        modelSha256:
+          typeof parsedBody?.model === "string"
+            ? digest(parsedBody.model)
+            : null,
         path: request.url,
+        promptOccurrenceCount: occurrenceCount,
       }),
     );
     mutationGeneration += 1;
@@ -312,12 +347,20 @@ const configure = async (request, response) => {
   if (state !== "unconfigured") throw new Error("state");
   const value = await boundedJson(request);
   if (
-    !exactKeys(value, ["challenge", "cutoff", "responseText", "runId"]) ||
+    !exactKeys(value, [
+      "challenge",
+      "cutoff",
+      "promptSha256",
+      "responseText",
+      "runId",
+    ]) ||
     typeof value.challenge !== "string" ||
     !/^[a-f0-9]{64}$/u.test(value.challenge) ||
     typeof value.runId !== "string" ||
     value.runId.length < 1 ||
     value.runId.length > 128 ||
+    typeof value.promptSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(value.promptSha256) ||
     !Number.isSafeInteger(value.cutoff) ||
     value.cutoff <= bootNow() ||
     typeof value.responseText !== "string" ||
@@ -328,6 +371,7 @@ const configure = async (request, response) => {
   runId = value.runId;
   cutoff = value.cutoff;
   responseText = value.responseText;
+  promptSha256 = value.promptSha256;
   releasePromise = new Promise((resolve) => {
     releaseResolve = resolve;
   });

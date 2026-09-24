@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-225da1f357202eb662b9e0ef10c8487f9857b51b1deaafebad25c5c0e507bce5",
+  "manifestIdentity": "sha256-e20e78c44b529b650aa739febb3c9dc691be76c1caf104f36a5a7da9e589aa9d",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -157,15 +157,15 @@
       "destinations": ["local-sqlite"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "060e6cce90fcaa3fc7342cb8c0fcd8f5a1a96c4f3d20ee1900a7b023f9741a52"
+        "sha256": "11a84cfc30b1396e58c0fc95c04d88955d9198075cb31377bee50dd1282d601f"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "a25cfff782d98cbbd95daf541618ee2a2fc86e37c329594e5b099fa17ac9c422"
+        "sha256": "120adf5211485e9a8af63db214c9be6bfd7681e1abcd2ab5a7af23b2941bc966"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "9c612d898ed1585ed49635e8ef6b335245d60015923d4b0c577628bf6a62038a"
+        "sha256": "dbb15e6d1474960a398addf988c7d347b20fd485d81130ffa7734c17006460bf"
       },
       "runtimeArtifacts": [
         {
@@ -174,7 +174,7 @@
             "path": "gate-mockserver.mjs"
           },
           "destination": "gate-mockserver.mjs",
-          "sha256": "6f498231690ba00344f4880ed41f6ee123021790434cccf71f067983627dfcb0"
+          "sha256": "fb507f5c322119fdff4095edeea3357632d512b5d0b170178601ab952c28e9ea"
         },
         {
           "source": {

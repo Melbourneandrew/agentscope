@@ -8,65 +8,40 @@ const token = /^[a-z][a-z0-9-]{0,63}$/u;
 const digest = /^[a-f0-9]{64}$/u;
 const boundedString = (value, maximum = 4_096) =>
   typeof value === "string" && value.length <= maximum;
-const countValue = (value, expected) => {
-  if (value === expected) return 1;
-  if (Array.isArray(value))
-    return value.reduce(
-      (count, child) => count + countValue(child, expected),
-      0,
-    );
-  if (typeof value === "object" && value !== null)
-    return Object.values(value).reduce(
-      (count, child) => count + countValue(child, expected),
-      0,
-    );
-  return 0;
-};
-
-const translateModelRequest = (request, prompt) => {
-  if (typeof request !== "object" || request === null || Array.isArray(request))
-    throw new Error("integration.codex.adapter-observation");
-  const bodyText =
-    typeof request.body === "string"
-      ? request.body
-      : typeof request.body?.string === "string"
-        ? request.body.string
-        : typeof request.body?.json === "string"
-          ? request.body.json
-          : undefined;
+const translateModelRequest = (request) => {
   if (
+    !exactKeys(request, [
+      "bodyBytes",
+      "bodySha256",
+      "credentialHeaderCount",
+      "method",
+      "modelSha256",
+      "path",
+      "promptOccurrenceCount",
+    ]) ||
     !boundedString(request.method, 16) ||
     !boundedString(request.path, 1_024) ||
-    bodyText === undefined ||
-    Buffer.byteLength(bodyText) > 1024 * 1024
-  )
-    throw new Error("integration.codex.adapter-observation");
-  let body;
-  try {
-    body = JSON.parse(bodyText);
-  } catch {
-    throw new Error("integration.codex.adapter-observation");
-  }
-  const headerNames = Array.isArray(request.headers)
-    ? request.headers.map(({ name }) => name)
-    : typeof request.headers === "object" && request.headers !== null
-      ? Object.keys(request.headers)
-      : [];
-  if (
-    headerNames.length > 64 ||
-    headerNames.some((name) => !boundedString(name, 128) || name.length < 1)
+    !Number.isSafeInteger(request.bodyBytes) ||
+    request.bodyBytes < 0 ||
+    request.bodyBytes > 1024 * 1024 ||
+    !digest.test(request.bodySha256) ||
+    !(request.modelSha256 === null || digest.test(request.modelSha256)) ||
+    !Number.isSafeInteger(request.promptOccurrenceCount) ||
+    request.promptOccurrenceCount < 0 ||
+    request.promptOccurrenceCount > 8_192 ||
+    !Number.isSafeInteger(request.credentialHeaderCount) ||
+    request.credentialHeaderCount < 0 ||
+    request.credentialHeaderCount > 64
   )
     throw new Error("integration.codex.adapter-observation");
   return Object.freeze({
     method: request.method,
     path: request.path,
-    bodyBytes: Buffer.byteLength(bodyText),
-    bodySha256: createHash("sha256").update(bodyText).digest("hex"),
-    model: typeof body?.model === "string" ? body.model : null,
-    promptOccurrenceCount: countValue(body, prompt),
-    credentialHeaderCount: headerNames.filter((name) =>
-      /^(?:authorization|api-key|x-api-key)$/iu.test(name),
-    ).length,
+    bodyBytes: request.bodyBytes,
+    bodySha256: request.bodySha256,
+    modelSha256: request.modelSha256,
+    promptOccurrenceCount: request.promptOccurrenceCount,
+    credentialHeaderCount: request.credentialHeaderCount,
   });
 };
 
@@ -93,9 +68,7 @@ export const translateCodexPlatformObservations = (input) => {
     input.modelRequests.length > 8
   )
     throw new Error("integration.codex.adapter-observation");
-  const modelRequests = input.modelRequests.map((request) =>
-    translateModelRequest(request, input.prompt),
-  );
+  const modelRequests = input.modelRequests.map(translateModelRequest);
   const { mediation, search, retrieval, doctor, uninstall } = input;
   if (
     !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
@@ -190,4 +163,3 @@ export const translateCodexPlatformObservations = (input) => {
     }),
   });
 };
-import { createHash } from "node:crypto";

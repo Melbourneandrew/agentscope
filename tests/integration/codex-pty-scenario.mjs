@@ -708,6 +708,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     {
       challenge: readinessChallenge,
       cutoff: modelAdmissionCutoff,
+      promptSha256,
       responseText: body.replace(
         "AGENTSCOPE_PTY_COMPLETE",
         expectedAssistantMessage,
