@@ -243,6 +243,10 @@ describe("integration cleanup authority", () => {
       "joinDeadlineHookState = classifyCodexShutdownAtJoinDeadline({",
     );
     expect(scenario).toContain("encodeCodexJoinDeadlineExitCode(");
+    expect(scenario).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
+    expect(scenario).toContain(
+      'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        `${diagnostic}\\n`',
+    );
     expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode)");
     expect(source).toContain(
       "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
