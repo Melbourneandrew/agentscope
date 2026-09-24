@@ -465,6 +465,48 @@ if (worktree !== "/worktree")
   throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");
 for (const directory of [home, agentscopeHome, worktree, ledger])
   mkdirSync(directory, { recursive: true });
+if (ledger !== "/ledger")
+  throw new Error("integration.codex.environment-AGENTSCOPE_LEDGER");
+const ledgerDescriptor = openSync(
+  ledger,
+  constants.O_RDONLY |
+    constants.O_DIRECTORY |
+    constants.O_NOFOLLOW |
+    constants.O_NONBLOCK,
+);
+try {
+  const before = fstatSync(ledgerDescriptor);
+  const pathBefore = lstatSync(ledger);
+  if (
+    !before.isDirectory() ||
+    !pathBefore.isDirectory() ||
+    before.dev !== pathBefore.dev ||
+    before.ino !== pathBefore.ino ||
+    before.uid !== 1000 ||
+    before.gid !== 1000 ||
+    before.nlink !== 2
+  )
+    throw new Error("integration.codex.ledger-authority");
+  fchownSync(ledgerDescriptor, 0, 0);
+  fchmodSync(ledgerDescriptor, 0o700);
+  const after = fstatSync(ledgerDescriptor);
+  const pathAfter = lstatSync(ledger);
+  if (
+    after.dev !== before.dev ||
+    after.ino !== before.ino ||
+    pathAfter.dev !== before.dev ||
+    pathAfter.ino !== before.ino ||
+    after.uid !== 0 ||
+    after.gid !== 0 ||
+    (after.mode & 0o7777) !== 0o700 ||
+    pathAfter.uid !== 0 ||
+    pathAfter.gid !== 0 ||
+    (pathAfter.mode & 0o7777) !== 0o700
+  )
+    throw new Error("integration.codex.ledger-authority");
+} finally {
+  closeSync(ledgerDescriptor);
+}
 const codexDiagnosticLogDirectory = join(codexHome, "diagnostic-log");
 const homeDescriptor = openSync(
   home,

@@ -91,6 +91,7 @@ const denied = (action, expectedCode) => {
 // namespace and mount graph as the installed binary. A missing listener is
 // insufficient: the protected directory itself must deny traversal.
 denied(() => readdirSync("/control/private"), "EACCES");
+denied(() => readdirSync("/ledger"), "EACCES");
 denied(() => readdirSync(`/proc/${controllerPid}/fd`), "EACCES");
 denied(() => process.kill(controllerPid, "SIGUSR2"), "EPERM");
 denied(() => {

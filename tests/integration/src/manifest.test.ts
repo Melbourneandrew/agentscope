@@ -322,6 +322,7 @@ describe("integration capability manifest", () => {
     const candidateExec = dropperSource.indexOf("process.execve(\n");
     for (const denial of [
       'readdirSync("/control/private")',
+      'readdirSync("/ledger")',
       "readdirSync(`/proc/${controllerPid}/fd`)",
       'process.kill(controllerPid, "SIGUSR2")',
       "checkpoint-${runId}.json",
@@ -347,6 +348,12 @@ describe("integration capability manifest", () => {
     );
     expect(source).toContain(
       "fchownSync(configurationDescriptor, 1000, 1000);",
+    );
+    expect(source).toContain("fchownSync(ledgerDescriptor, 0, 0);");
+    expect(source).toContain("fchmodSync(ledgerDescriptor, 0o700);");
+    expect(source).toContain('ledger !== "/ledger"');
+    expect(source.indexOf("fchmodSync(ledgerDescriptor, 0o700);")).toBeLessThan(
+      source.indexOf('recordInteractivePhase("init")'),
     );
     expect(source).toContain("codexHomeStatus.uid !== 1000");
     expect(source).toContain("hookStatus.uid !== 1000");
