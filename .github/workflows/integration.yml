@@ -263,7 +263,7 @@ jobs:
       - name: Install immutable workspace dependencies
         run: pnpm install --frozen-lockfile
       - name: Build certification verifier
-        run: pnpm --filter @agentscope/integration build
+        run: pnpm --filter '@agentscope/integration...' build
       - name: Download exactly three clean receipts
         uses: actions/download-artifact@v4
         with:
