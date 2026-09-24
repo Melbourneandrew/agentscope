@@ -19,7 +19,7 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
-  decodeCodexJoinDeadlineExitCode,
+  decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   interactivePtyExecutionReserveMilliseconds,
@@ -145,13 +145,10 @@ const untrustedCodexJoinHint = (ledger) => {
 };
 const decodeScenarioFailureExitCode = (exitCode) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
-  const joinDeadlineDiagnostic =
-    scenarioId === "codex-tui-trace-smoke"
-      ? decodeCodexJoinDeadlineExitCode(exitCode)
-      : undefined;
-  if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
   const phase = interactivePhases[exitCode - 64];
-  return phase === undefined ? undefined : `integration.fixture.codex-${phase}`;
+  return phase === undefined
+    ? decodeInteractiveFailureExitCode(exitCode, scenarioId)
+    : `integration.fixture.codex-${phase}`;
 };
 
 const requiredEnvironment = (name) => {
