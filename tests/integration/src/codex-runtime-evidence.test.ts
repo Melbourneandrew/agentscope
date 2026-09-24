@@ -881,7 +881,8 @@ describe("Codex bounded native ledgers", () => {
         writeFileSync(path, Buffer.from([0xff]));
         expect(classify).toThrow("integration.codex.hook-log");
         writeFileSync(path, "");
-        expect(classify).toThrow("integration.codex.hook-log");
+        // An empty live log is provisional, never a completed Stop witness.
+        expect(classify()).toBe(undefined);
         writeFileSync(path, Buffer.alloc(1_048_577, 0x61));
         expect(classify).toThrow("integration.codex.hook-log");
         rmSync(path);

@@ -656,7 +656,7 @@ const assertContainer = async (
   signal,
   expectedRequestBytes,
   immutableCandidate,
-  // eslint-disable-next-line complexity,max-params
+  // eslint-disable-next-line complexity,max-params,max-lines-per-function -- closed per-field diagnosis preserves container proof
 ) => {
   const { stdout } = await dockerWithSignal(
     ["container", "inspect", name],
@@ -746,25 +746,32 @@ const assertContainer = async (
       imageConfigMatches = false;
     }
   }
-  if (
-    !/^[a-f0-9]{64}$/u.test(container?.Id ?? "") ||
-    container?.Name !== `/${name}` ||
-    container?.Config?.Labels?.["com.agentscope.integration"] !== "true" ||
-    container?.Config?.Labels?.["com.agentscope.integration.run"] !==
-      plan.runId ||
-    container?.HostConfig?.ReadonlyRootfs !== true ||
-    container?.HostConfig?.NetworkMode !== plan.networkName ||
-    container?.HostConfig?.Memory !== limits.memoryBytes ||
-    container?.HostConfig?.PidsLimit !== limits.pidsLimit ||
-    !Array.isArray(container?.Mounts) ||
-    !expectedControlMount ||
-    JSON.stringify(tmpfsPaths) !== JSON.stringify(expectedPaths) ||
-    !tmpfsMatches ||
-    !requestLimitMatches ||
-    !immutableCandidateMatches ||
-    !imageConfigMatches
-  )
-    throw new Error("integration.isolation.container");
+  const failedAssertion = [
+    ["id", /^[a-f0-9]{64}$/u.test(container?.Id ?? "")],
+    ["name", container?.Name === `/${name}`],
+    [
+      "labels",
+      container?.Config?.Labels?.["com.agentscope.integration"] === "true" &&
+        container?.Config?.Labels?.["com.agentscope.integration.run"] ===
+          plan.runId,
+    ],
+    ["readonly", container?.HostConfig?.ReadonlyRootfs === true],
+    ["network", container?.HostConfig?.NetworkMode === plan.networkName],
+    ["memory", container?.HostConfig?.Memory === limits.memoryBytes],
+    ["pids", container?.HostConfig?.PidsLimit === limits.pidsLimit],
+    ["mount-inventory", Array.isArray(container?.Mounts)],
+    ["control-mount", expectedControlMount],
+    [
+      "tmpfs-paths",
+      JSON.stringify(tmpfsPaths) === JSON.stringify(expectedPaths),
+    ],
+    ["tmpfs-options", tmpfsMatches],
+    ["request-limit", requestLimitMatches],
+    ["candidate", immutableCandidateMatches],
+    ["candidate-image", imageConfigMatches],
+  ].find(([, matches]) => !matches)?.[0];
+  if (failedAssertion !== undefined)
+    throw new Error(`integration.isolation.container.${failedAssertion}`);
   return container.Id;
 };
 
