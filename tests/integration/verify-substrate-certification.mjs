@@ -17,7 +17,10 @@ import {
   SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES,
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./dist/substrate-certification.js";
-import { installedPtyFailurePredicates } from "./immutable-candidate-authority.mjs";
+import {
+  installedPtyFailurePredicates,
+  validCodexResearchDiagnostic,
+} from "./immutable-candidate-authority.mjs";
 
 const fail = () => {
   throw new Error("integration.certification.verification");
@@ -276,13 +279,14 @@ const verifyFailureEvidence = (expectedCase) => {
         "cleanupFailure",
         "controllerFailureEvidenceVersion",
         "controllerOutcome",
+        "codexResearchDiagnostic",
         "installedPtyFailure",
         "primaryFailure",
         "privateCleanup",
         "runId",
         "scenarioOutcome",
       ]) ||
-      record.controllerFailureEvidenceVersion !== 2 ||
+      record.controllerFailureEvidenceVersion !== 3 ||
       record.runId !== identity.runId ||
       record.controllerOutcome !== "retired-failure" ||
       record.certificationCase !== expectedCase ||
@@ -299,6 +303,7 @@ const verifyFailureEvidence = (expectedCase) => {
           )
         : record.certificationReadiness !== null) ||
       !validPtyFailure(record.installedPtyFailure) ||
+      !validCodexResearchDiagnostic(record.codexResearchDiagnostic) ||
       !(
         record.causalFailure === null ||
         /^integration\.[a-z.-]{1,96}$/u.test(record.causalFailure)

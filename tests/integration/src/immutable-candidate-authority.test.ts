@@ -31,6 +31,7 @@ const {
   extractUntrustedCodexConfigHint,
   extractUntrustedCodexJoinHint,
   extractUntrustedCodexTraceHint,
+  validCodexResearchDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
@@ -370,6 +371,35 @@ describe("Codex failure exit comparison", () => {
     [150, "78", "codex-tui-trace-smoke"],
   ])("rejects a non-Codex or invalid terminal witness", (child, outer, id) => {
     expect(codexFailureExitPair(child, outer, id)).toBeUndefined();
+  });
+});
+
+describe("bounded research-only Codex failure evidence", () => {
+  const valid = {
+    diagnosticVersion: 1,
+    untrustedConfigHint: "render",
+    exitPair: "150:78",
+  };
+  it("accepts only the exact bounded record or null", () => {
+    expect(validCodexResearchDiagnostic(null)).toBe(true);
+    expect(validCodexResearchDiagnostic(valid)).toBe(true);
+    expect(
+      validCodexResearchDiagnostic({
+        diagnosticVersion: 1,
+        untrustedConfigHint: null,
+        exitPair: "none:255",
+      }),
+    ).toBe(true);
+  });
+  it.each([
+    { ...valid, untrustedConfigHint: "secret" },
+    { ...valid, exitPair: "150:0" },
+    { ...valid, exitPair: "256:78" },
+    { ...valid, extra: true },
+    { ...valid, diagnosticVersion: 2 },
+    { ...valid, untrustedConfigHint: "render\nsecret" },
+  ])("rejects substituted or expanded diagnostic authority", (record) => {
+    expect(validCodexResearchDiagnostic(record)).toBe(false);
   });
 });
 

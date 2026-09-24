@@ -19,7 +19,10 @@ import {
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
-import { installedPtyFailurePredicates } from "./immutable-candidate-authority.mjs";
+import {
+  installedPtyFailurePredicates,
+  validCodexResearchDiagnostic,
+} from "./immutable-candidate-authority.mjs";
 import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
@@ -245,6 +248,7 @@ const assertFailureEvidence = (identity) => {
           "certificationReadiness",
           "controllerFailureEvidenceVersion",
           "controllerOutcome",
+          "codexResearchDiagnostic",
           "installedPtyFailure",
           "primaryFailure",
           "privateCleanup",
@@ -252,10 +256,11 @@ const assertFailureEvidence = (identity) => {
           "scenarioOutcome",
         ].sort(),
       ) ||
-    record.controllerFailureEvidenceVersion !== 2 ||
+    record.controllerFailureEvidenceVersion !== 3 ||
     record.runId !== identity.runId ||
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
+    !validCodexResearchDiagnostic(record.codexResearchDiagnostic) ||
     !(
       record.causalFailure === null ||
       /^(?:integration\.[a-z.-]{1,96})$/u.test(record.causalFailure)

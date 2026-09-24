@@ -385,20 +385,22 @@ describe("integration cleanup authority", () => {
     expect(outer).toContain("integration.isolation.untrusted-trace-hint:");
     expect(runner).toContain("retainedCandidateConfigStage(ledger)");
     expect(runner).toContain("integration.runner.untrusted-config-hint:");
-    expect(outer).toContain("emitUntrustedCodexConfigHint(output, scenarioId)");
+    expect(outer).toContain(
+      "retainCodexResearchDiagnostic(plan, output, receipt, error)",
+    );
     expect(outer).toContain(
       "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
     );
-    expect(outer).toContain("integration.isolation.untrusted-config-hint:");
+    expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
     expect(outer).not.toContain("writeSync(2,");
     expect(outer).toContain("codexFailureExitPair(");
-    expect(outer).toContain("integration.isolation.codex-exit-pair:");
+    expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
-    const configHintEmitter = outer.indexOf(
-      "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
+    const researchCapture = outer.indexOf(
+      "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
-    expect(configHintEmitter).toBeLessThan(
-      outer.indexOf("recordInteractiveExecutionFailure(", configHintEmitter),
+    expect(researchCapture).toBeLessThan(
+      outer.indexOf("recordInteractiveExecutionFailure(", researchCapture),
     );
     expect(scenario).toContain(
       "const terminalCut = classifyCodexSettledTraceObservation({",
@@ -409,15 +411,20 @@ describe("integration cleanup authority", () => {
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
-  it("bounds final failure-output drain before terminal controller exit", () => {
+  it("stores optional Codex research hints only in retired-failure evidence", () => {
     const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/controller-process.mjs"),
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
       "utf8",
     );
-    expect(source).toContain("await drainFailureDiagnostic({");
-    expect(source.indexOf("await drainFailureDiagnostic({")).toBeLessThan(
-      source.indexOf("process.exit(1)"),
+    expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
+    expect(source).toContain(
+      "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",
     );
+    expect(source).toContain('controllerOutcome: "retired-failure"');
+    expect(source).not.toContain(
+      "integration.isolation.untrusted-config-hint:",
+    );
+    expect(source).not.toContain("integration.isolation.codex-exit-pair:");
   });
 
   it("validates the failed PTY receipt before reporting a Codex join subtype", () => {
@@ -910,7 +917,7 @@ describe("integration workflow policy", () => {
         mkdirSync(run, { recursive: true, mode: 0o700 });
         const path = resolve(run, "controller-failure.json");
         const content = `${JSON.stringify({
-          controllerFailureEvidenceVersion: 2,
+          controllerFailureEvidenceVersion: 3,
           runId,
           certificationCase: null,
           certificationPredicate: null,
@@ -921,6 +928,7 @@ describe("integration workflow policy", () => {
           causalFailure: null,
           cleanupFailure: null,
           installedPtyFailure: null,
+          codexResearchDiagnostic: null,
           privateCleanup: null,
         })}\n`;
         writeFileSync(path, content, { mode: 0o600 });
@@ -1064,9 +1072,10 @@ describe("integration workflow policy", () => {
         certificationPredicate: null as string | null,
         primaryFailure: "integration.controller.unsettled-operation",
       },
+      codexResearchDiagnostic: unknown = null,
     ) => {
       const content = `${JSON.stringify({
-        controllerFailureEvidenceVersion: 2,
+        controllerFailureEvidenceVersion: 3,
         runId,
         certificationCase: certification.certificationCase,
         certificationPredicate: certification.certificationPredicate,
@@ -1077,6 +1086,7 @@ describe("integration workflow policy", () => {
         causalFailure: null,
         cleanupFailure: null,
         installedPtyFailure: null,
+        codexResearchDiagnostic,
         privateCleanup,
       })}\n`;
       writeFileSync(resolve(run, "controller-failure.json"), content, {
@@ -1130,6 +1140,24 @@ describe("integration workflow policy", () => {
       mkdirSync(run, { recursive: true, mode: 0o700 });
       writeEvidence(diagnostic);
       expect(verify()).toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render",
+        exitPair: "150:78",
+      });
+      expect(verify()).toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render:secret",
+        exitPair: "150:78",
+      });
+      expect(verify()).not.toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render",
+        exitPair: "150:0",
+      });
+      expect(verify()).not.toBe(0);
       writeEvidence(null);
       expect(verify()).not.toBe(0);
       writeEvidence({ ...diagnostic, outcome: "retired-success" });

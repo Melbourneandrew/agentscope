@@ -125,6 +125,7 @@ const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
 const installedPtyFailures = new Map();
+const codexResearchDiagnostics = new Map();
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
   readJson(resolve(integrationRoot, "capability-manifest.json")),
@@ -1975,23 +1976,19 @@ const emitUntrustedCodexTraceHint = (output, scenarioId) => {
       `integration.isolation.untrusted-trace-hint:${hint}\n`,
     );
 };
-const emitUntrustedCodexConfigHint = (output, scenarioId) => {
-  if (scenarioId !== "codex-tui-trace-smoke") return;
-  const hint = extractUntrustedCodexConfigHint(output);
-  if (hint !== undefined)
-    process.stderr.write(
-      `integration.isolation.untrusted-config-hint:${hint}\n`,
-    );
-};
-const emitCodexExitPair = (receipt, error, scenarioId) => {
-  const pair = codexFailureExitPair(receipt?.exitCode, error?.code, scenarioId);
-  if (pair === undefined) return;
-  process.stderr.write(`integration.isolation.codex-exit-pair:${pair}\n`);
-};
 const emitUntrustedCodexFailureHints = (output, scenarioId) => {
   emitUntrustedCodexJoinHint(output);
   emitUntrustedCodexTraceHint(output, scenarioId);
-  emitUntrustedCodexConfigHint(output, scenarioId);
+};
+const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
+  if (plan.scenarioId !== "codex-tui-trace-smoke") return;
+  codexResearchDiagnostics.set(plan.runId, {
+    diagnosticVersion: 1,
+    untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
+    exitPair:
+      codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
+      null,
+  });
 };
 const captureFailedScenarioReceipt = (
   output,
@@ -2244,7 +2241,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         outerMonotonicDeadline,
         fixtureCaptured,
       );
-      emitCodexExitPair(receipt, error, plan.scenarioId);
+      retainCodexResearchDiagnostic(plan, output, receipt, error);
       const retainedDiagnostic =
         plan.executionMode === "interactive" &&
         receipt !== undefined &&
@@ -2452,7 +2449,7 @@ const finalizeControllerFailureEvidence = (
   const directory = resolve(artifactsRoot, "runs", plan.runId);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const record = {
-    controllerFailureEvidenceVersion: 2,
+    controllerFailureEvidenceVersion: 3,
     runId: plan.runId,
     certificationCase: substrateCertificationCase ?? null,
     certificationPredicate:
@@ -2473,6 +2470,7 @@ const finalizeControllerFailureEvidence = (
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
     installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
+    codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null,
     privateCleanup:
       preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
   };

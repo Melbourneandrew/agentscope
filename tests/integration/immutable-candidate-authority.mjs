@@ -861,6 +861,31 @@ export const codexFailureExitPair = (
   return `${fixture}:${containerExit}`;
 };
 
+// Strictly research-only failure evidence; never a receipt or admission input.
+export const validCodexResearchDiagnostic = (value) =>
+  value === null ||
+  (typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify(
+        ["diagnosticVersion", "exitPair", "untrustedConfigHint"].sort(),
+      ) &&
+    value.diagnosticVersion === 1 &&
+    (value.untrustedConfigHint === null ||
+      [
+        "closed-marker",
+        "render",
+        "create",
+        "open",
+        "prove",
+        "publish",
+      ].includes(value.untrustedConfigHint)) &&
+    (value.exitPair === null ||
+      /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
+        value.exitPair,
+      )));
+
 export const selectInteractiveExecutionFailurePredicate = (
   candidate,
   retainedDiagnostic,
