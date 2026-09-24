@@ -362,6 +362,11 @@ describe("integration cleanup authority", () => {
     );
     expect(receipt).toBeGreaterThan(-1);
     expect(controller).toContain("? captureFailedScenarioReceipt(");
+    expect(controller).toContain("interactivePtyReceiptFailed(receipt)");
+    expect(controller).toContain("interactivePtyAuthorityMatches(receipt)");
+    expect(controller).toContain(
+      "{ outerMonotonicDeadline },\n          true,",
+    );
     expect(decode).toBeGreaterThan(receipt);
     expect(report).toBeGreaterThan(decode);
     expect(controller).toContain("receipt.exitCode === error?.code");
