@@ -381,22 +381,23 @@ const csiHasUnmodeledScreenMutation = (
   (csiIsPrivateModeControl(final, prefix, intermediate) &&
     (values.includes(7) || values.includes(1049)));
 
-const csiIsCanonicalScrollRegion = (
+const trustedScrollRegion = (
   final: string,
   prefix: string,
   intermediate: string,
   values: readonly number[],
   rows: number,
-): boolean =>
-  prefix === "" &&
-  intermediate === "" &&
-  final === "r" &&
-  ((values.length === 1 && (values[0] === 0 || values[0] === 1)) ||
-    // The parser conflates an omitted top parameter with explicit zero. Do
-    // not admit either two-parameter form until omission is preserved.
-    (values.length === 2 &&
-      values[0] === 1 &&
-      (values[1] === 0 || values[1] === rows)));
+): Readonly<{ top: number; bottom: number }> | null => {
+  if (prefix !== "" || intermediate !== "" || final !== "r") return null;
+  // The parser conflates an omitted top parameter with explicit zero. A
+  // two-parameter zero top cannot establish the exact region authority.
+  if (values.length === 2 && values[0] === 0) return null;
+  if (values.length < 1 || values.length > 2) return null;
+  const top = Math.max(1, values[0]!);
+  const bottom = values.length === 1 || values[1] === 0 ? rows : values[1]!;
+  if (top > rows || bottom > rows || (rows > 1 && top >= bottom)) return null;
+  return { top: top - 1, bottom: bottom - 1 };
+};
 
 const classifyUnmodeledScreenMutation = (
   final: string,
@@ -533,7 +534,9 @@ export class BoundedTerminalEmulator {
   #alternateScreen = false;
   #cursorPositionTrusted = true;
   #autoWrapEnabled = true;
-  #scrollRegionCanonical = true;
+  #scrollRegionTrusted = true;
+  #scrollRegionTop = 0;
+  #scrollRegionBottom: number;
   #cursorVisible = true;
   #savedColumn = 0;
   #savedRow = 0;
@@ -601,6 +604,7 @@ export class BoundedTerminalEmulator {
   ) {
     this.#limits = validateLimits(limits);
     this.#geometry = validateGeometry(geometry, this.#limits);
+    this.#scrollRegionBottom = this.#geometry.rows - 1;
     this.#cells = filledOwnArray(
       this.#geometry.columns * this.#geometry.rows,
       " ",
@@ -661,6 +665,7 @@ export class BoundedTerminalEmulator {
   public resize(geometry: PtyTerminalGeometry): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
     const next = validateGeometry(geometry, this.#limits);
+    const previousRows = this.#geometry.rows;
     const cells = filledOwnArray(next.columns * next.rows, " ");
     const cellBold = filledOwnArray(next.columns * next.rows, false);
     const cellDim = filledOwnArray(next.columns * next.rows, false);
@@ -684,6 +689,18 @@ export class BoundedTerminalEmulator {
     this.#cellDim = cellDim;
     this.#row = Math.min(this.#row, next.rows - 1);
     this.#column = Math.min(this.#column, next.columns - 1);
+    if (next.rows !== previousRows) {
+      if (
+        this.#scrollRegionTrusted &&
+        this.#scrollRegionTop === 0 &&
+        this.#scrollRegionBottom === previousRows - 1
+      )
+        this.#scrollRegionBottom = next.rows - 1;
+      else {
+        this.#scrollRegionTrusted = false;
+        this.#revokeChallengeScreenAuthority("scroll-region");
+      }
+    }
     this.#invalidateChallengeSynchronizedOutputFrame();
     this.#refreshChallengeStyledReadiness();
   }
@@ -974,7 +991,7 @@ export class BoundedTerminalEmulator {
       this.#renditionTrusted &&
       this.#cursorPositionTrusted &&
       this.#autoWrapEnabled &&
-      this.#scrollRegionCanonical;
+      this.#scrollRegionTrusted;
     if (outputAuthorityValid) {
       this.#challengeScreenAuthorityRevoked = false;
       this.#lastChallengeScreenRevocationKind = null;
@@ -1056,18 +1073,21 @@ export class BoundedTerminalEmulator {
       } else this.#commitChallengeSynchronizedOutputFrame();
       return;
     }
+    const region = trustedScrollRegion(
+      final,
+      prefix,
+      intermediate,
+      values,
+      this.#geometry.rows,
+    );
     if (
-      csiIsCanonicalScrollRegion(
-        final,
-        prefix,
-        intermediate,
-        values,
-        this.#geometry.rows,
-      ) &&
+      region !== null &&
       this.#unsupportedControlCount === 0 &&
       this.#malformedControlCount === 0
     ) {
-      this.#scrollRegionCanonical = true;
+      this.#scrollRegionTop = region.top;
+      this.#scrollRegionBottom = region.bottom;
+      this.#scrollRegionTrusted = true;
       if (this.#challengeSynchronizedOutputFrameActive)
         this.#resetChallengeOutputObservation();
       return;
@@ -1085,7 +1105,7 @@ export class BoundedTerminalEmulator {
         this.#cursorPositionTrusted = false;
       if (prefix === "" && final === "r") {
         this.#cursorPositionTrusted = false;
-        this.#scrollRegionCanonical = false;
+        this.#scrollRegionTrusted = false;
       }
       this.#revokeChallengeScreenAuthority(
         classifyUnmodeledScreenMutation(final, prefix, values),
@@ -1421,7 +1441,7 @@ export class BoundedTerminalEmulator {
       this.#recordUnsupportedControl("csi");
       return;
     }
-    if (!csiIsCanonicalScrollRegion("r", "", "", values, this.#geometry.rows))
+    if (trustedScrollRegion("r", "", "", values, this.#geometry.rows) === null)
       return;
     this.#row = 0;
     this.#column = 0;
@@ -1630,18 +1650,27 @@ export class BoundedTerminalEmulator {
   }
 
   #lineFeed(): void {
-    if (this.#row < this.#geometry.rows - 1) {
-      this.#row += 1;
+    if (this.#row !== this.#scrollRegionBottom) {
+      if (this.#row < this.#geometry.rows - 1) this.#row += 1;
       return;
     }
-    const retained = this.#cells.length - this.#geometry.columns;
-    for (let index = 0; index < retained; index += 1) {
+    if (!this.#scrollRegionTrusted) {
+      this.#revokeChallengeScreenAuthority("scroll-region");
+      return;
+    }
+    const start = this.#scrollRegionTop * this.#geometry.columns;
+    const retained = this.#scrollRegionBottom * this.#geometry.columns;
+    for (let index = start; index < retained; index += 1) {
       const source = index + this.#geometry.columns;
       this.#cells[index] = this.#cells[source]!;
       this.#cellBold[index] = this.#cellBold[source]!;
       this.#cellDim[index] = this.#cellDim[source]!;
     }
-    for (let index = retained; index < this.#cells.length; index += 1) {
+    for (
+      let index = retained;
+      index < retained + this.#geometry.columns;
+      index += 1
+    ) {
       this.#cells[index] = " ";
       this.#cellBold[index] = false;
       this.#cellDim[index] = false;
