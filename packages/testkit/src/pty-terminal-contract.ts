@@ -71,6 +71,15 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   inputBytes: number;
   inputSha256: string;
   readinessObserved: boolean;
+  /** Fixed, content-free terminal observations; never an admission predicate. */
+  challengedReadinessProgress?: Readonly<{
+    marker: boolean;
+    synchronizedFrame: boolean;
+    styledGlyph: boolean;
+    requiredText: boolean;
+    terminalProtocol: "complete" | "incomplete" | "rejected";
+    screenRevoked: boolean;
+  }>;
   /** Fixed, content-free diagnostic only; never a PTY admission predicate. */
   postSubmissionIdleDiagnostic?:
     | "not-armed"

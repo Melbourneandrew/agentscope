@@ -408,8 +408,21 @@ export const interactivePtyActionPrefixDiagnostic = (receipt) => {
 // Failure-only categories from the already validated PTY receipt. These
 // distinguish no child output from a rendered-but-unready terminal without
 // retaining terminal bytes, screen text, hashes, or process identities.
+const closedChallengedReadinessProgress = (value) =>
+  value !== null &&
+  Object.keys(value).sort().join(",") ===
+    "marker,requiredText,screenRevoked,styledGlyph,synchronizedFrame,terminalProtocol" &&
+  typeof value.marker === "boolean" &&
+  typeof value.synchronizedFrame === "boolean" &&
+  typeof value.styledGlyph === "boolean" &&
+  typeof value.requiredText === "boolean" &&
+  ["complete", "incomplete", "rejected"].includes(value.terminalProtocol) &&
+  typeof value.screenRevoked === "boolean";
+
+// eslint-disable-next-line complexity -- every category is validated before a failure-only log
 export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
   const snapshot = receipt?.finalSnapshot;
+  const challenged = receipt?.challengedReadinessProgress;
   if (
     !Number.isSafeInteger(receipt?.outputBytes) ||
     receipt.outputBytes < 0 ||
@@ -419,6 +432,8 @@ export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
     !Number.isSafeInteger(snapshot?.nonEmptyLineCount) ||
     snapshot.nonEmptyLineCount < 0 ||
     typeof snapshot?.sawCursorPositionQuery !== "boolean" ||
+    (challenged !== undefined &&
+      !closedChallengedReadinessProgress(challenged)) ||
     ![
       "active",
       "ready",
@@ -429,7 +444,7 @@ export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
     ].includes(snapshot?.semanticState)
   )
     return undefined;
-  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}`;
+  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}`;
 };
 
 // This optional receipt field is not part of the envelope authority checks.

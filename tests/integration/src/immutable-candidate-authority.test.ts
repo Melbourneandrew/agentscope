@@ -408,6 +408,21 @@ describe("interactive PTY readiness progress diagnostics", () => {
     expect(
       interactivePtyReadinessProgressDiagnostic({
         ...receipt,
+        challengedReadinessProgress: {
+          marker: true,
+          synchronizedFrame: true,
+          styledGlyph: false,
+          requiredText: false,
+          terminalProtocol: "incomplete",
+          screenRevoked: true,
+        },
+      }),
+    ).toBe(
+      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active:marker-observed:frame-observed:glyph-absent:prompt-absent:protocol-incomplete:screen-revoked",
+    );
+    expect(
+      interactivePtyReadinessProgressDiagnostic({
+        ...receipt,
         outputBytes: 0,
         readinessObserved: true,
         finalSnapshot: {
@@ -424,6 +439,17 @@ describe("interactive PTY readiness progress diagnostics", () => {
     for (const malformed of [
       { ...receipt, outputBytes: -1 },
       { ...receipt, readinessObserved: "true" },
+      {
+        ...receipt,
+        challengedReadinessProgress: {
+          marker: true,
+          synchronizedFrame: true,
+          styledGlyph: false,
+          requiredText: false,
+          terminalProtocol: "unknown",
+          screenRevoked: true,
+        },
+      },
       {
         ...receipt,
         finalSnapshot: { ...receipt.finalSnapshot, printableCellCount: -1 },

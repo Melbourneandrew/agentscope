@@ -110,6 +110,8 @@ const emulatorUnsupportedControlReason =
   BoundedTerminalEmulator.prototype.unsupportedControlReason;
 const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
+const emulatorChallengedReadinessProgress =
+  BoundedTerminalEmulator.prototype.challengedReadinessProgress;
 const emulatorReadinessObservationGeneration =
   BoundedTerminalEmulator.prototype.readinessObservationGeneration;
 const emulatorArmPostSubmissionIdleObservation =
@@ -3648,6 +3650,15 @@ const armSelectedPty = (
           inputBytes: ptyAuthority.inputBytes,
           inputSha256: ptyAuthority.inputSha256,
           readinessObserved,
+          ...(request.readiness.kind === "challenge-styled-text"
+            ? {
+                challengedReadinessProgress: safeReflectApply(
+                  emulatorChallengedReadinessProgress,
+                  terminal,
+                  [],
+                ),
+              }
+            : {}),
           ...(request.readiness.kind === "challenge-styled-text" &&
           request.interaction.actions.some(
             (action) =>
@@ -6013,6 +6024,14 @@ const selectedPtyRuntimeForTest = (
               chunkOffset = 0;
               if (
                 terminalProtocolNegativeSeed &&
+                chunkIndex === chunks.length
+              ) {
+                processes.clear();
+                terminal = true;
+                close({ code: 0, signal: 0 });
+              }
+              if (
+                seed === "terminal-preenter-frame-late-close" &&
                 chunkIndex === chunks.length
               ) {
                 processes.clear();

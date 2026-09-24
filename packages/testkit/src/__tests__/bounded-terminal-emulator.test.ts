@@ -179,6 +179,14 @@ describe("bounded semantic terminal emulator", () => {
     terminal.write(bytes("t\u001b[?2026l"));
     expect(terminal.readinessObserved()).toBe(true);
     expect(terminal.readinessObservationGeneration()).toBe(1);
+    expect(terminal.challengedReadinessProgress()).toEqual({
+      marker: true,
+      synchronizedFrame: true,
+      styledGlyph: true,
+      requiredText: true,
+      terminalProtocol: "complete",
+      screenRevoked: false,
+    });
 
     terminal.write(
       bytes(

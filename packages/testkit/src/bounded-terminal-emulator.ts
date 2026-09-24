@@ -565,9 +565,12 @@ export class BoundedTerminalEmulator {
   #lastChallengeScreenRevocationKind: ChallengeScreenRevocationKind | null =
     null;
   #challengeSynchronizedOutputFrameActive = false;
+  #challengeSynchronizedOutputFrameEverObserved = false;
   #challengeStyledTextObservedInOutput = false;
+  #challengeStyledTextEverObservedInOutput = false;
   #challengeStyledTextOutputCellIndex: number | null = null;
   #challengeRequiredTextObservedInOutput = false;
+  #challengeRequiredTextEverObservedInOutput = false;
   #challengeRequiredTextOutputTail = "";
   #challengeRequiredTextOutputStartCellIndex: number | null = null;
   #readinessChallengeObserved = false;
@@ -788,6 +791,29 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved;
   }
 
+  /** Content-free observations for failure diagnosis; never admission authority. */
+  public challengedReadinessProgress(): Readonly<{
+    marker: boolean;
+    synchronizedFrame: boolean;
+    styledGlyph: boolean;
+    requiredText: boolean;
+    terminalProtocol: "complete" | "incomplete" | "rejected";
+    screenRevoked: boolean;
+  }> {
+    return freezeAuthority({
+      marker: this.#readinessChallengeObserved,
+      synchronizedFrame: this.#challengeSynchronizedOutputFrameEverObserved,
+      styledGlyph: this.#challengeStyledTextEverObservedInOutput,
+      requiredText: this.#challengeRequiredTextEverObservedInOutput,
+      terminalProtocol: this.#terminalProtocolRejected
+        ? "rejected"
+        : this.#terminalProtocolPhase === 6
+          ? "complete"
+          : "incomplete",
+      screenRevoked: this.#challengeScreenAuthorityRevoked,
+    });
+  }
+
   /** Package-private causal observation used by the selected PTY kernel. */
   public readinessObservationGeneration(): number {
     return this.#readinessObservationGeneration;
@@ -935,6 +961,7 @@ export class BoundedTerminalEmulator {
   #beginChallengeSynchronizedOutputFrame(): void {
     this.#resetChallengeOutputObservation();
     this.#challengeSynchronizedOutputFrameActive = true;
+    this.#challengeSynchronizedOutputFrameEverObserved = true;
     this.#postSubmissionIdleFrameEligible =
       this.#postSubmissionIdleObservationArmed &&
       (this.#readinessMatcher.kind !== "challenge-styled-text" ||
@@ -1017,6 +1044,7 @@ export class BoundedTerminalEmulator {
       this.#dim === this.#readinessMatcher.dim
     ) {
       this.#challengeStyledTextObservedInOutput = true;
+      this.#challengeStyledTextEverObservedInOutput = true;
       this.#challengeStyledTextOutputCellIndex = cellIndex;
       this.#challengeRequiredTextObservedInOutput = false;
       this.#challengeRequiredTextOutputTail = "";
@@ -1031,6 +1059,7 @@ export class BoundedTerminalEmulator {
       this.#challengeRequiredTextOutputTail ===
         this.#readinessMatcher.requiredText;
     this.#challengeRequiredTextObservedInOutput ||= requiredTextObservedNow;
+    this.#challengeRequiredTextEverObservedInOutput ||= requiredTextObservedNow;
     if (requiredTextObservedNow) {
       const requiredStart =
         cellIndex - this.#readinessMatcher.requiredText.length + 1;

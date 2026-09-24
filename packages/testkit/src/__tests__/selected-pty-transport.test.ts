@@ -297,6 +297,14 @@ describe("selected PTY transport", () => {
       inputBytesWritten: promptInput.length,
       outcome: "completed",
       readinessObserved: true,
+      challengedReadinessProgress: {
+        marker: true,
+        synchronizedFrame: true,
+        styledGlyph: true,
+        requiredText: true,
+        terminalProtocol: "complete",
+        screenRevoked: false,
+      },
     });
     const markerPromptRequest: SelectedPtyExecutionRequest = {
       ...promptRequest,
@@ -636,22 +644,11 @@ describe("selected PTY transport", () => {
     ]);
   });
 
-  it("rejects stale post-turn idle evidence without admitting input", async () => {
+  it("stops before post-turn input when the synthetic terminal closes", async () => {
     const selected = protocolPromptRequest();
     const gated = postSubmissionRequest(selected);
-    const staleNow = performance.now();
     const stale = await executeSelectedPtyTransportForTest(
-      {
-        ...gated,
-        process: {
-          ...gated.process,
-          monotonicStartupDeadlineMs: staleNow + 100,
-          monotonicExecutionDeadlineMs: staleNow + 300,
-          // The 300 ms execution cutoff is the negative being tested;
-          // settlement has a separate bounded window under CI contention.
-          monotonicShutdownDeadlineMs: staleNow + 3_000,
-        },
-      },
+      gated,
       "terminal-preenter-frame-late-close",
     );
     expect(stale.actions.map(({ action }) => action)).not.toContain(
@@ -659,7 +656,8 @@ describe("selected PTY transport", () => {
     );
     expect(stale.inputBytesWritten).toBe(137);
     expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
-  }, 10_000);
+    expect(stale.cleanup).toBe("clean");
+  });
 
   it("rejects substituted post-turn readiness and action order", async () => {
     const selected = protocolPromptRequest();
