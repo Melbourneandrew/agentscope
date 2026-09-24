@@ -55,6 +55,26 @@ export type PtyMalformedControlReason =
 
 export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
 
+type ChallengeScreenRevocationKind =
+  | "combined-sync"
+  | "unmodeled-csi"
+  | "cursor-restore"
+  | "reverse-index"
+  | "tab-stop-set"
+  | "charset"
+  | "frame-line-break"
+  | "tab"
+  | "untrusted-cell"
+  | "rendition";
+
+type PtyIdleAtTitleDiagnostic =
+  | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
+  | "title-not-observed"
+  | "idle-revoked-protocol"
+  | "idle-revoked-screen"
+  | "idle-revoked-unclassified"
+  | `idle-revoked-${ChallengeScreenRevocationKind}`;
+
 export type PtyTerminalSemanticSnapshot = Readonly<{
   snapshotVersion: 1;
   geometry: PtyTerminalGeometry;
@@ -503,6 +523,8 @@ export class BoundedTerminalEmulator {
   #readinessObserved = false;
   #readinessObservationGeneration = 0;
   #challengeScreenAuthorityRevoked = false;
+  #lastChallengeScreenRevocationKind: ChallengeScreenRevocationKind | null =
+    null;
   #challengeSynchronizedOutputFrameActive = false;
   #challengeStyledTextObservedInOutput = false;
   #challengeStyledTextOutputCellIndex: number | null = null;
@@ -516,9 +538,8 @@ export class BoundedTerminalEmulator {
   #postSubmissionIdleFrameEligible = false;
   #postSubmissionEligibleFrameAttempted = false;
   #postSubmissionIdlePromptObserved = false;
-  #postSubmissionIdleAtTitleDiagnostic:
-    | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
-    | "title-not-observed" = "title-not-observed";
+  #postSubmissionIdleAtTitleDiagnostic: PtyIdleAtTitleDiagnostic =
+    "title-not-observed";
   #postSubmissionResponseTail = "";
   #postSubmissionResponseObserved = false;
   #completionTail = "";
@@ -743,6 +764,12 @@ export class BoundedTerminalEmulator {
     | "idle-frame-rejected"
     | "idle-readiness-revoked"
     | "idle-ready" {
+    return this.#diagnosePostSubmissionIdle();
+  }
+
+  #diagnosePostSubmissionIdle(): ReturnType<
+    BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]
+  > {
     if (!this.#postSubmissionIdleObservationArmed) return "not-armed";
     if (!this.#postSubmissionResponseObserved) return "response-not-observed";
     if (!this.#postSubmissionIdlePromptObserved)
@@ -753,10 +780,18 @@ export class BoundedTerminalEmulator {
   }
 
   /** Package-private, latched at the exact challenged title, before later output. */
-  public postSubmissionIdleAtTitleDiagnostic():
-    | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
-    | "title-not-observed" {
+  public postSubmissionIdleAtTitleDiagnostic(): PtyIdleAtTitleDiagnostic {
     return this.#postSubmissionIdleAtTitleDiagnostic;
+  }
+
+  #classifyPostSubmissionIdleAtTitle(): PtyIdleAtTitleDiagnostic {
+    const diagnostic = this.#diagnosePostSubmissionIdle();
+    if (diagnostic !== "idle-readiness-revoked") return diagnostic;
+    if (this.#terminalProtocolRejected || this.#terminalProtocolPhase !== 6)
+      return "idle-revoked-protocol";
+    if (!this.#challengeScreenAuthorityRevoked) return "idle-revoked-screen";
+    const kind = this.#lastChallengeScreenRevocationKind;
+    return kind === null ? "idle-revoked-unclassified" : `idle-revoked-${kind}`;
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -862,8 +897,9 @@ export class BoundedTerminalEmulator {
     this.#resetChallengeOutputObservation();
   }
 
-  #revokeChallengeScreenAuthority(): void {
+  #revokeChallengeScreenAuthority(kind: ChallengeScreenRevocationKind): void {
     this.#challengeScreenAuthorityRevoked = true;
+    this.#lastChallengeScreenRevocationKind = kind;
     // A semantic marker is historical readiness evidence, not a live screen
     // assertion. Exiting an alternate screen after completion must not erase
     // the marker that authorized the earlier input.
@@ -903,7 +939,10 @@ export class BoundedTerminalEmulator {
       this.#cursorPositionTrusted &&
       this.#autoWrapEnabled &&
       this.#scrollRegionCanonical;
-    if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
+    if (outputAuthorityValid) {
+      this.#challengeScreenAuthorityRevoked = false;
+      this.#lastChallengeScreenRevocationKind = null;
+    }
     this.#refreshChallengeStyledReadiness();
     if (this.#readinessObserved && outputAuthorityValid) {
       this.#readinessObservationGeneration += 1;
@@ -970,7 +1009,7 @@ export class BoundedTerminalEmulator {
       if (values.includes(1049)) {
         this.#cursorPositionTrusted = false;
       }
-      this.#revokeChallengeScreenAuthority();
+      this.#revokeChallengeScreenAuthority("combined-sync");
       return;
     }
     if (synchronizedOutputMode) {
@@ -1000,7 +1039,7 @@ export class BoundedTerminalEmulator {
             (values[0] === 0 || values[0] === 1) &&
             (values[1] === 0 || values[1] === this.#geometry.rows));
       }
-      this.#revokeChallengeScreenAuthority();
+      this.#revokeChallengeScreenAuthority("unmodeled-csi");
       return;
     }
     if (
@@ -1044,7 +1083,7 @@ export class BoundedTerminalEmulator {
         this.#savedCursorPositionTrusted = this.#cursorPositionTrusted;
         this.#state = "ground";
       } else if (character === "8") {
-        this.#revokeChallengeScreenAuthority();
+        this.#revokeChallengeScreenAuthority("cursor-restore");
         this.#row = this.#savedRow;
         this.#column = this.#savedColumn;
         this.#bold = this.#savedBold;
@@ -1067,11 +1106,12 @@ export class BoundedTerminalEmulator {
         this.#lineFeed();
         this.#state = "ground";
       } else if (character === "M") {
-        this.#revokeChallengeScreenAuthority();
+        this.#revokeChallengeScreenAuthority("reverse-index");
         this.#row = Math.max(0, this.#row - 1);
         this.#state = "ground";
       } else if (character === "H" || character === "=" || character === ">") {
-        if (character === "H") this.#revokeChallengeScreenAuthority();
+        if (character === "H")
+          this.#revokeChallengeScreenAuthority("tab-stop-set");
         else this.#resetChallengeRequiredTextOutputTail();
         this.#state = "ground";
       } else if (character === "c") {
@@ -1099,7 +1139,7 @@ export class BoundedTerminalEmulator {
       this.#characterSetTrusted =
         this.#characterSetTarget === "(" && character === "B";
       this.#characterSetTarget = null;
-      this.#revokeChallengeScreenAuthority();
+      this.#revokeChallengeScreenAuthority("charset");
       this.#state = "ground";
       return;
     }
@@ -1125,14 +1165,14 @@ export class BoundedTerminalEmulator {
   #consumeGround(character: string): void {
     if (character === "\r") {
       if (this.#challengeSynchronizedOutputFrameActive)
-        this.#revokeChallengeScreenAuthority();
+        this.#revokeChallengeScreenAuthority("frame-line-break");
       else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = 0;
       return;
     }
     if (character === "\n") {
       if (this.#challengeSynchronizedOutputFrameActive)
-        this.#revokeChallengeScreenAuthority();
+        this.#revokeChallengeScreenAuthority("frame-line-break");
       else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#lineFeed();
       return;
@@ -1143,7 +1183,7 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (character === "\t") {
-      this.#revokeChallengeScreenAuthority();
+      this.#revokeChallengeScreenAuthority("tab");
       this.#column = Math.min(
         this.#geometry.columns - 1,
         Math.ceil((this.#column + 1) / 8) * 8,
@@ -1162,7 +1202,7 @@ export class BoundedTerminalEmulator {
     }
     if (!trustedSingleCellCharacter(character)) {
       this.#cursorPositionTrusted = false;
-      this.#revokeChallengeScreenAuthority();
+      this.#revokeChallengeScreenAuthority("untrusted-cell");
     }
     const cellIndex = this.#row * this.#geometry.columns + this.#column;
     this.#cells[cellIndex] = character;
@@ -1365,7 +1405,7 @@ export class BoundedTerminalEmulator {
         index += 4;
       } else {
         this.#renditionTrusted = false;
-        this.#revokeChallengeScreenAuthority();
+        this.#revokeChallengeScreenAuthority("rendition");
         return;
       }
     }
@@ -1495,7 +1535,7 @@ export class BoundedTerminalEmulator {
       ) {
         if (this.#postSubmissionIdleAtTitleDiagnostic === "title-not-observed")
           this.#postSubmissionIdleAtTitleDiagnostic =
-            this.postSubmissionIdleDiagnostic();
+            this.#classifyPostSubmissionIdleAtTitle();
         this.#completionObserved = true;
       }
     }

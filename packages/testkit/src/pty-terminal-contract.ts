@@ -87,7 +87,20 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     | "idle-frame-not-observed"
     | "idle-frame-rejected"
     | "idle-readiness-revoked"
-    | "idle-ready";
+    | "idle-ready"
+    | "idle-revoked-protocol"
+    | "idle-revoked-screen"
+    | "idle-revoked-unclassified"
+    | "idle-revoked-combined-sync"
+    | "idle-revoked-unmodeled-csi"
+    | "idle-revoked-cursor-restore"
+    | "idle-revoked-reverse-index"
+    | "idle-revoked-tab-stop-set"
+    | "idle-revoked-charset"
+    | "idle-revoked-frame-line-break"
+    | "idle-revoked-tab"
+    | "idle-revoked-untrusted-cell"
+    | "idle-revoked-rendition";
   actions: readonly PtyTransportAction[];
   isTTY: true;
   initialGeometry: PtyTerminalGeometry;

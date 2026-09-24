@@ -643,10 +643,60 @@ describe("bounded semantic terminal emulator", () => {
       ),
     );
     expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+    Object.defineProperty(terminal, "postSubmissionIdleDiagnostic", {
+      value: () => {
+        throw new Error("substituted-public-diagnostic");
+      },
+    });
     terminal.write(
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
     );
     expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+  });
+
+  it("classifies fixed readiness losses at the exact challenged title", () => {
+    const challenge = "a".repeat(64);
+    for (const [mutation, category] of [
+      [
+        "\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l",
+        "idle-revoked-screen",
+      ],
+      ["\u001b[?1049l", "idle-revoked-unmodeled-csi"],
+    ] as const) {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(
+        bytes(
+          "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+        ),
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+      terminal.write(
+        bytes(
+          "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+        ),
+      );
+      expect(terminal.postSubmissionIdlePromptObserved()).toBe(true);
+      terminal.write(bytes(mutation));
+      terminal.write(
+        bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+      );
+      expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(category);
+    }
   });
 
   it("does not mistake mismatched styled text for post-completion readiness", () => {
