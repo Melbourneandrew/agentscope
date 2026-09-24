@@ -336,7 +336,7 @@ describe("integration capability manifest", () => {
     );
     const codexLaunch = source.indexOf("  const codexRun = run(\n");
     const readinessChallengePublication = source.indexOf(
-      "AGENTSCOPE_PTY_READY:${readinessChallenge}",
+      "AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}",
     );
     const sessionStartCheckpoint = source.indexOf(
       "      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
@@ -378,10 +378,10 @@ describe("integration capability manifest", () => {
     expect(readinessChallengePublication).toBeGreaterThan(challengeRead);
     expect(readinessChallengePublication).toBeLessThan(codexLaunch);
     expect(source).toContain(
-      "`AGENTSCOPE_PTY_READY:${readinessChallenge}\\r\\n`",
+      "`AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}\\r\\n`",
     );
     expect(source).not.toContain(
-      "`\\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}",
+      "`\\u001b[?1049hAGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}",
     );
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
@@ -647,8 +647,8 @@ describe("integration capability manifest", () => {
     expect(
       source.indexOf("  await releaseModelResponse();\n", modelRequest),
     ).toBeLessThan(terminalWait);
-    expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
-    expect(source).not.toContain("AGENTSCOPE_PTY_TOPOLOGY");
+    expect(source.match(/AGENTSCOPE_PTY_TOPOLOGY/gu)).toHaveLength(1);
+    expect(source).not.toContain("AGENTSCOPE_PTY_READY");
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
     expect(source).not.toContain("codex-hook-completion-probe");
   });

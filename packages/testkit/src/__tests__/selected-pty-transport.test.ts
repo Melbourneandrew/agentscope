@@ -603,41 +603,42 @@ describe("selected PTY transport", () => {
     20_000,
   );
 
-  it("waits for a fresh bounded idle prompt before post-turn input", async () => {
+  it.each([
+    "terminal-post-completion-idle",
+    "terminal-title-completion-after-idle",
+    "terminal-post-submission-readiness-revoked",
+    "terminal-idle-before-completion-marker",
+  ] as const)("waits for a fresh bounded idle prompt: %s", async (seed) => {
     const selected = protocolPromptRequest();
     const gated = postSubmissionRequest(selected);
-    for (const seed of [
-      "terminal-post-completion-idle",
-      "terminal-title-completion-after-idle",
-      "terminal-post-submission-readiness-revoked",
-      "terminal-idle-before-completion-marker",
-    ] as const) {
-      const completed = await executeSelectedPtyTransportForTest(gated, seed);
-      expect(completed).toMatchObject({
-        outcome: "completed",
-        cleanup: "clean",
-        inputBytesWritten: 138,
-        postSubmissionIdleDiagnostic: "idle-ready",
-      });
-      if (seed === "terminal-post-completion-idle")
-        expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
-          "title-not-observed",
-        );
-      if (seed === "terminal-title-completion-after-idle")
-        expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
-          "idle-ready",
-        );
-      expect(completed.actions.map(({ action }) => action)).toEqual([
-        "resize",
-        "input",
-        "checkpoint-process-topology",
-        "input",
-        "input",
-        "wait-for-semantic-completion",
-        "wait-for-post-submission-idle-prompt",
-        "input",
-      ]);
-    }
+    const completed = await executeSelectedPtyTransportForTest(gated, seed);
+    expect(completed).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      inputBytesWritten: 138,
+      postSubmissionIdleDiagnostic: "idle-ready",
+    });
+    if (seed === "terminal-post-completion-idle")
+      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
+        "title-not-observed",
+      );
+    if (seed === "terminal-title-completion-after-idle")
+      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe("idle-ready");
+    expect(completed.actions.map(({ action }) => action)).toEqual([
+      "resize",
+      "input",
+      "checkpoint-process-topology",
+      "input",
+      "input",
+      "wait-for-semantic-completion",
+      "wait-for-post-submission-idle-prompt",
+      "input",
+    ]);
+  });
+
+  it("rejects stale post-turn idle evidence without admitting input", async () => {
+    const selected = protocolPromptRequest();
+    const gated = postSubmissionRequest(selected);
     const staleNow = performance.now();
     const stale = await executeSelectedPtyTransportForTest(
       {
@@ -656,6 +657,11 @@ describe("selected PTY transport", () => {
     );
     expect(stale.inputBytesWritten).toBe(137);
     expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
+  });
+
+  it("rejects substituted post-turn readiness and action order", async () => {
+    const selected = protocolPromptRequest();
+    const gated = postSubmissionRequest(selected);
     for (const readiness of [
       selected.readiness,
       {
