@@ -19,6 +19,7 @@ const {
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexJoinHint,
+  extractUntrustedCodexTraceHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
@@ -34,6 +35,7 @@ const {
   readBoundedInteractiveFailureMarker,
   selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
+  untrustedCodexTraceHint,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
@@ -103,6 +105,30 @@ describe("interactive PTY artifact diagnostics", () => {
         readiness: () => false,
       }),
     ).toBe("input-bytes");
+  });
+});
+
+describe("untrusted Codex trace hint transport", () => {
+  it.each(["hook", "reporter", "search"])(
+    "extracts one closed content-free hint: %s",
+    (hint) => {
+      const line = `integration.runner.untrusted-trace-hint:${hint}\n`;
+      expect(extractUntrustedCodexTraceHint(line)).toBe(hint);
+      for (const output of [
+        `${line}${line}`,
+        `${line}integration.runner.untrusted-trace-hint:other\n`,
+        `x:${line}`,
+        `integration.runner.untrusted-trace-hint:${hint}-extra\n`,
+        `integration.runner.untrusted-trace-hint:${hint}:secret\n`,
+      ])
+        expect(extractUntrustedCodexTraceHint(output)).toBeUndefined();
+    },
+  );
+  it("rejects non-text and oversized attached output", () => {
+    expect(extractUntrustedCodexTraceHint(undefined)).toBeUndefined();
+    expect(
+      extractUntrustedCodexTraceHint("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
   });
 });
 
@@ -796,6 +822,40 @@ describe("interactive PTY failure diagnostic transport", () => {
       ).toBe(diagnostic);
     },
   );
+});
+
+describe("interactive trace failure-marker transport", () => {
+  it.each([
+    "integration.fixture.codex-trace-await-hook",
+    "integration.fixture.codex-trace-await-reporter",
+    "integration.fixture.codex-trace-await-search",
+  ])("does not promote a candidate-writable trace hint: %s", (diagnostic) => {
+    expect(
+      selectInteractiveFailureDiagnostic(
+        diagnostic,
+        "integration.fixture.codex-trace-search",
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe("integration.fixture.codex-trace-search");
+    expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+      ),
+    ).toBeUndefined();
+    expect(untrustedCodexTraceHint(diagnostic)).toBe(
+      diagnostic.slice("integration.fixture.codex-trace-await-".length),
+    );
+  });
+  for (const marker of [
+    "integration.fixture.codex-trace-await-other",
+    "integration.fixture.codex-trace-await-hook-extra",
+    "integration.fixture.codex-trace-search",
+    undefined,
+  ])
+    it(`rejects a substituted untrusted trace hint: ${marker}`, () => {
+      expect(untrustedCodexTraceHint(marker)).toBeUndefined();
+    });
 });
 
 describe("interactive PTY failure exit-code transport", () => {

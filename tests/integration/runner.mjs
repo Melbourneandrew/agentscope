@@ -26,6 +26,7 @@ import {
   interactivePtyReceiptFailed,
   readBoundedInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
+  untrustedCodexTraceHint,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
@@ -760,6 +761,15 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
   const hint = untrustedCodexJoinHint(ledger);
   if (hint !== undefined)
     process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);
+  if (scenarioId === "codex-tui-trace-smoke") {
+    const traceHint = untrustedCodexTraceHint(
+      readBoundedInteractiveFailureMarker(ledger),
+    );
+    if (traceHint !== undefined)
+      process.stdout.write(
+        `integration.runner.untrusted-trace-hint:${traceHint}\n`,
+      );
+  }
 }
 const fixtureResult = fixtureOutput
   .split("\n")

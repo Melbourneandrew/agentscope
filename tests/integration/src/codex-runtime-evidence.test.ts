@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  classifyCodexTraceDeadlineObservation,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
@@ -238,6 +239,35 @@ describe("Codex bounded native ledgers", () => {
         tracePresent: false,
       }),
     ).toBe("missing");
+  });
+
+  it("diagnoses only the last closed trace-deadline observation", () => {
+    expect(
+      classifyCodexTraceDeadlineObservation({
+        hookCompleted: false,
+        reporterSettled: false,
+      }),
+    ).toBe("trace-await-hook");
+    expect(
+      classifyCodexTraceDeadlineObservation({
+        hookCompleted: true,
+        reporterSettled: false,
+      }),
+    ).toBe("trace-await-reporter");
+    expect(
+      classifyCodexTraceDeadlineObservation({
+        hookCompleted: true,
+        reporterSettled: true,
+      }),
+    ).toBe("trace-await-search");
+    for (const input of [
+      { hookCompleted: false, reporterSettled: true },
+      { hookCompleted: "completed", reporterSettled: false },
+      { hookCompleted: true, reporterSettled: "settled" },
+    ])
+      expect(() =>
+        classifyCodexTraceDeadlineObservation(input as never),
+      ).toThrow("integration.codex.trace-observation");
   });
 
   it("retries only the exact content-free trace-unavailable diagnostic", () => {

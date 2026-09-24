@@ -51,6 +51,22 @@ export const classifyCodexSettledTraceObservation = ({
   return "pending";
 };
 
+// Failure-only diagnosis of the last authenticated observation. This does not
+// change the trace acceptance predicate or extend its deadline.
+export const classifyCodexTraceDeadlineObservation = ({
+  hookCompleted,
+  reporterSettled,
+}) => {
+  if (
+    typeof hookCompleted !== "boolean" ||
+    typeof reporterSettled !== "boolean" ||
+    (reporterSettled && !hookCompleted)
+  )
+    throw new Error("integration.codex.trace-observation");
+  if (!hookCompleted) return "trace-await-hook";
+  return reporterSettled ? "trace-await-search" : "trace-await-reporter";
+};
+
 export const codexTraceSearchUnavailable = ({
   code,
   signal,

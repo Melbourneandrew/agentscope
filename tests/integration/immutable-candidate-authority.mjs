@@ -173,6 +173,16 @@ export const selectInteractiveFailureDiagnostic = (
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       value !== "integration.fixture.codex-tui-child-rejected",
   );
+
+// Research-only: this candidate-writable marker is never a receipt predicate.
+export const untrustedCodexTraceHint = (marker) => {
+  if (marker === "integration.fixture.codex-trace-await-hook") return "hook";
+  if (marker === "integration.fixture.codex-trace-await-reporter")
+    return "reporter";
+  if (marker === "integration.fixture.codex-trace-await-search")
+    return "search";
+  return undefined;
+};
 export const interactivePtyReceiptFailed = (receipt) =>
   receipt.outcome !== "completed" ||
   receipt.finalSnapshot.semanticState !== "completed" ||
@@ -466,6 +476,22 @@ export const extractUntrustedCodexJoinHint = (output) => {
   return encodeCodexJoinDeadlineExitCode(state) === undefined
     ? undefined
     : state;
+};
+
+// Research-only, content-free, and never a receipt or admission predicate.
+export const extractUntrustedCodexTraceHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-trace-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-trace-hint:([a-z-]{1,32})$/u,
+  )?.[1];
+  return hint === "hook" || hint === "reporter" || hint === "search"
+    ? hint
+    : undefined;
 };
 
 export const selectInteractiveExecutionFailurePredicate = (

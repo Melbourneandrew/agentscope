@@ -295,6 +295,14 @@ describe("integration cleanup authority", () => {
       ),
       "utf8",
     );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    const outer = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
     for (const phase of [
       "trace-terminal",
       "trace-settlement",
@@ -346,6 +354,24 @@ describe("integration cleanup authority", () => {
       scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
     );
     expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
+    expect(scenario).toContain(
+      'error?.message === "integration.codex.trace-deadline"',
+    );
+    expect(scenario).toContain("classifyCodexTraceDeadlineObservation({");
+    for (const phase of [
+      "trace-await-hook",
+      "trace-await-reporter",
+      "trace-await-search",
+    ]) {
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+      expect(scenario).not.toContain(`recordInteractivePhase("${phase}")`);
+    }
+    expect(runner).toContain("untrustedCodexTraceHint(");
+    expect(runner).toContain("integration.runner.untrusted-trace-hint:");
+    expect(outer).toContain(
+      "emitUntrustedCodexTraceHint(output, plan.scenarioId)",
+    );
+    expect(outer).toContain("integration.isolation.untrusted-trace-hint:");
     expect(scenario).toContain(
       "const terminalCut = classifyCodexSettledTraceObservation({",
     );
