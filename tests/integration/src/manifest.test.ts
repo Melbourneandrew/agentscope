@@ -359,7 +359,7 @@ describe("integration capability manifest", () => {
       traceDeadline,
     );
     const checkpointAcknowledgement = source.indexOf(
-      "  await checkpointWitness;\n",
+      "    await Promise.race([checkpointWitness, earlyCodexExit]);\n",
       codexLaunch,
     );
     const modelResponse = source.indexOf("  await releaseModelResponse();\n");

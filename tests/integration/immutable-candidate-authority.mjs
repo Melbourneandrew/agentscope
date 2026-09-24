@@ -202,6 +202,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-unsupported-extended-csi",
   "testkit.pty.transport.semantic-unsupported-osc",
   "testkit.pty.transport.semantic-unsupported-unknown",
+  "integration.fixture.codex-tui-exit-before-checkpoint",
+  "integration.fixture.codex-tui-checkpoint-not-witnessed",
 ]);
 
 export const selectInteractiveFailureDiagnostic = (
@@ -630,6 +632,8 @@ const interactiveFixtureFailurePredicates = Object.freeze(
   ptyExecutionFailurePredicates.filter(
     (value) =>
       value.startsWith("integration.fixture.codex-") &&
+      value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
+      value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
       !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       !interactivePostTraceFailurePredicates.includes(value),

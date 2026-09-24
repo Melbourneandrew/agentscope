@@ -481,6 +481,18 @@ const recordInteractivePhase = (phase) => {
     { flag: "wx", mode: 0o600 },
   );
 };
+const recordPreCheckpointFailure = (kind) => {
+  if (
+    kind !== "tui-exit-before-checkpoint" &&
+    kind !== "tui-checkpoint-not-witnessed"
+  )
+    throw new Error("integration.codex.process-checkpoint");
+  writeFileSync(
+    join(ledger, "interactive-failure.txt"),
+    `integration.fixture.codex-${kind}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
 const recordModelGateArmFailure = (predicate) => {
   if (
     ![
@@ -1447,24 +1459,40 @@ try {
     },
   );
   recordInteractivePhase("tui-run-created");
-  await checkpointWitness;
-  recordInteractivePhase("tui-checkpoint");
-  recordInteractivePhase("model-gate-arm-start");
-  const gateArm = armModelGate(modelAdmissionCutoff);
+  let armPending = true;
+  let preArmExitPhase = "tui-exit-before-checkpoint";
   const earlyCodexExit = codexRun.then(
     () => {
-      recordInteractivePhase("tui-exit-before-arm");
-      throw new Error("integration.codex.tui-exit-before-arm");
+      if (!armPending) return;
+      if (preArmExitPhase === "tui-exit-before-checkpoint")
+        recordPreCheckpointFailure(preArmExitPhase);
+      else recordInteractivePhase(preArmExitPhase);
+      throw new Error(`integration.codex.${preArmExitPhase}`);
     },
     () => {
-      recordInteractivePhase("tui-exit-before-arm");
-      throw new Error("integration.codex.tui-exit-before-arm");
+      if (!armPending) return;
+      if (preArmExitPhase === "tui-exit-before-checkpoint")
+        recordPreCheckpointFailure(preArmExitPhase);
+      else recordInteractivePhase(preArmExitPhase);
+      throw new Error(`integration.codex.${preArmExitPhase}`);
     },
   );
+  try {
+    await Promise.race([checkpointWitness, earlyCodexExit]);
+  } catch (error) {
+    if (error?.message === "integration.codex.process-checkpoint")
+      recordPreCheckpointFailure("tui-checkpoint-not-witnessed");
+    throw error;
+  }
+  recordInteractivePhase("tui-checkpoint");
+  preArmExitPhase = "tui-exit-before-arm";
+  recordInteractivePhase("model-gate-arm-start");
+  const gateArm = armModelGate(modelAdmissionCutoff);
   sessionStartBeforeFirstModelRequestAdmission = await Promise.race([
     gateArm,
     earlyCodexExit,
   ]);
+  armPending = false;
   recordInteractivePhase("model-gate-arm-complete");
   await waitForModelRequestBeforeDeadline({
     deadline: traceDeadline,

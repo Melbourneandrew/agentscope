@@ -576,6 +576,15 @@ describe("gate-capable exact-build MockServer", () => {
       ),
     ).toMatchObject({ status: 403 });
     expect(
+      await request(
+        controlSocket,
+        "/connection-count",
+        {},
+        "c".repeat(64),
+        "PUT",
+      ),
+    ).toMatchObject({ status: 403 });
+    expect(
       await request(controlSocket, "/arm", {
         runId,
         sessionStartSpanSha256: "b".repeat(64),
@@ -954,6 +963,22 @@ describe("gate-capable exact-build MockServer", () => {
       (error: NodeJS.ErrnoException) => error.code ?? "error",
     );
     partial.write("POST /v1/responses HTTP/1.1\r\nHost: model\r\n");
+    let secondConnectionObserved = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlSocket,
+        "/connection-count",
+        {},
+        challenge,
+        "PUT",
+      );
+      if (observed.value.connectionCount === 2) {
+        secondConnectionObserved = true;
+        break;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(secondConnectionObserved).toBe(true);
     const started = bootNow();
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,

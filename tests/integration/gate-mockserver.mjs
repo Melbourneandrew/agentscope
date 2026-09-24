@@ -713,6 +713,10 @@ const authorizedRoute = async (request, response, pathname) => {
     json(response, 200, { ledger });
     return;
   }
+  if (request.method === "PUT" && pathname === "/connection-count") {
+    json(response, 200, { connectionCount: connections.size });
+    return;
+  }
   if (request.method === "PUT" && pathname === "/ledger") {
     if (terminalReceipt === undefined) throw new Error("ledger");
     json(response, 200, { ledger, receipt: terminalReceipt });
