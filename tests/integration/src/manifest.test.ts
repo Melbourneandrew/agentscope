@@ -362,6 +362,9 @@ describe("integration capability manifest", () => {
       "    await Promise.race([checkpointWitness, earlyCodexExit]);\n",
       codexLaunch,
     );
+    const checkpointWait = source.indexOf(
+      "  const checkpointWitness = waitForCheckpointWitness();\n",
+    );
     const modelResponse = source.indexOf("  await releaseModelResponse();\n");
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
@@ -384,6 +387,8 @@ describe("integration capability manifest", () => {
       "`\\u001b[?1049hAGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
     expect(codexLaunch).toBeLessThan(checkpointAcknowledgement);
+    expect(checkpointWait).toBeGreaterThan(codexLaunch);
+    expect(checkpointWait).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
     expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
     expect(source).not.toContain("      prompt,\n");
@@ -404,6 +409,12 @@ describe("integration capability manifest", () => {
     expect(source).not.toContain('readdirSync("/proc"');
     expect(source).toContain(
       "const checkpointWitness = waitForCheckpointWitness();",
+    );
+    expect(source).toContain(
+      'recordInteractivePhase("tui-child-rejected");\n      throw new Error("integration.codex.tui-child-rejected");',
+    );
+    expect(source).toContain(
+      'preCheckpointFailureDiagnostic = `integration.fixture.codex-${kind}`;\n  writeFileSync(\n    join(ledger, "interactive-failure.txt"),\n    `${preCheckpointFailureDiagnostic}\\n`,\n    { flag: "wx", mode: 0o600 },\n  );',
     );
     expect(source).not.toContain('process.once("SIGUSR2", onSignal);');
     expect(explicitHookEnablement).toBeGreaterThan(-1);

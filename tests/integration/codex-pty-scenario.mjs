@@ -494,6 +494,11 @@ const recordPreCheckpointFailure = (kind) => {
   )
     throw new Error("integration.codex.process-checkpoint");
   preCheckpointFailureDiagnostic = `integration.fixture.codex-${kind}`;
+  writeFileSync(
+    join(ledger, "interactive-failure.txt"),
+    `${preCheckpointFailureDiagnostic}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
 };
 const recordModelGateArmFailure = (predicate) => {
   if (
@@ -1427,7 +1432,6 @@ try {
   });
   chmodSync(configurationPath, 0o600);
   const traceDeadline = deadline - 3_000;
-  const checkpointWitness = waitForCheckpointWitness();
   await new Promise((resolve, reject) => {
     process.stdout.write(
       `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
@@ -1461,6 +1465,9 @@ try {
     },
   );
   recordInteractivePhase("tui-run-created");
+  // The fixed witness window starts only after the exact candidate child has
+  // been launched; setup and PTY publication cannot consume its authority.
+  const checkpointWitness = waitForCheckpointWitness();
   let armPending = true;
   let preArmExitPhase = "tui-exit-before-checkpoint";
   const earlyCodexExit = codexRun.then(
@@ -1473,10 +1480,10 @@ try {
     },
     () => {
       if (!armPending) return;
-      if (preArmExitPhase === "tui-exit-before-checkpoint")
-        recordPreCheckpointFailure(preArmExitPhase);
-      else recordInteractivePhase(preArmExitPhase);
-      throw new Error(`integration.codex.${preArmExitPhase}`);
+      // A rejected child promise includes spawn failure and nonzero exit; it
+      // cannot truthfully assert that an installed TUI process ever exited.
+      recordInteractivePhase("tui-child-rejected");
+      throw new Error("integration.codex.tui-child-rejected");
     },
   );
   try {
