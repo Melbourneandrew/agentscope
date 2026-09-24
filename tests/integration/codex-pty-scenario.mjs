@@ -19,6 +19,7 @@ import { basename, join } from "node:path";
 import {
   codexProjectionFailureDiagnostic,
   codexUninstallFailureDiagnostic,
+  codexUninstallUnclassifiedStageDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
   encodeInteractiveFailureExitCode,
@@ -29,6 +30,7 @@ let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
+let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
 const interactivePhases = Object.freeze([
   "bootstrap",
@@ -124,7 +126,8 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       : undefined;
   const uninstallDiagnostic =
     interactiveFailurePhase === "verify-uninstall"
-      ? codexUninstallFailureDiagnostic(error?.message)
+      ? (codexUninstallFailureDiagnostic(error?.message) ??
+        codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep))
       : undefined;
   const ownedDiagnostic = projectionDiagnostic ?? uninstallDiagnostic;
   if (ownedDiagnostic !== undefined) {
@@ -336,7 +339,9 @@ const run = (executable, arguments_, options = {}) => {
         if (stderr.length > maximumOutput) child.stderr.destroy();
       });
     }
-    child.once("error", reject);
+    child.once("error", () =>
+      reject(new Error("integration.codex.child-spawn")),
+    );
     child.once("close", (code, signal) => {
       if (timer !== undefined) clearTimeout(timer);
       try {
@@ -1481,7 +1486,9 @@ try {
     "agentscope uninstall",
     { monotonicDeadline: traceDeadline },
   );
+  uninstallVerificationStep = "result";
   const uninstall = projectUninstall(uninstallRecords);
+  uninstallVerificationStep = "hook";
   if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
   recordInteractivePhase("verify-status");
   const uninstalledStatus = projectHarnessStatus(

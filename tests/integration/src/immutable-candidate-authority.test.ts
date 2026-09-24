@@ -19,6 +19,7 @@ const {
   compileImmutableCandidateHandoff,
   codexProjectionFailureDiagnostic,
   codexUninstallFailureDiagnostic,
+  codexUninstallUnclassifiedStageDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
@@ -962,6 +963,7 @@ describe("Codex uninstall failure diagnostic transport", () => {
     ["integration.codex.trace-deadline", "trace-deadline", 145],
     ["integration.codex.cli-output", "cli-output", 146],
     ["integration.codex.uninstall", "result", 147],
+    ["integration.codex.child-spawn", "child-spawn", 148],
   ] as const)(
     "maps only the exact owned uninstall failure %s",
     (error, category, expectedExitCode) => {
@@ -981,6 +983,58 @@ describe("Codex uninstall failure diagnostic transport", () => {
     "integration.codex.other",
   ])("rejects unowned uninstall error content: %s", (error) => {
     expect(codexUninstallFailureDiagnostic(error)).toBeUndefined();
+  });
+
+  it.each([
+    ["cli", "during-cli-unclassified", 149],
+    ["result", "during-result-unclassified", 150],
+    ["hook", "during-hook-unclassified", 151],
+  ] as const)(
+    "keeps an unclassified error during %s content-free and failure-only",
+    (stage, category, expectedExitCode) => {
+      const diagnostic = `integration.fixture.codex-verify-uninstall-${category}`;
+      expect(codexUninstallUnclassifiedStageDiagnostic(stage)).toBe(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      expect(exitCode).toBe(expectedExitCode);
+      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+    },
+  );
+  for (const stage of [undefined, null, "else", "cli-secret"]) {
+    it(`rejects a substituted uninstall stage: ${stage}`, () => {
+      expect(codexUninstallUnclassifiedStageDiagnostic(stage)).toBeUndefined();
+    });
+  }
+
+  it("records only temporal stages and normalizes a native spawn error", () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /child\.once\("error", \(\) =>\s+reject\(new Error\("integration\.codex\.child-spawn"\)\),\s+\);/u,
+    );
+    expect(source).toContain(
+      "codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep)",
+    );
+    const invoke = source.indexOf('recordInteractivePhase("verify-uninstall")');
+    const result = source.indexOf(
+      'uninstallVerificationStep = "result";',
+      invoke,
+    );
+    const project = source.indexOf(
+      "const uninstall = projectUninstall(uninstallRecords);",
+      result,
+    );
+    const hook = source.indexOf('uninstallVerificationStep = "hook";', project);
+    const next = source.indexOf(
+      'recordInteractivePhase("verify-status")',
+      hook,
+    );
+    expect(invoke).toBeGreaterThan(0);
+    expect(result).toBeGreaterThan(invoke);
+    expect(project).toBeGreaterThan(result);
+    expect(hook).toBeGreaterThan(project);
+    expect(next).toBeGreaterThan(hook);
   });
 });
 
@@ -1059,7 +1113,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 31, 39, 63, 148, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 152, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

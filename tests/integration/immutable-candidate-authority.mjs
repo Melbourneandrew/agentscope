@@ -154,6 +154,10 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-uninstall-trace-deadline",
   "integration.fixture.codex-verify-uninstall-cli-output",
   "integration.fixture.codex-verify-uninstall-result",
+  "integration.fixture.codex-verify-uninstall-child-spawn",
+  "integration.fixture.codex-verify-uninstall-during-cli-unclassified",
+  "integration.fixture.codex-verify-uninstall-during-result-unclassified",
+  "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
   "integration.runner.fixture-failed",
   "integration.runner.fixture-result",
   "integration.runner.pty-authority",
@@ -262,12 +266,31 @@ const codexUninstallFailureDiagnostics = new Map([
     "integration.codex.uninstall",
     "integration.fixture.codex-verify-uninstall-result",
   ],
+  [
+    "integration.codex.child-spawn",
+    "integration.fixture.codex-verify-uninstall-child-spawn",
+  ],
 ]);
 
 export const codexUninstallFailureDiagnostic = (message) =>
   typeof message === "string"
     ? codexUninstallFailureDiagnostics.get(message)
     : undefined;
+
+const codexUninstallUnclassifiedStageDiagnostics = new Map([
+  ["cli", "integration.fixture.codex-verify-uninstall-during-cli-unclassified"],
+  [
+    "result",
+    "integration.fixture.codex-verify-uninstall-during-result-unclassified",
+  ],
+  [
+    "hook",
+    "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
+  ],
+]);
+
+export const codexUninstallUnclassifiedStageDiagnostic = (stage) =>
+  codexUninstallUnclassifiedStageDiagnostics.get(stage);
 
 // Research-only: this candidate-writable marker is never a receipt predicate.
 const untrustedCodexTraceHintPattern =
