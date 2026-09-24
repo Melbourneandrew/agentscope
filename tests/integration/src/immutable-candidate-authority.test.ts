@@ -37,6 +37,7 @@ const {
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
+  interactivePtyReadinessRejectionDiagnostic,
   interactivePtyArtifactRejectionCode,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
@@ -109,6 +110,39 @@ describe("Codex machine-output failure containment", () => {
 });
 
 describe("interactive PTY artifact diagnostics", () => {
+  it("reports only fixed readiness and terminal categories", () => {
+    const secret = "do-not-print-this-receipt-content";
+    expect(
+      interactivePtyReadinessRejectionDiagnostic({
+        ...completed,
+        readinessObserved: false,
+        request: { interaction: { trigger: "semantic-ready" } },
+        output: secret,
+      }),
+    ).toBe(
+      "entry-normal:readiness-false:terminal-completed:trigger-semantic-ready",
+    );
+    expect(
+      interactivePtyReadinessRejectionDiagnostic(
+        {
+          ...completed,
+          outcome: "deadline",
+          readinessObserved: false,
+          request: { interaction: { trigger: "immediate" } },
+        },
+        true,
+      ),
+    ).toBe("entry-failed:readiness-false:terminal-failed:trigger-immediate");
+    const malformed = interactivePtyReadinessRejectionDiagnostic({
+      readinessObserved: secret,
+      request: { interaction: { trigger: secret } },
+      output: secret,
+    });
+    expect(malformed).toBe(
+      "entry-normal:readiness-invalid:terminal-invalid:trigger-invalid",
+    );
+    expect(malformed).not.toContain(secret);
+  });
   it("requires readiness for success but retains a false observation for a settled failure", () => {
     const unreadyFailure = {
       ...completed,

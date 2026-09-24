@@ -477,6 +477,38 @@ export const interactivePtyArtifactReadinessMatches = (
     receipt?.readinessObserved === false &&
     interactivePtyReceiptFailed(receipt));
 
+// Failure-only, content-free categories. Never emit a receipt, action, or
+// terminal byte while diagnosing a readiness rejection in hosted replay.
+export const interactivePtyReadinessRejectionDiagnostic = (
+  receipt,
+  failed = false,
+) => {
+  const readiness =
+    receipt?.readinessObserved === true
+      ? "true"
+      : receipt?.readinessObserved === false
+        ? "false"
+        : "invalid";
+  const trigger =
+    receipt?.request?.interaction?.trigger === "semantic-ready"
+      ? "semantic-ready"
+      : receipt?.request?.interaction?.trigger === "immediate"
+        ? "immediate"
+        : "invalid";
+  let terminal = "invalid";
+  if (
+    typeof receipt?.outcome === "string" &&
+    typeof receipt?.finalSnapshot?.semanticState === "string"
+  ) {
+    try {
+      terminal = interactivePtyReceiptFailed(receipt) ? "failed" : "completed";
+    } catch {
+      // A malformed receipt is diagnostic evidence, never a success authority.
+    }
+  }
+  return `entry-${failed ? "failed" : "normal"}:readiness-${readiness}:terminal-${terminal}:trigger-${trigger}`;
+};
+
 const interactivePtyArtifactFields = Object.freeze([
   "process-fingerprint",
   "input-bytes",
