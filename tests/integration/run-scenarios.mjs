@@ -68,6 +68,7 @@ import {
   extractInteractiveChildDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyObservedActionsMatch,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
@@ -1165,8 +1166,11 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
         JSON.stringify(receipt?.request?.interaction?.actions) ===
         JSON.stringify(expectedActions),
       "observed-actions": () =>
-        JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
-        JSON.stringify(expectedActions.map(({ action }) => action)),
+        interactivePtyObservedActionsMatch(
+          receipt?.actions,
+          expectedActions,
+          failed,
+        ),
       "terminal-action": () =>
         receipt?.eofByteWritten ===
         !selectedScenario.waitForSemanticCompletionBeforeTerminalAction,

@@ -17,6 +17,7 @@ const {
   extractInteractiveChildDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyObservedActionsMatch,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
@@ -113,6 +114,41 @@ describe("interactive PTY receipt settlement", () => {
     expect(
       interactivePtyReceiptAuthorityMatches(timelySuccess, checks, true),
     ).toBe(false);
+  });
+});
+
+describe("interactive PTY action prefix diagnostics", () => {
+  it("requires full successful PTY actions but an exact failure prefix", () => {
+    const expected = [
+      { action: "resize" },
+      { action: "input" },
+      { action: "wait-for-semantic-completion" },
+      { action: "input" },
+    ];
+    expect(interactivePtyObservedActionsMatch(expected, expected)).toBe(true);
+    expect(
+      interactivePtyObservedActionsMatch(expected.slice(0, 2), expected),
+    ).toBe(false);
+    expect(
+      interactivePtyObservedActionsMatch(expected.slice(0, 2), expected, true),
+    ).toBe(true);
+    expect(interactivePtyObservedActionsMatch([], expected, true)).toBe(true);
+    expect(
+      interactivePtyObservedActionsMatch([{ action: "input" }], expected, true),
+    ).toBe(false);
+    expect(
+      interactivePtyObservedActionsMatch(
+        [...expected, { action: "input" }],
+        expected,
+        true,
+      ),
+    ).toBe(false);
+    expect(interactivePtyObservedActionsMatch(null, expected, true)).toBe(
+      false,
+    );
+    expect(interactivePtyObservedActionsMatch([null], expected, true)).toBe(
+      false,
+    );
   });
 });
 

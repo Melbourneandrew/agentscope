@@ -196,6 +196,30 @@ export const interactivePtyEnvelopeRejectionCode = (predicates) => {
   return null;
 };
 
+export const interactivePtyObservedActionsMatch = (
+  observedActions,
+  expectedActions,
+  failed = false,
+) => {
+  if (
+    !Array.isArray(observedActions) ||
+    !Array.isArray(expectedActions) ||
+    observedActions.length > expectedActions.length ||
+    (!failed && observedActions.length !== expectedActions.length) ||
+    observedActions.some((entry) => typeof entry?.action !== "string") ||
+    expectedActions.some((entry) => typeof entry?.action !== "string")
+  )
+    return false;
+  return (
+    JSON.stringify(observedActions.map(({ action }) => action)) ===
+    JSON.stringify(
+      expectedActions
+        .slice(0, observedActions.length)
+        .map(({ action }) => action),
+    )
+  );
+};
+
 // Failure-only diagnostics: never include receipt fields or terminal output.
 export const interactivePtyReceiptRejectionCode = (
   receipt,
