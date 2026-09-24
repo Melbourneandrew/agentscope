@@ -14,6 +14,11 @@ export function classifyCodexSettledTraceObservation(input: {
   tracePresent: boolean;
 }): "accepted" | "missing" | "pending";
 
+export function classifyCodexTraceDeadlineObservation(input: {
+  hookCompleted: boolean;
+  reporterSettled: boolean;
+}): "trace-await-hook" | "trace-await-reporter" | "trace-await-search";
+
 export function codexTraceSearchUnavailable(input: {
   code: number | null;
   signal: NodeJS.Signals | null;

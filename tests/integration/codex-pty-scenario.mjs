@@ -103,7 +103,7 @@ const advanceInteractivePhase = (phase) => {
 };
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
-process.setUncaughtExceptionCaptureCallback(() => {
+process.setUncaughtExceptionCaptureCallback((error) => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
   if (interactiveFailurePhase === "tui-join-deadline") {
     const diagnosticCode = encodeCodexJoinDeadlineExitCode(
@@ -112,11 +112,23 @@ process.setUncaughtExceptionCaptureCallback(() => {
     if (diagnosticCode !== undefined) exitCode = diagnosticCode;
   }
   try {
+    const traceDeadline =
+      error?.message === "integration.codex.trace-deadline" &&
+      [
+        "trace-search",
+        "hook-command-completed-before-budget-boundary",
+        "hook-command-completed-near-budget-boundary",
+      ].includes(interactiveFailurePhase);
     const diagnostic =
       interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
-        : `integration.fixture.codex-${interactiveFailurePhase}`;
+        : traceDeadline
+          ? `integration.fixture.codex-${classifyCodexTraceDeadlineObservation({
+              hookCompleted: traceWaitHookCompleted,
+              reporterSettled: traceWaitReporterSettled,
+            })}`
+          : `integration.fixture.codex-${interactiveFailurePhase}`;
     if (ledger !== undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
@@ -373,6 +385,8 @@ let operationalStateHealthDescriptor;
 let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
 let sessionStartBeforeFirstModelRequestAdmission;
+let traceWaitHookCompleted = false;
+let traceWaitReporterSettled = false;
 const recordInteractivePhase = (phase) => {
   advanceInteractivePhase(phase);
   writeFileSync(
@@ -422,6 +436,7 @@ const {
   classifyLocalSqliteOutcomeAfterBaseline,
   classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
+  classifyCodexTraceDeadlineObservation,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
@@ -1066,6 +1081,7 @@ const waitForTraceSummary = async (traceDeadline) => {
     });
     if (hookCommandObservation?.outcome === "completed")
       lastCompletedHookCommand = hookCommandObservation;
+    traceWaitHookCompleted = hookCommandObservation?.outcome === "completed";
     if (
       hookCommandObservation !== undefined &&
       hookCommandObservation.outcome !== "completed"
@@ -1083,6 +1099,7 @@ const waitForTraceSummary = async (traceDeadline) => {
     const reporterSettled = localSqliteReporterSettled(
       localSqliteLifecycleDescriptor,
     );
+    traceWaitReporterSettled = traceWaitHookCompleted && reporterSettled;
     if (hookCommandObservation?.outcome !== "completed" || !reporterSettled) {
       await waitForTraceObservationOrRecord(
         traceDeadline,

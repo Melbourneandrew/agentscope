@@ -67,6 +67,7 @@ import {
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexJoinHint,
+  extractUntrustedCodexTraceHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
@@ -1787,6 +1788,14 @@ const emitUntrustedCodexJoinHint = (output) => {
   if (hint !== undefined)
     process.stderr.write(`integration.isolation.untrusted-join-hint:${hint}\n`);
 };
+const emitUntrustedCodexTraceHint = (output, scenarioId) => {
+  if (scenarioId !== "codex-tui-trace-smoke") return;
+  const hint = extractUntrustedCodexTraceHint(output);
+  if (hint !== undefined)
+    process.stderr.write(
+      `integration.isolation.untrusted-trace-hint:${hint}\n`,
+    );
+};
 const captureFailedScenarioReceipt = (
   output,
   plan,
@@ -2029,6 +2038,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         });
       const output = `${error?.stdout ?? ""}`;
       emitUntrustedCodexJoinHint(output);
+      emitUntrustedCodexTraceHint(output, plan.scenarioId);
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,
