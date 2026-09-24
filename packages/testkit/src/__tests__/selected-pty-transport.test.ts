@@ -306,6 +306,9 @@ describe("selected PTY transport", () => {
         protocolRejectionKind: "none",
         protocolRejectedAtPhase: null,
         protocolRejectedStep: null,
+        protocolRejectedModePrefix: null,
+        protocolRejectedModeValue: null,
+        readinessEverObserved: true,
         screenRevoked: false,
       },
     });

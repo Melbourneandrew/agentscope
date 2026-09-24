@@ -463,6 +463,9 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
       protocolRejectionKind: z.enum(["none", "order", "mode", "reset"]),
       protocolRejectedAtPhase: z.number().int().min(0).max(6).nullable(),
       protocolRejectedStep: z.number().int().min(1).max(6).nullable(),
+      protocolRejectedModePrefix: z.enum(["greater", "less"]).nullable(),
+      protocolRejectedModeValue: z.number().int().min(0).max(31).nullable(),
+      readinessEverObserved: z.boolean(),
       screenRevoked: z.boolean(),
     })
     .optional(),
@@ -621,19 +624,45 @@ const challengedReadinessProgressConsistent = (
   >["challengedReadinessProgress"],
 ): boolean => {
   if (progress === undefined) return true;
+  if (
+    progress.readinessEverObserved &&
+    (!progress.marker ||
+      !progress.synchronizedFrame ||
+      !progress.styledGlyph ||
+      !progress.requiredText ||
+      progress.terminalProtocol === "incomplete" ||
+      (progress.terminalProtocol === "rejected" &&
+        progress.protocolRejectedAtPhase !== 6))
+  )
+    return false;
   if (progress.protocolRejectionKind === "none")
     return (
       progress.terminalProtocol !== "rejected" &&
       progress.protocolRejectedAtPhase === null &&
-      progress.protocolRejectedStep === null
+      progress.protocolRejectedStep === null &&
+      progress.protocolRejectedModePrefix === null &&
+      progress.protocolRejectedModeValue === null
     );
   return (
     progress.terminalProtocol === "rejected" &&
     progress.protocolRejectedAtPhase !== null &&
     (progress.protocolRejectionKind === "order"
       ? progress.protocolRejectedStep !== null &&
-        progress.protocolRejectedStep !== progress.protocolRejectedAtPhase + 1
-      : progress.protocolRejectedStep === null)
+        progress.protocolRejectedStep !==
+          progress.protocolRejectedAtPhase + 1 &&
+        progress.protocolRejectedModePrefix === null &&
+        progress.protocolRejectedModeValue === null
+      : progress.protocolRejectionKind === "mode"
+        ? progress.protocolRejectedStep === null &&
+          progress.protocolRejectedModePrefix !== null &&
+          progress.protocolRejectedModeValue !== null &&
+          !(
+            progress.protocolRejectedModePrefix === "greater" &&
+            progress.protocolRejectedModeValue === 7
+          )
+        : progress.protocolRejectedStep === null &&
+          progress.protocolRejectedModePrefix === null &&
+          progress.protocolRejectedModeValue === null)
   );
 };
 

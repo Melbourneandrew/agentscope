@@ -417,11 +417,14 @@ describe("interactive PTY readiness progress diagnostics", () => {
           protocolRejectionKind: "order",
           protocolRejectedAtPhase: 1,
           protocolRejectedStep: 4,
+          protocolRejectedModePrefix: null,
+          protocolRejectedModeValue: null,
+          readinessEverObserved: false,
           screenRevoked: true,
         },
       }),
     ).toBe(
-      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active:marker-observed:frame-observed:glyph-absent:prompt-absent:protocol-rejected:protocol-rejection-order-1-4:screen-revoked",
+      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active:marker-observed:frame-observed:glyph-absent:prompt-absent:protocol-rejected:protocol-rejection-order-1-4:ever-ready-absent:screen-revoked",
     );
     expect(
       interactivePtyReadinessProgressDiagnostic({
@@ -453,6 +456,9 @@ describe("interactive PTY readiness progress diagnostics", () => {
           protocolRejectionKind: "none",
           protocolRejectedAtPhase: null,
           protocolRejectedStep: null,
+          protocolRejectedModePrefix: null,
+          protocolRejectedModeValue: null,
+          readinessEverObserved: false,
           screenRevoked: true,
         },
       },
@@ -467,6 +473,9 @@ describe("interactive PTY readiness progress diagnostics", () => {
           protocolRejectionKind: "order",
           protocolRejectedAtPhase: 1,
           protocolRejectedStep: 2,
+          protocolRejectedModePrefix: null,
+          protocolRejectedModeValue: null,
+          readinessEverObserved: false,
           screenRevoked: true,
         },
       },
@@ -486,6 +495,65 @@ describe("interactive PTY readiness progress diagnostics", () => {
         interactivePtyReadinessProgressDiagnostic(malformed),
       ).toBeUndefined();
   });
+});
+
+it("reports only bounded CSI-u mode and historical readiness facts", () => {
+  expect(
+    interactivePtyReadinessProgressDiagnostic({
+      outputBytes: 1,
+      readinessObserved: false,
+      finalSnapshot: {
+        printableCellCount: 1,
+        nonEmptyLineCount: 1,
+        sawCursorPositionQuery: false,
+        semanticState: "completed",
+      },
+      challengedReadinessProgress: {
+        marker: true,
+        synchronizedFrame: true,
+        styledGlyph: true,
+        requiredText: true,
+        terminalProtocol: "rejected",
+        protocolRejectionKind: "mode",
+        protocolRejectedAtPhase: 6,
+        protocolRejectedStep: null,
+        protocolRejectedModePrefix: "less",
+        protocolRejectedModeValue: 1,
+        readinessEverObserved: true,
+        screenRevoked: false,
+      },
+    }),
+  ).toContain(":protocol-rejection-mode-6-less-1:ever-ready-observed:");
+});
+
+it("rejects impossible historical readiness diagnostics", () => {
+  const challenged = {
+    marker: false,
+    synchronizedFrame: true,
+    styledGlyph: true,
+    requiredText: true,
+    terminalProtocol: "complete",
+    protocolRejectionKind: "none",
+    protocolRejectedAtPhase: null,
+    protocolRejectedStep: null,
+    protocolRejectedModePrefix: null,
+    protocolRejectedModeValue: null,
+    readinessEverObserved: true,
+    screenRevoked: false,
+  };
+  expect(
+    interactivePtyReadinessProgressDiagnostic({
+      outputBytes: 1,
+      readinessObserved: false,
+      finalSnapshot: {
+        printableCellCount: 1,
+        nonEmptyLineCount: 1,
+        sawCursorPositionQuery: false,
+        semanticState: "active",
+      },
+      challengedReadinessProgress: challenged,
+    }),
+  ).toBeUndefined();
 });
 
 describe("interactive PTY action prefix diagnostics", () => {

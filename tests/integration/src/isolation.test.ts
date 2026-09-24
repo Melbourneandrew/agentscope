@@ -1740,6 +1740,9 @@ describe("selected PTY backend evidence", () => {
       protocolRejectionKind: "none" as const,
       protocolRejectedAtPhase: null,
       protocolRejectedStep: null,
+      protocolRejectedModePrefix: null,
+      protocolRejectedModeValue: null,
+      readinessEverObserved: false,
       screenRevoked: false,
     };
     expect(
@@ -1760,6 +1763,8 @@ describe("selected PTY backend evidence", () => {
       protocolRejectionKind: "order" as const,
       protocolRejectedAtPhase: 1,
       protocolRejectedStep: 4,
+      protocolRejectedModePrefix: null,
+      protocolRejectedModeValue: null,
     };
     expect(
       compileWithPreparedAuthority(
@@ -1780,6 +1785,18 @@ describe("selected PTY backend evidence", () => {
       { ...rejectedProgress, terminalProtocol: "complete" },
       { ...rejectedProgress, protocolRejectedStep: null },
       { ...rejectedProgress, protocolRejectedStep: 2 },
+      { ...progress, protocolRejectedModePrefix: "greater" },
+      { ...progress, readinessEverObserved: "true" },
+      { ...progress, readinessEverObserved: true },
+      { ...rejectedProgress, readinessEverObserved: true },
+      { ...rejectedProgress, protocolRejectedModeValue: 7 },
+      {
+        ...rejectedProgress,
+        protocolRejectionKind: "mode",
+        protocolRejectedStep: null,
+        protocolRejectedModePrefix: "greater",
+        protocolRejectedModeValue: 7,
+      },
     ])
       expect(() =>
         compileWithPreparedAuthority(

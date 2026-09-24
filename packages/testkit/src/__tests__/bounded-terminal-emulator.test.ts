@@ -188,6 +188,9 @@ describe("bounded semantic terminal emulator", () => {
       protocolRejectionKind: "none",
       protocolRejectedAtPhase: null,
       protocolRejectedStep: null,
+      protocolRejectedModePrefix: null,
+      protocolRejectedModeValue: null,
+      readinessEverObserved: true,
       screenRevoked: false,
     });
 
@@ -293,9 +296,45 @@ describe("bounded semantic terminal emulator", () => {
         protocolRejectionKind: kind,
         protocolRejectedAtPhase: 0,
         protocolRejectedStep: step,
+        protocolRejectedModePrefix: kind === "mode" ? "greater" : null,
+        protocolRejectedModeValue: kind === "mode" ? 1 : null,
+        readinessEverObserved: false,
       });
     },
   );
+
+  it("retains first post-readiness CSI-u rejection without terminal content", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 30 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "Ask Codex to do anything",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c\u001b[?2026h\u001b[1m›\u001b[22m \u001b[2mAsk Codex to do anything\u001b[?2026l",
+      ),
+    );
+    expect(terminal.readinessObservationGeneration()).toBe(1);
+    terminal.write(bytes("\u001b[<1u\u001b[>2u"));
+    expect(terminal.challengedReadinessProgress()).toMatchObject({
+      terminalProtocol: "rejected",
+      protocolRejectionKind: "mode",
+      protocolRejectedAtPhase: 6,
+      protocolRejectedModePrefix: "less",
+      protocolRejectedModeValue: 1,
+      readinessEverObserved: true,
+    });
+  });
 
   it("derives readiness from an exact synchronized prompt after unrelated Unicode", () => {
     const challenge = "a".repeat(64);

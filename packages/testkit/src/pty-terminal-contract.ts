@@ -81,6 +81,9 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     protocolRejectionKind: "none" | "order" | "mode" | "reset";
     protocolRejectedAtPhase: number | null;
     protocolRejectedStep: number | null;
+    protocolRejectedModePrefix: "greater" | "less" | null;
+    protocolRejectedModeValue: number | null;
+    readinessEverObserved: boolean;
     screenRevoked: boolean;
   }>;
   /** Fixed, content-free diagnostic only; never a PTY admission predicate. */

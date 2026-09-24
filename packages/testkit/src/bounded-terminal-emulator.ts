@@ -599,6 +599,8 @@ export class BoundedTerminalEmulator {
   #terminalProtocolRejectionKind: "none" | "order" | "mode" | "reset" = "none";
   #terminalProtocolRejectedAtPhase: number | null = null;
   #terminalProtocolRejectedStep: number | null = null;
+  #terminalProtocolRejectedModePrefix: "greater" | "less" | null = null;
+  #terminalProtocolRejectedModeValue: number | null = null;
   readonly #readinessMatcher: PtyTerminalReadinessMatcher;
 
   public constructor(
@@ -804,6 +806,9 @@ export class BoundedTerminalEmulator {
     protocolRejectionKind: "none" | "order" | "mode" | "reset";
     protocolRejectedAtPhase: number | null;
     protocolRejectedStep: number | null;
+    protocolRejectedModePrefix: "greater" | "less" | null;
+    protocolRejectedModeValue: number | null;
+    readinessEverObserved: boolean;
     screenRevoked: boolean;
   }> {
     return freezeAuthority({
@@ -819,6 +824,9 @@ export class BoundedTerminalEmulator {
       protocolRejectionKind: this.#terminalProtocolRejectionKind,
       protocolRejectedAtPhase: this.#terminalProtocolRejectedAtPhase,
       protocolRejectedStep: this.#terminalProtocolRejectedStep,
+      protocolRejectedModePrefix: this.#terminalProtocolRejectedModePrefix,
+      protocolRejectedModeValue: this.#terminalProtocolRejectedModeValue,
+      readinessEverObserved: this.#readinessObservationGeneration > 0,
       screenRevoked: this.#challengeScreenAuthorityRevoked,
     });
   }
@@ -1579,7 +1587,12 @@ export class BoundedTerminalEmulator {
     if ((prefix !== ">" && prefix !== "<") || values[0]! > 31) return false;
     if (prefix === ">" && values[0] === 7)
       this.#observeRequiredTerminalProtocolStep(1);
-    else this.#rejectRequiredTerminalProtocol("mode");
+    else
+      this.#rejectRequiredTerminalProtocol(
+        "mode",
+        prefix === ">" ? "greater" : "less",
+        values[0],
+      );
     return true;
   }
 
@@ -1623,7 +1636,11 @@ export class BoundedTerminalEmulator {
     this.#refreshChallengeStyledReadiness();
   }
 
-  #rejectRequiredTerminalProtocol(kind: "mode" | "reset"): void {
+  #rejectRequiredTerminalProtocol(
+    kind: "mode" | "reset",
+    modePrefix: "greater" | "less" | null = null,
+    modeValue: number | null = null,
+  ): void {
     if (
       this.#readinessMatcher.kind === "challenge-styled-text" &&
       !this.#terminalProtocolRejected
@@ -1631,6 +1648,8 @@ export class BoundedTerminalEmulator {
       this.#terminalProtocolRejected = true;
       this.#terminalProtocolRejectionKind = kind;
       this.#terminalProtocolRejectedAtPhase = this.#terminalProtocolPhase;
+      this.#terminalProtocolRejectedModePrefix = modePrefix;
+      this.#terminalProtocolRejectedModeValue = modeValue;
     }
   }
 
