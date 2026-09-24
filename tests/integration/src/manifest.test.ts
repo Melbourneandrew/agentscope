@@ -382,10 +382,11 @@ describe("integration capability manifest", () => {
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
     expect(source).toContain(
-      'const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}${joinDeadlineHookState === undefined ? "" : `-${joinDeadlineHookState}`}`;',
+      "const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;",
     );
     expect(source).toContain("`${diagnostic}\\n`");
     expect(source).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
+    expect(source).toContain("encodeCodexJoinDeadlineExitCode(");
     expect(source).toContain(
       'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
     );

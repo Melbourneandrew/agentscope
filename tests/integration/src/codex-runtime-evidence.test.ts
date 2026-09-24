@@ -77,6 +77,8 @@ describe("Codex bounded native ledgers", () => {
       `${stop}${sessionStart}`,
       `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
       `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
+      `${sessionStart}${start("Stop")}${close("Stop").replace('"completed"', '"timeout"')}`,
+      `${sessionStart}${stop}${start("SessionEnd")}${close("SessionEnd").replace('"completed"', '"timeout"')}`,
     ])
       expect(() => classifyCodexShutdownLogSource(source)).toThrow(
         /integration\.codex\.hook-(?:log|lifecycle)/u,
@@ -130,6 +132,7 @@ describe("Codex bounded native ledgers", () => {
           `${stop}${sessionStart}`,
           `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
           `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
+          `${sessionStart}${start("Stop")}${close("Stop").replace('"completed"', '"timeout"')}`,
         ]) {
           writeFileSync(path, source);
           expect(() => classifyCodexShutdownAtJoinDeadline(input)).toThrow(
