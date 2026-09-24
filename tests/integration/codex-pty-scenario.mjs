@@ -112,22 +112,23 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     if (diagnosticCode !== undefined) exitCode = diagnosticCode;
   }
   try {
-    const traceDeadline =
-      error?.message === "integration.codex.trace-deadline" &&
-      [
-        "trace-search",
-        "hook-command-completed-before-budget-boundary",
-        "hook-command-completed-near-budget-boundary",
-      ].includes(interactiveFailurePhase);
+    const traceFailure = [
+      "trace-search",
+      "hook-command-completed-before-budget-boundary",
+      "hook-command-completed-near-budget-boundary",
+    ].includes(interactiveFailurePhase);
     const diagnostic =
       interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
-        : traceDeadline
-          ? `integration.fixture.codex-${classifyCodexTraceDeadlineObservation({
-              hookCompleted: traceWaitHookCompleted,
-              reporterSettled: traceWaitReporterSettled,
-            })}`
+        : traceFailure
+          ? `integration.fixture.codex-trace-await-${classifyCodexTraceFailureHint(
+              {
+                errorMessage: error?.message,
+                hookCompleted: traceWaitHookCompleted,
+                reporterSettled: traceWaitReporterSettled,
+              },
+            )}`
           : `integration.fixture.codex-${interactiveFailurePhase}`;
     if (ledger !== undefined)
       writeFileSync(
@@ -328,8 +329,26 @@ const run = (executable, arguments_, options = {}) => {
             (deadlineExpired || code !== 0 || signal !== null)) ||
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
-        )
-          return reject(new Error("integration.codex.child"));
+        ) {
+          const traceFailureKind =
+            options.acceptTraceSearchUnavailable === true
+              ? codexTraceSearchChildFailureCategory({
+                  code,
+                  deadlineExpired,
+                  signal,
+                  stderrBytes: stderr.length,
+                  stdoutBytes: stdout.length,
+                  maximumBytes: maximumOutput,
+                })
+              : undefined;
+          return reject(
+            new Error(
+              traceFailureKind === undefined
+                ? "integration.codex.child"
+                : `integration.codex.trace-search-child-${traceFailureKind}`,
+            ),
+          );
+        }
         resolve({ stderr, stdout, traceTimedOut, traceUnavailable });
       } catch (error) {
         reject(error);
@@ -436,7 +455,8 @@ const {
   classifyLocalSqliteOutcomeAfterBaseline,
   classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
-  classifyCodexTraceDeadlineObservation,
+  classifyCodexTraceFailureHint,
+  codexTraceSearchChildFailureCategory,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,

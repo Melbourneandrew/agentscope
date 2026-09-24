@@ -19,6 +19,21 @@ export function classifyCodexTraceDeadlineObservation(input: {
   reporterSettled: boolean;
 }): "trace-await-hook" | "trace-await-reporter" | "trace-await-search";
 
+export function classifyCodexTraceFailureHint(input: {
+  errorMessage: unknown;
+  hookCompleted: boolean;
+  reporterSettled: boolean;
+}): `${"hook" | "reporter" | "search"}-${"deadline" | "child" | "child-deadline" | "child-exit-5" | "child-exit-other" | "child-signal" | "child-output-limit" | "hook-log" | "other"}`;
+
+export function codexTraceSearchChildFailureCategory(input: {
+  code: number | null;
+  deadlineExpired: boolean;
+  signal: NodeJS.Signals | null;
+  stderrBytes: number;
+  stdoutBytes: number;
+  maximumBytes: number;
+}): "output-limit" | "deadline" | "signal" | "exit-5" | "exit-other";
+
 export function codexTraceSearchUnavailable(input: {
   code: number | null;
   signal: NodeJS.Signals | null;

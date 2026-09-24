@@ -109,21 +109,28 @@ describe("interactive PTY artifact diagnostics", () => {
 });
 
 describe("untrusted Codex trace hint transport", () => {
-  it.each(["hook", "reporter", "search"])(
-    "extracts one closed content-free hint: %s",
-    (hint) => {
-      const line = `integration.runner.untrusted-trace-hint:${hint}\n`;
-      expect(extractUntrustedCodexTraceHint(line)).toBe(hint);
-      for (const output of [
-        `${line}${line}`,
-        `${line}integration.runner.untrusted-trace-hint:other\n`,
-        `x:${line}`,
-        `integration.runner.untrusted-trace-hint:${hint}-extra\n`,
-        `integration.runner.untrusted-trace-hint:${hint}:secret\n`,
-      ])
-        expect(extractUntrustedCodexTraceHint(output)).toBeUndefined();
-    },
-  );
+  it.each([
+    "hook-deadline",
+    "reporter-child",
+    "search-child-deadline",
+    "search-child-exit-5",
+    "search-child-exit-other",
+    "search-child-signal",
+    "search-child-output-limit",
+    "search-hook-log",
+    "search-other",
+  ])("extracts one closed content-free hint: %s", (hint) => {
+    const line = `integration.runner.untrusted-trace-hint:${hint}\n`;
+    expect(extractUntrustedCodexTraceHint(line)).toBe(hint);
+    for (const output of [
+      `${line}${line}`,
+      `${line}integration.runner.untrusted-trace-hint:other\n`,
+      `x:${line}`,
+      `integration.runner.untrusted-trace-hint:${hint}-extra\n`,
+      `integration.runner.untrusted-trace-hint:${hint}:secret\n`,
+    ])
+      expect(extractUntrustedCodexTraceHint(output)).toBeUndefined();
+  });
   it("rejects non-text and oversized attached output", () => {
     expect(extractUntrustedCodexTraceHint(undefined)).toBeUndefined();
     expect(
@@ -826,9 +833,12 @@ describe("interactive PTY failure diagnostic transport", () => {
 
 describe("interactive trace failure-marker transport", () => {
   it.each([
-    "integration.fixture.codex-trace-await-hook",
-    "integration.fixture.codex-trace-await-reporter",
-    "integration.fixture.codex-trace-await-search",
+    "integration.fixture.codex-trace-await-hook-deadline",
+    "integration.fixture.codex-trace-await-reporter-child",
+    "integration.fixture.codex-trace-await-search-child-deadline",
+    "integration.fixture.codex-trace-await-search-child-exit-5",
+    "integration.fixture.codex-trace-await-search-hook-log",
+    "integration.fixture.codex-trace-await-search-other",
   ])("does not promote a candidate-writable trace hint: %s", (diagnostic) => {
     expect(
       selectInteractiveFailureDiagnostic(
@@ -848,8 +858,9 @@ describe("interactive trace failure-marker transport", () => {
     );
   });
   for (const marker of [
-    "integration.fixture.codex-trace-await-other",
+    "integration.fixture.codex-trace-await-other-child",
     "integration.fixture.codex-trace-await-hook-extra",
+    "integration.fixture.codex-trace-await-hook",
     "integration.fixture.codex-trace-search",
     undefined,
   ])
