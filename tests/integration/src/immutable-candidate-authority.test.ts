@@ -17,6 +17,7 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  codexProjectionFailureDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
@@ -909,6 +910,44 @@ describe("interactive trace failure-marker transport", () => {
 });
 
 describe("interactive PTY failure exit-code transport", () => {
+  it.each([
+    [
+      "integration.codex.adapter-observation",
+      "integration.fixture.codex-verify-adapter-observation",
+      135,
+    ],
+    ...[
+      "scenario",
+      "hook-mediation",
+      "stimulus",
+      "model-request",
+      "trace",
+      "lifecycle",
+    ].map((predicate, index) => [
+      `integration.codex.oracle-${predicate}`,
+      `integration.fixture.codex-verify-oracle-${predicate}`,
+      136 + index,
+    ]),
+  ])(
+    "maps only exact owned projection failure %s",
+    (error, diagnostic, expectedExitCode) => {
+      expect(codexProjectionFailureDiagnostic(error)).toBe(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      expect(exitCode).toBe(expectedExitCode);
+      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+    },
+  );
+
+  it.each([
+    undefined,
+    null,
+    "integration.codex.oracle-other",
+    "integration.codex.oracle-trace:raw-content",
+    "integration.codex.adapter-observation\nsecret",
+    "integration.codex.oracle-__proto__",
+  ])("does not export an unowned projection error: %s", (error) => {
+    expect(codexProjectionFailureDiagnostic(error)).toBeUndefined();
+  });
   it("round-trips one exact allowlisted runner diagnostic through a reserved exit code", () => {
     const diagnostic = "integration.fixture.codex-model-request";
     const exitCode = encodeInteractiveFailureExitCode(diagnostic);
@@ -945,7 +984,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 31, 39, 63, 135, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 142, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

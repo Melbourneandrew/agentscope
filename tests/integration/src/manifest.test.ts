@@ -384,7 +384,11 @@ describe("integration capability manifest", () => {
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
     expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
     expect(source).toContain(
-      ": `integration.fixture.codex-${interactiveFailurePhase}`;",
+      "codexProjectionFailureDiagnostic(error?.message)",
+    );
+    expect(source).toContain("projectionDiagnostic ??");
+    expect(source).toContain(
+      ": `integration.fixture.codex-${interactiveFailurePhase}`);",
     );
     expect(source).toContain("`${diagnostic}\\n`");
     expect(source).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
