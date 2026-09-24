@@ -15,6 +15,7 @@ const {
   encodeInteractiveFailureExitCode,
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
+  interactivePtyEnvelopeDeadlineMatches,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
@@ -115,6 +116,21 @@ describe("interactive PTY receipt settlement", () => {
 });
 
 describe("interactive PTY receipt rejection diagnostics", () => {
+  it("keeps a late exact envelope only for failure diagnosis", () => {
+    expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 99)).toBe(true);
+    expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 100)).toBe(false);
+    expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 101)).toBe(false);
+    expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 101, true)).toBe(
+      true,
+    );
+    expect(interactivePtyEnvelopeDeadlineMatches(99, 100, 101, true)).toBe(
+      false,
+    );
+    expect(interactivePtyEnvelopeDeadlineMatches(101, 100, 101, true)).toBe(
+      false,
+    );
+  });
+
   it("classifies rejected receipt authority with closed content-free codes", () => {
     const checks = {
       envelope: true,

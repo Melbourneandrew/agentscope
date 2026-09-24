@@ -364,6 +364,9 @@ describe("integration cleanup authority", () => {
     expect(controller).toContain("? captureFailedScenarioReceipt(");
     expect(controller).toContain("interactivePtyReceiptAuthorityMatches(");
     expect(controller).toContain(
+      "envelope: interactivePtyEnvelopeMatches(receipt, plan, expected, failed)",
+    );
+    expect(controller).toContain(
       "fingerprint: interactivePtyFingerprintMatches(receipt)",
     );
     expect(controller).toContain(
