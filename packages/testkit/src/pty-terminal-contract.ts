@@ -79,6 +79,15 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     | "idle-frame-rejected"
     | "idle-readiness-revoked"
     | "idle-ready";
+  /** Fixed category latched when exact completion was parsed, not at teardown. */
+  postSubmissionIdleAtCompletionDiagnostic?:
+    | "completion-not-observed"
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready";
   actions: readonly PtyTransportAction[];
   isTTY: true;
   initialGeometry: PtyTerminalGeometry;

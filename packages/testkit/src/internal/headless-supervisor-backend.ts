@@ -115,6 +115,8 @@ const emulatorPostSubmissionIdlePromptObserved =
   BoundedTerminalEmulator.prototype.postSubmissionIdlePromptObserved;
 const emulatorPostSubmissionIdleDiagnostic =
   BoundedTerminalEmulator.prototype.postSubmissionIdleDiagnostic;
+const emulatorPostSubmissionIdleAtCompletionDiagnostic =
+  BoundedTerminalEmulator.prototype.postSubmissionIdleAtCompletionDiagnostic;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -3487,6 +3489,11 @@ const armSelectedPty = (
             ? {
                 postSubmissionIdleDiagnostic: safeReflectApply(
                   emulatorPostSubmissionIdleDiagnostic,
+                  terminal,
+                  [],
+                ),
+                postSubmissionIdleAtCompletionDiagnostic: safeReflectApply(
+                  emulatorPostSubmissionIdleAtCompletionDiagnostic,
                   terminal,
                   [],
                 ),

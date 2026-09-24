@@ -457,6 +457,17 @@ const ptyTerminalReceiptSchema = z
         "idle-ready",
       ])
       .optional(),
+    postSubmissionIdleAtCompletionDiagnostic: z
+      .enum([
+        "completion-not-observed",
+        "not-armed",
+        "response-not-observed",
+        "idle-frame-not-observed",
+        "idle-frame-rejected",
+        "idle-readiness-revoked",
+        "idle-ready",
+      ])
+      .optional(),
     actions: z.array(ptyObservedActionSchema).max(64),
     outerMonotonicDeadlineMs: z.number().finite().positive(),
     requestConstructedAtMs: z.number().finite().nonnegative(),

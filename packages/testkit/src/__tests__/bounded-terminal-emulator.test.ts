@@ -563,6 +563,9 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "response-not-observed",
     );
+    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
+      "completion-not-observed",
+    );
     terminal.write(
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
     );
@@ -593,9 +596,21 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.completionObserved()).toBe(true);
     expect(terminal.snapshot().semanticState).toBe("completed");
     expect(terminal.postSubmissionIdlePromptObserved()).toBe(true);
+    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
+      "idle-ready",
+    );
     terminal.write(bytes("\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l"));
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "idle-readiness-revoked",
+    );
+    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
+      "idle-ready",
+    );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+    );
+    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
+      "idle-ready",
     );
   });
 

@@ -301,6 +301,25 @@ export const interactivePtyIdleObservationDiagnostic = (receipt) => {
   return `integration.isolation.pty-idle-diagnostic:${category}`;
 };
 
+export const interactivePtyIdleAtCompletionDiagnostic = (receipt) => {
+  if (
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    !Array.isArray(receipt?.request?.interaction?.actions) ||
+    !receipt.request.interaction.actions.some(
+      (action) => action?.action === "wait-for-post-submission-idle-prompt",
+    )
+  )
+    return undefined;
+  const category = receipt.postSubmissionIdleAtCompletionDiagnostic;
+  if (
+    category !== "completion-not-observed" &&
+    (typeof category !== "string" ||
+      !ptyIdleDiagnosticCategories.includes(category))
+  )
+    return "integration.isolation.pty-idle-at-completion:missing-or-invalid";
+  return `integration.isolation.pty-idle-at-completion:${category}`;
+};
+
 export const interactivePtyArtifactReadinessMatches = (
   receipt,
   failed = false,
