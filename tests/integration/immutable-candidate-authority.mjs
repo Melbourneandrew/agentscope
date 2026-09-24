@@ -5,6 +5,24 @@ import { join } from "node:path";
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
 };
+
+export const parseCodexMachineOutput = (bytes, command) => {
+  if (!Buffer.isBuffer(bytes) || bytes.length > 1024 * 1024)
+    throw new Error("integration.codex.cli-output");
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error("integration.codex.cli-output");
+  }
+  if (
+    value?.command !== command ||
+    value?.completion !== "complete" ||
+    !Array.isArray(value.records)
+  )
+    throw new Error("integration.codex.cli-output");
+  return value.records;
+};
 export const readBoundedInteractiveFailureMarker = (ledger) => {
   let descriptor;
   try {
@@ -130,6 +148,12 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-oracle-model-request",
   "integration.fixture.codex-verify-oracle-trace",
   "integration.fixture.codex-verify-oracle-lifecycle",
+  "integration.fixture.codex-verify-uninstall-child",
+  "integration.fixture.codex-verify-uninstall-child-deadline",
+  "integration.fixture.codex-verify-uninstall-deadline",
+  "integration.fixture.codex-verify-uninstall-trace-deadline",
+  "integration.fixture.codex-verify-uninstall-cli-output",
+  "integration.fixture.codex-verify-uninstall-result",
   "integration.runner.fixture-failed",
   "integration.runner.fixture-result",
   "integration.runner.pty-authority",
@@ -211,6 +235,38 @@ const codexProjectionFailureDiagnostics = new Map([
 export const codexProjectionFailureDiagnostic = (message) =>
   typeof message === "string"
     ? codexProjectionFailureDiagnostics.get(message)
+    : undefined;
+
+const codexUninstallFailureDiagnostics = new Map([
+  [
+    "integration.codex.child",
+    "integration.fixture.codex-verify-uninstall-child",
+  ],
+  [
+    "integration.codex.child-deadline",
+    "integration.fixture.codex-verify-uninstall-child-deadline",
+  ],
+  [
+    "integration.codex.deadline",
+    "integration.fixture.codex-verify-uninstall-deadline",
+  ],
+  [
+    "integration.codex.trace-deadline",
+    "integration.fixture.codex-verify-uninstall-trace-deadline",
+  ],
+  [
+    "integration.codex.cli-output",
+    "integration.fixture.codex-verify-uninstall-cli-output",
+  ],
+  [
+    "integration.codex.uninstall",
+    "integration.fixture.codex-verify-uninstall-result",
+  ],
+]);
+
+export const codexUninstallFailureDiagnostic = (message) =>
+  typeof message === "string"
+    ? codexUninstallFailureDiagnostics.get(message)
     : undefined;
 
 // Research-only: this candidate-writable marker is never a receipt predicate.
