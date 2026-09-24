@@ -67,6 +67,61 @@ export const classifyCodexTraceDeadlineObservation = ({
   return reporterSettled ? "trace-await-search" : "trace-await-reporter";
 };
 
+const traceFailureKindByMessage = new Map([
+  ["integration.codex.trace-deadline", "deadline"],
+  ["integration.codex.child-deadline", "child-deadline"],
+  ["integration.codex.child", "child"],
+  ["integration.codex.trace-search-child-exit-5", "child-exit-5"],
+  ["integration.codex.trace-search-child-exit-other", "child-exit-other"],
+  ["integration.codex.trace-search-child-signal", "child-signal"],
+  ["integration.codex.trace-search-child-output-limit", "child-output-limit"],
+  ["integration.codex.trace-search-child-deadline", "child-deadline"],
+  ["integration.codex.hook-log", "hook-log"],
+]);
+
+export const classifyCodexTraceFailureHint = ({
+  errorMessage,
+  hookCompleted,
+  reporterSettled,
+}) => {
+  const stage = classifyCodexTraceDeadlineObservation({
+    hookCompleted,
+    reporterSettled,
+  }).slice("trace-await-".length);
+  const kind =
+    typeof errorMessage === "string"
+      ? (traceFailureKindByMessage.get(errorMessage) ?? "other")
+      : "other";
+  return `${stage}-${kind}`;
+};
+
+export const codexTraceSearchChildFailureCategory = ({
+  code,
+  deadlineExpired,
+  signal,
+  stderrBytes,
+  stdoutBytes,
+  maximumBytes,
+}) => {
+  if (
+    !Number.isSafeInteger(stderrBytes) ||
+    stderrBytes < 0 ||
+    !Number.isSafeInteger(stdoutBytes) ||
+    stdoutBytes < 0 ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    typeof deadlineExpired !== "boolean"
+  )
+    throw new Error("integration.codex.trace-search-child-observation");
+  if (stdoutBytes > maximumBytes || stderrBytes > maximumBytes)
+    return "output-limit";
+  if (deadlineExpired) return "deadline";
+  if (signal !== null) return "signal";
+  if (code === 5) return "exit-5";
+  if (code !== 0) return "exit-other";
+  throw new Error("integration.codex.trace-search-child-observation");
+};
+
 export const codexTraceSearchUnavailable = ({
   code,
   signal,

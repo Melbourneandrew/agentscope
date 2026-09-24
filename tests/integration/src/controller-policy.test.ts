@@ -354,18 +354,23 @@ describe("integration cleanup authority", () => {
       scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
     );
     expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
-    expect(scenario).toContain(
-      'error?.message === "integration.codex.trace-deadline"',
-    );
-    expect(scenario).toContain("classifyCodexTraceDeadlineObservation({");
+    expect(scenario).toContain("classifyCodexTraceFailureHint(");
+    expect(scenario).toContain("codexTraceSearchChildFailureCategory({");
+    expect(scenario).toContain("errorMessage: error?.message,");
     for (const phase of [
       "trace-await-hook",
       "trace-await-reporter",
       "trace-await-search",
-    ]) {
-      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+    ])
       expect(scenario).not.toContain(`recordInteractivePhase("${phase}")`);
-    }
+    expect(authority).toContain("codex-trace-await-");
+    const receiptPredicates = authority.slice(
+      authority.indexOf("export const ptyExecutionFailurePredicates"),
+      authority.indexOf("export const selectInteractiveFailureDiagnostic"),
+    );
+    expect(receiptPredicates).not.toContain(
+      '"integration.fixture.codex-trace-await-',
+    );
     expect(runner).toContain("untrustedCodexTraceHint(");
     expect(runner).toContain("integration.runner.untrusted-trace-hint:");
     expect(outer).toContain(

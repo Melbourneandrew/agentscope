@@ -17,6 +17,8 @@ import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
   classifyCodexTraceDeadlineObservation,
+  classifyCodexTraceFailureHint,
+  codexTraceSearchChildFailureCategory,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
@@ -268,6 +270,89 @@ describe("Codex bounded native ledgers", () => {
       expect(() =>
         classifyCodexTraceDeadlineObservation(input as never),
       ).toThrow("integration.codex.trace-observation");
+  });
+
+  it("reduces trace failure errors to a closed stage and kind without reflecting content", () => {
+    const kinds = [
+      ["integration.codex.trace-deadline", "deadline"],
+      ["integration.codex.child-deadline", "child-deadline"],
+      ["integration.codex.child", "child"],
+      ["integration.codex.trace-search-child-exit-5", "child-exit-5"],
+      ["integration.codex.trace-search-child-exit-other", "child-exit-other"],
+      ["integration.codex.trace-search-child-signal", "child-signal"],
+      [
+        "integration.codex.trace-search-child-output-limit",
+        "child-output-limit",
+      ],
+      ["integration.codex.trace-search-child-deadline", "child-deadline"],
+      ["integration.codex.hook-log", "hook-log"],
+      ["secret-bearing unexpected error", "other"],
+      [undefined, "other"],
+    ] as const;
+    for (const [errorMessage, expectedKind] of kinds)
+      expect(
+        classifyCodexTraceFailureHint({
+          errorMessage,
+          hookCompleted: true,
+          reporterSettled: true,
+        }),
+      ).toBe(`search-${expectedKind}`);
+    expect(
+      classifyCodexTraceFailureHint({
+        errorMessage: "integration.codex.child",
+        hookCompleted: false,
+        reporterSettled: false,
+      }),
+    ).toBe("hook-child");
+    expect(
+      classifyCodexTraceFailureHint({
+        errorMessage: "integration.codex.child",
+        hookCompleted: true,
+        reporterSettled: false,
+      }),
+    ).toBe("reporter-child");
+  });
+
+  it("classifies only bounded trace-search child status, never output content", () => {
+    const base = {
+      code: 0,
+      deadlineExpired: false,
+      signal: null,
+      stderrBytes: 0,
+      stdoutBytes: 0,
+      maximumBytes: 4_096,
+    };
+    expect(codexTraceSearchChildFailureCategory({ ...base, code: 5 })).toBe(
+      "exit-5",
+    );
+    expect(codexTraceSearchChildFailureCategory({ ...base, code: 1 })).toBe(
+      "exit-other",
+    );
+    expect(
+      codexTraceSearchChildFailureCategory({
+        ...base,
+        code: null,
+        signal: "SIGKILL",
+      }),
+    ).toBe("signal");
+    expect(
+      codexTraceSearchChildFailureCategory({
+        ...base,
+        deadlineExpired: true,
+      }),
+    ).toBe("deadline");
+    expect(
+      codexTraceSearchChildFailureCategory({
+        ...base,
+        stderrBytes: 4_097,
+      }),
+    ).toBe("output-limit");
+    expect(() => codexTraceSearchChildFailureCategory(base)).toThrow(
+      "integration.codex.trace-search-child-observation",
+    );
+    expect(() =>
+      codexTraceSearchChildFailureCategory({ ...base, stdoutBytes: -1 }),
+    ).toThrow("integration.codex.trace-search-child-observation");
   });
 
   it("retries only the exact content-free trace-unavailable diagnostic", () => {
