@@ -628,6 +628,11 @@ try {
       inputBytes: receipt.inputBytes,
       inputSha256: receipt.inputSha256,
       readinessObserved: receipt.readinessObserved,
+      ...(receipt.challengedReadinessProgress === undefined
+        ? {}
+        : {
+            challengedReadinessProgress: receipt.challengedReadinessProgress,
+          }),
       ...(receipt.postSubmissionIdleDiagnostic === undefined
         ? {}
         : {

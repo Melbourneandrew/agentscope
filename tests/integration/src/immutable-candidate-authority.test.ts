@@ -579,6 +579,9 @@ describe("Codex trace cutoff ordering", () => {
 
     const integrationRoot = resolve(import.meta.dirname, "..");
     const runner = readFileSync(join(integrationRoot, "runner.mjs"), "utf8");
+    expect(runner).toContain(
+      "challengedReadinessProgress: receipt.challengedReadinessProgress",
+    );
     const controller = readFileSync(
       join(integrationRoot, "run-scenarios.mjs"),
       "utf8",

@@ -1719,6 +1719,56 @@ describe("selected PTY backend evidence", () => {
       ).toThrow("integration.isolation.evidence");
   });
 
+  it("keeps challenged readiness diagnostics closed and content-free", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    const progress = {
+      marker: true,
+      synchronizedFrame: true,
+      styledGlyph: false,
+      requiredText: false,
+      terminalProtocol: "incomplete" as const,
+      screenRevoked: false,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            challengedReadinessProgress: progress,
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.challengedReadinessProgress,
+    ).toEqual(progress);
+    for (const malformed of [
+      { ...progress, terminalProtocol: "raw-terminal-content" },
+      { ...progress, rawTerminalText: "CANARY_SECRET" },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          {
+            ...interactive,
+            ptyTerminalReceipt: {
+              ...receipt,
+              challengedReadinessProgress: malformed,
+            },
+          },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+
   it.each([
     ["monotonicStartupDeadlineMs", 11_001],
     ["monotonicExecutionDeadlineMs", 25_999],

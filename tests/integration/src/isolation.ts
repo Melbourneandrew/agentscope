@@ -453,6 +453,16 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
   inputBytes: z.number().int().nonnegative().max(1_048_576),
   inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
   readinessObserved: z.boolean(),
+  challengedReadinessProgress: z
+    .strictObject({
+      marker: z.boolean(),
+      synchronizedFrame: z.boolean(),
+      styledGlyph: z.boolean(),
+      requiredText: z.boolean(),
+      terminalProtocol: z.enum(["complete", "incomplete", "rejected"]),
+      screenRevoked: z.boolean(),
+    })
+    .optional(),
   postSubmissionIdleDiagnostic: z
     .enum([
       "not-armed",
