@@ -621,6 +621,11 @@ try {
       inputBytes: receipt.inputBytes,
       inputSha256: receipt.inputSha256,
       readinessObserved: receipt.readinessObserved,
+      ...(receipt.postSubmissionIdleDiagnostic === undefined
+        ? {}
+        : {
+            postSubmissionIdleDiagnostic: receipt.postSubmissionIdleDiagnostic,
+          }),
       actions: receipt.actions,
       outerMonotonicDeadlineMs: headlessOuterDeadline,
       requestConstructedAtMs: now,

@@ -530,6 +530,59 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
   });
 
+  it("classifies post-submission idle evidence without exposing terminal content", () => {
+    const challenge = "a".repeat(64);
+    const response = `AGENTSCOPE_CODEX_RESPONSE:${challenge}`;
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "fixture-model default",
+        postSubmissionResponseText: response,
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("not-armed");
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(
+      bytes(
+        `AGENTSCOPE_PTY_READY:${challenge}\r\n\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l`,
+      ),
+    );
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.armPostSubmissionIdleObservation();
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe(
+      "response-not-observed",
+    );
+    terminal.write(bytes(response));
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe(
+      "idle-frame-not-observed",
+    );
+    terminal.write(
+      bytes("\u001b[?2026h\u001b[2J\u001b[Hprocessing\u001b[?2026l"),
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-frame-rejected");
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+    terminal.write(bytes("\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l"));
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe(
+      "idle-readiness-revoked",
+    );
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },

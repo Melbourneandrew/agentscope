@@ -1803,6 +1803,10 @@ const captureFailedScenarioReceipt = (
   if (plan.scenarioId === "codex-tui-trace-smoke") {
     const progress = interactivePtyActionPrefixDiagnostic(receipt);
     if (progress !== undefined) process.stderr.write(`${progress}\n`);
+    if (receipt.postSubmissionIdleDiagnostic !== undefined)
+      process.stderr.write(
+        `integration.isolation.pty-idle-diagnostic:${receipt.postSubmissionIdleDiagnostic}\n`,
+      );
   }
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);

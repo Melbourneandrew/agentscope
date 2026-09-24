@@ -596,6 +596,7 @@ describe("selected PTY transport", () => {
         outcome: "completed",
         cleanup: "clean",
         inputBytesWritten: 138,
+        postSubmissionIdleDiagnostic: "idle-ready",
       });
       expect(completed.actions.map(({ action }) => action)).toEqual([
         "resize",
@@ -625,6 +626,7 @@ describe("selected PTY transport", () => {
       "wait-for-post-submission-idle-prompt",
     );
     expect(stale.inputBytesWritten).toBe(137);
+    expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
     const missingIdleNow = performance.now();
     const missingIdle = await executeSelectedPtyTransportForTest(
       {
@@ -648,6 +650,9 @@ describe("selected PTY transport", () => {
       "wait-for-semantic-completion",
     ]);
     expect(missingIdle.inputBytesWritten).toBe(137);
+    expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
+      "response-not-observed",
+    );
     for (const seed of [
       "terminal-preenter-buffered-idle",
       "terminal-response-after-idle-frame",

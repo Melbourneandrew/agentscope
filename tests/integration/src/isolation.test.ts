@@ -1490,6 +1490,28 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    const contentFreeDiagnostic = {
+      ...receipt,
+      postSubmissionIdleDiagnostic: "idle-ready" as const,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        { ...interactive, ptyTerminalReceipt: contentFreeDiagnostic },
+        evidence,
+      ).ptyTerminalReceipt?.postSubmissionIdleDiagnostic,
+    ).toBe("idle-ready");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            postSubmissionIdleDiagnostic: "terminal-content",
+          },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
     for (const ptyTerminalReceipt of [
       refingerprintPtyEnvelope(
         receipt,

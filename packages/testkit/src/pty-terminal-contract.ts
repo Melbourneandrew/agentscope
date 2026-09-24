@@ -71,6 +71,14 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   inputBytes: number;
   inputSha256: string;
   readinessObserved: boolean;
+  /** Fixed, content-free diagnostic only; never a PTY admission predicate. */
+  postSubmissionIdleDiagnostic?:
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready";
   actions: readonly PtyTransportAction[];
   isTTY: true;
   initialGeometry: PtyTerminalGeometry;

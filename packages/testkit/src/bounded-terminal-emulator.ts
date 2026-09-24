@@ -514,6 +514,7 @@ export class BoundedTerminalEmulator {
   #completionObserved = false;
   #postSubmissionIdleObservationArmed = false;
   #postSubmissionIdleFrameEligible = false;
+  #postSubmissionEligibleFrameAttempted = false;
   #postSubmissionIdlePromptObserved = false;
   #postSubmissionResponseTail = "";
   #postSubmissionResponseObserved = false;
@@ -720,12 +721,32 @@ export class BoundedTerminalEmulator {
     if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
     this.#postSubmissionIdleObservationArmed = true;
     this.#postSubmissionIdleFrameEligible = false;
+    this.#postSubmissionEligibleFrameAttempted = false;
     this.#postSubmissionIdlePromptObserved = false;
+    this.#postSubmissionResponseTail = "";
+    this.#postSubmissionResponseObserved = false;
   }
 
   /** Package-private: one later synchronized challenged idle-prompt frame. */
   public postSubmissionIdlePromptObserved(): boolean {
     return this.#postSubmissionIdlePromptObserved && this.#readinessObserved;
+  }
+
+  /** Package-private, content-free failure diagnosis; never admission authority. */
+  public postSubmissionIdleDiagnostic():
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready" {
+    if (!this.#postSubmissionIdleObservationArmed) return "not-armed";
+    if (!this.#postSubmissionResponseObserved) return "response-not-observed";
+    if (!this.#postSubmissionIdlePromptObserved)
+      return this.#postSubmissionEligibleFrameAttempted
+        ? "idle-frame-rejected"
+        : "idle-frame-not-observed";
+    return this.#readinessObserved ? "idle-ready" : "idle-readiness-revoked";
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -821,6 +842,8 @@ export class BoundedTerminalEmulator {
       (this.#readinessMatcher.kind !== "challenge-styled-text" ||
         this.#readinessMatcher.postSubmissionResponseText === undefined ||
         this.#postSubmissionResponseObserved);
+    if (this.#postSubmissionIdleFrameEligible)
+      this.#postSubmissionEligibleFrameAttempted = true;
   }
 
   #invalidateChallengeSynchronizedOutputFrame(): void {
@@ -1151,6 +1174,8 @@ export class BoundedTerminalEmulator {
         this.#postSubmissionResponseObserved = true;
         this.#postSubmissionIdleFrameEligible =
           this.#challengeSynchronizedOutputFrameActive;
+        if (this.#postSubmissionIdleFrameEligible)
+          this.#postSubmissionEligibleFrameAttempted = true;
         this.#resetChallengeOutputObservation();
       }
     }
