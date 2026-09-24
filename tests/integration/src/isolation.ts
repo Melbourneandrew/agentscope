@@ -571,7 +571,8 @@ const ptyTerminalReceiptSchema = z
           request.monotonicShutdownDeadlineMs - 5_000,
         ) ||
       request.monotonicExecutionDeadlineMs !==
-        request.monotonicShutdownDeadlineMs - 5_000 ||
+        request.monotonicShutdownDeadlineMs -
+          (value.scenarioId === "codex-tui-trace-smoke" ? 25_000 : 5_000) ||
       request.terminationGraceMs !== 1_000 ||
       request.monotonicShutdownDeadlineMs !==
         value.translationLocalAtMs +
