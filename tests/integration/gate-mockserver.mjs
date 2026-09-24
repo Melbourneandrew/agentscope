@@ -137,6 +137,7 @@ let cutoff;
 let responseText;
 let promptSha256;
 let sessionStartSpanSha256;
+let armGeneration;
 let initialSocket;
 let connectionGeneration = 0;
 let mutationGeneration = 0;
@@ -154,15 +155,24 @@ const ledger = [];
 const modelServer = createHttpServer(async (request, response) => {
   const firstRequest = state === "armed";
   const connection = connectionBySocket.get(request.socket);
+  if (
+    connection === undefined ||
+    bootNow() >= cutoff ||
+    (!firstRequest &&
+      (state !== "admitted" || connection.admission !== "admitted"))
+  ) {
+    parserFailures += 1;
+    mutationGeneration += 1;
+    if (connection !== undefined) connection.parserOutcome = "rejected";
+    response.statusCode = 502;
+    response.end();
+    request.socket.destroy();
+    return;
+  }
   parserWork += 1;
+  connection.activeRequests += 1;
   mutationGeneration += 1;
   try {
-    if (
-      connection === undefined ||
-      (!firstRequest && connection.admission !== "admitted") ||
-      (!firstRequest && state !== "admitted" && state !== "draining")
-    )
-      throw new Error("integration.mockserver.state");
     connection.parserOutcome = "parsing";
     if (firstRequest) {
       state = "parsing-first";
@@ -213,6 +223,7 @@ const modelServer = createHttpServer(async (request, response) => {
       state = "admitted";
       connection.admission = "admitted";
     }
+    connection.parserOutcome = "accepted-pending-release";
     await releasePromise;
     if (state !== "admitted" && state !== "draining")
       throw new Error("integration.mockserver.release");
@@ -231,6 +242,7 @@ const modelServer = createHttpServer(async (request, response) => {
     response.end();
   } finally {
     parserWork -= 1;
+    connection.activeRequests -= 1;
     mutationGeneration += 1;
   }
 });
@@ -246,6 +258,7 @@ modelServer.on("clientError", (_error, socket) => {
 const registerSocket = (socket) => {
   const generation = ++connectionGeneration;
   const connection = {
+    activeRequests: 0,
     admission: "held",
     closed: false,
     eof: false,
@@ -319,7 +332,11 @@ const admitSocket = (connection) => {
 };
 const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
   const connection = registerSocket(socket);
-  if (state === "pending" || state === "unconfigured") {
+  if (
+    state === "pending" ||
+    state === "awaiting-ack" ||
+    state === "unconfigured"
+  ) {
     if (initialSocket !== undefined) {
       const initialConnection = connectionBySocket.get(initialSocket);
       if (initialConnection !== undefined) rejectSocket(initialConnection);
@@ -340,15 +357,32 @@ const closeTransportAdmission = () => {
   if (transportServer.listening) transportServer.close(() => undefined);
 };
 const enforceCutoff = () => {
-  if (state === "pending" || state === "armed" || state === "parsing-first") {
+  if (
+    state === "pending" ||
+    state === "awaiting-ack" ||
+    state === "armed" ||
+    state === "parsing-first"
+  ) {
     state = "denied";
     initialSocket?.destroy();
     initialSocket = undefined;
     for (const { socket } of connections.values()) socket.destroy();
   } else if (state === "admitted") {
     state = "draining";
-    for (const connection of connections.values())
+    for (const connection of connections.values()) {
       if (connection.admission === "awaiting-request") rejectSocket(connection);
+      else if (
+        connection.admission === "admitted" &&
+        connection.parserOutcome !== "accepted-pending-release" &&
+        connection.parserOutcome !== "accepted"
+      ) {
+        if (connection.parserOutcome === "framing") {
+          parserFailures += 1;
+          connection.parserOutcome = "rejected";
+        }
+        connection.socket.destroy();
+      }
+    }
   } else return;
   for (const connection of connections.values())
     if (
@@ -430,17 +464,42 @@ const arm = async (request, response) => {
     bootNow() >= cutoff
   )
     throw new Error("arm");
-  state = "armed";
+  state = "awaiting-ack";
   sessionStartSpanSha256 = value.sessionStartSpanSha256;
+  armGeneration = digest(`${challenge}:${runId}:${sessionStartSpanSha256}:1`);
+  mutationGeneration += 1;
+  json(response, 200, {
+    challengeSha256: digest(challenge),
+    generation: armGeneration,
+    runId,
+    state,
+  });
+};
+const acknowledgeArm = async (request, response) => {
+  const value = await boundedJson(request);
+  if (
+    !exactKeys(value, ["challengeSha256", "generation", "runId"]) ||
+    value.challengeSha256 !== digest(challenge) ||
+    value.generation !== armGeneration ||
+    value.runId !== runId ||
+    state !== "awaiting-ack" ||
+    bootNow() >= cutoff
+  )
+    throw new Error("ack");
+  state = "armed";
   mutationGeneration += 1;
   const socket = initialSocket;
   initialSocket = undefined;
-  if (socket !== undefined) {
+  response.once("finish", () => {
+    if (socket === undefined || state !== "armed") return;
     const connection = connectionBySocket.get(socket);
-    if (connection === undefined) throw new Error("arm");
+    if (connection === undefined) {
+      enforceCutoff();
+      return;
+    }
     admitSocket(connection);
-  }
-  json(response, 200, { runId, state });
+  });
+  json(response, 200, { runId, state, generation: armGeneration });
 };
 const release = async (request, response) => {
   const value = await boundedJson(request);
@@ -464,12 +523,16 @@ const seal = async (request, response) => {
   state = "draining";
   mutationGeneration += 1;
   if (cutoffTimer !== undefined) clearTimeout(cutoffTimer);
-  if (transportServer.listening)
-    await new Promise((resolve, reject) =>
-      transportServer.close((error) =>
-        error === undefined ? resolve() : reject(error),
-      ),
-    );
+  closeTransportAdmission();
+  for (const connection of connections.values())
+    if (!connection.closed && connection.activeRequests === 0) {
+      if (connection.parserOutcome === "framing") {
+        parserFailures += 1;
+        connection.parserOutcome = "rejected";
+        mutationGeneration += 1;
+      }
+      connection.socket.destroy();
+    }
   await waitForSettlement();
   terminalReceipt = Object.freeze({
     challengeSha256: digest(challenge),
@@ -516,6 +579,8 @@ const deny = async (request, response) => {
 const authorizedRoute = async (request, response, pathname) => {
   if (request.method === "POST" && pathname === "/arm")
     return arm(request, response);
+  if (request.method === "POST" && pathname === "/ack")
+    return acknowledgeArm(request, response);
   if (request.method === "POST" && pathname === "/release")
     return release(request, response);
   if (request.method === "POST" && pathname === "/seal")
@@ -554,6 +619,8 @@ const controlApplication = createHttpServer(async (request, response) => {
     json(response, 409, { error: "rejected" });
   }
 });
+// One protected, non-reconnectable control socket must survive the whole turn.
+controlApplication.keepAliveTimeout = 0;
 let selectedControlSocket;
 const controlServer = createNetServer({ pauseOnConnect: true }, (socket) => {
   if (selectedControlSocket !== undefined) {

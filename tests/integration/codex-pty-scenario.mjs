@@ -812,9 +812,32 @@ const armModelGate = async (modelAdmissionCutoff) => {
         throw error;
       }
       if (
-        !exactKeys(response, ["runId", "state"]) ||
+        !exactKeys(response, [
+          "challengeSha256",
+          "generation",
+          "runId",
+          "state",
+        ]) ||
+        response.challengeSha256 !==
+          createHash("sha256").update(readinessChallenge).digest("hex") ||
+        typeof response.generation !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(response.generation) ||
         response.runId !== integrationRunId ||
-        response.state !== "armed"
+        response.state !== "awaiting-ack"
+      ) {
+        recordModelGateArmFailure("control");
+        throw new Error("integration.codex.model-gate");
+      }
+      const acknowledged = await gateRequest("/ack", {
+        challengeSha256: response.challengeSha256,
+        generation: response.generation,
+        runId: integrationRunId,
+      });
+      if (
+        !exactKeys(acknowledged, ["generation", "runId", "state"]) ||
+        acknowledged.generation !== response.generation ||
+        acknowledged.runId !== integrationRunId ||
+        acknowledged.state !== "armed"
       ) {
         recordModelGateArmFailure("control");
         throw new Error("integration.codex.model-gate");
