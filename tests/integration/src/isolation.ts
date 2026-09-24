@@ -219,7 +219,7 @@ const cleanupInventorySchema = z.strictObject({
 const cleanupEvidenceSchema = z
   .strictObject({
     outcome: z.enum(["complete", "failed", "verification-failed"]),
-    removalFailureCount: z.number().int().min(0).max(8),
+    removalFailureCount: z.number().int().min(0).max(9),
     remaining: cleanupInventorySchema.nullable(),
   })
   .superRefine((value, context) => {
@@ -729,6 +729,7 @@ export interface IsolationPlan {
   readonly imageTag: string;
   readonly mockServerImageTag: string;
   readonly networkName: string;
+  readonly controlVolumeName: string | null;
   readonly collectorName: string;
   readonly retrievalName: string;
   readonly mockServerName: string;
@@ -905,6 +906,7 @@ export interface IsolationDriver {
     signal: AbortSignal,
   ): Promise<string>;
   createNetwork(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  createControlVolume(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
@@ -918,6 +920,7 @@ export interface IsolationDriver {
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
   removeContainer(name: string): Promise<void>;
   removeNetwork(name: string): Promise<void>;
+  removeControlVolume(name: string): Promise<void>;
   removeImage(tag: string): Promise<void>;
   removeContext(runId: string): Promise<void>;
   inspectCleanup(plan: IsolationPlan): Promise<unknown>;
@@ -1116,6 +1119,10 @@ export const createIsolationPlan = (input: {
     imageTag: `${prefix}:candidate`,
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
+    controlVolumeName:
+      input.scenario.scenarioId === "codex-tui-trace-smoke"
+        ? `${prefix}-control`
+        : null,
     collectorName: `${prefix}-collector`,
     retrievalName: `${prefix}-retrieval`,
     mockServerName: `${prefix}-mockserver`,
@@ -1151,6 +1158,7 @@ const cleanup = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
 ): Promise<CleanupResult> => {
+  const controlVolumeName = plan.controlVolumeName;
   const operations: ReadonlyArray<readonly [string, () => Promise<void>]> = [
     ["scenario-container", () => driver.removeContainer(plan.scenarioName)],
     ["collector-container", () => driver.removeContainer(plan.collectorName)],
@@ -1160,6 +1168,14 @@ const cleanup = async (
       () => driver.removeContainer(plan.mockServerName),
     ],
     ["network", () => driver.removeNetwork(plan.networkName)],
+    ...(controlVolumeName === null
+      ? []
+      : [
+          [
+            "control-volume",
+            () => driver.removeControlVolume(controlVolumeName),
+          ] as const,
+        ]),
     ["scenario-image", () => driver.removeImage(plan.imageTag)],
     ["mock-server-image", () => driver.removeImage(plan.mockServerImageTag)],
     ["context", () => driver.removeContext(plan.runId)],
@@ -1236,6 +1252,8 @@ export const executeIsolationPlan = async (
     mockServerImageDigest = builtMockServerImageDigest;
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
     await driver.createNetwork(plan, signal);
+    if (plan.controlVolumeName !== null)
+      await driver.createControlVolume(plan, signal);
     await driver.startCollector(plan, signal);
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);

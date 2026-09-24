@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash, timingSafeEqual } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { dirname, isAbsolute } from "node:path";
 
 const maximumBodyBytes = 1024 * 1024;
 const maximumLedgerEntries = 16;
@@ -19,22 +20,57 @@ const bootNow = () => {
     throw new Error("integration.mockserver.clock");
   return Number(source.split(/\s/u, 1)[0]) * 1_000;
 };
-const parsePorts = () => {
-  if (process.argv.length === 2) return [1080, 1081];
+const parseEndpoints = () => {
+  if (process.argv.length === 2)
+    return {
+      modelPort: 1080,
+      controlSocket: "/control/private/gate.sock",
+      production: true,
+    };
   if (
     process.argv.length !== 6 ||
     process.argv[2] !== "--model-port" ||
-    process.argv[4] !== "--control-port" ||
+    process.argv[4] !== "--control-socket" ||
     !/^\d{1,5}$/u.test(process.argv[3]) ||
-    !/^\d{1,5}$/u.test(process.argv[5])
+    !isAbsolute(process.argv[5]) ||
+    process.argv[5].length > 100 ||
+    process.argv[5].includes("\0") ||
+    process.argv[5].split("/").some((part) => part === "..")
   )
     throw new Error("integration.mockserver.arguments");
-  const ports = [Number(process.argv[3]), Number(process.argv[5])];
-  if (ports.some((port) => port < 1 || port > 65_535) || ports[0] === ports[1])
+  const modelPort = Number(process.argv[3]);
+  if (modelPort < 1 || modelPort > 65_535)
     throw new Error("integration.mockserver.arguments");
-  return ports;
+  return { modelPort, controlSocket: process.argv[5], production: false };
 };
-const [modelPort, controlPort] = parsePorts();
+const { modelPort, controlSocket, production } = parseEndpoints();
+const controlDirectory = dirname(controlSocket);
+if (production) {
+  const parent = lstatSync("/control");
+  if (
+    !parent.isDirectory() ||
+    parent.isSymbolicLink() ||
+    parent.uid !== 0 ||
+    (parent.mode & 0o777) !== 0o755
+  )
+    throw new Error("integration.mockserver.control-parent");
+  mkdirSync(controlDirectory, { mode: 0o700 });
+}
+const controlDirectoryStatus = lstatSync(controlDirectory);
+if (
+  !controlDirectoryStatus.isDirectory() ||
+  controlDirectoryStatus.isSymbolicLink() ||
+  (controlDirectoryStatus.mode & 0o777) !== 0o700 ||
+  controlDirectoryStatus.uid !== process.getuid()
+)
+  throw new Error("integration.mockserver.control-directory");
+try {
+  lstatSync(controlSocket);
+  throw new Error("integration.mockserver.control-socket-exists");
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
+}
+process.umask(0o177);
 const digest = (value) => createHash("sha256").update(value).digest("hex");
 const promptOccurrences = (value, promptSha256) => {
   const pending = [value];
@@ -531,4 +567,13 @@ const controlServer = createNetServer({ pauseOnConnect: true }, (socket) => {
 });
 
 transportServer.listen(modelPort, "0.0.0.0");
-controlServer.listen(controlPort, "0.0.0.0");
+controlServer.listen(controlSocket, () => {
+  const status = lstatSync(controlSocket);
+  if (
+    !status.isSocket() ||
+    status.isSymbolicLink() ||
+    (status.mode & 0o777) !== 0o600 ||
+    status.uid !== process.getuid()
+  )
+    throw new Error("integration.mockserver.control-socket");
+});

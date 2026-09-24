@@ -175,7 +175,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(3);
+    expect(scenario?.runtimeArtifacts).toHaveLength(4);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -304,6 +304,33 @@ describe("integration capability manifest", () => {
       resolve(integrationRoot, scenario.scenarioProcess.path),
       "utf8",
     );
+    const dropperSource = readFileSync(
+      resolve(integrationRoot, "codex-candidate-dropper.mjs"),
+      "utf8",
+    );
+    expect(
+      scenario.runtimeArtifacts.filter(
+        ({ destination }) => destination === "codex-candidate-dropper.mjs",
+      ),
+    ).toEqual([
+      {
+        source: { kind: "integration", path: "codex-candidate-dropper.mjs" },
+        destination: "codex-candidate-dropper.mjs",
+        sha256: createHash("sha256").update(dropperSource).digest("hex"),
+      },
+    ]);
+    const candidateExec = dropperSource.indexOf("process.execve(\n");
+    for (const denial of [
+      'readdirSync("/control/private")',
+      "readdirSync(`/proc/${controllerPid}/fd`)",
+      'process.kill(controllerPid, "SIGUSR2")',
+      "checkpoint-${runId}.json",
+      'createConnection({ path: "/control/private/gate.sock" })',
+    ]) {
+      expect(dropperSource.indexOf(denial)).toBeGreaterThan(-1);
+      expect(dropperSource.indexOf(denial)).toBeLessThan(candidateExec);
+    }
+    expect(source).toContain("AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,");
     const challengeRead = source.indexOf(
       "const readinessChallenge = await readReadinessChallenge();\n",
     );
@@ -314,11 +341,11 @@ describe("integration capability manifest", () => {
     const sessionStartCheckpoint = source.indexOf(
       "      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
     );
-    const explicitHookEnablement = source.indexOf(
-      '      "--enable",\n      "hooks",\n',
+    const explicitHookEnablement = dropperSource.indexOf(
+      '    "--enable",\n    "hooks",\n',
     );
-    const explicitHookTrust = source.indexOf(
-      '      "--dangerously-bypass-hook-trust",\n',
+    const explicitHookTrust = dropperSource.indexOf(
+      '    "--dangerously-bypass-hook-trust",\n',
     );
     const modelRequest = source.indexOf(
       "  await waitForModelRequestBeforeDeadline({\n",
@@ -332,7 +359,7 @@ describe("integration capability manifest", () => {
       traceDeadline,
     );
     const checkpointAcknowledgement = source.indexOf(
-      "  await checkpointSignal;\n",
+      "  await checkpointWitness;\n",
       codexLaunch,
     );
     const modelResponse = source.indexOf("  await releaseModelResponse();\n");
@@ -376,9 +403,9 @@ describe("integration capability manifest", () => {
     expect(source).not.toContain("readFileSync(`/proc/${pid}/stat`");
     expect(source).not.toContain('readdirSync("/proc"');
     expect(source).toContain(
-      "const checkpointSignal = waitForCheckpointSignal();",
+      "const checkpointWitness = waitForCheckpointWitness();",
     );
-    expect(source).toContain('process.once("SIGUSR2", onSignal);');
+    expect(source).not.toContain('process.once("SIGUSR2", onSignal);');
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);

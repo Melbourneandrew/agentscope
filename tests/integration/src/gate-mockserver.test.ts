@@ -1,8 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { Agent, request as httpRequest } from "node:http";
 import { createConnection, createServer, type Socket } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -15,7 +17,8 @@ const responseText =
 const prompt = "fixture prompt";
 const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const children = new Set<ChildProcess>();
-const agents = new Map<number, Agent>();
+const agents = new Map<string, Agent>();
+const controlRoots = new Set<string>();
 
 const bootNow = () => Number(process.hrtime.bigint() / 1_000_000n);
 const availablePort = async () => {
@@ -36,13 +39,13 @@ const availablePort = async () => {
   return address.port;
 };
 const request = async (
-  controlPort: number,
+  controlSocket: string,
   path: string,
   body?: unknown,
   token = challenge,
   method = body === undefined ? "GET" : "POST",
 ) => {
-  const agent = agents.get(controlPort);
+  const agent = agents.get(controlSocket);
   if (agent === undefined) throw new Error("gate-test.agent");
   return new Promise<{
     status: number;
@@ -50,7 +53,6 @@ const request = async (
   }>((resolvePromise, reject) => {
     const bytes = body === undefined ? undefined : JSON.stringify(body);
     const controlRequest = httpRequest(
-      `http://127.0.0.1:${controlPort}${path}`,
       {
         agent,
         headers:
@@ -61,6 +63,8 @@ const request = async (
                 "content-type": "application/json",
               },
         method,
+        path,
+        socketPath: controlSocket,
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -89,15 +93,17 @@ const request = async (
 };
 const startGate = async () => {
   const modelPort = await availablePort();
-  const controlPort = await availablePort();
+  const controlRoot = mkdtempSync(join(tmpdir(), "agentscope-gate-"));
+  controlRoots.add(controlRoot);
+  const controlSocket = join(controlRoot, "gate.sock");
   const child = spawn(
     process.execPath,
     [
       source,
       "--model-port",
       String(modelPort),
-      "--control-port",
-      String(controlPort),
+      "--control-socket",
+      controlSocket,
     ],
     {
       env: { LANG: "C.UTF-8", PATH: process.env.PATH },
@@ -105,18 +111,18 @@ const startGate = async () => {
     },
   );
   children.add(child);
-  agents.set(controlPort, new Agent({ keepAlive: true, maxSockets: 1 }));
-  return { child, controlPort, modelPort };
+  agents.set(controlSocket, new Agent({ keepAlive: true, maxSockets: 1 }));
+  return { child, controlSocket, modelPort };
 };
 const configure = async (
-  controlPort: number,
+  controlSocket: string,
   cutoffWindowMs = 5_000,
   clock: () => number = bootNow,
   configureRequest: typeof request = request,
 ) => {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      const health = await request(controlPort, "/health");
+      const health = await request(controlSocket, "/health");
       if (health.status === 200) break;
     } catch {
       // The fixture owns this bounded startup readiness phase.
@@ -127,7 +133,7 @@ const configure = async (
   const cutoff = clock() + cutoffWindowMs;
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
-      return await configureRequest(controlPort, "/configure", {
+      return await configureRequest(controlSocket, "/configure", {
         challenge,
         cutoff,
         promptSha256,
@@ -150,9 +156,12 @@ const connect = async (port: number) => {
   });
   return socket;
 };
-const expectConnectionRefused = (port: number) =>
+const expectConnectionRefused = (endpoint: number | string) =>
   new Promise<void>((resolvePromise, reject) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
+    const socket =
+      typeof endpoint === "string"
+        ? createConnection(endpoint)
+        : createConnection({ host: "127.0.0.1", port: endpoint });
     socket.once("connect", () => {
       socket.destroy();
       reject(new Error("gate-test.control-open"));
@@ -210,12 +219,66 @@ afterEach(async () => {
         }),
     ),
   );
+  for (const controlRoot of controlRoots)
+    rmSync(controlRoot, { recursive: true });
+  controlRoots.clear();
 });
 
 // eslint-disable-next-line max-lines-per-function -- closed adversarial state-machine matrix
 describe("gate-capable exact-build MockServer", () => {
+  it("refuses to create its own control authority directory", async () => {
+    const modelPort = await availablePort();
+    const controlRoot = mkdtempSync(join(tmpdir(), "agentscope-gate-"));
+    controlRoots.add(controlRoot);
+    const child = spawn(
+      process.execPath,
+      [
+        source,
+        "--model-port",
+        String(modelPort),
+        "--control-socket",
+        join(controlRoot, "missing", "gate.sock"),
+      ],
+      { env: { LANG: "C.UTF-8", PATH: process.env.PATH }, stdio: "ignore" },
+    );
+    children.add(child);
+    expect(await terminal(child)).toMatchObject({ code: 1, signal: null });
+    expect(() => lstatSync(join(controlRoot, "missing"))).toThrow();
+  });
+
+  it("owns a private Unix control listener before one-use selection", async () => {
+    const { controlSocket } = await startGate();
+    let socket;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        socket = lstatSync(controlSocket);
+        break;
+      } catch (error) {
+        if (
+          typeof error !== "object" ||
+          error === null ||
+          !("code" in error) ||
+          error.code !== "ENOENT" ||
+          attempt === 99
+        )
+          throw error;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      }
+    }
+    const directory = lstatSync(resolve(controlSocket, ".."));
+    if (socket === undefined) throw new Error("gate-test.control-readiness");
+    expect(directory.isDirectory()).toBe(true);
+    expect(directory.isSymbolicLink()).toBe(false);
+    expect(directory.mode & 0o777).toBe(0o700);
+    expect(socket.isSocket()).toBe(true);
+    expect(socket.isSymbolicLink()).toBe(false);
+    expect(socket.mode & 0o777).toBe(0o600);
+    expect(socket.uid).toBe(process.getuid?.());
+    expect((await configure(controlSocket)).status).toBe(200);
+  });
+
   it("fixes one absolute cutoff after health readiness", async () => {
-    const { controlPort } = await startGate();
+    const { controlSocket } = await startGate();
     const clock = vi.fn(bootNow);
     const observedCutoffs: unknown[] = [];
     let configureAttempts = 0;
@@ -228,7 +291,7 @@ describe("gate-capable exact-build MockServer", () => {
     };
 
     expect(
-      await configure(controlPort, 5_000, clock, retryingRequest),
+      await configure(controlSocket, 5_000, clock, retryingRequest),
     ).toMatchObject({
       status: 200,
       value: { runId, state: "pending" },
@@ -239,33 +302,33 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("holds the first socket below HTTP parsing until the exact span is armed", async () => {
-    const { child, controlPort, modelPort } = await startGate();
+    const { child, controlSocket, modelPort } = await startGate();
     const childTerminal = terminal(child);
-    expect(await configure(controlPort)).toMatchObject({
+    expect(await configure(controlSocket)).toMatchObject({
       status: 200,
       value: { runId, state: "pending" },
     });
-    await expectConnectionRefused(controlPort);
+    await expectConnectionRefused(controlSocket);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     socket.write(exactRequest());
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
     expect(
-      await request(controlPort, "/requests", {}, challenge, "PUT"),
+      await request(controlSocket, "/requests", {}, challenge, "PUT"),
     ).toMatchObject({
       status: 200,
       value: { ledger: [] },
     });
     const span = "b".repeat(64);
     expect(
-      await request(controlPort, "/arm", {
+      await request(controlSocket, "/arm", {
         runId,
         sessionStartSpanSha256: span,
       }),
     ).toMatchObject({ status: 200, value: { state: "armed" } });
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
-        controlPort,
+        controlSocket,
         "/requests",
         {},
         challenge,
@@ -274,12 +337,12 @@ describe("gate-capable exact-build MockServer", () => {
       if ((observed.value.ledger as unknown[]).length === 1) break;
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    expect(await request(controlPort, "/release", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/release", { runId })).toMatchObject({
       status: 200,
       value: { state: "admitted" },
     });
     expect((await completion).toString("utf8")).toContain(responseText);
-    const sealed = await request(controlPort, "/seal", { runId });
+    const sealed = await request(controlSocket, "/seal", { runId });
     expect(sealed.status).toBe(200);
     const nativeRequest = (sealed.value.ledger as Record<string, unknown>[])[0];
     expect(nativeRequest).toBeDefined();
@@ -352,21 +415,21 @@ describe("gate-capable exact-build MockServer", () => {
       expectedPromptCount,
       expectedCredentialCount,
     ) => {
-      const { child, controlPort, modelPort } = await startGate();
+      const { child, controlSocket, modelPort } = await startGate();
       const childTerminal = terminal(child);
-      expect(await configure(controlPort)).toMatchObject({ status: 200 });
+      expect(await configure(controlSocket)).toMatchObject({ status: 200 });
       const socket = await connect(modelPort);
       const completion = collect(socket);
       socket.write(exactRequest(body, extraHeaders));
       expect(
-        await request(controlPort, "/arm", {
+        await request(controlSocket, "/arm", {
           runId,
           sessionStartSpanSha256: "b".repeat(64),
         }),
       ).toMatchObject({ status: 200 });
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const observed = await request(
-          controlPort,
+          controlSocket,
           "/requests",
           {},
           challenge,
@@ -375,11 +438,13 @@ describe("gate-capable exact-build MockServer", () => {
         if ((observed.value.ledger as unknown[]).length === 1) break;
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
       }
-      expect(await request(controlPort, "/release", { runId })).toMatchObject({
-        status: 200,
-      });
+      expect(await request(controlSocket, "/release", { runId })).toMatchObject(
+        {
+          status: 200,
+        },
+      );
       await completion;
-      const sealed = await request(controlPort, "/seal", { runId });
+      const sealed = await request(controlSocket, "/seal", { runId });
       expect(sealed.status).toBe(200);
       const retained = (sealed.value.ledger as Record<string, unknown>[])[0];
       expect(retained).toMatchObject({
@@ -393,8 +458,8 @@ describe("gate-capable exact-build MockServer", () => {
   );
 
   it("rejects substituted control authority and duplicate initial sockets", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket);
     const first = await connect(modelPort);
     const second = await connect(modelPort);
     await new Promise<void>((resolvePromise) =>
@@ -402,19 +467,19 @@ describe("gate-capable exact-build MockServer", () => {
     );
     expect(
       await request(
-        controlPort,
+        controlSocket,
         "/arm",
         { runId, sessionStartSpanSha256: "b".repeat(64) },
         "c".repeat(64),
       ),
     ).toMatchObject({ status: 403 });
     expect(
-      await request(controlPort, "/arm", {
+      await request(controlSocket, "/arm", {
         runId,
         sessionStartSpanSha256: "b".repeat(64),
       }),
     ).toMatchObject({ status: 409 });
-    expect(await request(controlPort, "/deny", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {
@@ -431,12 +496,12 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("denies a partial request at the absolute cutoff without admitting work", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, 200);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 200);
     const socket = await connect(modelPort);
     const completion = collect(socket);
     expect(
-      await request(controlPort, "/arm", {
+      await request(controlSocket, "/arm", {
         runId,
         sessionStartSpanSha256: "b".repeat(64),
       }),
@@ -445,7 +510,7 @@ describe("gate-capable exact-build MockServer", () => {
       "POST /v1/responses HTTP/1.1\r\nHost: model\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{",
     );
     await completion;
-    expect(await request(controlPort, "/deny", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
         ledger: [],
@@ -455,11 +520,11 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("permanently denies a second socket during provisional parsing", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
-    await request(controlPort, "/arm", {
+    await request(controlSocket, "/arm", {
       runId,
       sessionStartSpanSha256: "b".repeat(64),
     });
@@ -470,11 +535,11 @@ describe("gate-capable exact-build MockServer", () => {
     const second = await connect(modelPort);
     await collect(second);
     await firstCompletion;
-    expect(await request(controlPort, "/health")).toMatchObject({
+    expect(await request(controlSocket, "/health")).toMatchObject({
       status: 200,
       value: { state: "denied" },
     });
-    expect(await request(controlPort, "/deny", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
         ledger: [],
@@ -499,18 +564,18 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("drains work admitted before cutoff while refusing later admission", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, 300);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 300);
     const socket = await connect(modelPort);
     const completion = collect(socket);
-    await request(controlPort, "/arm", {
+    await request(controlSocket, "/arm", {
       runId,
       sessionStartSpanSha256: "b".repeat(64),
     });
     socket.write(exactRequest());
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
-        controlPort,
+        controlSocket,
         "/requests",
         {},
         challenge,
@@ -521,12 +586,12 @@ describe("gate-capable exact-build MockServer", () => {
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 320));
     await expectConnectionRefused(modelPort);
-    expect(await request(controlPort, "/release", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/release", { runId })).toMatchObject({
       status: 200,
       value: { state: "draining" },
     });
     expect((await completion).toString("utf8")).toContain(responseText);
-    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {
@@ -544,18 +609,18 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("rejects an idle later socket when cutoff wins before its request", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, 500);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 500);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
-    await request(controlPort, "/arm", {
+    await request(controlSocket, "/arm", {
       runId,
       sessionStartSpanSha256: "b".repeat(64),
     });
     first.write(exactRequest());
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
-        controlPort,
+        controlSocket,
         "/requests",
         {},
         challenge,
@@ -564,13 +629,13 @@ describe("gate-capable exact-build MockServer", () => {
       if ((observed.value.ledger as unknown[]).length === 1) break;
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    await request(controlPort, "/release", { runId });
+    await request(controlSocket, "/release", { runId });
     await firstCompletion;
     const idle = await connect(modelPort);
     const idleCompletion = collect(idle);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 520));
     await idleCompletion;
-    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {
@@ -591,18 +656,18 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("accounts for partial framing admitted before cutoff", async () => {
-    const { controlPort, modelPort } = await startGate();
-    await configure(controlPort, 700);
+    const { controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 700);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
-    await request(controlPort, "/arm", {
+    await request(controlSocket, "/arm", {
       runId,
       sessionStartSpanSha256: "b".repeat(64),
     });
     first.write(exactRequest());
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
-        controlPort,
+        controlSocket,
         "/requests",
         {},
         challenge,
@@ -611,7 +676,7 @@ describe("gate-capable exact-build MockServer", () => {
       if ((observed.value.ledger as unknown[]).length === 1) break;
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    await request(controlPort, "/release", { runId });
+    await request(controlSocket, "/release", { runId });
     await firstCompletion;
     const partial = await connect(modelPort);
     const partialCompletion = collect(partial);
@@ -619,7 +684,7 @@ describe("gate-capable exact-build MockServer", () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 720));
     partial.end();
     await partialCompletion;
-    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {
@@ -641,18 +706,18 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("rejects a request-ready callback delayed past cutoff", async () => {
-    const { child, controlPort, modelPort } = await startGate();
-    await configure(controlPort, 1_200);
+    const { child, controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 1_200);
     const first = await connect(modelPort);
     const firstCompletion = collect(first);
-    await request(controlPort, "/arm", {
+    await request(controlSocket, "/arm", {
       runId,
       sessionStartSpanSha256: "b".repeat(64),
     });
     first.write(exactRequest());
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
-        controlPort,
+        controlSocket,
         "/requests",
         {},
         challenge,
@@ -661,7 +726,7 @@ describe("gate-capable exact-build MockServer", () => {
       if ((observed.value.ledger as unknown[]).length === 1) break;
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    await request(controlPort, "/release", { runId });
+    await request(controlSocket, "/release", { runId });
     await firstCompletion;
     const delayed = await connect(modelPort);
     const delayedCompletion = collect(delayed).then(
@@ -675,7 +740,7 @@ describe("gate-capable exact-build MockServer", () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_220));
     expect(child.kill("SIGCONT")).toBe(true);
     expect(["closed", "ECONNRESET"]).toContain(await delayedCompletion);
-    expect(await request(controlPort, "/seal", { runId })).toMatchObject({
+    expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {

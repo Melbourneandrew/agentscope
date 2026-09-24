@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-e20e78c44b529b650aa739febb3c9dc691be76c1caf104f36a5a7da9e589aa9d",
+  "manifestIdentity": "sha256-58a2e68208b710db9eadbed28acdb44842477df10d465adb2ff3bb9049a16178",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -165,16 +165,24 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "dbb15e6d1474960a398addf988c7d347b20fd485d81130ffa7734c17006460bf"
+        "sha256": "15c96533c2275af57937428f3c2a4a48e7f47396cb338fe3178713b9c265f769"
       },
       "runtimeArtifacts": [
+        {
+          "source": {
+            "kind": "integration",
+            "path": "codex-candidate-dropper.mjs"
+          },
+          "destination": "codex-candidate-dropper.mjs",
+          "sha256": "84c5fec933401de0eff66ccddcd108c73700ea0dcf8b2bb06c478afbf1f7b5a1"
+        },
         {
           "source": {
             "kind": "integration",
             "path": "gate-mockserver.mjs"
           },
           "destination": "gate-mockserver.mjs",
-          "sha256": "fb507f5c322119fdff4095edeea3357632d512b5d0b170178601ab952c28e9ea"
+          "sha256": "895ae103d85e06261666e30bc0e980118234582dc2b136addcfb642e3ed28d1b"
         },
         {
           "source": {

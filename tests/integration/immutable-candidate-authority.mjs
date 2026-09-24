@@ -977,8 +977,25 @@ export const decodeImmutableCandidateHandoff = (encoded, expected) => {
   return Object.freeze(record);
 };
 
+const selectedControlMountMatches = (container, controlVolume, handoff) => {
+  if (!Array.isArray(container?.Mounts)) return false;
+  if (handoff.scenarioId !== "codex-tui-trace-smoke")
+    return container.Mounts.length === 0 && controlVolume === undefined;
+  const mount = container.Mounts[0];
+  return (
+    controlVolume?.name === `agentscope-int-${handoff.runId}-control` &&
+    typeof controlVolume.mountpoint === "string" &&
+    container.Mounts.length === 1 &&
+    mount?.Type === "volume" &&
+    mount.Name === controlVolume.name &&
+    mount.Source === controlVolume.mountpoint &&
+    mount.Destination === "/control" &&
+    mount.RW === true
+  );
+};
 export const validateImmutableScenarioContainer = ({
   container,
+  controlVolume,
   handoff,
   image,
   networkName,
@@ -991,7 +1008,8 @@ export const validateImmutableScenarioContainer = ({
     image.Id !== handoff.imageId ||
     sha256(JSON.stringify(image.Config)) !== handoff.imageConfigSha256 ||
     container.Image !== handoff.imageId ||
-    container.Config?.User !== "1000:1000" ||
+    container.Config?.User !==
+      (handoff.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") ||
     !Array.isArray(container.Config?.Env) ||
     !container.Config.Env.includes(
       `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${handoff.encoded}`,
@@ -999,10 +1017,15 @@ export const validateImmutableScenarioContainer = ({
     container.HostConfig?.ReadonlyRootfs !== true ||
     container.HostConfig?.NetworkMode !== networkName ||
     JSON.stringify(container.HostConfig?.CapDrop) !== JSON.stringify(["ALL"]) ||
+    JSON.stringify(container.HostConfig?.CapAdd ?? []) !==
+      JSON.stringify(
+        handoff.scenarioId === "codex-tui-trace-smoke"
+          ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
+          : [],
+      ) ||
     !Array.isArray(container.HostConfig?.SecurityOpt) ||
     !container.HostConfig.SecurityOpt.includes("no-new-privileges") ||
-    !Array.isArray(container.Mounts) ||
-    container.Mounts.length !== 0 ||
+    !selectedControlMountMatches(container, controlVolume, handoff) ||
     !plainRecord(container.HostConfig?.Tmpfs) ||
     JSON.stringify(container.HostConfig.Tmpfs) !== JSON.stringify(tmpfs)
   )

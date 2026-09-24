@@ -790,6 +790,10 @@ const driver = () => {
       calls.push("network");
       return Promise.resolve();
     }),
+    createControlVolume: vi.fn(() => {
+      calls.push("control-volume");
+      return Promise.resolve();
+    }),
     startCollector: vi.fn(() => {
       calls.push("collector");
       return Promise.resolve();
@@ -811,6 +815,10 @@ const driver = () => {
     removeContainer,
     removeNetwork: vi.fn((name) => {
       calls.push(`remove-network:${name}`);
+      return Promise.resolve();
+    }),
+    removeControlVolume: vi.fn((name) => {
+      calls.push(`remove-control-volume:${name}`);
       return Promise.resolve();
     }),
     removeImage: vi.fn((name) => {
@@ -854,6 +862,38 @@ describe("scenario isolation", () => {
       "/tmp",
     ]);
     expect(() => planFor("not-a-token")).toThrow("integration.isolation.plan");
+  });
+
+  it("reserves a control volume only for the real Codex gate scenario", () => {
+    const ordinary = planFor("0123456789abcdef");
+    const scenario = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    if (scenario === undefined) throw new Error("integration.test.scenario");
+    const codex = createIsolationPlan({
+      scenario,
+      manifestIdentity: manifest.manifestIdentity,
+      candidate,
+      runToken: "0123456789abcdef",
+      baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
+      mockServerImageIdentity: preparedIdentityFor(
+        scenario.mockServerImage,
+        "b",
+      ),
+      selection: {
+        selectionVersion: 2,
+        manifestIdentity: manifest.manifestIdentity,
+        mode: "scenario",
+        selector: { scenarioId: scenario.scenarioId },
+        scenarioIds: [scenario.scenarioId],
+      },
+      maximumParallelScenarios: 2,
+      scenarioTimeoutMilliseconds: 300_000,
+    });
+    expect(ordinary.controlVolumeName).toBeNull();
+    expect(codex.controlVolumeName).toBe(
+      "agentscope-int-0123456789abcdef-control",
+    );
   });
 
   it("records digest-bound evidence and always tears down after success", async () => {

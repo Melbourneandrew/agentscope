@@ -7,6 +7,7 @@ export const createImagePreparationState = () => {
   const preparedDockerClientDiagnostics = new WeakMap();
   const pendingPreparedDockerImageRetirements = new WeakMap();
   const pendingPreparedDockerNetworkRetirements = new WeakMap();
+  const pendingPreparedDockerControlVolumeRetirements = new WeakMap();
 
   const clientIsUsable = (client) =>
     preparedDockerClients.has(client) &&
@@ -44,10 +45,13 @@ export const createImagePreparationState = () => {
         pendingPreparedDockerImageRetirements.get(client)?.delete(tag),
       completePendingNetwork: (client, name) =>
         pendingPreparedDockerNetworkRetirements.get(client)?.delete(name),
+      completePendingControlVolume: (client, name) =>
+        pendingPreparedDockerControlVolumeRetirements.get(client)?.delete(name),
       endClose: (client) => closingPreparedDockerClients.delete(client),
       finishClose: (client) => {
         pendingPreparedDockerImageRetirements.delete(client);
         pendingPreparedDockerNetworkRetirements.delete(client);
+        pendingPreparedDockerControlVolumeRetirements.delete(client);
         preparedDockerClients.delete(client);
       },
       hasClient: (client) => preparedDockerClients.has(client),
@@ -60,12 +64,23 @@ export const createImagePreparationState = () => {
         pendingPreparedDockerNetworkRetirements.get(client)?.get(name),
       pendingNetworkCount: (client) =>
         pendingPreparedDockerNetworkRetirements.get(client)?.size ?? 0,
+      pendingControlVolume: (client, name) =>
+        pendingPreparedDockerControlVolumeRetirements.get(client)?.get(name),
+      pendingControlVolumeCount: (client) =>
+        pendingPreparedDockerControlVolumeRetirements.get(client)?.size ?? 0,
       recordDiagnostic,
       recordPendingNetwork: (client, name, network) => {
         const pending =
           pendingPreparedDockerNetworkRetirements.get(client) ?? new Map();
         pending.set(name, network);
         pendingPreparedDockerNetworkRetirements.set(client, pending);
+      },
+      recordPendingControlVolume: (client, name, volume) => {
+        const pending =
+          pendingPreparedDockerControlVolumeRetirements.get(client) ??
+          new Map();
+        pending.set(name, volume);
+        pendingPreparedDockerControlVolumeRetirements.set(client, pending);
       },
     }),
   });

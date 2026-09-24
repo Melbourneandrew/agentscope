@@ -956,6 +956,42 @@ describe("selected PTY transport", () => {
     ).toBe(true);
   });
 
+  it("admits only the exact Codex controller capability set", () => {
+    const ordinary = principalFacts();
+    const controller = {
+      ...ordinary,
+      profile: "codex-controller" as const,
+      uid: 0,
+      euid: 0,
+      gid: 0,
+      egid: 0,
+      groups: [0],
+      status: ordinary.status
+        .replaceAll("1000", "0")
+        .replaceAll("CapEff:\t0000000000000000", "CapEff:\t00000000000000e3")
+        .replaceAll("CapPrm:\t0000000000000000", "CapPrm:\t00000000000000e3")
+        .replaceAll("CapBnd:\t0000000000000000", "CapBnd:\t00000000000000e3"),
+    };
+    expect(validateSelectedContainerPrincipalFactsForTest(controller)).toBe(
+      true,
+    );
+    expect(() =>
+      validateSelectedContainerPrincipalFactsForTest({
+        ...controller,
+        status: controller.status.replace(
+          "CapBnd:\t00000000000000e3",
+          "CapBnd:\t00000000000000e2",
+        ),
+      }),
+    ).toThrow("testkit.pty.immutable-candidate");
+    expect(() =>
+      validateSelectedContainerPrincipalFactsForTest({
+        ...controller,
+        groups: [0, 1000],
+      }),
+    ).toThrow("testkit.pty.immutable-candidate");
+  });
+
   it.each(["uid", "gid", "groups", "status"] as const)(
     "rejects causal immutable principal %s substitution",
     (seed) => {

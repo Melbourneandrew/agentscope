@@ -742,6 +742,7 @@ const container = (handoff: ReturnType<typeof compiled>): any => ({
   },
   Mounts: [],
 });
+// eslint-disable-next-line max-lines-per-function -- one closed handoff and container adversarial matrix
 describe("immutable candidate authority", () => {
   it("binds a canonical candidate inventory and closed handoff", () => {
     const handoff = compiled();
@@ -792,6 +793,54 @@ describe("immutable candidate authority", () => {
         tmpfs: container(handoff).HostConfig.Tmpfs,
       }),
     ).toBe(true);
+  });
+
+  it("binds the Codex controller profile without admitting a substitute capability", () => {
+    const handoff = compileImmutableCandidateHandoff({
+      candidate: candidate(),
+      image: image(),
+      plan: { ...plan(), scenarioId: "codex-tui-trace-smoke" },
+    });
+    const selected = container(handoff);
+    selected.Config.User = "0:0";
+    selected.HostConfig.CapAdd = [
+      "CHOWN",
+      "DAC_OVERRIDE",
+      "KILL",
+      "SETGID",
+      "SETUID",
+    ];
+    const controlVolume = {
+      name: `agentscope-int-${handoff.runId}-control`,
+      mountpoint: "/var/lib/docker/volumes/control/_data",
+    };
+    selected.Mounts = [
+      {
+        Type: "volume",
+        Name: controlVolume.name,
+        Source: controlVolume.mountpoint,
+        Destination: "/control",
+        RW: true,
+      },
+    ];
+    const input = {
+      container: selected,
+      controlVolume,
+      handoff,
+      image: image(),
+      networkName: "selected-network",
+      tmpfs: selected.HostConfig.Tmpfs,
+    };
+    expect(validateImmutableScenarioContainer(input)).toBe(true);
+    expect(() =>
+      validateImmutableScenarioContainer({
+        ...input,
+        container: {
+          ...selected,
+          HostConfig: { ...selected.HostConfig, CapAdd: ["SETUID"] },
+        },
+      }),
+    ).toThrow("integration.immutable-candidate.authority");
   });
 
   it("rejects duplicate and non-closed candidate inventory entries", () => {

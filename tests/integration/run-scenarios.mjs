@@ -51,9 +51,11 @@ import {
   preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
+  registerPreparedDockerControlVolume,
   registerPreparedDockerNetwork,
   revalidatePreparedImageAdmission,
   retirePreparedDockerNetwork,
+  retirePreparedDockerControlVolume,
 } from "./image-preparation.mjs";
 import {
   inspectPreparedHarnessMaterial,
@@ -296,6 +298,20 @@ const confinementArguments = (plan) => [
   "--read-only",
   "--cap-drop",
   "ALL",
+  ...(plan.scenarioId === "codex-tui-trace-smoke"
+    ? [
+        "--cap-add",
+        "CHOWN",
+        "--cap-add",
+        "DAC_OVERRIDE",
+        "--cap-add",
+        "KILL",
+        "--cap-add",
+        "SETGID",
+        "--cap-add",
+        "SETUID",
+      ]
+    : []),
   "--security-opt",
   "no-new-privileges",
   "--pids-limit",
@@ -303,7 +319,7 @@ const confinementArguments = (plan) => [
   "--memory",
   String(ISOLATION_EXECUTOR_LIMITS.containers.scenario.memoryBytes),
   "--user",
-  "1000:1000",
+  plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000",
   ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.scenario),
 ];
 const sidecarResourceArguments = (limits) => [
@@ -320,7 +336,7 @@ const stageEsmPackageBoundary = (context) => {
 };
 
 // The exact staged inventory and Dockerfile are reviewed as one authority.
-// eslint-disable-next-line max-lines-per-function
+// eslint-disable-next-line max-lines-per-function -- exact staged scenario authority
 const stageBuildContext = (plan) => {
   const runContexts = resolve(artifactsRoot, "contexts", plan.runId);
   const context = resolve(runContexts, "scenario");
@@ -561,6 +577,11 @@ const stageBuildContext = (plan) => {
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
       "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      ...(gateCapableMockServer
+        ? [
+            "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
+          ]
+        : []),
       "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
       "COPY dist ./dist",
@@ -660,6 +681,20 @@ const assertContainer = async (
   const environment = Array.isArray(container?.Config?.Env)
     ? container.Config.Env
     : [];
+  const expectedControlVolume =
+    plan.scenarioId === "codex-tui-trace-smoke" &&
+    (name === plan.scenarioName || name === plan.mockServerName)
+      ? controlVolumeIdentities.get(plan.runId)
+      : undefined;
+  const expectedControlMount =
+    expectedControlVolume === undefined
+      ? container?.Mounts?.length === 0
+      : container?.Mounts?.length === 1 &&
+        container.Mounts[0]?.Type === "volume" &&
+        container.Mounts[0]?.Name === expectedControlVolume.name &&
+        container.Mounts[0]?.Source === expectedControlVolume.mountpoint &&
+        container.Mounts[0]?.Destination === "/control" &&
+        container.Mounts[0]?.RW === true;
   const requestLimitMatches =
     expectedRequestBytes === undefined ||
     environment.includes(
@@ -668,12 +703,19 @@ const assertContainer = async (
   const immutableCandidateMatches =
     immutableCandidate === undefined ||
     (container?.Image === immutableCandidate.imageId &&
-      container?.Config?.User === "1000:1000" &&
+      container?.Config?.User ===
+        (plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") &&
       environment.includes(
         `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
       ) &&
       JSON.stringify(container?.HostConfig?.CapDrop) ===
         JSON.stringify(["ALL"]) &&
+      JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
+        JSON.stringify(
+          plan.scenarioId === "codex-tui-trace-smoke"
+            ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
+            : [],
+        ) &&
       Array.isArray(container?.HostConfig?.SecurityOpt) &&
       container.HostConfig.SecurityOpt.includes("no-new-privileges"));
   let imageConfigMatches = immutableCandidate === undefined;
@@ -694,6 +736,7 @@ const assertContainer = async (
       if (imageConfigMatches)
         validateImmutableScenarioContainer({
           container,
+          controlVolume: expectedControlVolume,
           handoff: immutableCandidate,
           image: records[0],
           networkName: plan.networkName,
@@ -714,7 +757,7 @@ const assertContainer = async (
     container?.HostConfig?.Memory !== limits.memoryBytes ||
     container?.HostConfig?.PidsLimit !== limits.pidsLimit ||
     !Array.isArray(container?.Mounts) ||
-    container.Mounts.length !== 0 ||
+    !expectedControlMount ||
     JSON.stringify(tmpfsPaths) !== JSON.stringify(expectedPaths) ||
     !tmpfsMatches ||
     !requestLimitMatches ||
@@ -754,6 +797,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 const fixtureResults = new Map();
 const scenarioContainerIdentities = new Map();
 const mockServerContainerIdentities = new Map();
+const controlVolumeIdentities = new Map();
 const mockServerJoinDeadlines = new Map();
 const scenarioOutcomes = new Map();
 const observedCertificationRunIds = new Set();
@@ -1437,6 +1481,87 @@ const createNetwork = async (plan, signal) => {
     throw new Error("integration.isolation.network");
   }
 };
+const inspectControlVolume = async (name, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["volume", "inspect", name],
+    signal,
+  );
+  const records = JSON.parse(stdout);
+  if (!Array.isArray(records) || records.length !== 1)
+    throw new Error("integration.isolation.control-volume");
+  return records[0];
+};
+const exactControlVolumePresent = async (name, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["volume", "ls", "--quiet", "--filter", `name=${name}`],
+    signal,
+  );
+  const names = stdout.trim() === "" ? [] : stdout.trim().split("\n");
+  if (
+    names.length > 256 ||
+    names.some((value) => !/^[a-z0-9][a-z0-9_.-]{0,255}$/u.test(value)) ||
+    names.filter((value) => value === name).length > 1
+  )
+    throw new Error("integration.isolation.control-volume");
+  return names.includes(name);
+};
+const createControlVolume = async (plan, signal) => {
+  const name = plan.controlVolumeName;
+  if (
+    plan.scenarioId !== "codex-tui-trace-smoke" ||
+    name !== `agentscope-int-${plan.runId}-control` ||
+    controlVolumeIdentities.has(plan.runId)
+  )
+    throw new Error("integration.isolation.control-volume");
+  if (await exactControlVolumePresent(name, signal))
+    throw new Error("integration.isolation.control-volume");
+  await dockerWithSignal(
+    ["volume", "create", "--driver", "local", ...labelArguments(plan), name],
+    signal,
+    { mutationCapable: true },
+  );
+  try {
+    const volume = await registerPreparedDockerControlVolume(
+      preparedDockerClient,
+      {
+        deadline:
+          performance.now() + remainingIntegrationOperationMilliseconds(30_000),
+        name,
+        runId: plan.runId,
+        signal,
+      },
+    );
+    controlVolumeIdentities.set(plan.runId, {
+      name,
+      createdAt: volume.createdAt,
+      mountpoint: volume.mountpoint,
+    });
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
+};
+const assertControlVolumeCurrent = async (plan, signal) => {
+  const expected = controlVolumeIdentities.get(plan.runId);
+  if (
+    expected?.name !== plan.controlVolumeName ||
+    plan.scenarioId !== "codex-tui-trace-smoke"
+  )
+    throw new Error("integration.isolation.control-volume");
+  try {
+    const current = await inspectControlVolume(expected.name, signal);
+    if (
+      current?.Name !== expected.name ||
+      current?.CreatedAt !== expected.createdAt ||
+      current?.Mountpoint !== expected.mountpoint ||
+      current?.Labels?.["com.agentscope.integration.run"] !== plan.runId
+    )
+      throw new Error("integration.isolation.control-volume");
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
+};
 const startCollector = async (plan, signal) => {
   await dockerWithSignal(
     [
@@ -1532,6 +1657,8 @@ const startRetrieval = async (plan, signal) => {
   });
 };
 const startMockServer = async (plan, signal) => {
+  const gateCapable = plan.scenarioId === "codex-tui-trace-smoke";
+  if (gateCapable) await assertControlVolumeCurrent(plan, signal);
   await dockerWithSignal(
     [
       "create",
@@ -1549,6 +1676,14 @@ const startMockServer = async (plan, signal) => {
       "ALL",
       "--security-opt",
       "no-new-privileges",
+      ...(gateCapable
+        ? [
+            "--user",
+            "0:0",
+            "--mount",
+            `type=volume,source=${plan.controlVolumeName},target=/control`,
+          ]
+        : []),
       ...sidecarResourceArguments(
         ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
       ),
@@ -1632,6 +1767,8 @@ const createScenarioContainer = async (
   outerMonotonicDeadline,
   immutableCandidate,
 ) => {
+  if (plan.controlVolumeName !== null)
+    await assertControlVolumeCurrent(plan, signal);
   const testModeArguments =
     testMode === undefined
       ? []
@@ -1652,6 +1789,12 @@ const createScenarioContainer = async (
       plan.scenarioName,
       ...labelArguments(plan),
       ...confinementArguments(plan),
+      ...(plan.controlVolumeName === null
+        ? []
+        : [
+            "--mount",
+            `type=volume,source=${plan.controlVolumeName},target=/control`,
+          ]),
       "--env",
       `HOME=${SCENARIO_HOME}`,
       "--env",
@@ -2424,6 +2567,7 @@ const countDockerResources = async (kind, plan, signal) => {
   );
   return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
 };
+// eslint-disable-next-line max-lines-per-function -- one exact run-owned Docker lifecycle
 const createDriver = (plan) => {
   const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;
   let removalSignal;
@@ -2454,6 +2598,7 @@ const createDriver = (plan) => {
     buildImage,
     buildMockServerImage,
     createNetwork,
+    createControlVolume,
     startCollector,
     startRetrieval,
     startMockServer,
@@ -2487,6 +2632,29 @@ const createDriver = (plan) => {
         throw new Error("integration.isolation.cleanup-network-remove", {
           cause: error,
         });
+      }
+    },
+    removeControlVolume: async (name) => {
+      const expected = controlVolumeIdentities.get(plan.runId);
+      if (
+        expected?.name !== name ||
+        name !== `agentscope-int-${plan.runId}-control`
+      )
+        throw new Error("integration.isolation.cleanup-control-volume");
+      const signal = boundedRemovalSignal();
+      try {
+        await retirePreparedDockerControlVolume(preparedDockerClient, {
+          deadline:
+            performance.now() +
+            remainingIntegrationOperationMilliseconds(30_000, true),
+          name,
+          runId: plan.runId,
+          signal,
+        });
+        controlVolumeIdentities.delete(plan.runId);
+      } catch (error) {
+        markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+        throw error;
       }
     },
     removeImage: (tag) =>

@@ -6,6 +6,7 @@ import {
   constants,
   chmodSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -280,25 +281,70 @@ advanceInteractivePhase("bootstrap-readiness");
 const readinessChallenge = await readReadinessChallenge();
 const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;
 terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;
-const waitForCheckpointSignal = () =>
-  new Promise((resolve, reject) => {
-    let settled = false;
-    let timer;
-    const settle = (error) => {
-      if (settled) return;
-      settled = true;
-      process.off("SIGUSR2", onSignal);
-      if (timer !== undefined) clearTimeout(timer);
-      if (error === undefined) resolve();
-      else reject(error);
-    };
-    const onSignal = () => settle();
-    process.once("SIGUSR2", onSignal);
-    timer = setTimeout(
-      () => settle(new Error("integration.codex.process-checkpoint")),
-      Math.min(5_000, remaining()),
-    );
-  });
+const rootStartIdentity = () => {
+  const source = readFileSync("/proc/self/stat", "utf8");
+  const close = source.lastIndexOf(")");
+  const start = source
+    .slice(close + 2)
+    .trim()
+    .split(/\s+/u)[19];
+  if (source.length > 4096 || close < 1 || !/^\d+$/u.test(start ?? ""))
+    throw new Error("integration.codex.process-checkpoint");
+  return `${process.pid}:${start}`;
+};
+const checkpointPath = () =>
+  `/control/private/checkpoint-${integrationRunId}.json`;
+const waitForCheckpointWitness = async () => {
+  const cutoff = bootNow() + Math.min(5_000, remaining());
+  const expectedStart = rootStartIdentity();
+  while (bootNow() < cutoff) {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        checkpointPath(),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const before = fstatSync(descriptor);
+      if (
+        !before.isFile() ||
+        before.nlink !== 1 ||
+        before.uid !== 0 ||
+        (before.mode & 0o777) !== 0o600 ||
+        before.size < 1 ||
+        before.size > 4096
+      )
+        throw new Error("integration.codex.process-checkpoint");
+      const bytes = readFileSync(descriptor, "utf8");
+      const after = fstatSync(descriptor);
+      const value = JSON.parse(bytes);
+      if (
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        Object.keys(value).sort().join("\0") !==
+          "challenge\0processSetSha256\0rootPid\0rootStartIdentity\0runId\0witnessVersion" ||
+        bytes !== `${JSON.stringify(value)}\n` ||
+        value.witnessVersion !== 1 ||
+        value.runId !== integrationRunId ||
+        value.challenge !== readinessChallenge ||
+        value.rootPid !== process.pid ||
+        value.rootStartIdentity !== expectedStart ||
+        !/^[a-f0-9]{64}$/u.test(value.processSetSha256)
+      )
+        throw new Error("integration.codex.process-checkpoint");
+      return value;
+    } catch (error) {
+      if (error?.code !== "ENOENT")
+        throw new Error("integration.codex.process-checkpoint", {
+          cause: error,
+        });
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("integration.codex.process-checkpoint");
+};
 
 const maximumOutput = 1024 * 1024;
 const run = (executable, arguments_, options = {}) => {
@@ -399,7 +445,6 @@ const run = (executable, arguments_, options = {}) => {
   return completion;
 };
 const agentscope = "/opt/agentscope/installed/node_modules/.bin/agentscope";
-const codex = "/opt/agentscope/harness/node_modules/.bin/codex";
 advanceInteractivePhase("bootstrap-environment");
 const home = required("HOME");
 const codexHome = join(home, ".codex");
@@ -586,13 +631,23 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const modelControlEndpoint = (() => {
-  const value = new URL(modelEndpoint);
-  if (value.protocol !== "http:" || value.pathname !== "/")
-    throw new Error("integration.codex.model-gate");
-  value.port = "1081";
-  return value.origin;
-})();
+const modelControlSocket = "/control/private/gate.sock";
+const assertPrivateControlSocket = () => {
+  const directory = lstatSync("/control/private");
+  const socket = lstatSync(modelControlSocket);
+  if (
+    process.getuid() !== 0 ||
+    !directory.isDirectory() ||
+    directory.isSymbolicLink() ||
+    directory.uid !== 0 ||
+    (directory.mode & 0o777) !== 0o700 ||
+    !socket.isSocket() ||
+    socket.isSymbolicLink() ||
+    socket.uid !== 0 ||
+    (socket.mode & 0o777) !== 0o600
+  )
+    throw new Error("integration.codex.model-gate-control-identity");
+};
 const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
 const gateHeaders = Object.freeze({
   authorization: `Bearer ${readinessChallenge}`,
@@ -602,7 +657,6 @@ const controlRequest = (path, method, value, signal) =>
   new Promise((resolve, reject) => {
     const body = value === undefined ? undefined : JSON.stringify(value);
     const request = httpRequest(
-      `${modelControlEndpoint}${path}`,
       {
         agent: modelControlAgent,
         headers:
@@ -610,7 +664,9 @@ const controlRequest = (path, method, value, signal) =>
             ? gateHeaders
             : { ...gateHeaders, "content-length": Buffer.byteLength(body) },
         method,
+        path,
         signal,
+        socketPath: modelControlSocket,
       },
       (response) => {
         const chunks = [];
@@ -658,7 +714,10 @@ const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
 const gateRequest = (path, value, signal) =>
   controlRequest(path, "POST", value, signal);
 const proveControlPlaneClosed = async () => {
-  const endpoint = new URL(modelControlEndpoint);
+  const endpoint = new URL(modelEndpoint);
+  if (endpoint.protocol !== "http:" || endpoint.pathname !== "/")
+    throw new Error("integration.codex.model-gate");
+  endpoint.port = "1081";
   await new Promise((resolve, reject) => {
     const socket = createConnection({
       host: endpoint.hostname,
@@ -683,6 +742,7 @@ const proveControlPlaneClosed = async () => {
   });
 };
 const configureModelGate = async (modelAdmissionCutoff) => {
+  assertPrivateControlSocket();
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
   );
@@ -1303,7 +1363,7 @@ try {
   });
   chmodSync(configurationPath, 0o600);
   const traceDeadline = deadline - 3_000;
-  const checkpointSignal = waitForCheckpointSignal();
+  const checkpointWitness = waitForCheckpointWitness();
   await new Promise((resolve, reject) => {
     process.stdout.write(
       `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
@@ -1314,33 +1374,30 @@ try {
   recordInteractivePhase("tui-readiness-challenge-published");
   recordInteractivePhase("tui-start");
   const codexRun = run(
-    codex,
-    [
-      "--no-alt-screen",
-      "--enable",
-      "hooks",
-      "--dangerously-bypass-hook-trust",
-      "--sandbox",
-      "read-only",
-      "--ask-for-approval",
-      "never",
-    ],
+    "/usr/local/bin/node",
+    ["/opt/agentscope/codex-candidate-dropper.mjs"],
     {
       cwd: worktree,
       env: {
-        ...process.env,
+        HOME: home,
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        LANG: "C.UTF-8",
+        TERM: "xterm-256color",
+        XDG_CONFIG_HOME: "/harness-home",
+        AGENTSCOPE_HOME: agentscopeHome,
         CODEX_HOME: codexHome,
         // The pinned Codex source emits the command authority span from this
         // exact module target. Select it directly: accepting a broader crate
         // prefix made the evidence depend on EnvFilter prefix behaviour rather
         // than the authenticated producer identity.
         RUST_LOG: "codex_hooks::engine::command_runner=trace",
+        AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,
       },
       inherit: true,
     },
   );
   recordInteractivePhase("tui-run-created");
-  await checkpointSignal;
+  await checkpointWitness;
   recordInteractivePhase("tui-checkpoint");
   recordInteractivePhase("model-gate-arm-start");
   const gateArm = armModelGate(modelAdmissionCutoff);

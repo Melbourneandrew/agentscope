@@ -49,9 +49,11 @@ import {
   readImageTimeoutSourceForTesting,
   readPreparedImageEvidence,
   registerPreparedDockerNetwork,
+  registerPreparedDockerControlVolume,
   revalidatePreparedImageAdmission,
   retirePreparedDockerImage,
   retirePreparedDockerNetwork,
+  retirePreparedDockerControlVolume,
   retirePreparedImageEvidence,
   runOwnedImageCommandForTesting,
   validatePreparedImageEvidence,
@@ -450,6 +452,12 @@ const engineFixture = ({
   networkInitiallyPresent = true,
   networkName,
   networkRunId,
+  controlVolumeName,
+  controlVolumeRunId,
+  controlVolumeInitiallyPresent = true,
+  controlVolumeSubstituted = false,
+  controlVolumeDisappearsAfterAdmission = false,
+  controlVolumeAttached = false,
   preexistingVolume = false,
   preexistingTag = false,
   pullCompletesThenDisconnect = false,
@@ -485,6 +493,12 @@ const engineFixture = ({
   networkInitiallyPresent?: boolean;
   networkName?: string;
   networkRunId?: string;
+  controlVolumeName?: string;
+  controlVolumeRunId?: string;
+  controlVolumeInitiallyPresent?: boolean;
+  controlVolumeSubstituted?: boolean;
+  controlVolumeDisappearsAfterAdmission?: boolean;
+  controlVolumeAttached?: boolean;
   preexistingVolume?: boolean;
   preexistingTag?: boolean;
   pullCompletesThenDisconnect?: boolean;
@@ -513,6 +527,8 @@ const engineFixture = ({
     imageDeleted: boolean;
     networkPresent: boolean;
     networkInspectionCount: number;
+    controlVolumePresent: boolean;
+    controlVolumeInspectionCount: number;
     tagInspectionCount: number;
     unprovedContainment: boolean;
   } = {
@@ -528,6 +544,9 @@ const engineFixture = ({
     imageDeleted: false,
     networkPresent: networkName !== undefined && networkInitiallyPresent,
     networkInspectionCount: 0,
+    controlVolumePresent:
+      controlVolumeName !== undefined && controlVolumeInitiallyPresent,
+    controlVolumeInspectionCount: 0,
     tagInspectionCount: 0,
     unprovedContainment,
   };
@@ -677,6 +696,38 @@ const engineFixture = ({
           }
         : { statusCode: 404, body: "{}" };
     }
+    if (
+      controlVolumeName !== undefined &&
+      entry.method === "GET" &&
+      entry.path === `/v1.50/volumes/${encodeURIComponent(controlVolumeName)}`
+    ) {
+      state.controlVolumeInspectionCount += 1;
+      return state.controlVolumePresent &&
+        !(
+          controlVolumeDisappearsAfterAdmission &&
+          state.controlVolumeInspectionCount > 1
+        )
+        ? {
+            statusCode: 200,
+            body: JSON.stringify({
+              Name: controlVolumeName,
+              Driver: "local",
+              Scope: "local",
+              CreatedAt:
+                controlVolumeSubstituted &&
+                state.controlVolumeInspectionCount > 1
+                  ? "2000-01-01T00:00:00Z"
+                  : fixtureCreatedAt,
+              Mountpoint: `/var/lib/docker/volumes/${controlVolumeName}/_data`,
+              Labels: {
+                "com.agentscope.integration": "true",
+                "com.agentscope.integration.run": controlVolumeRunId,
+              },
+              Options: {},
+            }),
+          }
+        : { statusCode: 404, body: "{}" };
+    }
     if (entry.method === "DELETE") {
       if (entry.path.includes("/containers/"))
         state.builderContainer = undefined;
@@ -695,6 +746,14 @@ const engineFixture = ({
         };
       }
       if (entry.path.includes("/networks/")) state.networkPresent = false;
+      if (
+        controlVolumeName !== undefined &&
+        entry.path === `/v1.50/volumes/${encodeURIComponent(controlVolumeName)}`
+      ) {
+        if (controlVolumeAttached)
+          return { statusCode: 409, body: '{"message":"volume in use"}' };
+        state.controlVolumePresent = false;
+      }
       return { statusCode: 204, body: "" };
     }
     if (
@@ -2279,6 +2338,161 @@ describe("authenticated buildx consumption", () => {
         runId: networkRunId,
       }),
     ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("keeps an exact control volume pending until authenticated retirement", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+    });
+    const client = buildClient(engine);
+    const identity = await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    expect(identity.name).toBe(name);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires the exact control volume before closing the prepared client", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).resolves.toBeUndefined();
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).not.toThrow();
+  });
+
+  it("does not delete a substituted control volume", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeSubstituted: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects an absent control volume before recording authority", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const client = buildClient(
+      engineFixture({
+        controlVolumeName: name,
+        controlVolumeRunId: runId,
+        controlVolumeInitiallyPresent: false,
+      }),
+    );
+    await expect(
+      registerPreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when a registered control volume vanishes", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeDisappearsAfterAdmission: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when the exact control volume is still attached", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeAttached: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow();
     expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
   });
 

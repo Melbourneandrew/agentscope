@@ -7,10 +7,13 @@ import {
   closeSync,
   constants,
   fstatSync,
+  fsyncSync,
+  lstatSync,
   openSync,
   readFileSync,
   readlinkSync,
   readdirSync,
+  writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -790,6 +793,11 @@ type ImmutableCandidateRecord = Readonly<{
 type ImmutableCandidateAuthority = Readonly<{
   assertFile: (descriptor: number, path: string) => void;
   assertRuntime: () => void;
+  publishTopologyCheckpoint?: (
+    challenge: string,
+    root: ProcessSnapshot,
+    processes: readonly ProcessSnapshot[],
+  ) => void;
 }>;
 const immutableCandidateAuthorities = new WeakSet<object>();
 let immutableCandidateAuthorityCreated = false;
@@ -902,6 +910,7 @@ const exactImmutableCandidateRecord = (
 };
 
 const validatePrincipalFacts = (facts: {
+  profile?: "ordinary" | "codex-controller";
   uid: number | undefined;
   euid: number | undefined;
   gid: number | undefined;
@@ -910,13 +919,24 @@ const validatePrincipalFacts = (facts: {
   status: string;
 }): void => {
   if (
-    facts.uid !== 1000 ||
-    facts.euid !== 1000 ||
-    facts.gid !== 1000 ||
-    facts.egid !== 1000 ||
+    facts.profile !== undefined &&
+    facts.profile !== "ordinary" &&
+    facts.profile !== "codex-controller"
+  )
+    return fail("testkit.pty.immutable-candidate");
+  const codexController = facts.profile === "codex-controller";
+  const expectedId = codexController ? 0 : 1000;
+  const expectedCaps = codexController
+    ? "00000000000000e3"
+    : "0000000000000000";
+  if (
+    facts.uid !== expectedId ||
+    facts.euid !== expectedId ||
+    facts.gid !== expectedId ||
+    facts.egid !== expectedId ||
     facts.groups === undefined ||
     facts.groups.length < 1 ||
-    safeReflectApply(arraySome, facts.groups, [(group) => group !== 1000])
+    safeReflectApply(arraySome, facts.groups, [(group) => group !== expectedId])
   )
     return fail("testkit.pty.immutable-candidate");
   const field = (name: string): string => {
@@ -927,13 +947,15 @@ const validatePrincipalFacts = (facts: {
     return values[0]!.slice(name.length + 1).trim();
   };
   if (
-    field("Uid") !== "1000\t1000\t1000\t1000" ||
-    field("Gid") !== "1000\t1000\t1000\t1000" ||
-    field("CapEff") !== "0000000000000000" ||
-    field("CapPrm") !== "0000000000000000" ||
+    field("Uid") !==
+      `${expectedId}\t${expectedId}\t${expectedId}\t${expectedId}` ||
+    field("Gid") !==
+      `${expectedId}\t${expectedId}\t${expectedId}\t${expectedId}` ||
+    field("CapEff") !== expectedCaps ||
+    field("CapPrm") !== expectedCaps ||
     field("CapInh") !== "0000000000000000" ||
     field("CapAmb") !== "0000000000000000" ||
-    field("CapBnd") !== "0000000000000000" ||
+    field("CapBnd") !== expectedCaps ||
     field("NoNewPrivs") !== "1"
   )
     return fail("testkit.pty.immutable-candidate");
@@ -1006,7 +1028,9 @@ const validateImmutableFileFacts = (facts: {
     return fail("testkit.pty.immutable-candidate");
 };
 
-const readPrincipalAuthority = (): Readonly<{
+const readPrincipalAuthority = (
+  profile: "ordinary" | "codex-controller",
+): Readonly<{
   mountIdentity: string;
   mountNamespace: string;
   mountTable: ReadonlyMap<number, ReadonlySet<string>>;
@@ -1014,6 +1038,7 @@ const readPrincipalAuthority = (): Readonly<{
   const groups = process.getgroups?.();
   const status = boundedProcFile("/proc/self/status", 64 * 1024);
   validatePrincipalFacts({
+    profile,
     uid: process.getuid?.(),
     euid: process.geteuid?.(),
     gid: process.getgid?.(),
@@ -1036,16 +1061,97 @@ const fdMountId = (descriptor: number): number => {
   return parseImmutableFdMountId(source);
 };
 
+const publishProtectedTopologyCheckpoint = (
+  record: ImmutableCandidateRecord,
+  assertRuntime: () => void,
+  challenge: string,
+  root: ProcessSnapshot,
+  processes: readonly ProcessSnapshot[],
+): void => {
+  assertRuntime();
+  if (
+    !/^[a-f0-9]{64}$/u.test(challenge) ||
+    root.pid < 2 ||
+    processes.length < 2 ||
+    processes.length > 128 ||
+    processes.filter(
+      (entry) =>
+        entry.pid === root.pid && entry.startIdentity === root.startIdentity,
+    ).length !== 1
+  )
+    return fail("testkit.pty.checkpoint-witness");
+  const directory = "/control/private";
+  const parent = lstatSync(directory);
+  if (
+    !parent.isDirectory() ||
+    parent.isSymbolicLink() ||
+    parent.uid !== 0 ||
+    (parent.mode & 0o777) !== 0o700
+  )
+    return fail("testkit.pty.checkpoint-witness");
+  const bytes = Buffer.from(
+    `${JSON.stringify({
+      witnessVersion: 1,
+      runId: record.runId,
+      challenge,
+      rootPid: root.pid,
+      rootStartIdentity: root.startIdentity,
+      processSetSha256: createHash("sha256")
+        .update(
+          JSON.stringify(
+            [...processes]
+              .map(({ pid, parentPid, startIdentity }) => ({
+                pid,
+                parentPid,
+                startIdentity,
+              }))
+              .sort((left, right) => left.pid - right.pid),
+          ),
+        )
+        .digest("hex"),
+    })}\n`,
+  );
+  if (bytes.length > 4096) return fail("testkit.pty.checkpoint-witness");
+  const descriptor = openSync(
+    `${directory}/checkpoint-${record.runId}.json`,
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_EXCL |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    if (writeSync(descriptor, bytes) !== bytes.length)
+      return fail("testkit.pty.checkpoint-witness");
+    fsyncSync(descriptor);
+    const written = fstatSync(descriptor);
+    if (
+      !written.isFile() ||
+      written.nlink !== 1 ||
+      written.uid !== 0 ||
+      (written.mode & 0o777) !== 0o600 ||
+      written.size !== bytes.length
+    )
+      return fail("testkit.pty.checkpoint-witness");
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
 const createImmutableCandidateAuthority = (
   candidate: unknown,
 ): ImmutableCandidateAuthority => {
   if (immutableCandidateAuthorityCreated)
     return fail("testkit.pty.immutable-candidate");
   immutableCandidateAuthorityCreated = true;
-  exactImmutableCandidateRecord(candidate);
-  const initial = readPrincipalAuthority();
+  const record = exactImmutableCandidateRecord(candidate);
+  const profile =
+    record.scenarioId === "codex-tui-trace-smoke"
+      ? "codex-controller"
+      : "ordinary";
+  const initial = readPrincipalAuthority(profile);
   const assertRuntime = (): void => {
-    const current = readPrincipalAuthority();
+    const current = readPrincipalAuthority(profile);
     if (
       current.mountNamespace !== initial.mountNamespace ||
       current.mountIdentity !== initial.mountIdentity
@@ -1080,6 +1186,23 @@ const createImmutableCandidateAuthority = (
         expectedFileDigests.set(path, expectedDigest);
       },
       assertRuntime,
+      ...(record.scenarioId === "codex-tui-trace-smoke"
+        ? {
+            publishTopologyCheckpoint: (
+              challenge: string,
+              root: ProcessSnapshot,
+              processes: readonly ProcessSnapshot[],
+            ): void => {
+              publishProtectedTopologyCheckpoint(
+                record,
+                assertRuntime,
+                challenge,
+                root,
+                processes,
+              );
+            },
+          }
+        : {}),
     },
   ]) as ImmutableCandidateAuthority;
   const pending = [resolve(import.meta.dirname, "..")];
@@ -1392,6 +1515,11 @@ type PtyRuntime = Readonly<{
   ) => readonly ProcessSnapshot[];
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
   readProcess: (pid: number) => ProcessSnapshot | undefined;
+  publishTopologyCheckpoint?: (
+    challenge: string,
+    root: ProcessSnapshot,
+    processes: readonly ProcessSnapshot[],
+  ) => void;
   reapAdoptedZombie: (
     pid: number,
     startIdentity: string,
@@ -1763,6 +1891,7 @@ const productionContainerRuntime = (
       }),
   };
 };
+/* eslint-disable max-lines-per-function -- one immutable runtime facade for selected PTY execution */
 const productionPtyRuntime = (
   authority: ImmutableCandidateAuthority,
 ): PtyRuntime => ({
@@ -1781,7 +1910,22 @@ const productionPtyRuntime = (
       deadline,
     );
   },
-  releaseFrozenProcessSet: releaseFrozenContainerProcessSet,
+  releaseFrozenProcessSet: (
+    namespaceIdentity,
+    processes,
+    rootPid,
+    notifyRoot,
+  ) => {
+    releaseFrozenContainerProcessSet(
+      namespaceIdentity,
+      processes,
+      rootPid,
+      notifyRoot && authority.publishTopologyCheckpoint === undefined,
+    );
+  },
+  ...(authority.publishTopologyCheckpoint === undefined
+    ? {}
+    : { publishTopologyCheckpoint: authority.publishTopologyCheckpoint }),
   sendSignal: (pid, signal) => process.kill(pid, signal),
   spawnPty: (request, geometry, interpreter, scriptSha256) => {
     authority.assertRuntime();
@@ -1882,6 +2026,7 @@ const productionPtyRuntime = (
     };
   },
 });
+/* eslint-enable max-lines-per-function */
 
 // The closed request schema intentionally validates every nested authority field.
 const snapshotPtyRequest = (
@@ -2520,6 +2665,22 @@ const exactPtyWrite = (
   return value;
 };
 
+const publishTopologyCheckpointIfSelected = (
+  runtime: PtyRuntime,
+  request: SelectedPtyExecutionRequest,
+  root: ProcessSnapshot,
+  processes: readonly ProcessSnapshot[],
+): void => {
+  if (runtime.publishTopologyCheckpoint === undefined) return;
+  if (!("challenge" in request.readiness))
+    return fail("testkit.pty.checkpoint-witness");
+  runtime.publishTopologyCheckpoint(
+    request.readiness.challenge,
+    root,
+    processes,
+  );
+};
+
 const armSelectedPty = (
   composition: ContainerComposition,
   runtime: PtyRuntime,
@@ -3087,6 +3248,12 @@ const armSelectedPty = (
               topology: action.topology,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
+            publishTopologyCheckpointIfSelected(
+              runtime,
+              request,
+              root,
+              processSet,
+            );
             if (request.readiness.kind === "challenge-process-topology")
               readinessObserved = true;
             actionIndex += 1;

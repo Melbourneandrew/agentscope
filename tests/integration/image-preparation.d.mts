@@ -173,6 +173,33 @@ export declare const registerPreparedDockerNetwork: (
   }>,
 ) => Promise<boolean>;
 
+export declare const registerPreparedDockerControlVolume: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<
+  Readonly<{
+    name: string;
+    runId: string;
+    createdAt: string;
+    mountpoint: string;
+  }>
+>;
+
+export declare const retirePreparedDockerControlVolume: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<void>;
+
 export declare const createBoundedBuildContext: (
   root: string,
   options?: Readonly<{

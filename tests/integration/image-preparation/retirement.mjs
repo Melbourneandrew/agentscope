@@ -78,6 +78,59 @@ export const createRetirementOperations = (state, docker) => {
       throw fixedError("integration.images.containment");
     return network;
   };
+  const validateControlVolumeInput = (client, { deadline, name, runId }) => {
+    if (
+      name !== `agentscope-int-${runId}-control` ||
+      !/^[a-f\d]{16}$/u.test(runId ?? "")
+    )
+      throw fixedError("integration.images.docker-client");
+    return validateNetworkInput(client, {
+      deadline,
+      name: `agentscope-int-${runId}-network`,
+      runId,
+    });
+  };
+  const inspectPreparedControlVolume = async ({
+    daemon,
+    engine,
+    name,
+    policy,
+    runId,
+    signal,
+  }) => {
+    const response = await engineCall(
+      { policy, signal, transport: engine },
+      {
+        expected: [200, 404],
+        method: "GET",
+        path: `/v${daemon.apiVersion}/volumes/${encodeURIComponent(name)}`,
+      },
+    );
+    if (response.statusCode === 404) return undefined;
+    const volume = JSON.parse(response.body);
+    if (
+      volume?.Name !== name ||
+      volume?.Driver !== "local" ||
+      volume?.Scope !== "local" ||
+      typeof volume?.CreatedAt !== "string" ||
+      volume.CreatedAt.length === 0 ||
+      typeof volume?.Mountpoint !== "string" ||
+      volume.Mountpoint.length === 0 ||
+      volume?.Labels?.["com.agentscope.integration"] !== "true" ||
+      volume?.Labels?.["com.agentscope.integration.run"] !== runId ||
+      (volume?.Options !== null &&
+        (typeof volume.Options !== "object" ||
+          Array.isArray(volume.Options) ||
+          Object.keys(volume.Options).length !== 0))
+    )
+      throw fixedError("integration.images.containment");
+    return Object.freeze({
+      name,
+      runId,
+      createdAt: volume.CreatedAt,
+      mountpoint: volume.Mountpoint,
+    });
+  };
   const retirePreparedDockerImage = async (
     client,
     { deadline, imageId, signal, tag },
@@ -278,10 +331,113 @@ export const createRetirementOperations = (state, docker) => {
     }
   };
 
+  const registerPreparedDockerControlVolume = async (
+    client,
+    { deadline, name, runId, signal },
+  ) => {
+    const policy = validateControlVolumeInput(client, {
+      deadline,
+      name,
+      runId,
+    });
+    if (state.pendingControlVolume(client, name) !== undefined)
+      throw fixedError("integration.images.docker-client");
+    const engine =
+      client.engineRequestForTesting ?? engineTransport(client.socket);
+    try {
+      const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+      if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+        throw fixedError("integration.images.containment");
+      const volume = await inspectPreparedControlVolume({
+        daemon,
+        engine,
+        name,
+        policy,
+        runId,
+        signal,
+      });
+      if (volume === undefined)
+        throw fixedError("integration.images.containment");
+      assertSocketCurrentFor(engine, client.socket);
+      state.recordPendingControlVolume(client, name, volume);
+      return volume;
+    } catch (error) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw error;
+    }
+  };
+
+  const retirePreparedDockerControlVolume = async (
+    client,
+    { deadline, name, runId, signal },
+  ) => {
+    const policy = validateControlVolumeInput(client, {
+      deadline,
+      name,
+      runId,
+    });
+    const pending = state.pendingControlVolume(client, name);
+    if (pending?.runId !== runId)
+      throw fixedError("integration.images.docker-client");
+    const engine =
+      client.engineRequestForTesting ?? engineTransport(client.socket);
+    try {
+      const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+      if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+        throw fixedError("integration.images.containment");
+      const current = await inspectPreparedControlVolume({
+        daemon,
+        engine,
+        name,
+        policy,
+        runId,
+        signal,
+      });
+      if (
+        current?.createdAt !== pending.createdAt ||
+        current?.mountpoint !== pending.mountpoint
+      )
+        throw fixedError("integration.images.containment");
+      await engineCall(
+        { policy, signal, transport: engine },
+        {
+          expected: [204],
+          method: "DELETE",
+          path: `/v${daemon.apiVersion}/volumes/${encodeURIComponent(name)}`,
+        },
+      );
+      const terminalPolicy = { ...policy, workDeadline: policy.deadline };
+      if (
+        (await inspectPreparedControlVolume({
+          daemon,
+          engine,
+          name,
+          policy: terminalPolicy,
+          runId,
+          signal,
+        })) !== undefined
+      )
+        throw fixedError("integration.images.containment");
+      assertSocketCurrentFor(engine, client.socket);
+      if (
+        !sameDaemon(
+          daemon,
+          await inspectDaemon(engine, client.socket, terminalPolicy),
+        )
+      )
+        throw fixedError("integration.images.containment");
+      state.completePendingControlVolume(client, name);
+    } catch (error) {
+      markPreparedDockerClientForOuterHostRetirement(client);
+      throw error;
+    }
+  };
+
   const closePreparedDockerClient = (client) => {
     if (
       state.pendingCount(client) !== 0 ||
-      state.pendingNetworkCount(client) !== 0
+      state.pendingNetworkCount(client) !== 0 ||
+      state.pendingControlVolumeCount(client) !== 0
     ) {
       if (state.hasClient(client))
         markPreparedDockerClientForOuterHostRetirement(client);
@@ -358,7 +514,9 @@ export const createRetirementOperations = (state, docker) => {
     markPreparedDockerClientForOuterHostRetirement,
     preparedDockerClientRequiresOuterHostRetirement,
     registerPreparedDockerNetwork,
+    registerPreparedDockerControlVolume,
     retirePreparedDockerImage,
     retirePreparedDockerNetwork,
+    retirePreparedDockerControlVolume,
   });
 };
