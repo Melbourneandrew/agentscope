@@ -649,12 +649,25 @@ const assertPrivateControlSocket = () => {
     throw new Error("integration.codex.model-gate-control-identity");
 };
 const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
+let modelGateCutoff;
 const gateHeaders = Object.freeze({
   authorization: `Bearer ${readinessChallenge}`,
   "content-type": "application/json",
 });
-const controlRequest = (path, method, value, signal) =>
-  new Promise((resolve, reject) => {
+const controlRequest = (path, method, value, signal) => {
+  const operationDeadline =
+    path === "/seal" || path === "/deny"
+      ? deadline
+      : (modelGateCutoff ?? deadline);
+  const operationRemaining = Math.floor(operationDeadline - bootNow());
+  if (operationRemaining <= 0)
+    throw new Error("integration.codex.model-gate-deadline");
+  const boundedSignal = AbortSignal.timeout(operationRemaining);
+  const selectedSignal =
+    signal === undefined
+      ? boundedSignal
+      : AbortSignal.any([signal, boundedSignal]);
+  return new Promise((resolve, reject) => {
     const body = value === undefined ? undefined : JSON.stringify(value);
     const request = httpRequest(
       {
@@ -665,7 +678,7 @@ const controlRequest = (path, method, value, signal) =>
             : { ...gateHeaders, "content-length": Buffer.byteLength(body) },
         method,
         path,
-        signal,
+        signal: selectedSignal,
         socketPath: modelControlSocket,
       },
       (response) => {
@@ -697,6 +710,7 @@ const controlRequest = (path, method, value, signal) =>
     );
     request.end(body);
   });
+};
 const readModelRequests = async (signal) => {
   const value = await controlRequest("/requests", "PUT", {}, signal);
   if (!exactKeys(value, ["ledger"]))
@@ -742,6 +756,7 @@ const proveControlPlaneClosed = async () => {
   });
 };
 const configureModelGate = async (modelAdmissionCutoff) => {
+  modelGateCutoff = modelAdmissionCutoff;
   assertPrivateControlSocket();
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
@@ -908,6 +923,7 @@ const sealModelGate = async (checkpoint) => {
       "challengeSha256",
       "connectionCount",
       "connections",
+      "cutoffUnsettled",
       "ledgerCount",
       "mutationGeneration",
       "parserFailures",
@@ -918,6 +934,7 @@ const sealModelGate = async (checkpoint) => {
     receipt.challengeSha256 !==
       createHash("sha256").update(readinessChallenge).digest("hex") ||
     receipt.connectionCount !== 1 ||
+    receipt.cutoffUnsettled !== false ||
     !Array.isArray(receipt.connections) ||
     receipt.connections.length !== 1 ||
     !exactKeys(receipt.connections[0], [

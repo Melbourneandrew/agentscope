@@ -138,6 +138,8 @@ let responseText;
 let promptSha256;
 let sessionStartSpanSha256;
 let armGeneration;
+let ackPending = false;
+let cutoffUnsettled = false;
 let initialSocket;
 let connectionGeneration = 0;
 let mutationGeneration = 0;
@@ -356,6 +358,22 @@ const transportServer = createNetServer({ pauseOnConnect: true }, (socket) => {
 const closeTransportAdmission = () => {
   if (transportServer.listening) transportServer.close(() => undefined);
 };
+const rejectOpenConnectionAtCutoff = (connection) => {
+  if (connection.closed) return;
+  if (connection.admission === "awaiting-request") {
+    rejectSocket(connection);
+    return;
+  }
+  if (connection.parserOutcome === "framing") {
+    parserFailures += 1;
+    connection.parserOutcome = "rejected";
+  } else if (connection.admission === "admitted") {
+    // A completed request's live HTTP socket may conceal pipelined framing.
+    // Closing it cannot prove every raw-byte disposition.
+    cutoffUnsettled = true;
+  }
+  connection.socket.destroy();
+};
 const enforceCutoff = () => {
   if (
     state === "pending" ||
@@ -369,24 +387,8 @@ const enforceCutoff = () => {
     for (const { socket } of connections.values()) socket.destroy();
   } else if (state === "admitted") {
     state = "draining";
-    for (const connection of connections.values()) {
-      if (connection.admission === "awaiting-request") rejectSocket(connection);
-      else if (
-        connection.admission === "admitted" &&
-        connection.parserOutcome !== "accepted-pending-release" &&
-        connection.parserOutcome !== "accepted"
-      ) {
-        if (connection.parserOutcome === "framing") {
-          parserFailures += 1;
-          connection.parserOutcome = "rejected";
-        }
-        connection.socket.destroy();
-      } else if (connection.admission === "admitted") {
-        // The admitted response needs only the write side. Stop raw input
-        // before Node's HTTP parser can see a later pipelined request.
-        connection.socket.pause();
-      }
-    }
+    for (const connection of connections.values())
+      rejectOpenConnectionAtCutoff(connection);
   } else return;
   for (const connection of connections.values())
     if (
@@ -487,15 +489,21 @@ const acknowledgeArm = async (request, response) => {
     value.generation !== armGeneration ||
     value.runId !== runId ||
     state !== "awaiting-ack" ||
+    ackPending ||
     bootNow() >= cutoff
   )
     throw new Error("ack");
-  state = "armed";
-  mutationGeneration += 1;
+  ackPending = true;
   const socket = initialSocket;
-  initialSocket = undefined;
   response.once("finish", () => {
-    if (socket === undefined || state !== "armed") return;
+    if (state !== "awaiting-ack" || bootNow() >= cutoff) {
+      enforceCutoff();
+      return;
+    }
+    state = "armed";
+    mutationGeneration += 1;
+    initialSocket = undefined;
+    if (socket === undefined) return;
     const connection = connectionBySocket.get(socket);
     if (connection === undefined) {
       enforceCutoff();
@@ -503,7 +511,7 @@ const acknowledgeArm = async (request, response) => {
     }
     admitSocket(connection);
   });
-  json(response, 200, { runId, state, generation: armGeneration });
+  json(response, 200, { runId, state: "armed", generation: armGeneration });
 };
 const release = async (request, response) => {
   const value = await boundedJson(request);
@@ -522,7 +530,11 @@ const seal = async (request, response) => {
   const value = await boundedJson(request);
   if (!exactKeys(value, ["runId"]) || value.runId !== runId)
     throw new Error("seal");
-  if ((state !== "admitted" && state !== "draining") || parserWork !== 0)
+  if (
+    (state !== "admitted" && state !== "draining") ||
+    parserWork !== 0 ||
+    cutoffUnsettled
+  )
     throw new Error("seal");
   state = "draining";
   mutationGeneration += 1;
@@ -540,6 +552,7 @@ const seal = async (request, response) => {
   await waitForSettlement();
   terminalReceipt = Object.freeze({
     challengeSha256: digest(challenge),
+    cutoffUnsettled,
     connectionCount: connections.size,
     connections: connectionReceipt(),
     ledgerCount: ledger.length,
@@ -568,6 +581,7 @@ const deny = async (request, response) => {
   await waitForSettlement();
   terminalReceipt = Object.freeze({
     challengeSha256: digest(challenge),
+    cutoffUnsettled,
     connectionCount: connections.size,
     connections: connectionReceipt(),
     ledgerCount: ledger.length,

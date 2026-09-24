@@ -636,7 +636,7 @@ describe("gate-capable exact-build MockServer", () => {
     });
   });
 
-  it("drains work admitted before cutoff while refusing later admission", async () => {
+  it("fails closed when an admitted response still owns a live socket at cutoff", async () => {
     const { controlSocket, modelPort } = await startGate();
     await configure(controlSocket, 300);
     const socket = await connect(modelPort);
@@ -660,16 +660,19 @@ describe("gate-capable exact-build MockServer", () => {
       status: 200,
       value: { state: "draining" },
     });
-    expect((await completion).toString("utf8")).toContain(responseText);
+    expect((await completion).toString("utf8")).not.toContain(responseText);
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
+      status: 409,
+    });
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
         receipt: {
+          cutoffUnsettled: true,
           connections: [
             {
               admission: "admitted",
               closed: true,
-              parserOutcome: "accepted",
             },
           ],
           state: "draining",
@@ -843,13 +846,16 @@ describe("gate-capable exact-build MockServer", () => {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 450));
-    socket.write(exactRequest({ model: "late", input: "late" }));
+    expect(socket.destroyed).toBe(true);
     await request(controlSocket, "/release", { runId });
     await completion;
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
+      status: 409,
+    });
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
       status: 200,
       value: {
-        receipt: { ledgerCount: 1, parserFailures: 0, state: "draining" },
+        receipt: { cutoffUnsettled: true, ledgerCount: 1, state: "draining" },
       },
     });
   });
