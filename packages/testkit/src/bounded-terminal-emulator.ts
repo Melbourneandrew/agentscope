@@ -380,6 +380,23 @@ const csiHasUnmodeledScreenMutation = (
   (csiIsPrivateModeControl(final, prefix, intermediate) &&
     (values.includes(7) || values.includes(1049)));
 
+const csiIsCanonicalScrollRegion = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+  rows: number,
+): boolean =>
+  prefix === "" &&
+  intermediate === "" &&
+  final === "r" &&
+  ((values.length === 1 && (values[0] === 0 || values[0] === 1)) ||
+    // The parser conflates an omitted top parameter with explicit zero. Do
+    // not admit either two-parameter form until omission is preserved.
+    (values.length === 2 &&
+      values[0] === 1 &&
+      (values[1] === 0 || values[1] === rows)));
+
 const classifyUnmodeledScreenMutation = (
   final: string,
   prefix: string,
@@ -1038,6 +1055,22 @@ export class BoundedTerminalEmulator {
       } else this.#commitChallengeSynchronizedOutputFrame();
       return;
     }
+    if (
+      csiIsCanonicalScrollRegion(
+        final,
+        prefix,
+        intermediate,
+        values,
+        this.#geometry.rows,
+      ) &&
+      this.#unsupportedControlCount === 0 &&
+      this.#malformedControlCount === 0
+    ) {
+      this.#scrollRegionCanonical = true;
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#resetChallengeOutputObservation();
+      return;
+    }
     const unmodeledScreenMutation = csiHasUnmodeledScreenMutation(
       final,
       prefix,
@@ -1051,11 +1084,7 @@ export class BoundedTerminalEmulator {
         this.#cursorPositionTrusted = false;
       if (prefix === "" && final === "r") {
         this.#cursorPositionTrusted = false;
-        this.#scrollRegionCanonical =
-          (values.length === 1 && values[0] === 0) ||
-          (values.length === 2 &&
-            (values[0] === 0 || values[0] === 1) &&
-            (values[1] === 0 || values[1] === this.#geometry.rows));
+        this.#scrollRegionCanonical = false;
       }
       this.#revokeChallengeScreenAuthority(
         classifyUnmodeledScreenMutation(final, prefix, values),
@@ -1375,8 +1404,8 @@ export class BoundedTerminalEmulator {
     } else if (final === "c" && first === 0) {
       this.#observeRequiredTerminalProtocolStep(6);
       this.#enqueueTerminalResponse("\u001b[?1;2c");
-    } else if (passiveCsiIsSupported(final, values, this.#geometry.rows))
-      return;
+    } else if (final === "r") this.#applyScrollRegionCsi(values);
+    else if (passiveCsiIsSupported(final, values, this.#geometry.rows)) return;
     else if (final === "s") {
       this.#savedRow = this.#row;
       this.#savedColumn = this.#column;
@@ -1384,6 +1413,18 @@ export class BoundedTerminalEmulator {
       this.#row = this.#savedRow;
       this.#column = this.#savedColumn;
     } else this.#recordUnsupportedControl("csi");
+  }
+
+  #applyScrollRegionCsi(values: readonly number[]): void {
+    if (!passiveCsiIsSupported("r", values, this.#geometry.rows)) {
+      this.#recordUnsupportedControl("csi");
+      return;
+    }
+    if (!csiIsCanonicalScrollRegion("r", "", "", values, this.#geometry.rows))
+      return;
+    this.#row = 0;
+    this.#column = 0;
+    this.#cursorPositionTrusted = true;
   }
 
   #applySgr(values: readonly number[]): void {
