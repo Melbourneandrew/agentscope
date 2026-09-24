@@ -1720,6 +1720,21 @@ const captureFailedScenarioReceipt = (
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
   return receipt;
 };
+const captureAvailableFailedScenarioReceipt = (
+  output,
+  plan,
+  outerMonotonicDeadline,
+  fixtureCaptured,
+) =>
+  output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
+  output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
+    ? captureFailedScenarioReceipt(
+        output,
+        plan,
+        outerMonotonicDeadline,
+        fixtureCaptured,
+      )
+    : undefined;
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
@@ -1918,9 +1933,17 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         });
       const output = `${error?.stdout ?? ""}`;
       const fixtureCaptured = captureFixtureResult(output, plan);
+      const receipt = captureAvailableFailedScenarioReceipt(
+        output,
+        plan,
+        outerMonotonicDeadline,
+        fixtureCaptured,
+      );
       const retainedDiagnostic =
-        plan.executionMode === "interactive"
-          ? decodeInteractiveFailureExitCode(error?.code, plan.scenarioId)
+        plan.executionMode === "interactive" &&
+        receipt !== undefined &&
+        receipt.exitCode === error?.code
+          ? decodeInteractiveFailureExitCode(receipt.exitCode, plan.scenarioId)
           : undefined;
       const recordedDiagnostic = recordInteractiveExecutionFailure(
         plan,
@@ -1950,18 +1973,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           { cause: error },
         );
       }
-      if (
-        output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
-        output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
-      ) {
-        const receipt = captureFailedScenarioReceipt(
-          output,
-          plan,
-          outerMonotonicDeadline,
-          fixtureCaptured,
-        );
-        return { receipt, succeeded: false };
-      }
+      if (receipt !== undefined) return { receipt, succeeded: false };
       throw error;
     } catch (handledError) {
       if (!terminalMutationProved)
