@@ -18,6 +18,7 @@ const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
   codexProjectionFailureDiagnostic,
+  codexUninstallFailureDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
@@ -39,6 +40,7 @@ const {
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
+  parseCodexMachineOutput,
   readBoundedInteractiveFailureMarker,
   selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
@@ -61,6 +63,49 @@ const completed = {
   terminalOutputJoined: true,
   terminalTransportClosed: true,
 };
+
+describe("Codex machine-output failure containment", () => {
+  const command = "agentscope uninstall";
+  const valid = Buffer.from(
+    JSON.stringify({
+      command,
+      completion: "complete",
+      records: [{ ok: true }],
+    }),
+  );
+
+  it("returns only records from one valid closed envelope", () => {
+    expect(parseCodexMachineOutput(valid, command)).toEqual([{ ok: true }]);
+  });
+
+  it.each([
+    ["invalid-utf8", Buffer.from([0xff])],
+    ["invalid-json", Buffer.from("not-json")],
+    [
+      "missing-records",
+      Buffer.from(JSON.stringify({ command, completion: "complete" })),
+    ],
+    [
+      "wrong-command",
+      Buffer.from(
+        JSON.stringify({
+          command: "other",
+          completion: "complete",
+          records: [],
+        }),
+      ),
+    ],
+    ["oversized", Buffer.alloc(1024 * 1024 + 1)],
+    ["wrong-type", "not-a-buffer"],
+  ] as const)(
+    "collapses %s output to one content-free code",
+    (_label, bytes) => {
+      expect(() => parseCodexMachineOutput(bytes, command)).toThrow(
+        "integration.codex.cli-output",
+      );
+    },
+  );
+});
 
 describe("interactive PTY artifact diagnostics", () => {
   it("requires readiness for success but retains a false observation for a settled failure", () => {
@@ -909,6 +954,36 @@ describe("interactive trace failure-marker transport", () => {
     });
 });
 
+describe("Codex uninstall failure diagnostic transport", () => {
+  it.each([
+    ["integration.codex.child", "child", 142],
+    ["integration.codex.child-deadline", "child-deadline", 143],
+    ["integration.codex.deadline", "deadline", 144],
+    ["integration.codex.trace-deadline", "trace-deadline", 145],
+    ["integration.codex.cli-output", "cli-output", 146],
+    ["integration.codex.uninstall", "result", 147],
+  ] as const)(
+    "maps only the exact owned uninstall failure %s",
+    (error, category, expectedExitCode) => {
+      const diagnostic = `integration.fixture.codex-verify-uninstall-${category}`;
+      expect(codexUninstallFailureDiagnostic(error)).toBe(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      expect(exitCode).toBe(expectedExitCode);
+      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+    },
+  );
+
+  it.each([
+    undefined,
+    null,
+    "integration.codex.child:stderr",
+    "integration.codex.uninstall\nsecret",
+    "integration.codex.other",
+  ])("rejects unowned uninstall error content: %s", (error) => {
+    expect(codexUninstallFailureDiagnostic(error)).toBeUndefined();
+  });
+});
+
 describe("interactive PTY failure exit-code transport", () => {
   it.each([
     [
@@ -984,7 +1059,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 31, 39, 63, 142, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 148, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

@@ -18,9 +18,11 @@ import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 import {
   codexProjectionFailureDiagnostic,
+  codexUninstallFailureDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
   encodeInteractiveFailureExitCode,
+  parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
 
 let ledger;
@@ -120,9 +122,14 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     interactiveFailurePhase === "verify-projection"
       ? codexProjectionFailureDiagnostic(error?.message)
       : undefined;
-  if (projectionDiagnostic !== undefined) {
+  const uninstallDiagnostic =
+    interactiveFailurePhase === "verify-uninstall"
+      ? codexUninstallFailureDiagnostic(error?.message)
+      : undefined;
+  const ownedDiagnostic = projectionDiagnostic ?? uninstallDiagnostic;
+  if (ownedDiagnostic !== undefined) {
     const diagnosticCode = encodeInteractiveFailureExitCode(
-      projectionDiagnostic,
+      ownedDiagnostic,
       "codex-tui-trace-smoke",
     );
     if (diagnosticCode !== undefined) exitCode = diagnosticCode;
@@ -140,7 +147,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       "hook-command-completed-near-budget-boundary",
     ].includes(interactiveFailurePhase);
     const diagnostic =
-      projectionDiagnostic ??
+      ownedDiagnostic ??
       (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
@@ -386,19 +393,6 @@ const run = (executable, arguments_, options = {}) => {
   });
   return completion;
 };
-const parseMachine = (bytes, command) => {
-  const value = JSON.parse(
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-  );
-  if (
-    value?.command !== command ||
-    value?.completion !== "complete" ||
-    !Array.isArray(value.records)
-  )
-    throw new Error("integration.codex.cli-output");
-  return value.records;
-};
-
 const agentscope = "/opt/agentscope/installed/node_modules/.bin/agentscope";
 const codex = "/opt/agentscope/harness/node_modules/.bin/codex";
 advanceInteractivePhase("bootstrap-environment");
