@@ -720,7 +720,13 @@ const assertContainer = async (
     JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
       JSON.stringify(
         plan.scenarioId === "codex-tui-trace-smoke"
-          ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
+          ? [
+              "CAP_CHOWN",
+              "CAP_DAC_OVERRIDE",
+              "CAP_KILL",
+              "CAP_SETGID",
+              "CAP_SETUID",
+            ]
           : [],
       );
   const candidateSecurityMatches =

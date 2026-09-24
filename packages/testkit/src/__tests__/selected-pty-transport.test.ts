@@ -109,6 +109,48 @@ const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
   };
 };
 
+const postSubmissionRequest = (
+  selected: SelectedPtyExecutionRequest = protocolPromptRequest(),
+): SelectedPtyExecutionRequest => {
+  const now = performance.now();
+  return {
+    ...selected,
+    readiness: {
+      ...selected.readiness,
+      postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"a".repeat(64)}`,
+    } as SelectedPtyExecutionRequest["readiness"],
+    process: {
+      ...selected.process,
+      monotonicStartupDeadlineMs: now + 5_000,
+      monotonicExecutionDeadlineMs: now + 10_000,
+      monotonicShutdownDeadlineMs: now + 15_000,
+    },
+    interaction: {
+      ...selected.interaction,
+      actions: [
+        ...selected.interaction.actions.slice(0, -1),
+        { action: "wait-for-post-submission-idle-prompt" },
+        selected.interaction.actions.at(-1)!,
+      ],
+    },
+  };
+};
+
+const boundedNegativePostSubmissionRequest =
+  (): SelectedPtyExecutionRequest => {
+    const selected = postSubmissionRequest();
+    const now = performance.now();
+    return {
+      ...selected,
+      process: {
+        ...selected.process,
+        monotonicStartupDeadlineMs: now + 1_000,
+        monotonicExecutionDeadlineMs: now + 3_000,
+        monotonicShutdownDeadlineMs: now + 5_000,
+      },
+    };
+  };
+
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
   const principalFacts = () => ({
@@ -561,31 +603,9 @@ describe("selected PTY transport", () => {
     20_000,
   );
 
-  // eslint-disable-next-line max-lines-per-function -- one closed positive/negative post-turn witness matrix
   it("waits for a fresh bounded idle prompt before post-turn input", async () => {
     const selected = protocolPromptRequest();
-    const now = performance.now();
-    const gated: SelectedPtyExecutionRequest = {
-      ...selected,
-      readiness: {
-        ...selected.readiness,
-        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"a".repeat(64)}`,
-      } as SelectedPtyExecutionRequest["readiness"],
-      process: {
-        ...selected.process,
-        monotonicStartupDeadlineMs: now + 5_000,
-        monotonicExecutionDeadlineMs: now + 10_000,
-        monotonicShutdownDeadlineMs: now + 15_000,
-      },
-      interaction: {
-        ...selected.interaction,
-        actions: [
-          ...selected.interaction.actions.slice(0, -1),
-          { action: "wait-for-post-submission-idle-prompt" },
-          selected.interaction.actions.at(-1)!,
-        ],
-      },
-    };
+    const gated = postSubmissionRequest(selected);
     for (const seed of [
       "terminal-post-completion-idle",
       "terminal-title-completion-after-idle",
@@ -636,61 +656,6 @@ describe("selected PTY transport", () => {
     );
     expect(stale.inputBytesWritten).toBe(137);
     expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
-    const missingIdleNow = performance.now();
-    const missingIdle = await executeSelectedPtyTransportForTest(
-      {
-        ...gated,
-        process: {
-          ...gated.process,
-          monotonicStartupDeadlineMs: missingIdleNow + 100,
-          monotonicExecutionDeadlineMs: missingIdleNow + 300,
-          monotonicShutdownDeadlineMs: missingIdleNow + 700,
-        },
-      },
-      "terminal-post-submission-idle-missing",
-    );
-    expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
-    const missingIdleActions = missingIdle.actions.map(({ action }) => action);
-    expect(missingIdleActions.slice(0, 5)).toEqual([
-      "resize",
-      "input",
-      "checkpoint-process-topology",
-      "input",
-      "input",
-    ]);
-    // Under load the final completion frame can be observed without a
-    // causally post-input semantic wait. Neither case admits an idle response.
-    expect(
-      missingIdleActions.length === 5 ||
-        (missingIdleActions.length === 6 &&
-          missingIdleActions[5] === "wait-for-semantic-completion"),
-    ).toBe(true);
-    expect(missingIdle.inputBytesWritten).toBe(137);
-    expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
-      "response-not-observed",
-    );
-    for (const seed of [
-      "terminal-preenter-buffered-idle",
-      "terminal-response-after-idle-frame",
-    ] as const) {
-      const bufferedNow = performance.now();
-      const buffered = await executeSelectedPtyTransportForTest(
-        {
-          ...gated,
-          process: {
-            ...gated.process,
-            monotonicStartupDeadlineMs: bufferedNow + 100,
-            monotonicExecutionDeadlineMs: bufferedNow + 300,
-            monotonicShutdownDeadlineMs: bufferedNow + 700,
-          },
-        },
-        seed,
-      );
-      expect(buffered.actions.map(({ action }) => action)).not.toContain(
-        "wait-for-post-submission-idle-prompt",
-      );
-      expect(buffered.inputBytesWritten).toBe(137);
-    }
     for (const readiness of [
       selected.readiness,
       {
@@ -731,6 +696,50 @@ describe("selected PTY transport", () => {
       ),
     ).rejects.toMatchObject({ code: "testkit.pty.request" });
   });
+
+  it("does not admit an absent post-submission response", async () => {
+    const missingIdle = await executeSelectedPtyTransportForTest(
+      boundedNegativePostSubmissionRequest(),
+      "terminal-post-submission-idle-missing",
+    );
+    expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
+    const actions = missingIdle.actions.map(({ action }) => action);
+    expect(actions.slice(0, 5)).toEqual([
+      "resize",
+      "input",
+      "checkpoint-process-topology",
+      "input",
+      "input",
+    ]);
+    // Completion may precede a causally post-input semantic wait; neither
+    // observation admits an idle response.
+    expect(
+      actions.length === 5 ||
+        (actions.length === 6 && actions[5] === "wait-for-semantic-completion"),
+    ).toBe(true);
+    expect(missingIdle.inputBytesWritten).toBe(137);
+    expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
+      "response-not-observed",
+    );
+  }, 10_000);
+
+  it.each([
+    "terminal-preenter-buffered-idle",
+    "terminal-response-after-idle-frame",
+  ] as const)(
+    "does not admit buffered idle evidence: %s",
+    async (seed) => {
+      const buffered = await executeSelectedPtyTransportForTest(
+        boundedNegativePostSubmissionRequest(),
+        seed,
+      );
+      expect(buffered.actions.map(({ action }) => action)).not.toContain(
+        "wait-for-post-submission-idle-prompt",
+      );
+      expect(buffered.inputBytesWritten).toBe(137);
+    },
+    10_000,
+  );
 
   it("does not submit the prompt without a drained live terminal", async () => {
     const selected = protocolPromptRequest();

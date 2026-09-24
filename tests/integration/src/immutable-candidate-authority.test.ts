@@ -804,11 +804,11 @@ describe("immutable candidate authority", () => {
     const selected = container(handoff);
     selected.Config.User = "0:0";
     selected.HostConfig.CapAdd = [
-      "CHOWN",
-      "DAC_OVERRIDE",
-      "KILL",
-      "SETGID",
-      "SETUID",
+      "CAP_CHOWN",
+      "CAP_DAC_OVERRIDE",
+      "CAP_KILL",
+      "CAP_SETGID",
+      "CAP_SETUID",
     ];
     const controlVolume = {
       name: `agentscope-int-${handoff.runId}-control`,
@@ -832,6 +832,18 @@ describe("immutable candidate authority", () => {
       tmpfs: selected.HostConfig.Tmpfs,
     };
     expect(validateImmutableScenarioContainer(input)).toBe(true);
+    expect(() =>
+      validateImmutableScenarioContainer({
+        ...input,
+        container: {
+          ...selected,
+          HostConfig: {
+            ...selected.HostConfig,
+            CapAdd: ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+          },
+        },
+      }),
+    ).toThrow("integration.immutable-candidate.authority");
     expect(() =>
       validateImmutableScenarioContainer({
         ...input,

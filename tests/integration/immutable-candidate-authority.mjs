@@ -1020,7 +1020,13 @@ export const validateImmutableScenarioContainer = ({
     JSON.stringify(container.HostConfig?.CapAdd ?? []) !==
       JSON.stringify(
         handoff.scenarioId === "codex-tui-trace-smoke"
-          ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
+          ? [
+              "CAP_CHOWN",
+              "CAP_DAC_OVERRIDE",
+              "CAP_KILL",
+              "CAP_SETGID",
+              "CAP_SETUID",
+            ]
           : [],
       ) ||
     !Array.isArray(container.HostConfig?.SecurityOpt) ||
