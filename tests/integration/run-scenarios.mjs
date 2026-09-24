@@ -66,7 +66,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
-  ptyExecutionFailurePredicates,
+  selectInteractiveExecutionFailurePredicate,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } from "./immutable-candidate-authority.mjs";
@@ -1693,21 +1693,17 @@ const recordInteractiveExecutionFailure = (
   retainedDiagnostic,
 ) => {
   if (plan.executionMode !== "interactive") return;
-  const candidate =
-    retainedDiagnostic ?? contentFreeChildFailureCode(error, output);
-  const diagnostic =
-    candidate.startsWith("integration.fixture.codex-tui-join-deadline-") &&
-    (plan.scenarioId !== "codex-tui-trace-smoke" ||
-      retainedDiagnostic !== candidate)
-      ? "child-failure"
-      : candidate;
+  const predicate = selectInteractiveExecutionFailurePredicate(
+    contentFreeChildFailureCode(error, output),
+    retainedDiagnostic,
+    plan.scenarioId,
+  );
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
-    predicate: ptyExecutionFailurePredicates.includes(diagnostic)
-      ? diagnostic
-      : "child-failure",
+    predicate,
   });
+  return predicate;
 };
 const captureFailedScenarioReceipt = (
   output,
@@ -1920,22 +1916,22 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         throw new Error("integration.isolation.child-failure", {
           cause: error,
         });
-      if (plan.executionMode === "interactive")
-        process.stderr.write(
-          `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error, error?.stdout)}\n`,
-        );
       const output = `${error?.stdout ?? ""}`;
       const fixtureCaptured = captureFixtureResult(output, plan);
       const retainedDiagnostic =
         plan.executionMode === "interactive"
           ? decodeInteractiveFailureExitCode(error?.code, plan.scenarioId)
           : undefined;
-      recordInteractiveExecutionFailure(
+      const recordedDiagnostic = recordInteractiveExecutionFailure(
         plan,
         error,
         output,
         retainedDiagnostic,
       );
+      if (recordedDiagnostic !== undefined)
+        process.stderr.write(
+          `integration.isolation.interactive-diagnostic:${recordedDiagnostic}\n`,
+        );
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({

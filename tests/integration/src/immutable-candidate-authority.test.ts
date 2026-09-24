@@ -16,6 +16,7 @@ const {
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptFailed,
+  selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -288,6 +289,41 @@ describe("interactive PTY receipt transport", () => {
       );
     },
   );
+});
+
+describe("interactive PTY failure diagnostic provenance", () => {
+  it("never reports a spoofed Codex subtype from stdout or another scenario", () => {
+    const specific =
+      "integration.fixture.codex-tui-join-deadline-session-end-completed";
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        specific,
+        undefined,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        specific,
+        undefined,
+        "fixture-process-interactive",
+      ),
+    ).toBe("child-failure");
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        specific,
+        specific,
+        "fixture-process-interactive",
+      ),
+    ).toBe("child-failure");
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        "integration.runner.fixture-failed",
+        specific,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe(specific);
+  });
 });
 
 describe("interactive PTY failure diagnostic transport", () => {

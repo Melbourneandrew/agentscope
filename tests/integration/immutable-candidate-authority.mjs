@@ -214,6 +214,24 @@ export const decodeCodexJoinDeadlineExitCode = (exitCode) => {
     : `integration.fixture.codex-tui-join-deadline-${state}`;
 };
 
+export const selectInteractiveExecutionFailurePredicate = (
+  candidate,
+  retainedDiagnostic,
+  scenarioId,
+) => {
+  const diagnostic = retainedDiagnostic ?? candidate;
+  if (typeof diagnostic !== "string") return "child-failure";
+  if (
+    diagnostic.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
+  return ptyExecutionFailurePredicates.includes(diagnostic)
+    ? diagnostic
+    : "child-failure";
+};
+
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
   if (
     scenarioId === "codex-tui-trace-smoke" &&
