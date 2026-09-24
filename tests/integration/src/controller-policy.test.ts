@@ -362,8 +362,10 @@ describe("integration cleanup authority", () => {
     );
     expect(receipt).toBeGreaterThan(-1);
     expect(controller).toContain("? captureFailedScenarioReceipt(");
-    expect(controller).toContain("interactivePtyReceiptFailed(receipt)");
-    expect(controller).toContain("interactivePtyAuthorityMatches(receipt)");
+    expect(controller).toContain("interactivePtyReceiptAuthorityMatches(");
+    expect(controller).toContain(
+      "fingerprint: interactivePtyFingerprintMatches(receipt)",
+    );
     expect(controller).toContain(
       "{ outerMonotonicDeadline },\n          true,",
     );

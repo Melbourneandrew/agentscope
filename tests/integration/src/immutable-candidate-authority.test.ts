@@ -16,6 +16,7 @@ const {
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptFailed,
+  interactivePtyReceiptAuthorityMatches,
   selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
@@ -60,6 +61,55 @@ describe("interactive PTY receipt settlement", () => {
       true,
     );
     expect(interactivePtyReceiptFailed({ ...completed, signal: 9 })).toBe(true);
+  });
+
+  it("accepts a late non-completed receipt only for failure diagnosis with every authority check", () => {
+    const checks = {
+      envelope: true,
+      process: true,
+      geometry: true,
+      artifact: true,
+      fingerprint: true,
+    };
+    const lateFailure = {
+      ...completed,
+      outcome: "deadline",
+      exitCode: 32,
+      finalSnapshot: { semanticState: "active" },
+      returnedAtMs: 150,
+      request: { process: { monotonicShutdownDeadlineMs: 100 } },
+    };
+    expect(
+      interactivePtyReceiptAuthorityMatches(lateFailure, checks, true),
+    ).toBe(true);
+    expect(interactivePtyReceiptAuthorityMatches(lateFailure, checks)).toBe(
+      false,
+    );
+    for (const key of [
+      "fingerprint",
+      "geometry",
+      "artifact",
+      "process",
+      "envelope",
+    ] as const)
+      expect(
+        interactivePtyReceiptAuthorityMatches(
+          lateFailure,
+          { ...checks, [key]: false },
+          true,
+        ),
+      ).toBe(false);
+    const timelySuccess = {
+      ...completed,
+      returnedAtMs: 50,
+      request: { process: { monotonicShutdownDeadlineMs: 100 } },
+    };
+    expect(interactivePtyReceiptAuthorityMatches(timelySuccess, checks)).toBe(
+      true,
+    );
+    expect(
+      interactivePtyReceiptAuthorityMatches(timelySuccess, checks, true),
+    ).toBe(false);
   });
 });
 

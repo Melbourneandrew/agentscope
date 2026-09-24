@@ -151,6 +151,22 @@ export const interactivePtyReceiptFailed = (receipt) =>
   !receipt.terminalInputJoined ||
   !receipt.terminalOutputJoined ||
   !receipt.terminalTransportClosed;
+
+export const interactivePtyReceiptAuthorityMatches = (
+  receipt,
+  checks,
+  failed = false,
+) =>
+  checks?.envelope === true &&
+  checks.process === true &&
+  checks.geometry === true &&
+  checks.artifact === true &&
+  checks.fingerprint === true &&
+  (failed
+    ? interactivePtyReceiptFailed(receipt)
+    : receipt?.returnedAtMs <=
+        receipt?.request?.process?.monotonicShutdownDeadlineMs &&
+      receipt?.finalSnapshot?.semanticState === "completed");
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
