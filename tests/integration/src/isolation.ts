@@ -480,7 +480,6 @@ const ptyTerminalReceiptSchema = z
         "idle-revoked-reverse-index",
         "idle-revoked-tab-stop-set",
         "idle-revoked-charset",
-        "idle-revoked-frame-line-break",
         "idle-revoked-tab",
         "idle-revoked-untrusted-cell",
         "idle-revoked-rendition",

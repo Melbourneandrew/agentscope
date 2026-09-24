@@ -787,6 +787,96 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
   });
 
+  it("models in-frame line breaks only while the proved idle screen survives", () => {
+    const challenge = "a".repeat(64);
+    const title = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+    const readyTerminal = () => {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(
+        bytes(
+          "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+        ),
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+      terminal.write(
+        bytes(
+          "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+        ),
+      );
+      expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+      return terminal;
+    };
+
+    const unchanged = readyTerminal();
+    unchanged.write(bytes("\u001b[?2026h\r\n\u001b[?2026l"));
+    unchanged.write(bytes(title));
+    expect(unchanged.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+
+    const scrolled = readyTerminal();
+    scrolled.write(bytes("\u001b[8;1H\u001b[?2026h\n\u001b[?2026l"));
+    scrolled.write(bytes(title));
+    expect(scrolled.postSubmissionIdleAtTitleDiagnostic()).toBe(
+      "idle-revoked-screen",
+    );
+  });
+
+  it("does not stitch a fresh prompt witness across an in-frame line break", () => {
+    const challenge = "a".repeat(64);
+    for (const lineBreak of ["\r", "\n"]) {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(
+        bytes(
+          "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+        ),
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+      terminal.write(
+        bytes(
+          `\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default${lineBreak}\u001b[?2026l`,
+        ),
+      );
+      expect(terminal.postSubmissionIdleDiagnostic()).toBe(
+        "idle-frame-rejected",
+      );
+      terminal.write(
+        bytes(
+          "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+        ),
+      );
+      expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+    }
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
