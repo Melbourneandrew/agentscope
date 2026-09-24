@@ -415,7 +415,10 @@ describe("integration capability manifest", () => {
     );
     expect(source).toContain("codexUninstallFailureDiagnostic(error?.message)");
     expect(source).toContain(
-      "const ownedDiagnostic = projectionDiagnostic ?? uninstallDiagnostic;",
+      "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    projectionDiagnostic ??\n    uninstallDiagnostic;",
+    );
+    expect(source).toContain(
+      "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
     );
     expect(source).toContain(
       ": `integration.fixture.codex-${interactiveFailurePhase}`);",

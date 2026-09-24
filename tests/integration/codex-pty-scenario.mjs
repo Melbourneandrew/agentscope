@@ -31,6 +31,7 @@ let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
+let preCheckpointFailureDiagnostic;
 let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
 const interactivePhases = Object.freeze([
@@ -130,7 +131,10 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       ? (codexUninstallFailureDiagnostic(error?.message) ??
         codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep))
       : undefined;
-  const ownedDiagnostic = projectionDiagnostic ?? uninstallDiagnostic;
+  const ownedDiagnostic =
+    preCheckpointFailureDiagnostic ??
+    projectionDiagnostic ??
+    uninstallDiagnostic;
   if (ownedDiagnostic !== undefined) {
     const diagnosticCode = encodeInteractiveFailureExitCode(
       ownedDiagnostic,
@@ -151,6 +155,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       "hook-command-completed-near-budget-boundary",
     ].includes(interactiveFailurePhase);
     const diagnostic =
+      preCheckpointFailureDiagnostic ??
       ownedDiagnostic ??
       (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
@@ -164,7 +169,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
               },
             )}`
           : `integration.fixture.codex-${interactiveFailurePhase}`);
-    if (ledger !== undefined)
+    if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
         `${diagnostic}\n`,
@@ -483,15 +488,12 @@ const recordInteractivePhase = (phase) => {
 };
 const recordPreCheckpointFailure = (kind) => {
   if (
-    kind !== "tui-exit-before-checkpoint" &&
-    kind !== "tui-checkpoint-not-witnessed"
+    (kind !== "tui-exit-before-checkpoint" &&
+      kind !== "tui-checkpoint-not-witnessed") ||
+    preCheckpointFailureDiagnostic !== undefined
   )
     throw new Error("integration.codex.process-checkpoint");
-  writeFileSync(
-    join(ledger, "interactive-failure.txt"),
-    `integration.fixture.codex-${kind}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
+  preCheckpointFailureDiagnostic = `integration.fixture.codex-${kind}`;
 };
 const recordModelGateArmFailure = (predicate) => {
   if (

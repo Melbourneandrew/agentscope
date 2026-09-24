@@ -1143,23 +1143,38 @@ describe("interactive PTY failure diagnostic transport", () => {
 
 describe("pre-checkpoint failure diagnostic transport", () => {
   it.each([
-    "integration.fixture.codex-tui-exit-before-checkpoint",
-    "integration.fixture.codex-tui-checkpoint-not-witnessed",
-  ])("retains %s without reassigning exit codes", (diagnostic) => {
-    expect(
-      selectInteractiveFailureDiagnostic(
-        diagnostic,
-        "integration.fixture.codex-tui-run-created",
-        "testkit.pty.receipt-terminal",
-      ),
-    ).toBe(diagnostic);
-    expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
-    expect(
-      extractInteractiveChildDiagnostic(
-        `integration.runner.interactive-diagnostic:${diagnostic}\n`,
-      ),
-    ).toBe(diagnostic);
-  });
+    ["integration.fixture.codex-tui-exit-before-checkpoint", 139],
+    ["integration.fixture.codex-tui-checkpoint-not-witnessed", 140],
+  ] as const)(
+    "retains %s only through its controller exit code",
+    (diagnostic, exitCode) => {
+      expect(
+        selectInteractiveFailureDiagnostic(
+          diagnostic,
+          "integration.fixture.codex-tui-run-created",
+          "testkit.pty.receipt-terminal",
+        ),
+      ).toBe("integration.fixture.codex-tui-run-created");
+      expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBe(exitCode);
+      expect(
+        decodeInteractiveFailureExitCode(exitCode, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exitCode,
+          "fixture-process-interactive",
+        ),
+      ).toBeUndefined();
+      expect(
+        extractInteractiveChildDiagnostic(
+          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+        ),
+      ).toBe(diagnostic);
+    },
+  );
 });
 
 describe("interactive trace failure-marker transport", () => {

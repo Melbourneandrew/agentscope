@@ -215,6 +215,8 @@ export const selectInteractiveFailureDiagnostic = (
     (value) =>
       typeof value === "string" &&
       ptyExecutionFailurePredicates.includes(value) &&
+      value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
+      value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
       value !== "integration.fixture.codex-tui-join-deadline" &&
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       value !== "integration.fixture.codex-tui-child-rejected",
@@ -723,6 +725,12 @@ export const selectInteractiveExecutionFailurePredicate = (
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (scenarioId === "codex-tui-trace-smoke") {
+    if (diagnostic === "integration.fixture.codex-tui-exit-before-checkpoint")
+      return 139;
+    if (diagnostic === "integration.fixture.codex-tui-checkpoint-not-witnessed")
+      return 140;
+  }
   if (
     scenarioId === "codex-tui-trace-smoke" &&
     typeof diagnostic === "string"
@@ -744,6 +752,10 @@ export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
 export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
   if (scenarioId === "codex-tui-trace-smoke") {
+    if (exitCode === 139)
+      return "integration.fixture.codex-tui-exit-before-checkpoint";
+    if (exitCode === 140)
+      return "integration.fixture.codex-tui-checkpoint-not-witnessed";
     const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
     if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
     const postTraceDiagnostic =

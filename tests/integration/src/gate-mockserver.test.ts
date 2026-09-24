@@ -962,8 +962,9 @@ describe("gate-capable exact-build MockServer", () => {
       () => "closed",
       (error: NodeJS.ErrnoException) => error.code ?? "error",
     );
-    partial.write("POST /v1/responses HTTP/1.1\r\nHost: model\r\n");
-    let secondConnectionObserved = false;
+    const partialRequest = "POST /v1/responses HTTP/1.1\r\nHost: model\r\n";
+    partial.write(partialRequest);
+    let secondFramingObserved = false;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const observed = await request(
         controlSocket,
@@ -972,17 +973,36 @@ describe("gate-capable exact-build MockServer", () => {
         challenge,
         "PUT",
       );
-      if (observed.value.connectionCount === 2) {
-        secondConnectionObserved = true;
+      if (
+        observed.value.connectionCount === 2 &&
+        observed.value.latestAdmission === "admitted" &&
+        observed.value.latestRawForwardedBytes ===
+          Buffer.byteLength(partialRequest)
+      ) {
+        secondFramingObserved = true;
         break;
       }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    expect(secondConnectionObserved).toBe(true);
+    expect(secondFramingObserved).toBe(true);
     const started = bootNow();
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
-      value: { receipt: { ledgerCount: 1, connectionCount: 2 } },
+      value: {
+        receipt: {
+          ledgerCount: 1,
+          connectionCount: 2,
+          parserFailures: 1,
+          connections: [
+            {},
+            {
+              closed: true,
+              parserOutcome: "rejected",
+              rawForwardedBytes: Buffer.byteLength(partialRequest),
+            },
+          ],
+        },
+      },
     });
     expect(bootNow() - started).toBeLessThan(1_000);
     expect(["closed", "ECONNRESET"]).toContain(await partialCompletion);

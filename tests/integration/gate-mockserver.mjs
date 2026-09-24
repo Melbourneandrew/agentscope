@@ -714,7 +714,12 @@ const authorizedRoute = async (request, response, pathname) => {
     return;
   }
   if (request.method === "PUT" && pathname === "/connection-count") {
-    json(response, 200, { connectionCount: connections.size });
+    const latest = [...connections.values()].at(-1);
+    json(response, 200, {
+      connectionCount: connections.size,
+      latestAdmission: latest?.admission ?? null,
+      latestRawForwardedBytes: latest?.rawForwardedBytes ?? 0,
+    });
     return;
   }
   if (request.method === "PUT" && pathname === "/ledger") {
