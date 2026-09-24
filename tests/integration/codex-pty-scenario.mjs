@@ -93,6 +93,15 @@ const interactivePhases = Object.freeze([
   "trace-reporter-settled",
   "trace-search-result",
   "verify",
+  "verify-config",
+  "verify-gate",
+  "verify-trace-get",
+  "verify-correlation",
+  "verify-doctor",
+  "verify-uninstall",
+  "verify-status",
+  "verify-projection",
+  "verify-evidence",
 ]);
 const advanceInteractivePhase = (phase) => {
   const phaseIndex = interactivePhases.indexOf(phase);
@@ -1423,11 +1432,14 @@ try {
     now: bootNow,
     record: () => recordInteractivePhase("verify"),
   });
+  recordInteractivePhase("verify-config");
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
+  recordInteractivePhase("verify-gate");
   const modelRequests = await sealModelGate(
     sessionStartBeforeFirstModelRequestAdmission,
   );
+  recordInteractivePhase("verify-trace-get");
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
     throw new Error("integration.codex.trace-search");
@@ -1445,14 +1457,17 @@ try {
   );
   if (getRecords.length !== 1 || getRecords[0]?.locator?.traceId !== traceId)
     throw new Error("integration.codex.trace-get");
+  recordInteractivePhase("verify-correlation");
   const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
   if (codexSessionId === undefined || traceGraph.sessionId !== codexSessionId)
     throw new Error("integration.codex.trace-correlation");
+  recordInteractivePhase("verify-doctor");
   const doctor = projectDoctor(
     await cli(["doctor"], "agentscope doctor", {
       monotonicDeadline: traceDeadline,
     }),
   );
+  recordInteractivePhase("verify-uninstall");
   const uninstallRecords = await cli(
     ["uninstall", "codex", "--yes"],
     "agentscope uninstall",
@@ -1460,6 +1475,7 @@ try {
   );
   const uninstall = projectUninstall(uninstallRecords);
   if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
+  recordInteractivePhase("verify-status");
   const uninstalledStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status", {
       monotonicDeadline: traceDeadline,
@@ -1467,6 +1483,7 @@ try {
     "ready",
     1,
   );
+  recordInteractivePhase("verify-projection");
   const translated = translateCodexPlatformObservations({
     scenarioId,
     prompt,
@@ -1497,6 +1514,7 @@ try {
     expectedPromptSha256: promptSha256,
     scenarioId,
   });
+  recordInteractivePhase("verify-evidence");
   const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
     "base64url",
   );

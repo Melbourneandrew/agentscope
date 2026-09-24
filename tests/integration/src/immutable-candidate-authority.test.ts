@@ -825,7 +825,7 @@ describe("interactive PTY failure diagnostic transport", () => {
     ).toBe(diagnostic);
     const exitCode = encodeInteractiveFailureExitCode(diagnostic);
     expect(exitCode).toEqual(expect.any(Number));
-    expect(exitCode).toBeLessThanOrEqual(125);
+    expect(exitCode).toBeLessThanOrEqual(134);
     expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
     expect(
       extractInteractiveChildDiagnostic(
@@ -919,6 +919,25 @@ describe("interactive PTY failure exit-code transport", () => {
   });
 
   it.each([
+    ["config", 126],
+    ["gate", 127],
+    ["trace-get", 128],
+    ["correlation", 129],
+    ["doctor", 130],
+    ["uninstall", 131],
+    ["status", 132],
+    ["projection", 133],
+    ["evidence", 134],
+  ] as const)(
+    "transports only the closed post-trace checkpoint %s at exit code %i",
+    (checkpoint, exitCode) => {
+      const diagnostic = `integration.fixture.codex-verify-${checkpoint}`;
+      expect(encodeInteractiveFailureExitCode(diagnostic)).toBe(exitCode);
+      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+    },
+  );
+
+  it.each([
     undefined,
     "integration.fixture.codex-not-allowlisted",
     "testkit.pty.transport.semantic-nonzero",
@@ -926,7 +945,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 31, 39, 63, 126, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 135, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

@@ -579,6 +579,15 @@ describe("Codex interactive diagnostic order", () => {
       "trace-reporter-settled",
       "trace-search-result",
       "verify",
+      "verify-config",
+      "verify-gate",
+      "verify-trace-get",
+      "verify-correlation",
+      "verify-doctor",
+      "verify-uninstall",
+      "verify-status",
+      "verify-projection",
+      "verify-evidence",
     ];
     const phases = (source: string) => {
       const declaration = source.slice(
@@ -591,6 +600,9 @@ describe("Codex interactive diagnostic order", () => {
     };
     expect(phases(scenario)).toEqual(expected);
     expect(phases(runner)).toEqual(expected);
+    for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
+      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
+    }
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
