@@ -522,10 +522,10 @@ it("reports only bounded CSI-u mode and historical readiness facts", () => {
         readinessEverObserved: true,
         screenRevoked: false,
       },
-      checkpointProgressDiagnostic: "topology-mismatch",
+      checkpointProgressDiagnostic: "topology-nonroot-missing",
     }),
   ).toContain(
-    ":protocol-rejection-mode-6-less-1:ever-ready-observed:screen-intact:checkpoint-topology-mismatch",
+    ":protocol-rejection-mode-6-less-1:ever-ready-observed:screen-intact:checkpoint-topology-nonroot-missing",
   );
 });
 

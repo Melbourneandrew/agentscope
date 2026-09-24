@@ -1839,7 +1839,7 @@ describe("selected PTY backend evidence", () => {
       withDiagnostic("publication-unsettled").ptyTerminalReceipt
         ?.checkpointProgressDiagnostic,
     ).toBe("publication-unsettled");
-    expect(() => withDiagnostic("topology-mismatch")).toThrow(
+    expect(() => withDiagnostic("topology-nonroot-missing")).toThrow(
       "integration.isolation.evidence",
     );
     expect(() => withDiagnostic("raw-terminal-content")).toThrow(

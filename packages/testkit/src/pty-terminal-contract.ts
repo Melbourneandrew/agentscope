@@ -96,7 +96,9 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     | "deadline"
     | "ready-gate-other"
     | "ready-gate-open"
-    | "topology-mismatch"
+    | "topology-root-missing"
+    | "topology-nonroot-missing"
+    | "topology-identity-conflict"
     | "publication-unsettled"
     | "advanced";
   /** Fixed, content-free diagnostic only; never a PTY admission predicate. */

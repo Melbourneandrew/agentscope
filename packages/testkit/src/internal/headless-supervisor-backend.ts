@@ -772,6 +772,34 @@ type ProcessSnapshot = Readonly<{
   startIdentity: string;
   state: string;
 }>;
+type CheckpointTopologyClassification =
+  "matched" | "root-missing" | "nonroot-missing" | "identity-conflict";
+const classifyCheckpointTopology = (
+  processes: readonly ProcessSnapshot[],
+  root: ProcessSnapshot,
+): CheckpointTopologyClassification => {
+  const rootMatches = processes.filter(
+    (candidate) =>
+      candidate.pid === root.pid &&
+      candidate.startIdentity === root.startIdentity &&
+      candidate.state !== "Z",
+  );
+  if (rootMatches.length !== 1) return "root-missing";
+  if (
+    processes.filter(
+      (candidate) => candidate.pid !== root.pid && candidate.state !== "Z",
+    ).length === 0
+  )
+    return "nonroot-missing";
+  if (
+    new Set(processes.map(({ startIdentity }) => startIdentity)).size !==
+    processes.length
+  )
+    return "identity-conflict";
+  return "matched";
+};
+/** Package-private, pure oracle for the selected checkpoint's fixed category. */
+export const classifyCheckpointTopologyForTest = classifyCheckpointTopology;
 type AdoptedZombieReapReceipt = Readonly<{
   pid: number;
   startIdentity: string;
@@ -2830,7 +2858,8 @@ const armSelectedPty = (
     };
     let readinessObserved = false;
     let checkpointReadyAtGate = false;
-    let checkpointTopologyMismatchObserved = false;
+    let checkpointTopologyMismatchKind:
+      Exclude<CheckpointTopologyClassification, "matched"> | undefined;
     let checkpointPublicationAttempted = false;
     let checkpointActionAdvanced = false;
     let checkpointFirstReadyGate:
@@ -3245,28 +3274,14 @@ const armSelectedPty = (
               composition.namespaceIdentity,
               processRequest.monotonicExecutionDeadlineMs,
             );
-            const rootMatches = processSet.filter(
-              (candidate) =>
-                candidate.pid === root.pid &&
-                candidate.startIdentity === root.startIdentity &&
-                candidate.state !== "Z",
-            );
-            const liveContainedProcesses = processSet.filter(
-              (candidate) =>
-                candidate.pid !== root.pid && candidate.state !== "Z",
-            );
-            const topologyMatches =
-              rootMatches.length === 1 &&
-              liveContainedProcesses.length >= 1 &&
-              new Set(processSet.map(({ startIdentity }) => startIdentity))
-                .size === processSet.length;
+            const topology = classifyCheckpointTopology(processSet, root);
             if (
               safeReflectApply(performanceNow, performance, []) >=
               processRequest.monotonicExecutionDeadlineMs
             )
               return fail("testkit.headless.execution.deadline");
-            if (!topologyMatches) {
-              checkpointTopologyMismatchObserved = true;
+            if (topology !== "matched") {
+              checkpointTopologyMismatchKind = topology;
               runtime.releaseFrozenProcessSet(
                 composition.namespaceIdentity,
                 processSet,
@@ -3702,8 +3717,8 @@ const armSelectedPty = (
                     ? "advanced"
                     : checkpointPublicationAttempted
                       ? "publication-unsettled"
-                      : checkpointTopologyMismatchObserved
-                        ? "topology-mismatch"
+                      : checkpointTopologyMismatchKind !== undefined
+                        ? `topology-${checkpointTopologyMismatchKind}`
                         : checkpointReadyAtGate
                           ? checkpointFirstReadyGate
                           : "no-live-readiness"

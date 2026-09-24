@@ -479,7 +479,9 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
       "deadline",
       "ready-gate-other",
       "ready-gate-open",
-      "topology-mismatch",
+      "topology-root-missing",
+      "topology-nonroot-missing",
+      "topology-identity-conflict",
       "publication-unsettled",
       "advanced",
     ])

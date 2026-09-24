@@ -10,6 +10,7 @@ import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
 import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
 import {
+  classifyCheckpointTopologyForTest,
   executeSelectedPtyTransportForTest,
   validateSelectedContainerFilesystemFactsForTest,
   validateSelectedContainerPrincipalFactsForTest,
@@ -17,6 +18,37 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+it("classifies only exact frozen checkpoint topology facts", () => {
+  const root = { pid: 21, parentPid: 1, startIdentity: "21:1", state: "T" };
+  const descendant = {
+    pid: 22,
+    parentPid: 21,
+    startIdentity: "22:1",
+    state: "T",
+  };
+  expect(classifyCheckpointTopologyForTest([root, descendant], root)).toBe(
+    "matched",
+  );
+  expect(classifyCheckpointTopologyForTest([descendant], root)).toBe(
+    "root-missing",
+  );
+  expect(classifyCheckpointTopologyForTest([root], root)).toBe(
+    "nonroot-missing",
+  );
+  expect(
+    classifyCheckpointTopologyForTest(
+      [root, { ...descendant, startIdentity: root.startIdentity }],
+      root,
+    ),
+  ).toBe("identity-conflict");
+  expect(
+    classifyCheckpointTopologyForTest(
+      [{ ...root, state: "Z" }, descendant],
+      root,
+    ),
+  ).toBe("root-missing");
+});
 // eslint-disable-next-line @typescript-eslint/unbound-method -- hostile-prototype test invokes this exact method with Reflect.apply
 const originalTerminalSnapshot = BoundedTerminalEmulator.prototype.snapshot;
 const request = (
