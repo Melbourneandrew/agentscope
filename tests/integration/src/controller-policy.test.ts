@@ -242,6 +242,9 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       "joinDeadlineHookState = classifyCodexShutdownAtJoinDeadline({",
     );
+    expect(scenario).toContain("encodeCodexJoinDeadlineExitCode(");
+    expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode)");
+    expect(source).not.toContain("readRetainedJoinDiagnostic");
     expect(scenario).toContain(
       '} else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
     );

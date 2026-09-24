@@ -8,13 +8,14 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  decodeCodexJoinDeadlineExitCode,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptFailed,
-  selectCodexJoinDeadlineDiagnostic,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -290,9 +291,9 @@ describe("interactive PTY receipt transport", () => {
 });
 
 describe("interactive PTY failure diagnostic transport", () => {
-  it("selects only a closed failure-only shutdown classification", () => {
+  it("uses a disjoint authenticated exit-code range for join classifications", () => {
     const generic = "integration.fixture.codex-tui-join-deadline";
-    for (const state of [
+    for (const [index, state] of [
       "log-unavailable",
       "hook-log-invalid",
       "stop-unseen",
@@ -300,11 +301,10 @@ describe("interactive PTY failure diagnostic transport", () => {
       "stop-completed",
       "session-end-active",
       "session-end-completed",
-    ]) {
+    ].entries()) {
       const specific = `${generic}-${state}`;
-      expect(selectCodexJoinDeadlineDiagnostic(generic, specific)).toBe(
-        specific,
-      );
+      expect(encodeCodexJoinDeadlineExitCode(state)).toBe(32 + index);
+      expect(decodeCodexJoinDeadlineExitCode(32 + index)).toBe(specific);
       expect(encodeInteractiveFailureExitCode(specific)).toBeUndefined();
       expect(
         extractInteractiveChildDiagnostic(
@@ -314,19 +314,12 @@ describe("interactive PTY failure diagnostic transport", () => {
     }
     for (const untrusted of [
       undefined,
-      "integration.fixture.codex-tui-join-deadline-success",
-      "integration.fixture.codex-tui-join-deadline-session-end-completed-extra",
-      "testkit.pty.receipt-terminal",
+      "success",
+      "session-end-completed-extra",
     ])
-      expect(selectCodexJoinDeadlineDiagnostic(generic, untrusted)).toBe(
-        generic,
-      );
-    expect(
-      selectCodexJoinDeadlineDiagnostic(
-        "integration.fixture.codex-tui-child-rejected",
-        `${generic}-session-end-completed`,
-      ),
-    ).toBe("integration.fixture.codex-tui-child-rejected");
+      expect(encodeCodexJoinDeadlineExitCode(untrusted)).toBeUndefined();
+    for (const unreserved of [undefined, 1, 31, 39, 63, 92, 126, 1.5])
+      expect(decodeCodexJoinDeadlineExitCode(unreserved)).toBeUndefined();
   });
 
   it.each([

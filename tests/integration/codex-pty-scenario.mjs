@@ -16,6 +16,7 @@ import {
 import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
+import { encodeCodexJoinDeadlineExitCode } from "./immutable-candidate-authority.mjs";
 
 let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
@@ -101,8 +102,14 @@ if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
 process.setUncaughtExceptionCaptureCallback(() => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
+  if (interactiveFailurePhase === "tui-join-deadline") {
+    const diagnosticCode = encodeCodexJoinDeadlineExitCode(
+      joinDeadlineHookState,
+    );
+    if (diagnosticCode !== undefined) exitCode = diagnosticCode;
+  }
   try {
-    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}${joinDeadlineHookState === undefined ? "" : `-${joinDeadlineHookState}`}`;
+    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
     if (ledger !== undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
@@ -113,7 +120,7 @@ process.setUncaughtExceptionCaptureCallback(() => {
         },
       );
   } catch {
-    exitCode = 64;
+    if (joinDeadlineHookState === undefined) exitCode = 64;
   }
   let settled = false;
   const settle = (code) => {

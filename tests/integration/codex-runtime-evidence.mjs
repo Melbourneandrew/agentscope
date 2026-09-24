@@ -340,6 +340,9 @@ export const classifyCodexShutdownLogSource = (source) => {
     (activeEventName === undefined && activeOpen !== undefined)
   )
     throw new Error("integration.codex.hook-lifecycle");
+  for (const span of spans)
+    if (commandOutcome(span.close) !== "completed")
+      throw new Error("integration.codex.hook-lifecycle");
   if (names.includes("SessionEnd")) return "session-end-completed";
   if (activeEventName === "SessionEnd") return "session-end-active";
   if (names.includes("Stop")) return "stop-completed";

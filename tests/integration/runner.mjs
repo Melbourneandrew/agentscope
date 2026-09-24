@@ -19,15 +19,14 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
+  decodeCodexJoinDeadlineExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   interactivePtyReceiptFailed,
-  selectCodexJoinDeadlineDiagnostic,
   selectInteractiveFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
-import { readRetainedJoinDiagnostic } from "./retained-join-diagnostic.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
 
 const substrateCertificationCase = parseSubstrateCertificationCaseValue(
@@ -125,6 +124,8 @@ const retainedInteractivePhase = (ledger) => {
 };
 const decodeScenarioFailureExitCode = (exitCode) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
+  const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
+  if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
   const phase = interactivePhases[exitCode - 64];
   return phase === undefined ? undefined : `integration.fixture.codex-${phase}`;
 };
@@ -638,15 +639,9 @@ try {
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
     if (interactivePtyReceiptFailed(receipt)) {
-      const decoded =
+      const diagnostic =
         decodeScenarioFailureExitCode(receipt.exitCode) ??
         retainedInteractivePhase(ledger);
-      const diagnostic = selectCodexJoinDeadlineDiagnostic(
-        decoded,
-        decoded === "integration.fixture.codex-tui-join-deadline"
-          ? readRetainedJoinDiagnostic(join(ledger, "interactive-failure.txt"))
-          : undefined,
-      );
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
