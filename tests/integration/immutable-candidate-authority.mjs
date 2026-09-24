@@ -167,6 +167,33 @@ export const interactivePtyReceiptAuthorityMatches = (
     : receipt?.returnedAtMs <=
         receipt?.request?.process?.monotonicShutdownDeadlineMs &&
       receipt?.finalSnapshot?.semanticState === "completed");
+
+// Failure-only diagnostics: never include receipt fields or terminal output.
+export const interactivePtyReceiptRejectionCode = (
+  receipt,
+  checks,
+  failed = false,
+) => {
+  for (const key of [
+    "envelope",
+    "process",
+    "geometry",
+    "artifact",
+    "fingerprint",
+  ])
+    if (checks?.[key] !== true) return key;
+  try {
+    if (failed)
+      return interactivePtyReceiptFailed(receipt) ? null : "terminal-state";
+    return receipt?.returnedAtMs <=
+      receipt?.request?.process?.monotonicShutdownDeadlineMs &&
+      receipt?.finalSnapshot?.semanticState === "completed"
+      ? null
+      : "terminal-state";
+  } catch {
+    return "terminal-state";
+  }
+};
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
