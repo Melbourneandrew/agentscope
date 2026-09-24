@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-74c368e3e22b86eefa2f67f3e99d66366c08f860d7237d165ed655a1f6c9f73f",
+  "manifestIdentity": "sha256-cf77a259da8fcf4160dc59b65df5c30dc620e7eff822b2376c1f48d9cde7158e",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -182,7 +182,7 @@
             "path": "gate-mockserver.mjs"
           },
           "destination": "gate-mockserver.mjs",
-          "sha256": "3eb2bc32e2f9458a31b1008a57e8c244b822fc79e33d2991fcf2d1f76bdc22da"
+          "sha256": "2f13408a30d87e42bf600bb183965c8bd665c159d73b6764559b52a8275c7d9a"
         },
         {
           "source": {

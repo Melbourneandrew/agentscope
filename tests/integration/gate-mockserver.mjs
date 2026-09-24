@@ -381,6 +381,10 @@ const enforceCutoff = () => {
           connection.parserOutcome = "rejected";
         }
         connection.socket.destroy();
+      } else if (connection.admission === "admitted") {
+        // The admitted response needs only the write side. Stop raw input
+        // before Node's HTTP parser can see a later pipelined request.
+        connection.socket.pause();
       }
     }
   } else return;

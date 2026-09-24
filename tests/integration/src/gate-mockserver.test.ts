@@ -849,7 +849,7 @@ describe("gate-capable exact-build MockServer", () => {
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 200,
       value: {
-        receipt: { ledgerCount: 1, parserFailures: 1, state: "draining" },
+        receipt: { ledgerCount: 1, parserFailures: 0, state: "draining" },
       },
     });
   });
