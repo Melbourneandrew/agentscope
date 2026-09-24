@@ -23,7 +23,7 @@ const {
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
   interactivePtyIdleObservationDiagnostic,
-  interactivePtyIdleAtCompletionDiagnostic,
+  interactivePtyIdleAtTitleDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -221,13 +221,13 @@ describe("interactive PTY action prefix diagnostics", () => {
         },
       },
       postSubmissionIdleDiagnostic: "response-not-observed",
-      postSubmissionIdleAtCompletionDiagnostic: "idle-ready",
+      postSubmissionIdleAtTitleDiagnostic: "idle-ready",
     };
     expect(interactivePtyIdleObservationDiagnostic(receipt)).toBe(
       "integration.isolation.pty-idle-diagnostic:response-not-observed",
     );
-    expect(interactivePtyIdleAtCompletionDiagnostic(receipt)).toBe(
-      "integration.isolation.pty-idle-at-completion:idle-ready",
+    expect(interactivePtyIdleAtTitleDiagnostic(receipt)).toBe(
+      "integration.isolation.pty-idle-at-title:idle-ready",
     );
     for (const substituted of [
       "terminal-content\nspoofed-output",
@@ -250,11 +250,11 @@ describe("interactive PTY action prefix diagnostics", () => {
       undefined,
     ])
       expect(
-        interactivePtyIdleAtCompletionDiagnostic({
+        interactivePtyIdleAtTitleDiagnostic({
           ...receipt,
-          postSubmissionIdleAtCompletionDiagnostic: substituted,
+          postSubmissionIdleAtTitleDiagnostic: substituted,
         }),
-      ).toBe("integration.isolation.pty-idle-at-completion:missing-or-invalid");
+      ).toBe("integration.isolation.pty-idle-at-title:missing-or-invalid");
     expect(
       interactivePtyIdleObservationDiagnostic({
         ...receipt,

@@ -301,7 +301,7 @@ export const interactivePtyIdleObservationDiagnostic = (receipt) => {
   return `integration.isolation.pty-idle-diagnostic:${category}`;
 };
 
-export const interactivePtyIdleAtCompletionDiagnostic = (receipt) => {
+export const interactivePtyIdleAtTitleDiagnostic = (receipt) => {
   if (
     receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
     !Array.isArray(receipt?.request?.interaction?.actions) ||
@@ -310,14 +310,14 @@ export const interactivePtyIdleAtCompletionDiagnostic = (receipt) => {
     )
   )
     return undefined;
-  const category = receipt.postSubmissionIdleAtCompletionDiagnostic;
+  const category = receipt.postSubmissionIdleAtTitleDiagnostic;
   if (
-    category !== "completion-not-observed" &&
+    category !== "title-not-observed" &&
     (typeof category !== "string" ||
       !ptyIdleDiagnosticCategories.includes(category))
   )
-    return "integration.isolation.pty-idle-at-completion:missing-or-invalid";
-  return `integration.isolation.pty-idle-at-completion:${category}`;
+    return "integration.isolation.pty-idle-at-title:missing-or-invalid";
+  return `integration.isolation.pty-idle-at-title:${category}`;
 };
 
 export const interactivePtyArtifactReadinessMatches = (

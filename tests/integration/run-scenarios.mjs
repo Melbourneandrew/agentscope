@@ -71,7 +71,7 @@ import {
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
   interactivePtyIdleObservationDiagnostic,
-  interactivePtyIdleAtCompletionDiagnostic,
+  interactivePtyIdleAtTitleDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -1808,9 +1808,8 @@ const captureFailedScenarioReceipt = (
     const idleDiagnostic = interactivePtyIdleObservationDiagnostic(receipt);
     if (idleDiagnostic !== undefined)
       process.stderr.write(`${idleDiagnostic}\n`);
-    const idleAtCompletion = interactivePtyIdleAtCompletionDiagnostic(receipt);
-    if (idleAtCompletion !== undefined)
-      process.stderr.write(`${idleAtCompletion}\n`);
+    const idleAtTitle = interactivePtyIdleAtTitleDiagnostic(receipt);
+    if (idleAtTitle !== undefined) process.stderr.write(`${idleAtTitle}\n`);
   }
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);

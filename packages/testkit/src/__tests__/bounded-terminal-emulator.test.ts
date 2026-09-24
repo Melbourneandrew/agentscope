@@ -563,8 +563,8 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "response-not-observed",
     );
-    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
-      "completion-not-observed",
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(
+      "title-not-observed",
     );
     terminal.write(
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
@@ -596,22 +596,57 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.completionObserved()).toBe(true);
     expect(terminal.snapshot().semanticState).toBe("completed");
     expect(terminal.postSubmissionIdlePromptObserved()).toBe(true);
-    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
-      "idle-ready",
-    );
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
     terminal.write(bytes("\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l"));
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "idle-readiness-revoked",
     );
-    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
-      "idle-ready",
-    );
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
     terminal.write(
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
     );
-    expect(terminal.postSubmissionIdleAtCompletionDiagnostic()).toBe(
-      "idle-ready",
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+  });
+
+  it("latches the challenged title even after generic printable completion", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "fixture-model default",
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
     );
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(
+      "title-not-observed",
+    );
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+    );
+    expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
   });
 
   it("does not mistake mismatched styled text for post-completion readiness", () => {

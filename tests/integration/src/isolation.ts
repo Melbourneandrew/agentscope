@@ -457,9 +457,9 @@ const ptyTerminalReceiptSchema = z
         "idle-ready",
       ])
       .optional(),
-    postSubmissionIdleAtCompletionDiagnostic: z
+    postSubmissionIdleAtTitleDiagnostic: z
       .enum([
-        "completion-not-observed",
+        "title-not-observed",
         "not-armed",
         "response-not-observed",
         "idle-frame-not-observed",

@@ -626,11 +626,11 @@ try {
         : {
             postSubmissionIdleDiagnostic: receipt.postSubmissionIdleDiagnostic,
           }),
-      ...(receipt.postSubmissionIdleAtCompletionDiagnostic === undefined
+      ...(receipt.postSubmissionIdleAtTitleDiagnostic === undefined
         ? {}
         : {
-            postSubmissionIdleAtCompletionDiagnostic:
-              receipt.postSubmissionIdleAtCompletionDiagnostic,
+            postSubmissionIdleAtTitleDiagnostic:
+              receipt.postSubmissionIdleAtTitleDiagnostic,
           }),
       actions: receipt.actions,
       outerMonotonicDeadlineMs: headlessOuterDeadline,
