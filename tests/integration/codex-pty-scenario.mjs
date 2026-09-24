@@ -943,13 +943,21 @@ const sealModelGate = async (checkpoint) => {
       "eof",
       "generation",
       "parserOutcome",
+      "parserTransportClosed",
+      "rawForwardedBytes",
       "rawRejectedBytes",
+      "responseBytes",
     ]) ||
     receipt.connections[0].admission !== "admitted" ||
     receipt.connections[0].closed !== true ||
     receipt.connections[0].generation !== 1 ||
     receipt.connections[0].parserOutcome !== "accepted" ||
+    receipt.connections[0].parserTransportClosed !== true ||
+    !Number.isSafeInteger(receipt.connections[0].rawForwardedBytes) ||
+    receipt.connections[0].rawForwardedBytes <= 0 ||
     receipt.connections[0].rawRejectedBytes !== 0 ||
+    !Number.isSafeInteger(receipt.connections[0].responseBytes) ||
+    receipt.connections[0].responseBytes <= 0 ||
     receipt.ledgerCount !== 1 ||
     !Number.isSafeInteger(receipt.mutationGeneration) ||
     receipt.mutationGeneration < 1 ||

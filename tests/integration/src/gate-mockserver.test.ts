@@ -91,7 +91,7 @@ const request = async (
     controlRequest.end(bytes);
   });
 };
-const startGate = async () => {
+const startGate = async ({ delayCutoffTimer = false } = {}) => {
   const modelPort = await availablePort();
   const controlRoot = mkdtempSync(join(tmpdir(), "agentscope-gate-"));
   controlRoots.add(controlRoot);
@@ -99,6 +99,12 @@ const startGate = async () => {
   const child = spawn(
     process.execPath,
     [
+      ...(delayCutoffTimer
+        ? [
+            "--import",
+            resolve(integrationRoot, "fixtures/delay-gate-cutoff-timer.mjs"),
+          ]
+        : []),
       source,
       "--model-port",
       String(modelPort),
@@ -527,6 +533,21 @@ describe("gate-capable exact-build MockServer", () => {
       await completion;
       const sealed = await request(controlSocket, "/seal", { runId });
       expect(sealed.status).toBe(200);
+      const receipt = sealed.value.receipt as {
+        connections: {
+          closed: boolean;
+          parserTransportClosed: boolean;
+          rawForwardedBytes: number;
+          rawRejectedBytes: number;
+          responseBytes: number;
+        }[];
+      };
+      expect(receipt.connections).toHaveLength(1);
+      expect(receipt.connections[0]?.closed).toBe(true);
+      expect(receipt.connections[0]?.parserTransportClosed).toBe(true);
+      expect(receipt.connections[0]?.rawForwardedBytes).toBeGreaterThan(0);
+      expect(receipt.connections[0]?.rawRejectedBytes).toBe(0);
+      expect(receipt.connections[0]?.responseBytes).toBeGreaterThan(0);
       const retained = (sealed.value.ledger as Record<string, unknown>[])[0];
       expect(retained).toMatchObject({
         promptOccurrenceCount: expectedPromptCount,
@@ -861,8 +882,10 @@ describe("gate-capable exact-build MockServer", () => {
   });
 
   it("rejects post-cutoff raw input before HTTP parsing when the timer is delayed", async () => {
-    const { child, controlSocket, modelPort } = await startGate();
-    await configure(controlSocket, 1_000);
+    const { controlSocket, modelPort } = await startGate({
+      delayCutoffTimer: true,
+    });
+    await configure(controlSocket, 400);
     const socket = await connect(modelPort);
     const completion = collect(socket).then(
       () => "closed",
@@ -881,10 +904,8 @@ describe("gate-capable exact-build MockServer", () => {
       if ((observed.value.ledger as unknown[]).length === 1) break;
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
     }
-    expect(child.kill("SIGSTOP")).toBe(true);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 450));
     socket.write(exactRequest({ model: "late", input: "late" }));
-    expect(child.kill("SIGCONT")).toBe(true);
     expect(["closed", "ECONNRESET"]).toContain(await completion);
     expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
       status: 409,
@@ -893,7 +914,16 @@ describe("gate-capable exact-build MockServer", () => {
       status: 200,
       value: {
         ledger: [{}],
-        receipt: { cutoffUnsettled: true, ledgerCount: 1 },
+        receipt: {
+          cutoffUnsettled: true,
+          ledgerCount: 1,
+          connections: [
+            {
+              rawRejectedBytes: exactRequest({ model: "late", input: "late" })
+                .length,
+            },
+          ],
+        },
       },
     });
   });

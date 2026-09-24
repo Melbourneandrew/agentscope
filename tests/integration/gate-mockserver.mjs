@@ -4,8 +4,10 @@ import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { dirname, isAbsolute } from "node:path";
+import { Duplex } from "node:stream";
 
 const maximumBodyBytes = 1024 * 1024;
+const maximumWireBytes = maximumBodyBytes + 64 * 1024;
 const maximumLedgerEntries = 16;
 const exactKeys = (value, keys) =>
   value !== null &&
@@ -266,41 +268,106 @@ const registerSocket = (socket) => {
     eof: false,
     generation,
     parserOutcome: "not-parsed",
+    parserTransport: undefined,
+    parserTransportClosed: true,
+    rawForwardedBytes: 0,
     rawRejectedBytes: 0,
+    responseBytes: 0,
     requestReady: undefined,
     socket,
   };
   connections.set(generation, connection);
   connectionBySocket.set(socket, connection);
-  const emitBeforeIngressGuard = socket.emit;
-  socket.emit = (event, ...arguments_) => {
-    if (
-      event === "data" &&
-      cutoff !== undefined &&
-      (bootNow() >= cutoff || state === "draining" || state === "denied")
-    ) {
-      cutoffUnsettled = true;
-      const bytes = arguments_[0];
-      if (Buffer.isBuffer(bytes)) {
-        connection.rawRejectedBytes += bytes.length;
-        mutationGeneration += 1;
-      }
-      enforceCutoff();
-      socket.destroy();
-      return false;
-    }
-    return emitBeforeIngressGuard.call(socket, event, ...arguments_);
-  };
   socket.once("end", () => {
     connection.eof = true;
     mutationGeneration += 1;
   });
   socket.once("close", () => {
     connection.closed = true;
+    connection.parserTransport?.destroy();
     mutationGeneration += 1;
+  });
+  socket.once("error", () => {
+    cutoffUnsettled = true;
+    connection.parserTransport?.destroy();
   });
   mutationGeneration += 1;
   return connection;
+};
+const attachParserTransport = (connection) => {
+  const { socket } = connection;
+  if (connection.parserTransport !== undefined)
+    throw new Error("integration.mockserver.parser-transport");
+  const parserTransport = new Duplex({
+    readableHighWaterMark: maximumWireBytes,
+    read() {
+      if (!socket.destroyed) socket.resume();
+    },
+    write(bytes, _encoding, callback) {
+      if (socket.destroyed || !Buffer.isBuffer(bytes)) {
+        callback(new Error("integration.mockserver.parser-output"));
+        return;
+      }
+      connection.responseBytes += bytes.length;
+      if (connection.responseBytes > maximumWireBytes) {
+        cutoffUnsettled = true;
+        callback(new Error("integration.mockserver.parser-output"));
+        return;
+      }
+      socket.write(bytes, callback);
+    },
+    final(callback) {
+      socket.end(callback);
+    },
+    destroy(error, callback) {
+      socket.destroy();
+      callback(error);
+    },
+  });
+  parserTransport.setTimeout = () => parserTransport;
+  parserTransport.setNoDelay = () => parserTransport;
+  parserTransport.setKeepAlive = () => parserTransport;
+  connection.parserTransport = parserTransport;
+  connection.parserTransportClosed = false;
+  connectionBySocket.set(parserTransport, connection);
+  parserTransport.once("close", () => {
+    connection.parserTransportClosed = true;
+    mutationGeneration += 1;
+  });
+  parserTransport.once("error", () => {
+    cutoffUnsettled = true;
+    socket.destroy();
+  });
+  socket.on("data", (bytes) => {
+    if (
+      !Buffer.isBuffer(bytes) ||
+      bootNow() >= cutoff ||
+      state === "draining" ||
+      state === "denied"
+    ) {
+      cutoffUnsettled = true;
+      if (Buffer.isBuffer(bytes)) connection.rawRejectedBytes += bytes.length;
+      mutationGeneration += 1;
+      parserTransport.destroy();
+      enforceCutoff();
+      return;
+    }
+    if (connection.rawForwardedBytes + bytes.length > maximumWireBytes) {
+      connection.rawRejectedBytes += bytes.length;
+      cutoffUnsettled = true;
+      parserTransport.destroy();
+      return;
+    }
+    connection.rawForwardedBytes += bytes.length;
+    mutationGeneration += 1;
+    if (!parserTransport.push(bytes)) {
+      cutoffUnsettled = true;
+      parserTransport.destroy();
+    }
+  });
+  socket.once("end", () => parserTransport.push(null));
+  modelServer.emit("connection", parserTransport);
+  socket.resume();
 };
 const rejectSocket = (connection) => {
   if (connection.requestReady !== undefined) {
@@ -308,6 +375,7 @@ const rejectSocket = (connection) => {
     connection.requestReady = undefined;
   }
   connection.admission = "rejected";
+  connection.parserTransport?.destroy();
   connection.socket.destroy();
   mutationGeneration += 1;
 };
@@ -331,8 +399,7 @@ const admitSocket = (connection) => {
   }
   if (state === "armed") {
     mutationGeneration += 1;
-    modelServer.emit("connection", socket);
-    socket.resume();
+    attachParserTransport(connection);
     return;
   }
   connection.admission = "awaiting-request";
@@ -346,8 +413,7 @@ const admitSocket = (connection) => {
     connection.admission = "admitted";
     connection.parserOutcome = "framing";
     mutationGeneration += 1;
-    modelServer.emit("connection", socket);
-    socket.resume();
+    attachParserTransport(connection);
   };
   socket.once("readable", connection.requestReady);
   mutationGeneration += 1;
@@ -393,6 +459,7 @@ const rejectOpenConnectionAtCutoff = (connection) => {
     cutoffUnsettled = true;
   }
   connection.socket.destroy();
+  connection.parserTransport?.destroy();
 };
 const enforceCutoff = () => {
   if (
@@ -422,7 +489,10 @@ const enforceCutoff = () => {
   closeTransportAdmission();
 };
 const settledConnections = () =>
-  parserWork === 0 && [...connections.values()].every(({ closed }) => closed);
+  parserWork === 0 &&
+  [...connections.values()].every(
+    ({ closed, parserTransportClosed }) => closed && parserTransportClosed,
+  );
 const waitForSettlement = async () => {
   const settlementDeadline = cutoff + 5_000;
   while (!settledConnections() && bootNow() < settlementDeadline)
@@ -437,14 +507,20 @@ const connectionReceipt = () =>
       eof,
       generation,
       parserOutcome,
+      parserTransportClosed,
+      rawForwardedBytes,
       rawRejectedBytes,
+      responseBytes,
     }) => ({
       admission,
       closed,
       eof,
       generation,
       parserOutcome,
+      parserTransportClosed,
+      rawForwardedBytes,
       rawRejectedBytes,
+      responseBytes,
     }),
   );
 const configure = async (request, response) => {
