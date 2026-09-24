@@ -109,7 +109,7 @@ export const compileInteractivePtyActions = (
       ? [
           { action: "wait-for-semantic-completion" as const },
           ...(scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
-            ? [{ action: "wait-for-idle-prompt-after-completion" as const }]
+            ? [{ action: "wait-for-post-submission-idle-prompt" as const }]
             : []),
           ...postCompletionInputActions,
           ...(scenario.postCompletionControl === "interrupt-byte"

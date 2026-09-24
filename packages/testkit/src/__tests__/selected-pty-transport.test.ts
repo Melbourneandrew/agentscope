@@ -575,30 +575,32 @@ describe("selected PTY transport", () => {
         ...selected.interaction,
         actions: [
           ...selected.interaction.actions.slice(0, -1),
-          { action: "wait-for-idle-prompt-after-completion" },
+          { action: "wait-for-post-submission-idle-prompt" },
           selected.interaction.actions.at(-1)!,
         ],
       },
     };
-    const completed = await executeSelectedPtyTransportForTest(
-      gated,
+    for (const seed of [
       "terminal-post-completion-idle",
-    );
-    expect(completed).toMatchObject({
-      outcome: "completed",
-      cleanup: "clean",
-      inputBytesWritten: 138,
-    });
-    expect(completed.actions.map(({ action }) => action)).toEqual([
-      "resize",
-      "input",
-      "checkpoint-process-topology",
-      "input",
-      "input",
-      "wait-for-semantic-completion",
-      "wait-for-idle-prompt-after-completion",
-      "input",
-    ]);
+      "terminal-idle-before-completion-marker",
+    ] as const) {
+      const completed = await executeSelectedPtyTransportForTest(gated, seed);
+      expect(completed).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        inputBytesWritten: 138,
+      });
+      expect(completed.actions.map(({ action }) => action)).toEqual([
+        "resize",
+        "input",
+        "checkpoint-process-topology",
+        "input",
+        "input",
+        "wait-for-semantic-completion",
+        "wait-for-post-submission-idle-prompt",
+        "input",
+      ]);
+    }
     const staleNow = performance.now();
     const stale = await executeSelectedPtyTransportForTest(
       {
@@ -610,20 +612,20 @@ describe("selected PTY transport", () => {
           monotonicShutdownDeadlineMs: staleNow + 700,
         },
       },
-      "terminal-post-completion-stale",
+      "terminal-preenter-frame-late-close",
     );
     expect(stale.actions.map(({ action }) => action)).not.toContain(
-      "wait-for-idle-prompt-after-completion",
+      "wait-for-post-submission-idle-prompt",
     );
     expect(stale.inputBytesWritten).toBe(137);
     for (const actions of [
       [
-        { action: "wait-for-idle-prompt-after-completion" as const },
+        { action: "wait-for-post-submission-idle-prompt" as const },
         ...selected.interaction.actions,
       ],
       [
         ...gated.interaction.actions.slice(0, -1),
-        { action: "wait-for-idle-prompt-after-completion" as const },
+        { action: "wait-for-post-submission-idle-prompt" as const },
         selected.interaction.actions.at(-1)!,
       ],
     ])

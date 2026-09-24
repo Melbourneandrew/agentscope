@@ -23,7 +23,7 @@ export type SelectedPtyExecutionAction =
       topology: "root-with-contained-process-set";
     }>
   | Readonly<{ action: "wait-for-semantic-completion" }>
-  | Readonly<{ action: "wait-for-idle-prompt-after-completion" }>
+  | Readonly<{ action: "wait-for-post-submission-idle-prompt" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{
@@ -125,7 +125,7 @@ export type PtyTransportAction =
       monotonicAtMs: number;
     }>
   | Readonly<{
-      action: "wait-for-idle-prompt-after-completion";
+      action: "wait-for-post-submission-idle-prompt";
       monotonicAtMs: number;
     }>
   | Readonly<{ action: "eof"; monotonicAtMs: number }>
