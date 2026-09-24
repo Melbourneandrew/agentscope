@@ -34,6 +34,14 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
+const candidateConfigStages = Object.freeze([
+  "closed-marker",
+  "render",
+  "create",
+  "open",
+  "prove",
+  "publish",
+]);
 let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
 const interactivePhases = Object.freeze([
@@ -534,6 +542,16 @@ const recordInteractivePhase = (phase) => {
   writeFileSync(
     join(ledger, `interactive-phase-${phase}.txt`),
     `integration.fixture.codex-${phase}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
+const recordCandidateConfigStage = (stage) => {
+  if (!candidateConfigStages.includes(stage))
+    throw new Error("integration.codex.candidate-config-stage");
+  candidateConfigStage = stage;
+  writeFileSync(
+    join(ledger, `candidate-config-${stage}.txt`),
+    `integration.fixture.codex-candidate-config-${stage}\n`,
     { flag: "wx", mode: 0o600 },
   );
 };
@@ -1504,8 +1522,9 @@ try {
   await configureModelGate(modelAdmissionCutoff);
   recordInteractivePhase("model-gate-configured");
   await proveControlPlaneClosed();
+  recordCandidateConfigStage("closed-marker");
   recordInteractivePhase("control-plane-closed");
-  candidateConfigStage = "render";
+  recordCandidateConfigStage("render");
   // TOML has no syntax for returning to the root table. Keep every root key
   // ahead of the first table emitted by the provider configuration; appending
   // log_dir after it would silently make the key part of model_providers.
@@ -1515,18 +1534,18 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
-  candidateConfigStage = "create";
+  recordCandidateConfigStage("create");
   const configurationPath = join(codexHome, "config.toml");
   writeFileSync(configurationPath, configuration, {
     flag: "wx",
     mode: 0o600,
   });
-  candidateConfigStage = "open";
+  recordCandidateConfigStage("open");
   const configurationDescriptor = openSync(
     configurationPath,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
-  candidateConfigStage = "prove";
+  recordCandidateConfigStage("prove");
   try {
     const before = fstatSync(configurationDescriptor);
     if (
@@ -1553,7 +1572,7 @@ try {
   } finally {
     closeSync(configurationDescriptor);
   }
-  candidateConfigStage = undefined;
+  recordCandidateConfigStage("publish");
   const traceDeadline = deadline - 3_000;
   await new Promise((resolve, reject) => {
     process.stdout.write(
@@ -1562,6 +1581,7 @@ try {
         error === null || error === undefined ? resolve() : reject(error),
     );
   });
+  candidateConfigStage = undefined;
   recordInteractivePhase("tui-readiness-challenge-published");
   recordInteractivePhase("tui-start");
   const codexRun = run(

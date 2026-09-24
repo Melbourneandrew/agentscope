@@ -70,6 +70,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-candidate-config-create",
   "integration.fixture.codex-candidate-config-open",
   "integration.fixture.codex-candidate-config-prove",
+  "integration.fixture.codex-candidate-config-closed-marker",
+  "integration.fixture.codex-candidate-config-publish",
   "integration.fixture.codex-tui-run-created",
   "integration.fixture.codex-tui-readiness-challenge-published",
   "integration.fixture.codex-tui-checkpoint",
@@ -763,6 +765,8 @@ const candidateConfigStages = Object.freeze([
   "create",
   "open",
   "prove",
+  "closed-marker",
+  "publish",
 ]);
 
 const codexJoinDeadlineDiagnosticStates = Object.freeze([
@@ -821,6 +825,22 @@ export const extractUntrustedCodexTraceHint = (output) => {
     : undefined;
 };
 
+// Research-only progress, never a receipt, checkpoint, or admission predicate.
+export const extractUntrustedCodexConfigHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(
+      /^integration\.runner\.untrusted-config-hint:[^\n]*$/gmu,
+    ),
+  ];
+  if (lines.length !== 1) return undefined;
+  const stage = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-config-hint:(closed-marker|render|create|open|prove|publish)$/u,
+  )?.[1];
+  return stage;
+};
+
 export const selectInteractiveExecutionFailurePredicate = (
   candidate,
   retainedDiagnostic,
@@ -830,6 +850,12 @@ export const selectInteractiveExecutionFailurePredicate = (
   if (typeof diagnostic !== "string") return "child-failure";
   if (
     diagnostic.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
+  if (
+    diagnostic.startsWith("integration.fixture.codex-candidate-config-") &&
     (scenarioId !== "codex-tui-trace-smoke" ||
       retainedDiagnostic !== diagnostic)
   )

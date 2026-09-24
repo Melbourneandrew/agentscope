@@ -385,6 +385,19 @@ describe("integration cleanup authority", () => {
       "emitUntrustedCodexTraceHint(output, plan.scenarioId)",
     );
     expect(outer).toContain("integration.isolation.untrusted-trace-hint:");
+    expect(runner).toContain("retainedCandidateConfigStage(ledger)");
+    expect(runner).toContain("integration.runner.untrusted-config-hint:");
+    expect(outer).toContain(
+      "emitUntrustedCodexConfigHint(output, plan.scenarioId)",
+    );
+    expect(outer).toContain("integration.isolation.untrusted-config-hint:");
+    expect(authority).toContain("extractUntrustedCodexConfigHint");
+    const configHintEmitter = outer.indexOf(
+      "emitUntrustedCodexConfigHint(output, plan.scenarioId)",
+    );
+    expect(configHintEmitter).toBeLessThan(
+      outer.indexOf("recordInteractiveExecutionFailure(", configHintEmitter),
+    );
     expect(scenario).toContain(
       "const terminalCut = classifyCodexSettledTraceObservation({",
     );

@@ -1,7 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   writeFileSync,
@@ -133,6 +137,70 @@ const retainedInteractivePhase = (ledger) => {
     }
   }
   return retained;
+};
+// A root-ledger progress marker helps diagnose a failed replay. It does not
+// authenticate attached stdout or establish any scenario/checkpoint authority.
+const retainedCandidateConfigStage = (ledger) => {
+  if (scenarioId !== "codex-tui-trace-smoke" || ledger !== "/ledger")
+    return undefined;
+  try {
+    const root = lstatSync(ledger);
+    if (
+      !root.isDirectory() ||
+      root.isSymbolicLink() ||
+      root.uid !== 0 ||
+      root.gid !== 0 ||
+      (root.mode & 0o7777) !== 0o700
+    )
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  let last;
+  let gap = false;
+  for (const stage of [
+    "closed-marker",
+    "render",
+    "create",
+    "open",
+    "prove",
+    "publish",
+  ]) {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        join(ledger, `candidate-config-${stage}.txt`),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const before = fstatSync(descriptor);
+      const expected = `integration.fixture.codex-candidate-config-${stage}\n`;
+      if (
+        gap ||
+        !before.isFile() ||
+        before.nlink !== 1 ||
+        before.uid !== 0 ||
+        before.gid !== 0 ||
+        (before.mode & 0o7777) !== 0o600 ||
+        before.size !== Buffer.byteLength(expected) ||
+        readFileSync(descriptor, "utf8") !== expected
+      )
+        return undefined;
+      const after = fstatSync(descriptor);
+      if (
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        after.size !== before.size
+      )
+        return undefined;
+      last = stage;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return undefined;
+      gap = true;
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  }
+  return last;
 };
 const untrustedCodexJoinHint = (ledger) => {
   if (scenarioId !== "codex-tui-trace-smoke") return undefined;
@@ -774,6 +842,11 @@ try {
   fixtureFailure = error;
 }
 if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
+  const configHint = retainedCandidateConfigStage(ledger);
+  if (configHint !== undefined)
+    process.stdout.write(
+      `integration.runner.untrusted-config-hint:${configHint}\n`,
+    );
   const hint = untrustedCodexJoinHint(ledger);
   if (hint !== undefined)
     process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);

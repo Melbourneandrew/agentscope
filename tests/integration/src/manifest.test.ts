@@ -355,10 +355,15 @@ describe("integration capability manifest", () => {
     expect(source.indexOf("fchmodSync(ledgerDescriptor, 0o700);")).toBeLessThan(
       source.indexOf('recordInteractivePhase("init")'),
     );
-    expect(source).toContain('candidateConfigStage = "render";');
-    expect(source).toContain('candidateConfigStage = "create";');
-    expect(source).toContain('candidateConfigStage = "open";');
-    expect(source).toContain('candidateConfigStage = "prove";');
+    for (const stage of [
+      "closed-marker",
+      "render",
+      "create",
+      "open",
+      "prove",
+      "publish",
+    ])
+      expect(source).toContain(`recordCandidateConfigStage("${stage}");`);
     expect(source).toContain("candidateConfigStage = undefined;");
     expect(source).toContain("codexHomeStatus.uid !== 1000");
     expect(source).toContain("hookStatus.uid !== 1000");

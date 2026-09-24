@@ -27,6 +27,7 @@ const {
   encodeInteractiveFailureExitCode,
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
+  extractUntrustedCodexConfigHint,
   extractUntrustedCodexJoinHint,
   extractUntrustedCodexTraceHint,
   interactivePtyEnvelopeDeadlineMatches,
@@ -310,6 +311,44 @@ describe("untrusted Codex trace hint transport", () => {
     expect(extractUntrustedCodexTraceHint(undefined)).toBeUndefined();
     expect(
       extractUntrustedCodexTraceHint("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
+  });
+});
+
+describe("untrusted Codex candidate configuration hint transport", () => {
+  it.each(["closed-marker", "render", "create", "open", "prove", "publish"])(
+    "extracts one bounded progress hint without admission: %s",
+    (stage) => {
+      const line = `integration.runner.untrusted-config-hint:${stage}\n`;
+      expect(extractUntrustedCodexConfigHint(line)).toBe(stage);
+      for (const output of [
+        `${line}${line}`,
+        `${line}integration.runner.untrusted-config-hint:other\n`,
+        `x:${line}`,
+        `integration.runner.untrusted-config-hint:${stage}-extra\n`,
+        `integration.runner.untrusted-config-hint:${stage}:secret\n`,
+      ])
+        expect(extractUntrustedCodexConfigHint(output)).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          `integration.fixture.codex-candidate-config-${stage}`,
+          undefined,
+          "fixture-process-interactive",
+        ),
+      ).toBe("child-failure");
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          `integration.fixture.codex-candidate-config-${stage}`,
+          undefined,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe("child-failure");
+    },
+  );
+  it("rejects non-text and oversized attached output", () => {
+    expect(extractUntrustedCodexConfigHint(undefined)).toBeUndefined();
+    expect(
+      extractUntrustedCodexConfigHint("x".repeat(16 * 1024 * 1024 + 1)),
     ).toBeUndefined();
   });
 });
@@ -1365,6 +1404,13 @@ describe("pre-checkpoint failure diagnostic transport", () => {
         selectInteractiveFailureDiagnostic(diagnostic, undefined, undefined),
       ).toBeUndefined();
       expect(
+        selectInteractiveExecutionFailurePredicate(
+          undefined,
+          diagnostic,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
         extractInteractiveChildDiagnostic(
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
         ),
@@ -1379,6 +1425,8 @@ describe("candidate configuration diagnostic transport", () => {
     ["create", 151],
     ["open", 152],
     ["prove", 153],
+    ["closed-marker", 154],
+    ["publish", 155],
   ] as const)(
     "keeps %s in a separate bounded Codex exit-code range",
     (stage, exitCode) => {
@@ -1399,6 +1447,13 @@ describe("candidate configuration diagnostic transport", () => {
       expect(
         selectInteractiveFailureDiagnostic(diagnostic, undefined, undefined),
       ).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          undefined,
+          diagnostic,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe(diagnostic);
     },
   );
 });
