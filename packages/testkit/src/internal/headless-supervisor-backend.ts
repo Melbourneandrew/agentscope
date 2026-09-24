@@ -2922,11 +2922,27 @@ const armSelectedPty = (
           }
         }
         if (causalInputDrainObserved) drainedInputActionIndex = actionIndex;
+        // Completion and idle-prompt waits only observe output. The submitted
+        // turn may legitimately replace the original live composer, so these
+        // waits consume the earlier admitted input rather than demanding that
+        // its readiness screen remain visible. Later input still rechecks live
+        // readiness; the Codex action sequence also requires a fresh
+        // challenged idle-prompt observation before /exit.
+        const observingSubmittedTurn =
+          (pendingActionBeforeRead?.action === "wait-for-semantic-completion" ||
+            pendingActionBeforeRead?.action ===
+              "wait-for-post-submission-idle-prompt") &&
+          lastCompletedInputOutputBytes >= 0;
         const inputAdmitted =
           allowInput &&
-          (request.interaction.trigger === "immediate" || readinessObserved) &&
-          (!requiresLiveReadiness || readinessObserved) &&
-          (!requiresTerminalProtocol ||
+          (observingSubmittedTurn ||
+            request.interaction.trigger === "immediate" ||
+            readinessObserved) &&
+          (observingSubmittedTurn ||
+            !requiresLiveReadiness ||
+            readinessObserved) &&
+          (observingSubmittedTurn ||
+            !requiresTerminalProtocol ||
             safeReflectApply(
               emulatorRequiredTerminalProtocolReady,
               terminal,
@@ -3091,7 +3107,7 @@ const armSelectedPty = (
             actionIndex += 1;
           } else if (action?.action === "wait-for-semantic-completion") {
             if (
-              readinessObserved &&
+              (observingSubmittedTurn || readinessObserved) &&
               safeReflectApply(emulatorSnapshot, terminal, []).semanticState ===
                 "completed" &&
               semanticCompletionObservedAtOutputBytes >
@@ -4885,6 +4901,8 @@ type SelectedPtyTestSeed =
   | "terminal-redraw-enter-fragmented"
   | "terminal-prompt-partial"
   | "terminal-post-completion-idle"
+  | "terminal-post-submission-readiness-revoked"
+  | "terminal-post-submission-idle-missing"
   | "terminal-idle-before-completion-marker"
   | "terminal-preenter-frame-late-close"
   | "terminal-preenter-buffered-idle"
@@ -5487,6 +5505,8 @@ const selectedPtyRuntimeForTest = (
         );
       if (
         (seed === "terminal-post-completion-idle" ||
+          seed === "terminal-post-submission-readiness-revoked" ||
+          seed === "terminal-post-submission-idle-missing" ||
           seed === "terminal-idle-before-completion-marker" ||
           seed === "terminal-preenter-buffered-idle" ||
           seed === "terminal-response-after-idle-frame") &&
@@ -5498,7 +5518,20 @@ const selectedPtyRuntimeForTest = (
         );
         if (seed === "terminal-post-completion-idle")
           chunks.splice(5, 1, responseFrame);
-        else if (seed === "terminal-idle-before-completion-marker")
+        else if (
+          seed === "terminal-post-submission-readiness-revoked" ||
+          seed === "terminal-post-submission-idle-missing"
+        ) {
+          chunks.splice(
+            4,
+            0,
+            safeBufferFrom(
+              "\u001b[?2026h\u001b[2J\u001b[HProcessing\u001b[?2026l",
+            ),
+          );
+          if (seed === "terminal-post-submission-readiness-revoked")
+            chunks.push(responseFrame);
+        } else if (seed === "terminal-idle-before-completion-marker")
           chunks.splice(4, 0, responseFrame);
         else if (seed === "terminal-response-after-idle-frame")
           chunks.splice(
@@ -5736,6 +5769,8 @@ const selectedPtyRuntimeForTest = (
             return { status: "would-block" as const };
           if (
             (seed === "terminal-post-completion-idle" ||
+              seed === "terminal-post-submission-readiness-revoked" ||
+              seed === "terminal-post-submission-idle-missing" ||
               seed === "terminal-idle-before-completion-marker" ||
               seed === "terminal-preenter-buffered-idle" ||
               seed === "terminal-response-after-idle-frame") &&

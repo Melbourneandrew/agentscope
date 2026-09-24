@@ -335,6 +335,7 @@ describe("selected PTY transport", () => {
         { action: "checkpoint-process-topology" },
         { action: "input", byteLength: prompt.length },
         { action: "input", byteLength: enter.length },
+        { action: "wait-for-semantic-completion" },
       ],
       inputBytesWritten: 65 + prompt.length + enter.length,
       outcome: "input-incomplete",
@@ -587,6 +588,7 @@ describe("selected PTY transport", () => {
     };
     for (const seed of [
       "terminal-post-completion-idle",
+      "terminal-post-submission-readiness-revoked",
       "terminal-idle-before-completion-marker",
     ] as const) {
       const completed = await executeSelectedPtyTransportForTest(gated, seed);
@@ -623,6 +625,29 @@ describe("selected PTY transport", () => {
       "wait-for-post-submission-idle-prompt",
     );
     expect(stale.inputBytesWritten).toBe(137);
+    const missingIdleNow = performance.now();
+    const missingIdle = await executeSelectedPtyTransportForTest(
+      {
+        ...gated,
+        process: {
+          ...gated.process,
+          monotonicStartupDeadlineMs: missingIdleNow + 100,
+          monotonicExecutionDeadlineMs: missingIdleNow + 300,
+          monotonicShutdownDeadlineMs: missingIdleNow + 700,
+        },
+      },
+      "terminal-post-submission-idle-missing",
+    );
+    expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
+    expect(missingIdle.actions.map(({ action }) => action)).toEqual([
+      "resize",
+      "input",
+      "checkpoint-process-topology",
+      "input",
+      "input",
+      "wait-for-semantic-completion",
+    ]);
+    expect(missingIdle.inputBytesWritten).toBe(137);
     for (const seed of [
       "terminal-preenter-buffered-idle",
       "terminal-response-after-idle-frame",
