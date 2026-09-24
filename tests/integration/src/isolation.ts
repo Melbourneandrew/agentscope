@@ -440,134 +440,170 @@ const ptySnapshotSchema = z.strictObject({
     "output-limit",
   ]),
 });
-const ptyTerminalReceiptSchema = z
-  .strictObject({
-    receiptVersion: z.literal(1),
-    transport: z.literal("pty"),
-    scenarioId: id,
-    runId: runToken,
-    requestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
-    processRequestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
-    processStartIdentity: z
-      .string()
-      .regex(/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u),
-    inputBytes: z.number().int().nonnegative().max(1_048_576),
-    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
-    readinessObserved: z.boolean(),
-    postSubmissionIdleDiagnostic: z
-      .enum([
-        "not-armed",
-        "response-not-observed",
-        "idle-frame-not-observed",
-        "idle-frame-rejected",
-        "idle-readiness-revoked",
-        "idle-ready",
-      ])
-      .optional(),
-    postSubmissionIdleAtTitleDiagnostic: z
-      .enum([
-        "title-not-observed",
-        "not-armed",
-        "response-not-observed",
-        "idle-frame-not-observed",
-        "idle-frame-rejected",
-        "idle-readiness-revoked",
-        "idle-ready",
-        "idle-revoked-protocol",
-        "idle-revoked-screen",
-        "idle-revoked-unclassified",
-        "idle-revoked-combined-sync",
-        "idle-revoked-alternate-screen-enter",
-        "idle-revoked-alternate-screen-exit",
-        "idle-revoked-autowrap-enable",
-        "idle-revoked-autowrap-disable",
-        "idle-revoked-scroll-region",
-        "idle-revoked-screen-edit",
-        "idle-revoked-cursor-restore",
-        "idle-revoked-reverse-index",
-        "idle-revoked-tab-stop-set",
-        "idle-revoked-charset",
-        "idle-revoked-tab",
-        "idle-revoked-untrusted-cell",
-        "idle-revoked-rendition",
-      ])
-      .optional(),
-    actions: z.array(ptyObservedActionSchema).max(64),
-    outerMonotonicDeadlineMs: z.number().finite().positive(),
-    requestConstructedAtMs: z.number().finite().nonnegative(),
-    translationBootAtMs: z.number().finite().nonnegative(),
-    translationLocalAtMs: z.number().finite().nonnegative(),
-    request: z.strictObject({
-      process: ptyProcessAuthoritySchema,
-      completion: z.strictObject({ kind: z.literal("semantic-marker") }),
-      readiness: z.discriminatedUnion("kind", [
-        z.strictObject({ kind: z.literal("semantic-marker") }),
-        z.strictObject({
-          kind: z.literal("challenge-marker"),
-          challenge: z.string().regex(/^[a-f\d]{64}$/u),
-        }),
-        z.strictObject({
-          kind: z.literal("challenge-process-topology"),
-          challenge: z.string().regex(/^[a-f\d]{64}$/u),
-        }),
-        z.strictObject({
-          kind: z.literal("challenge-styled-text"),
-          challenge: z.string().regex(/^[a-f\d]{64}$/u),
-          text: z.string().length(1),
-          requiredText: z.string().min(1).max(32),
-          postSubmissionResponseText: z.string().min(65).max(128).optional(),
-          requiredTerminalProtocol: z.literal("csi-u-flags-7-query-v1"),
-          bold: z.boolean(),
-          dim: z.boolean(),
-        }),
-        z.strictObject({
-          kind: z.literal("styled-text-after-completion"),
-          text: z.string().min(1).max(4),
-          bold: z.boolean(),
-          dim: z.boolean(),
-        }),
-      ]),
-      initialGeometry: ptyGeometrySchema,
-      interaction: z.strictObject({
-        trigger: z.enum(["semantic-ready", "immediate"]),
-        actions: z.array(ptyRequestedActionSchema).min(1).max(64),
+const ptyTerminalReceiptRecordSchema = z.strictObject({
+  receiptVersion: z.literal(1),
+  transport: z.literal("pty"),
+  scenarioId: id,
+  runId: runToken,
+  requestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+  processRequestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+  processStartIdentity: z
+    .string()
+    .regex(/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u),
+  inputBytes: z.number().int().nonnegative().max(1_048_576),
+  inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+  readinessObserved: z.boolean(),
+  postSubmissionIdleDiagnostic: z
+    .enum([
+      "not-armed",
+      "response-not-observed",
+      "idle-frame-not-observed",
+      "idle-frame-rejected",
+      "idle-readiness-revoked",
+      "idle-ready",
+    ])
+    .optional(),
+  postSubmissionIdleAtTitleDiagnostic: z
+    .enum([
+      "title-not-observed",
+      "not-armed",
+      "response-not-observed",
+      "idle-frame-not-observed",
+      "idle-frame-rejected",
+      "idle-readiness-revoked",
+      "idle-ready",
+      "idle-revoked-protocol",
+      "idle-revoked-screen",
+      "idle-revoked-unclassified",
+      "idle-revoked-combined-sync",
+      "idle-revoked-alternate-screen-enter",
+      "idle-revoked-alternate-screen-exit",
+      "idle-revoked-autowrap-enable",
+      "idle-revoked-autowrap-disable",
+      "idle-revoked-scroll-region",
+      "idle-revoked-screen-edit",
+      "idle-revoked-cursor-restore",
+      "idle-revoked-reverse-index",
+      "idle-revoked-tab-stop-set",
+      "idle-revoked-charset",
+      "idle-revoked-tab",
+      "idle-revoked-untrusted-cell",
+      "idle-revoked-rendition",
+    ])
+    .optional(),
+  actions: z.array(ptyObservedActionSchema).max(64),
+  outerMonotonicDeadlineMs: z.number().finite().positive(),
+  requestConstructedAtMs: z.number().finite().nonnegative(),
+  translationBootAtMs: z.number().finite().nonnegative(),
+  translationLocalAtMs: z.number().finite().nonnegative(),
+  request: z.strictObject({
+    process: ptyProcessAuthoritySchema,
+    completion: z.strictObject({ kind: z.literal("semantic-marker") }),
+    readiness: z.discriminatedUnion("kind", [
+      z.strictObject({ kind: z.literal("semantic-marker") }),
+      z.strictObject({
+        kind: z.literal("challenge-marker"),
+        challenge: z.string().regex(/^[a-f\d]{64}$/u),
       }),
-      interpreter: z.strictObject({
-        path: z.string().startsWith("/").max(16_384),
-        sha256: z.string().regex(/^[a-f\d]{64}$/u),
+      z.strictObject({
+        kind: z.literal("challenge-process-topology"),
+        challenge: z.string().regex(/^[a-f\d]{64}$/u),
       }),
-      scriptSha256: z.string().regex(/^[a-f\d]{64}$/u),
-    }),
-    returnedAtMs: z.number().finite().nonnegative(),
-    isTTY: z.literal(true),
-    observedGeometry: ptyGeometrySchema,
-    observedCanonicalMode: z.boolean(),
-    eofByte: z.number().int().min(0).max(255),
-    eofByteWritten: z.boolean(),
-    inputBytesWritten: z.number().int().min(0).max(1_048_576),
-    outcome: z.enum([
-      "completed",
-      "signaled",
-      "exited-nonzero",
-      "aborted",
-      "timeout",
-      "output-limit",
-      "transport-failed",
-      "input-incomplete",
+      z.strictObject({
+        kind: z.literal("challenge-styled-text"),
+        challenge: z.string().regex(/^[a-f\d]{64}$/u),
+        text: z.string().length(1),
+        requiredText: z.string().min(1).max(32),
+        postSubmissionResponseText: z.string().min(65).max(128).optional(),
+        requiredTerminalProtocol: z.literal("csi-u-flags-7-query-v1"),
+        bold: z.boolean(),
+        dim: z.boolean(),
+      }),
+      z.strictObject({
+        kind: z.literal("styled-text-after-completion"),
+        text: z.string().min(1).max(4),
+        bold: z.boolean(),
+        dim: z.boolean(),
+      }),
     ]),
-    outputBytes: z.number().int().min(0).max(1_048_576),
-    outputSha256: z.string().regex(/^[a-f\d]{64}$/u),
-    finalSnapshot: ptySnapshotSchema,
-    exitCode: z.number().int().min(0).max(255).nullable(),
-    signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]).nullable(),
-    cleanup: z.enum(["clean", "residual", "uncertain"]),
-    residualProcessCount: z.number().int().nonnegative().max(256),
-    processJoined: z.boolean(),
-    terminalInputJoined: z.boolean(),
-    terminalOutputJoined: z.boolean(),
-    terminalTransportClosed: z.boolean(),
-  })
-  .superRefine((value, context) => {
+    initialGeometry: ptyGeometrySchema,
+    interaction: z.strictObject({
+      trigger: z.enum(["semantic-ready", "immediate"]),
+      actions: z.array(ptyRequestedActionSchema).min(1).max(64),
+    }),
+    interpreter: z.strictObject({
+      path: z.string().startsWith("/").max(16_384),
+      sha256: z.string().regex(/^[a-f\d]{64}$/u),
+    }),
+    scriptSha256: z.string().regex(/^[a-f\d]{64}$/u),
+  }),
+  returnedAtMs: z.number().finite().nonnegative(),
+  isTTY: z.literal(true),
+  observedGeometry: ptyGeometrySchema,
+  observedCanonicalMode: z.boolean(),
+  eofByte: z.number().int().min(0).max(255),
+  eofByteWritten: z.boolean(),
+  inputBytesWritten: z.number().int().min(0).max(1_048_576),
+  outcome: z.enum([
+    "completed",
+    "signaled",
+    "exited-nonzero",
+    "aborted",
+    "timeout",
+    "output-limit",
+    "transport-failed",
+    "input-incomplete",
+  ]),
+  outputBytes: z.number().int().min(0).max(1_048_576),
+  outputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+  finalSnapshot: ptySnapshotSchema,
+  exitCode: z.number().int().min(0).max(255).nullable(),
+  signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]).nullable(),
+  cleanup: z.enum(["clean", "residual", "uncertain"]),
+  residualProcessCount: z.number().int().nonnegative().max(256),
+  processJoined: z.boolean(),
+  terminalInputJoined: z.boolean(),
+  terminalOutputJoined: z.boolean(),
+  terminalTransportClosed: z.boolean(),
+});
+
+type PtyTerminalReceiptRecord = z.infer<typeof ptyTerminalReceiptRecordSchema>;
+
+// The live challenged screen may clear on TUI exit. Only one kernel-recorded
+// topology checkpoint in a complete, settled Codex receipt proves earlier
+// readiness; the outer envelope separately binds the exact manifest plan.
+const historicalCodexReadinessMatches = (
+  value: PtyTerminalReceiptRecord,
+  requestedActionKinds: readonly string[],
+  observedActionKinds: readonly string[],
+): boolean => {
+  const checkpointIndex = requestedActionKinds.indexOf(
+    "checkpoint-process-topology",
+  );
+  return (
+    value.scenarioId === "codex-tui-trace-smoke" &&
+    value.request.readiness.kind === "challenge-styled-text" &&
+    value.request.interaction.trigger === "immediate" &&
+    value.outcome === "completed" &&
+    value.finalSnapshot.semanticState === "completed" &&
+    value.exitCode === 0 &&
+    value.signal === null &&
+    value.cleanup === "clean" &&
+    value.residualProcessCount === 0 &&
+    value.processJoined &&
+    value.terminalInputJoined &&
+    value.terminalOutputJoined &&
+    value.terminalTransportClosed &&
+    checkpointIndex >= 0 &&
+    checkpointIndex ===
+      requestedActionKinds.lastIndexOf("checkpoint-process-topology") &&
+    value.actions.length === requestedActionKinds.length &&
+    observedActionKinds[checkpointIndex] === "checkpoint-process-topology"
+  );
+};
+
+const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
+  (value, context) => {
     const request = value.request.process;
     const challengeReadiness =
       value.request.readiness.kind === "challenge-marker" ||
@@ -581,6 +617,11 @@ const ptyTerminalReceiptSchema = z
     const observedActionKinds = value.actions.map(({ action }) => action);
     const requestedActionKinds = value.request.interaction.actions.map(
       ({ action }) => action,
+    );
+    const historicalCodexReadiness = historicalCodexReadinessMatches(
+      value,
+      requestedActionKinds,
+      observedActionKinds,
     );
     const requestFingerprint = `sha256:${createHash("sha256")
       .update(
@@ -606,7 +647,7 @@ const ptyTerminalReceiptSchema = z
       value.processRequestFingerprint !== request.requestFingerprint ||
       value.inputBytes !== request.inputBytes ||
       value.inputSha256 !== request.inputSha256 ||
-      !value.readinessObserved ||
+      (!value.readinessObserved && !historicalCodexReadiness) ||
       (challengeReadiness
         ? value.request.interaction.trigger !== "immediate"
         : value.request.interaction.trigger !== "semantic-ready") ||
@@ -670,7 +711,8 @@ const ptyTerminalReceiptSchema = z
       (value.eofByteWritten && value.inputBytesWritten !== value.inputBytes)
     )
       context.addIssue({ code: "custom", message: "pty receipt drift" });
-  });
+  },
+);
 
 export interface IsolationPlan {
   readonly runId: string;
