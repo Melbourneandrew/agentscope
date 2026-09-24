@@ -15,7 +15,6 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -1980,20 +1979,14 @@ const emitUntrustedCodexConfigHint = (output, scenarioId) => {
   if (scenarioId !== "codex-tui-trace-smoke") return;
   const hint = extractUntrustedCodexConfigHint(output);
   if (hint !== undefined)
-    try {
-      writeSync(2, `integration.isolation.untrusted-config-hint:${hint}\n`);
-    } catch {
-      // A diagnostic sink failure cannot replace the original scenario failure.
-    }
+    process.stderr.write(
+      `integration.isolation.untrusted-config-hint:${hint}\n`,
+    );
 };
 const emitCodexExitPair = (receipt, error, scenarioId) => {
   const pair = codexFailureExitPair(receipt?.exitCode, error?.code, scenarioId);
   if (pair === undefined) return;
-  try {
-    writeSync(2, `integration.isolation.codex-exit-pair:${pair}\n`);
-  } catch {
-    // Preserve the original failure if the diagnostic sink is closed.
-  }
+  process.stderr.write(`integration.isolation.codex-exit-pair:${pair}\n`);
 };
 const emitUntrustedCodexFailureHints = (output, scenarioId) => {
   emitUntrustedCodexJoinHint(output);

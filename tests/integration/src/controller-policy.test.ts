@@ -390,9 +390,7 @@ describe("integration cleanup authority", () => {
       "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
     );
     expect(outer).toContain("integration.isolation.untrusted-config-hint:");
-    expect(outer).toContain(
-      "writeSync(2, `integration.isolation.untrusted-config-hint:${hint}\\n`)",
-    );
+    expect(outer).not.toContain("writeSync(2,");
     expect(outer).toContain("codexFailureExitPair(");
     expect(outer).toContain("integration.isolation.codex-exit-pair:");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
@@ -409,6 +407,17 @@ describe("integration cleanup authority", () => {
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
+  });
+
+  it("bounds final failure-output drain before terminal controller exit", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/controller-process.mjs"),
+      "utf8",
+    );
+    expect(source).toContain("await drainFailureDiagnostic({");
+    expect(source.indexOf("await drainFailureDiagnostic({")).toBeLessThan(
+      source.indexOf("process.exit(1)"),
+    );
   });
 
   it("validates the failed PTY receipt before reporting a Codex join subtype", () => {
