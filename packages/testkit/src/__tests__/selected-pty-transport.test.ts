@@ -599,6 +599,14 @@ describe("selected PTY transport", () => {
         inputBytesWritten: 138,
         postSubmissionIdleDiagnostic: "idle-ready",
       });
+      if (seed === "terminal-post-completion-idle")
+        expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
+          "title-not-observed",
+        );
+      if (seed === "terminal-title-completion-after-idle")
+        expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
+          "idle-ready",
+        );
       expect(completed.actions.map(({ action }) => action)).toEqual([
         "resize",
         "input",

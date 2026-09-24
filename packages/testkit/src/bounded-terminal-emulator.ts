@@ -516,9 +516,9 @@ export class BoundedTerminalEmulator {
   #postSubmissionIdleFrameEligible = false;
   #postSubmissionEligibleFrameAttempted = false;
   #postSubmissionIdlePromptObserved = false;
-  #postSubmissionIdleAtCompletionDiagnostic:
+  #postSubmissionIdleAtTitleDiagnostic:
     | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
-    | "completion-not-observed" = "completion-not-observed";
+    | "title-not-observed" = "title-not-observed";
   #postSubmissionResponseTail = "";
   #postSubmissionResponseObserved = false;
   #completionTail = "";
@@ -752,11 +752,11 @@ export class BoundedTerminalEmulator {
     return this.#readinessObserved ? "idle-ready" : "idle-readiness-revoked";
   }
 
-  /** Package-private, latched at the exact completion control, before later output. */
-  public postSubmissionIdleAtCompletionDiagnostic():
+  /** Package-private, latched at the exact challenged title, before later output. */
+  public postSubmissionIdleAtTitleDiagnostic():
     | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
-    | "completion-not-observed" {
-    return this.#postSubmissionIdleAtCompletionDiagnostic;
+    | "title-not-observed" {
+    return this.#postSubmissionIdleAtTitleDiagnostic;
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -1493,8 +1493,8 @@ export class BoundedTerminalEmulator {
         this.#postSubmissionResponseObserved &&
         title === `${completedMarker}:${this.#readinessMatcher.challenge}`
       ) {
-        if (!this.#completionObserved)
-          this.#postSubmissionIdleAtCompletionDiagnostic =
+        if (this.#postSubmissionIdleAtTitleDiagnostic === "title-not-observed")
+          this.#postSubmissionIdleAtTitleDiagnostic =
             this.postSubmissionIdleDiagnostic();
         this.#completionObserved = true;
       }

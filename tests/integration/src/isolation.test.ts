@@ -1493,7 +1493,7 @@ describe("selected PTY backend evidence", () => {
     const contentFreeDiagnostic = {
       ...receipt,
       postSubmissionIdleDiagnostic: "idle-ready" as const,
-      postSubmissionIdleAtCompletionDiagnostic: "idle-ready" as const,
+      postSubmissionIdleAtTitleDiagnostic: "idle-ready" as const,
     };
     expect(
       compileWithPreparedAuthority(
@@ -1505,7 +1505,7 @@ describe("selected PTY backend evidence", () => {
       compileWithPreparedAuthority(
         { ...interactive, ptyTerminalReceipt: contentFreeDiagnostic },
         evidence,
-      ).ptyTerminalReceipt?.postSubmissionIdleAtCompletionDiagnostic,
+      ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
     ).toBe("idle-ready");
     expect(() =>
       compileWithPreparedAuthority(
@@ -1525,7 +1525,7 @@ describe("selected PTY backend evidence", () => {
           ...interactive,
           ptyTerminalReceipt: {
             ...receipt,
-            postSubmissionIdleAtCompletionDiagnostic: "terminal-content",
+            postSubmissionIdleAtTitleDiagnostic: "terminal-content",
           },
         },
         evidence,

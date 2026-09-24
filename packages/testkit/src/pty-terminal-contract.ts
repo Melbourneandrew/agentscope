@@ -79,9 +79,9 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     | "idle-frame-rejected"
     | "idle-readiness-revoked"
     | "idle-ready";
-  /** Fixed category latched when exact completion was parsed, not at teardown. */
-  postSubmissionIdleAtCompletionDiagnostic?:
-    | "completion-not-observed"
+  /** Fixed category latched at the challenged title, not generic completion. */
+  postSubmissionIdleAtTitleDiagnostic?:
+    | "title-not-observed"
     | "not-armed"
     | "response-not-observed"
     | "idle-frame-not-observed"
