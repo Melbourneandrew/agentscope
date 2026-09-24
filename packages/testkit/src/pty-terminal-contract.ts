@@ -78,6 +78,9 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     styledGlyph: boolean;
     requiredText: boolean;
     terminalProtocol: "complete" | "incomplete" | "rejected";
+    protocolRejectionKind: "none" | "order" | "mode" | "reset";
+    protocolRejectedAtPhase: number | null;
+    protocolRejectedStep: number | null;
     screenRevoked: boolean;
   }>;
   /** Fixed, content-free diagnostic only; never a PTY admission predicate. */

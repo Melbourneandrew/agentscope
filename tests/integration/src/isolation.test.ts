@@ -1737,6 +1737,9 @@ describe("selected PTY backend evidence", () => {
       styledGlyph: false,
       requiredText: false,
       terminalProtocol: "incomplete" as const,
+      protocolRejectionKind: "none" as const,
+      protocolRejectedAtPhase: null,
+      protocolRejectedStep: null,
       screenRevoked: false,
     };
     expect(
@@ -1751,9 +1754,32 @@ describe("selected PTY backend evidence", () => {
         evidence,
       ).ptyTerminalReceipt?.challengedReadinessProgress,
     ).toEqual(progress);
+    const rejectedProgress = {
+      ...progress,
+      terminalProtocol: "rejected" as const,
+      protocolRejectionKind: "order" as const,
+      protocolRejectedAtPhase: 1,
+      protocolRejectedStep: 4,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            challengedReadinessProgress: rejectedProgress,
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.challengedReadinessProgress,
+    ).toEqual(rejectedProgress);
     for (const malformed of [
       { ...progress, terminalProtocol: "raw-terminal-content" },
       { ...progress, rawTerminalText: "CANARY_SECRET" },
+      { ...progress, terminalProtocol: "rejected" },
+      { ...rejectedProgress, terminalProtocol: "complete" },
+      { ...rejectedProgress, protocolRejectedStep: null },
+      { ...rejectedProgress, protocolRejectedStep: 2 },
     ])
       expect(() =>
         compileWithPreparedAuthority(

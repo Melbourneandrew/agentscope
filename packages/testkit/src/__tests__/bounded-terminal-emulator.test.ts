@@ -185,6 +185,9 @@ describe("bounded semantic terminal emulator", () => {
       styledGlyph: true,
       requiredText: true,
       terminalProtocol: "complete",
+      protocolRejectionKind: "none",
+      protocolRejectedAtPhase: null,
+      protocolRejectedStep: null,
       screenRevoked: false,
     });
 
@@ -262,6 +265,37 @@ describe("bounded semantic terminal emulator", () => {
     expect(malformedColor.readinessObserved()).toBe(false);
     expect(malformedColor.readinessObservationGeneration()).toBe(0);
   });
+
+  it.each([
+    ["\u001b[6n", "order", 2],
+    ["\u001b[>1u", "mode", null],
+    ["\u001bc", "reset", null],
+  ] as const)(
+    "reports only the first closed terminal-protocol rejection for %s",
+    (sequence, kind, step) => {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 30 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge: "a".repeat(64),
+          text: "›",
+          requiredText: "Ask Codex to do anything",
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(bytes(sequence));
+      terminal.write(bytes("\u001b[>7u"));
+      expect(terminal.challengedReadinessProgress()).toMatchObject({
+        terminalProtocol: "rejected",
+        protocolRejectionKind: kind,
+        protocolRejectedAtPhase: 0,
+        protocolRejectedStep: step,
+      });
+    },
+  );
 
   it("derives readiness from an exact synchronized prompt after unrelated Unicode", () => {
     const challenge = "a".repeat(64);

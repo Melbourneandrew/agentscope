@@ -460,6 +460,9 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
       styledGlyph: z.boolean(),
       requiredText: z.boolean(),
       terminalProtocol: z.enum(["complete", "incomplete", "rejected"]),
+      protocolRejectionKind: z.enum(["none", "order", "mode", "reset"]),
+      protocolRejectedAtPhase: z.number().int().min(0).max(6).nullable(),
+      protocolRejectedStep: z.number().int().min(1).max(6).nullable(),
       screenRevoked: z.boolean(),
     })
     .optional(),
@@ -612,6 +615,28 @@ const historicalCodexReadinessMatches = (
   );
 };
 
+const challengedReadinessProgressConsistent = (
+  progress: z.infer<
+    typeof ptyTerminalReceiptRecordSchema
+  >["challengedReadinessProgress"],
+): boolean => {
+  if (progress === undefined) return true;
+  if (progress.protocolRejectionKind === "none")
+    return (
+      progress.terminalProtocol !== "rejected" &&
+      progress.protocolRejectedAtPhase === null &&
+      progress.protocolRejectedStep === null
+    );
+  return (
+    progress.terminalProtocol === "rejected" &&
+    progress.protocolRejectedAtPhase !== null &&
+    (progress.protocolRejectionKind === "order"
+      ? progress.protocolRejectedStep !== null &&
+        progress.protocolRejectedStep !== progress.protocolRejectedAtPhase + 1
+      : progress.protocolRejectedStep === null)
+  );
+};
+
 const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
   (value, context) => {
     const request = value.request.process;
@@ -657,6 +682,9 @@ const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
       value.processRequestFingerprint !== request.requestFingerprint ||
       value.inputBytes !== request.inputBytes ||
       value.inputSha256 !== request.inputSha256 ||
+      !challengedReadinessProgressConsistent(
+        value.challengedReadinessProgress,
+      ) ||
       (!value.readinessObserved && !historicalCodexReadiness) ||
       (challengeReadiness
         ? value.request.interaction.trigger !== "immediate"

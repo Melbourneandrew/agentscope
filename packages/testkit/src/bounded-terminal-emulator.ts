@@ -596,6 +596,9 @@ export class BoundedTerminalEmulator {
   #terminalResponseBytes = 0;
   #terminalProtocolPhase = 0;
   #terminalProtocolRejected = false;
+  #terminalProtocolRejectionKind: "none" | "order" | "mode" | "reset" = "none";
+  #terminalProtocolRejectedAtPhase: number | null = null;
+  #terminalProtocolRejectedStep: number | null = null;
   readonly #readinessMatcher: PtyTerminalReadinessMatcher;
 
   public constructor(
@@ -798,6 +801,9 @@ export class BoundedTerminalEmulator {
     styledGlyph: boolean;
     requiredText: boolean;
     terminalProtocol: "complete" | "incomplete" | "rejected";
+    protocolRejectionKind: "none" | "order" | "mode" | "reset";
+    protocolRejectedAtPhase: number | null;
+    protocolRejectedStep: number | null;
     screenRevoked: boolean;
   }> {
     return freezeAuthority({
@@ -810,6 +816,9 @@ export class BoundedTerminalEmulator {
         : this.#terminalProtocolPhase === 6
           ? "complete"
           : "incomplete",
+      protocolRejectionKind: this.#terminalProtocolRejectionKind,
+      protocolRejectedAtPhase: this.#terminalProtocolRejectedAtPhase,
+      protocolRejectedStep: this.#terminalProtocolRejectedStep,
       screenRevoked: this.#challengeScreenAuthorityRevoked,
     });
   }
@@ -1215,7 +1224,7 @@ export class BoundedTerminalEmulator {
         this.#state = "ground";
       } else if (character === "c") {
         this.#invalidateChallengeSynchronizedOutputFrame();
-        this.#rejectRequiredTerminalProtocol();
+        this.#rejectRequiredTerminalProtocol("reset");
         this.#clearDisplay(2);
         this.#row = 0;
         this.#column = 0;
@@ -1570,7 +1579,7 @@ export class BoundedTerminalEmulator {
     if ((prefix !== ">" && prefix !== "<") || values[0]! > 31) return false;
     if (prefix === ">" && values[0] === 7)
       this.#observeRequiredTerminalProtocolStep(1);
-    else this.#rejectRequiredTerminalProtocol();
+    else this.#rejectRequiredTerminalProtocol("mode");
     return true;
   }
 
@@ -1602,16 +1611,27 @@ export class BoundedTerminalEmulator {
       this.#terminalProtocolRejected ||
       step !== this.#terminalProtocolPhase + 1
     ) {
-      this.#terminalProtocolRejected = true;
+      if (!this.#terminalProtocolRejected) {
+        this.#terminalProtocolRejected = true;
+        this.#terminalProtocolRejectionKind = "order";
+        this.#terminalProtocolRejectedAtPhase = this.#terminalProtocolPhase;
+        this.#terminalProtocolRejectedStep = step;
+      }
       return;
     }
     this.#terminalProtocolPhase = step;
     this.#refreshChallengeStyledReadiness();
   }
 
-  #rejectRequiredTerminalProtocol(): void {
-    if (this.#readinessMatcher.kind === "challenge-styled-text")
+  #rejectRequiredTerminalProtocol(kind: "mode" | "reset"): void {
+    if (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      !this.#terminalProtocolRejected
+    ) {
       this.#terminalProtocolRejected = true;
+      this.#terminalProtocolRejectionKind = kind;
+      this.#terminalProtocolRejectedAtPhase = this.#terminalProtocolPhase;
+    }
   }
 
   #finishOsc(): void {

@@ -413,12 +413,15 @@ describe("interactive PTY readiness progress diagnostics", () => {
           synchronizedFrame: true,
           styledGlyph: false,
           requiredText: false,
-          terminalProtocol: "incomplete",
+          terminalProtocol: "rejected",
+          protocolRejectionKind: "order",
+          protocolRejectedAtPhase: 1,
+          protocolRejectedStep: 4,
           screenRevoked: true,
         },
       }),
     ).toBe(
-      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active:marker-observed:frame-observed:glyph-absent:prompt-absent:protocol-incomplete:screen-revoked",
+      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active:marker-observed:frame-observed:glyph-absent:prompt-absent:protocol-rejected:protocol-rejection-order-1-4:screen-revoked",
     );
     expect(
       interactivePtyReadinessProgressDiagnostic({
@@ -447,6 +450,23 @@ describe("interactive PTY readiness progress diagnostics", () => {
           styledGlyph: false,
           requiredText: false,
           terminalProtocol: "unknown",
+          protocolRejectionKind: "none",
+          protocolRejectedAtPhase: null,
+          protocolRejectedStep: null,
+          screenRevoked: true,
+        },
+      },
+      {
+        ...receipt,
+        challengedReadinessProgress: {
+          marker: true,
+          synchronizedFrame: true,
+          styledGlyph: false,
+          requiredText: false,
+          terminalProtocol: "rejected",
+          protocolRejectionKind: "order",
+          protocolRejectedAtPhase: 1,
+          protocolRejectedStep: 2,
           screenRevoked: true,
         },
       },

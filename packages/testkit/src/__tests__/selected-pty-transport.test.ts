@@ -303,6 +303,9 @@ describe("selected PTY transport", () => {
         styledGlyph: true,
         requiredText: true,
         terminalProtocol: "complete",
+        protocolRejectionKind: "none",
+        protocolRejectedAtPhase: null,
+        protocolRejectedStep: null,
         screenRevoked: false,
       },
     });

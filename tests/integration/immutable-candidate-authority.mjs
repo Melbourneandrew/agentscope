@@ -411,12 +411,27 @@ export const interactivePtyActionPrefixDiagnostic = (receipt) => {
 const closedChallengedReadinessProgress = (value) =>
   value !== null &&
   Object.keys(value).sort().join(",") ===
-    "marker,requiredText,screenRevoked,styledGlyph,synchronizedFrame,terminalProtocol" &&
+    "marker,protocolRejectedAtPhase,protocolRejectedStep,protocolRejectionKind,requiredText,screenRevoked,styledGlyph,synchronizedFrame,terminalProtocol" &&
   typeof value.marker === "boolean" &&
   typeof value.synchronizedFrame === "boolean" &&
   typeof value.styledGlyph === "boolean" &&
   typeof value.requiredText === "boolean" &&
   ["complete", "incomplete", "rejected"].includes(value.terminalProtocol) &&
+  ["none", "order", "mode", "reset"].includes(value.protocolRejectionKind) &&
+  (value.protocolRejectionKind === "none"
+    ? value.terminalProtocol !== "rejected" &&
+      value.protocolRejectedAtPhase === null &&
+      value.protocolRejectedStep === null
+    : value.terminalProtocol === "rejected" &&
+      Number.isInteger(value.protocolRejectedAtPhase) &&
+      value.protocolRejectedAtPhase >= 0 &&
+      value.protocolRejectedAtPhase <= 6 &&
+      (value.protocolRejectionKind === "order"
+        ? Number.isInteger(value.protocolRejectedStep) &&
+          value.protocolRejectedStep >= 1 &&
+          value.protocolRejectedStep <= 6 &&
+          value.protocolRejectedStep !== value.protocolRejectedAtPhase + 1
+        : value.protocolRejectedStep === null)) &&
   typeof value.screenRevoked === "boolean";
 
 // eslint-disable-next-line complexity -- every category is validated before a failure-only log
@@ -444,7 +459,14 @@ export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
     ].includes(snapshot?.semanticState)
   )
     return undefined;
-  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}`;
+  const protocolRejection =
+    challenged?.protocolRejectionKind === "order"
+      ? `order-${challenged.protocolRejectedAtPhase}-${challenged.protocolRejectedStep}`
+      : challenged?.protocolRejectionKind === "mode" ||
+          challenged?.protocolRejectionKind === "reset"
+        ? `${challenged.protocolRejectionKind}-${challenged.protocolRejectedAtPhase}`
+        : "none";
+  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:protocol-rejection-${protocolRejection}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}`;
 };
 
 // This optional receipt field is not part of the envelope authority checks.
