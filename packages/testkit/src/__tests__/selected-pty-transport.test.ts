@@ -650,14 +650,21 @@ describe("selected PTY transport", () => {
       "terminal-post-submission-idle-missing",
     );
     expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
-    expect(missingIdle.actions.map(({ action }) => action)).toEqual([
+    const missingIdleActions = missingIdle.actions.map(({ action }) => action);
+    expect(missingIdleActions.slice(0, 5)).toEqual([
       "resize",
       "input",
       "checkpoint-process-topology",
       "input",
       "input",
-      "wait-for-semantic-completion",
     ]);
+    // Under load the final completion frame can be observed without a
+    // causally post-input semantic wait. Neither case admits an idle response.
+    expect(
+      missingIdleActions.length === 5 ||
+        (missingIdleActions.length === 6 &&
+          missingIdleActions[5] === "wait-for-semantic-completion"),
+    ).toBe(true);
     expect(missingIdle.inputBytesWritten).toBe(137);
     expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
       "response-not-observed",

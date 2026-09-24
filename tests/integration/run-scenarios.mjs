@@ -700,23 +700,32 @@ const assertContainer = async (
     environment.includes(
       `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${expectedRequestBytes}`,
     );
-  const immutableCandidateMatches =
+  const candidateImageIdMatches =
     immutableCandidate === undefined ||
-    (container?.Image === immutableCandidate.imageId &&
-      container?.Config?.User ===
-        (plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") &&
-      environment.includes(
-        `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
-      ) &&
-      JSON.stringify(container?.HostConfig?.CapDrop) ===
-        JSON.stringify(["ALL"]) &&
-      JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
-        JSON.stringify(
-          plan.scenarioId === "codex-tui-trace-smoke"
-            ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
-            : [],
-        ) &&
-      Array.isArray(container?.HostConfig?.SecurityOpt) &&
+    container?.Image === immutableCandidate.imageId;
+  const candidateUserMatches =
+    immutableCandidate === undefined ||
+    container?.Config?.User ===
+      (plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000");
+  const candidateEnvironmentMatches =
+    immutableCandidate === undefined ||
+    environment.includes(
+      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+    );
+  const candidateCapDropMatches =
+    immutableCandidate === undefined ||
+    JSON.stringify(container?.HostConfig?.CapDrop) === JSON.stringify(["ALL"]);
+  const candidateCapAddMatches =
+    immutableCandidate === undefined ||
+    JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
+      JSON.stringify(
+        plan.scenarioId === "codex-tui-trace-smoke"
+          ? ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"]
+          : [],
+      );
+  const candidateSecurityMatches =
+    immutableCandidate === undefined ||
+    (Array.isArray(container?.HostConfig?.SecurityOpt) &&
       container.HostConfig.SecurityOpt.includes("no-new-privileges"));
   let imageConfigMatches = immutableCandidate === undefined;
   if (immutableCandidate !== undefined) {
@@ -767,7 +776,12 @@ const assertContainer = async (
     ],
     ["tmpfs-options", tmpfsMatches],
     ["request-limit", requestLimitMatches],
-    ["candidate", immutableCandidateMatches],
+    ["candidate-image-id", candidateImageIdMatches],
+    ["candidate-user", candidateUserMatches],
+    ["candidate-environment", candidateEnvironmentMatches],
+    ["candidate-cap-drop", candidateCapDropMatches],
+    ["candidate-cap-add", candidateCapAddMatches],
+    ["candidate-security", candidateSecurityMatches],
     ["candidate-image", imageConfigMatches],
   ].find(([, matches]) => !matches)?.[0];
   if (failedAssertion !== undefined)
