@@ -468,6 +468,45 @@ export const interactivePtyIdleAtTitleDiagnostic = (receipt) => {
   return `integration.isolation.pty-idle-at-title:${category}`;
 };
 
+// Challenged styled-screen readiness is a live state and can be revoked when
+// the TUI exits its alternate screen. The selected kernel's exact topology
+// checkpoint is historical evidence: it is recorded only after challenged
+// live readiness and a frozen, authenticated process-set observation.
+const codexHistoricalPtyReadinessMatches = (receipt) => {
+  if (
+    receipt?.scenarioId !== "codex-tui-trace-smoke" ||
+    receipt?.readinessObserved !== false ||
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    receipt?.request?.interaction?.trigger !== "immediate"
+  )
+    return false;
+  const requested = receipt.request.interaction.actions;
+  const observed = receipt.actions;
+  if (
+    !Array.isArray(requested) ||
+    requested.length > 32 ||
+    !interactivePtyObservedActionsMatch(observed, requested)
+  )
+    return false;
+  try {
+    if (interactivePtyReceiptFailed(receipt)) return false;
+  } catch {
+    return false;
+  }
+  let checkpointCount = 0;
+  for (let index = 0; index < requested.length; index += 1) {
+    if (requested[index]?.action !== "checkpoint-process-topology") continue;
+    checkpointCount += 1;
+    if (
+      requested[index]?.topology !== "root-with-contained-process-set" ||
+      observed[index]?.action !== "checkpoint-process-topology" ||
+      observed[index]?.topology !== "root-with-contained-process-set"
+    )
+      return false;
+  }
+  return checkpointCount === 1;
+};
+
 export const interactivePtyArtifactReadinessMatches = (
   receipt,
   failed = false,
@@ -475,7 +514,8 @@ export const interactivePtyArtifactReadinessMatches = (
   receipt?.readinessObserved === true ||
   (failed &&
     receipt?.readinessObserved === false &&
-    interactivePtyReceiptFailed(receipt));
+    interactivePtyReceiptFailed(receipt)) ||
+  (!failed && codexHistoricalPtyReadinessMatches(receipt));
 
 // Failure-only, content-free categories. Never emit a receipt, action, or
 // terminal byte while diagnosing a readiness rejection in hosted replay.
