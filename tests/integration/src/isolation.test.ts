@@ -1513,12 +1513,13 @@ describe("selected PTY backend evidence", () => {
           ...interactive,
           ptyTerminalReceipt: {
             ...receipt,
-            postSubmissionIdleAtTitleDiagnostic: "idle-revoked-unmodeled-csi",
+            postSubmissionIdleAtTitleDiagnostic:
+              "idle-revoked-alternate-screen-exit",
           },
         },
         evidence,
       ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
-    ).toBe("idle-revoked-unmodeled-csi");
+    ).toBe("idle-revoked-alternate-screen-exit");
     expect(() =>
       compileWithPreparedAuthority(
         {
