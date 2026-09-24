@@ -66,6 +66,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
+  extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyObservedActionsMatch,
@@ -1775,6 +1776,11 @@ const recordInteractiveExecutionFailure = (
   });
   return predicate;
 };
+const emitUntrustedCodexJoinHint = (output) => {
+  const hint = extractUntrustedCodexJoinHint(output);
+  if (hint !== undefined)
+    process.stderr.write(`integration.isolation.untrusted-join-hint:${hint}\n`);
+};
 const captureFailedScenarioReceipt = (
   output,
   plan,
@@ -2007,6 +2013,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           cause: error,
         });
       const output = `${error?.stdout ?? ""}`;
+      emitUntrustedCodexJoinHint(output);
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,

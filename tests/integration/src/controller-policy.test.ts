@@ -248,6 +248,11 @@ describe("integration cleanup authority", () => {
       'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        `${diagnostic}\\n`',
     );
     expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode)");
+    expect(source).toContain("integration.runner.untrusted-join-hint:");
+    expect(source).toContain("const hint = untrustedCodexJoinHint(ledger);");
+    expect(source).toContain(
+      "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
+    );
     expect(source).toContain(
       "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
     );
