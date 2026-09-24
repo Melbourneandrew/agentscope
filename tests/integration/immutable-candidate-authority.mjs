@@ -1,7 +1,39 @@
 import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
 
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
+};
+export const readBoundedInteractiveFailureMarker = (ledger) => {
+  let descriptor;
+  try {
+    descriptor = openSync(
+      join(ledger, "interactive-failure.txt"),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size < 1 || before.size > 128)
+      return undefined;
+    const bytes = Buffer.alloc(before.size + 1);
+    const count = readSync(descriptor, bytes, 0, bytes.length, 0);
+    const after = fstatSync(descriptor);
+    if (
+      count !== before.size ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size
+    )
+      return undefined;
+    const content = bytes.subarray(0, count).toString("utf8");
+    return /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+      ? content.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 };
 export const ptyExecutionFailurePredicates = Object.freeze([
   "child-failure",
@@ -138,6 +170,7 @@ export const selectInteractiveFailureDiagnostic = (
       typeof value === "string" &&
       ptyExecutionFailurePredicates.includes(value) &&
       value !== "integration.fixture.codex-tui-join-deadline" &&
+      !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       value !== "integration.fixture.codex-tui-child-rejected",
   );
 export const interactivePtyReceiptFailed = (receipt) =>
@@ -331,6 +364,21 @@ export const decodeCodexJoinDeadlineExitCode = (exitCode) => {
   return state === undefined
     ? undefined
     : `integration.fixture.codex-tui-join-deadline-${state}`;
+};
+
+// Research-only: candidate-writable fixture text cannot become a receipt claim.
+export const extractUntrustedCodexJoinHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const matches = [
+    ...output.matchAll(
+      /^integration\.runner\.untrusted-join-hint:([a-z-]{1,32})$/gmu,
+    ),
+  ];
+  const state = matches.length === 1 ? matches[0]?.[1] : undefined;
+  return encodeCodexJoinDeadlineExitCode(state) === undefined
+    ? undefined
+    : state;
 };
 
 export const selectInteractiveExecutionFailurePredicate = (

@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // The authority is deliberately private integration JavaScript, not a package API.
@@ -15,6 +18,7 @@ const {
   encodeInteractiveFailureExitCode,
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
+  extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyObservedActionsMatch,
@@ -23,6 +27,7 @@ const {
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
+  readBoundedInteractiveFailureMarker,
   selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
@@ -731,5 +736,59 @@ describe("interactive PTY failure exit-code transport", () => {
     "x:integration.runner.interactive-diagnostic:integration.fixture.codex-model-request\n",
   ])("rejects missing, duplicate, unapproved, or non-line records", (value) => {
     expect(extractInteractiveChildDiagnostic(value)).toBeUndefined();
+  });
+});
+
+describe("untrusted Codex join hints", () => {
+  it("reads only a bounded no-follow marker as untrusted data", () => {
+    const ledger = mkdtempSync(join(tmpdir(), "agentscope-join-hint-"));
+    const marker = join(ledger, "interactive-failure.txt");
+    const payload = join(ledger, "payload.txt");
+    const value = "integration.fixture.codex-tui-join-deadline-stop-active\n";
+    try {
+      expect(readBoundedInteractiveFailureMarker(ledger)).toBeUndefined();
+      writeFileSync(payload, value);
+      symlinkSync(payload, marker);
+      expect(readBoundedInteractiveFailureMarker(ledger)).toBeUndefined();
+      rmSync(marker);
+      writeFileSync(marker, "x".repeat(129));
+      expect(readBoundedInteractiveFailureMarker(ledger)).toBeUndefined();
+      writeFileSync(marker, value);
+      expect(readBoundedInteractiveFailureMarker(ledger)).toBe(value.trim());
+      writeFileSync(marker, `${value}extra`);
+      expect(readBoundedInteractiveFailureMarker(ledger)).toBeUndefined();
+    } finally {
+      rmSync(ledger, { recursive: true, force: true });
+    }
+  });
+
+  it("never promotes a candidate-writable specific marker into authority", () => {
+    const specific =
+      "integration.fixture.codex-tui-join-deadline-session-end-completed";
+    expect(
+      selectInteractiveFailureDiagnostic(
+        specific,
+        undefined,
+        "testkit.pty.receipt-terminal",
+      ),
+    ).toBe("testkit.pty.receipt-terminal");
+    expect(
+      selectInteractiveFailureDiagnostic(specific, undefined, specific),
+    ).toBeUndefined();
+    expect(decodeInteractiveFailureExitCode(38, "codex-tui-trace-smoke")).toBe(
+      specific,
+    );
+  });
+
+  it("extracts only one closed content-free research hint", () => {
+    const line = "integration.runner.untrusted-join-hint:stop-active\n";
+    expect(extractUntrustedCodexJoinHint(line)).toBe("stop-active");
+    for (const output of [
+      `${line}${line}`,
+      "integration.runner.untrusted-join-hint:arbitrary\n",
+      "integration.runner.untrusted-join-hint:stop-active-extra\n",
+      "integration.runner.untrusted-join-hint:stop-active:secret\n",
+    ])
+      expect(extractUntrustedCodexJoinHint(output)).toBeUndefined();
   });
 });

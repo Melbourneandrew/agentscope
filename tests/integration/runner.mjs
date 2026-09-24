@@ -23,6 +23,7 @@ import {
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
   interactivePtyReceiptFailed,
+  readBoundedInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
@@ -121,6 +122,15 @@ const retainedInteractivePhase = (ledger) => {
     }
   }
   return retained;
+};
+const untrustedCodexJoinHint = (ledger) => {
+  if (scenarioId !== "codex-tui-trace-smoke") return undefined;
+  const marker = readBoundedInteractiveFailureMarker(ledger);
+  const prefix = "integration.fixture.codex-tui-join-deadline-";
+  return marker?.startsWith(prefix) &&
+    encodeInteractiveFailureExitCode(marker, scenarioId) !== undefined
+    ? marker.slice(prefix.length)
+    : undefined;
 };
 const decodeScenarioFailureExitCode = (exitCode) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
@@ -705,21 +715,7 @@ try {
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
-    let fixtureFailure;
-    const failurePath = join(ledger, "interactive-failure.txt");
-    try {
-      const status = lstatSync(failurePath);
-      const content = readFileSync(failurePath, "utf8");
-      if (
-        status.isFile() &&
-        !status.isSymbolicLink() &&
-        status.size === Buffer.byteLength(content) &&
-        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
-      )
-        fixtureFailure = content.trim();
-    } catch {
-      // The selected PTY error remains the diagnostic if no fixture record exists.
-    }
+    const fixtureFailure = readBoundedInteractiveFailureMarker(ledger);
     const diagnostic = selectInteractiveFailureDiagnostic(
       fixtureFailure,
       retainedInteractivePhase(ledger),
@@ -741,6 +737,11 @@ try {
     }
   } else fixtureOutput = "";
   fixtureFailure = error;
+}
+if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
+  const hint = untrustedCodexJoinHint(ledger);
+  if (hint !== undefined)
+    process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);
 }
 const fixtureResult = fixtureOutput
   .split("\n")
