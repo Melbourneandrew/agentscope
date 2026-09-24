@@ -23,6 +23,7 @@ const {
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
   interactivePtyIdleObservationDiagnostic,
+  interactivePtyIdleAtCompletionDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -220,9 +221,13 @@ describe("interactive PTY action prefix diagnostics", () => {
         },
       },
       postSubmissionIdleDiagnostic: "response-not-observed",
+      postSubmissionIdleAtCompletionDiagnostic: "idle-ready",
     };
     expect(interactivePtyIdleObservationDiagnostic(receipt)).toBe(
       "integration.isolation.pty-idle-diagnostic:response-not-observed",
+    );
+    expect(interactivePtyIdleAtCompletionDiagnostic(receipt)).toBe(
+      "integration.isolation.pty-idle-at-completion:idle-ready",
     );
     for (const substituted of [
       "terminal-content\nspoofed-output",
@@ -237,6 +242,19 @@ describe("interactive PTY action prefix diagnostics", () => {
           postSubmissionIdleDiagnostic: substituted,
         }),
       ).toBe("integration.isolation.pty-idle-diagnostic:missing-or-invalid");
+    for (const substituted of [
+      "terminal-content\nspoofed-output",
+      "\u001b[31mredacted\u001b[0m",
+      { toString: () => "secret" },
+      null,
+      undefined,
+    ])
+      expect(
+        interactivePtyIdleAtCompletionDiagnostic({
+          ...receipt,
+          postSubmissionIdleAtCompletionDiagnostic: substituted,
+        }),
+      ).toBe("integration.isolation.pty-idle-at-completion:missing-or-invalid");
     expect(
       interactivePtyIdleObservationDiagnostic({
         ...receipt,
@@ -255,7 +273,9 @@ describe("interactive PTY action prefix diagnostics", () => {
     for (const other of ["fixture-process-interactive", "", undefined])
       expect(interactivePtyExecutionReserveMilliseconds(other)).toBe(5_000);
   });
+});
 
+describe("interactive PTY action matching", () => {
   it("requires full successful PTY actions but an exact failure prefix", () => {
     const expected = [
       { action: "resize" },

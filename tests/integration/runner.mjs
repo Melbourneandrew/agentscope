@@ -626,6 +626,12 @@ try {
         : {
             postSubmissionIdleDiagnostic: receipt.postSubmissionIdleDiagnostic,
           }),
+      ...(receipt.postSubmissionIdleAtCompletionDiagnostic === undefined
+        ? {}
+        : {
+            postSubmissionIdleAtCompletionDiagnostic:
+              receipt.postSubmissionIdleAtCompletionDiagnostic,
+          }),
       actions: receipt.actions,
       outerMonotonicDeadlineMs: headlessOuterDeadline,
       requestConstructedAtMs: now,

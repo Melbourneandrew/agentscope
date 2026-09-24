@@ -516,6 +516,9 @@ export class BoundedTerminalEmulator {
   #postSubmissionIdleFrameEligible = false;
   #postSubmissionEligibleFrameAttempted = false;
   #postSubmissionIdlePromptObserved = false;
+  #postSubmissionIdleAtCompletionDiagnostic:
+    | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
+    | "completion-not-observed" = "completion-not-observed";
   #postSubmissionResponseTail = "";
   #postSubmissionResponseObserved = false;
   #completionTail = "";
@@ -747,6 +750,13 @@ export class BoundedTerminalEmulator {
         ? "idle-frame-rejected"
         : "idle-frame-not-observed";
     return this.#readinessObserved ? "idle-ready" : "idle-readiness-revoked";
+  }
+
+  /** Package-private, latched at the exact completion control, before later output. */
+  public postSubmissionIdleAtCompletionDiagnostic():
+    | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
+    | "completion-not-observed" {
+    return this.#postSubmissionIdleAtCompletionDiagnostic;
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -1482,8 +1492,12 @@ export class BoundedTerminalEmulator {
         this.#postSubmissionIdleObservationArmed &&
         this.#postSubmissionResponseObserved &&
         title === `${completedMarker}:${this.#readinessMatcher.challenge}`
-      )
+      ) {
+        if (!this.#completionObserved)
+          this.#postSubmissionIdleAtCompletionDiagnostic =
+            this.postSubmissionIdleDiagnostic();
         this.#completionObserved = true;
+      }
     }
     this.#control = "";
     this.#state = "ground";
