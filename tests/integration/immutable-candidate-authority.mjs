@@ -841,6 +841,26 @@ export const extractUntrustedCodexConfigHint = (output) => {
   return stage;
 };
 
+// Failure-only transport comparison. Neither number authorizes a receipt.
+export const codexFailureExitPair = (
+  fixtureExit,
+  containerExit,
+  scenarioId,
+) => {
+  if (
+    scenarioId !== "codex-tui-trace-smoke" ||
+    !Number.isSafeInteger(containerExit) ||
+    containerExit < 1 ||
+    containerExit > 255
+  )
+    return undefined;
+  const fixture =
+    Number.isSafeInteger(fixtureExit) && fixtureExit >= 0 && fixtureExit <= 255
+      ? String(fixtureExit)
+      : "none";
+  return `${fixture}:${containerExit}`;
+};
+
 export const selectInteractiveExecutionFailurePredicate = (
   candidate,
   retainedDiagnostic,

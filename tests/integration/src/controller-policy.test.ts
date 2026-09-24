@@ -381,19 +381,23 @@ describe("integration cleanup authority", () => {
     );
     expect(runner).toContain("untrustedCodexTraceHint(");
     expect(runner).toContain("integration.runner.untrusted-trace-hint:");
-    expect(outer).toContain(
-      "emitUntrustedCodexTraceHint(output, plan.scenarioId)",
-    );
+    expect(outer).toContain("emitUntrustedCodexTraceHint(output, scenarioId)");
     expect(outer).toContain("integration.isolation.untrusted-trace-hint:");
     expect(runner).toContain("retainedCandidateConfigStage(ledger)");
     expect(runner).toContain("integration.runner.untrusted-config-hint:");
+    expect(outer).toContain("emitUntrustedCodexConfigHint(output, scenarioId)");
     expect(outer).toContain(
-      "emitUntrustedCodexConfigHint(output, plan.scenarioId)",
+      "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
     );
     expect(outer).toContain("integration.isolation.untrusted-config-hint:");
+    expect(outer).toContain(
+      "writeSync(2, `integration.isolation.untrusted-config-hint:${hint}\\n`)",
+    );
+    expect(outer).toContain("codexFailureExitPair(");
+    expect(outer).toContain("integration.isolation.codex-exit-pair:");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
     const configHintEmitter = outer.indexOf(
-      "emitUntrustedCodexConfigHint(output, plan.scenarioId)",
+      "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
     );
     expect(configHintEmitter).toBeLessThan(
       outer.indexOf("recordInteractiveExecutionFailure(", configHintEmitter),

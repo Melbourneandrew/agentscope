@@ -15,6 +15,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -66,6 +67,7 @@ import {
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
 import {
+  codexFailureExitPair,
   compileImmutableCandidateHandoff,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
@@ -1978,9 +1980,25 @@ const emitUntrustedCodexConfigHint = (output, scenarioId) => {
   if (scenarioId !== "codex-tui-trace-smoke") return;
   const hint = extractUntrustedCodexConfigHint(output);
   if (hint !== undefined)
-    process.stderr.write(
-      `integration.isolation.untrusted-config-hint:${hint}\n`,
-    );
+    try {
+      writeSync(2, `integration.isolation.untrusted-config-hint:${hint}\n`);
+    } catch {
+      // A diagnostic sink failure cannot replace the original scenario failure.
+    }
+};
+const emitCodexExitPair = (receipt, error, scenarioId) => {
+  const pair = codexFailureExitPair(receipt?.exitCode, error?.code, scenarioId);
+  if (pair === undefined) return;
+  try {
+    writeSync(2, `integration.isolation.codex-exit-pair:${pair}\n`);
+  } catch {
+    // Preserve the original failure if the diagnostic sink is closed.
+  }
+};
+const emitUntrustedCodexFailureHints = (output, scenarioId) => {
+  emitUntrustedCodexJoinHint(output);
+  emitUntrustedCodexTraceHint(output, scenarioId);
+  emitUntrustedCodexConfigHint(output, scenarioId);
 };
 const captureFailedScenarioReceipt = (
   output,
@@ -2225,9 +2243,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           cause: error,
         });
       const output = `${error?.stdout ?? ""}`;
-      emitUntrustedCodexJoinHint(output);
-      emitUntrustedCodexTraceHint(output, plan.scenarioId);
-      emitUntrustedCodexConfigHint(output, plan.scenarioId);
+      emitUntrustedCodexFailureHints(output, plan.scenarioId);
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,
@@ -2235,6 +2251,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         outerMonotonicDeadline,
         fixtureCaptured,
       );
+      emitCodexExitPair(receipt, error, plan.scenarioId);
       const retainedDiagnostic =
         plan.executionMode === "interactive" &&
         receipt !== undefined &&

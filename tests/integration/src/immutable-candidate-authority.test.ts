@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 
 const {
+  codexFailureExitPair,
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
   codexProjectionFailureDiagnostic,
@@ -350,6 +351,25 @@ describe("untrusted Codex candidate configuration hint transport", () => {
     expect(
       extractUntrustedCodexConfigHint("x".repeat(16 * 1024 * 1024 + 1)),
     ).toBeUndefined();
+  });
+});
+
+describe("Codex failure exit comparison", () => {
+  it("keeps exact fixture and authenticated terminal container codes separate", () => {
+    expect(codexFailureExitPair(150, 78, "codex-tui-trace-smoke")).toBe(
+      "150:78",
+    );
+    expect(codexFailureExitPair(undefined, 78, "codex-tui-trace-smoke")).toBe(
+      "none:78",
+    );
+  });
+  it.each([
+    [150, 78, "fixture-process-interactive"],
+    [150, 0, "codex-tui-trace-smoke"],
+    [150, 256, "codex-tui-trace-smoke"],
+    [150, "78", "codex-tui-trace-smoke"],
+  ])("rejects a non-Codex or invalid terminal witness", (child, outer, id) => {
+    expect(codexFailureExitPair(child, outer, id)).toBeUndefined();
   });
 });
 
