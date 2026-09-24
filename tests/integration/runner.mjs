@@ -520,9 +520,9 @@ try {
       now + 10_000,
       headlessShutdownDeadline - 5_000,
     ),
-    // The Codex fixture itself stops five seconds before the outer deadline.
-    // Retire a stalled selected PTY earlier so its bounded action-prefix
-    // receipt can be emitted and joined before that fixture cutoff.
+    // The Codex fixture's trace cutoff is eight seconds before the outer
+    // deadline. Keep the selected PTY alive through it, then reserve the
+    // remaining five seconds for bounded settlement and receipt emission.
     monotonicExecutionDeadlineMs:
       headlessShutdownDeadline -
       interactivePtyExecutionReserveMilliseconds(scenarioId),
