@@ -331,6 +331,31 @@ describe("integration capability manifest", () => {
       expect(dropperSource.indexOf(denial)).toBeLessThan(candidateExec);
     }
     expect(source).toContain("AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,");
+    // The controller remains root for /control/private, but the installed
+    // product and its private Codex home must belong to the eventual UID 1000
+    // candidate. Root-owned 0700 hooks/config made the real TUI exit before
+    // the protected process-topology checkpoint.
+    expect(source).toContain(
+      "...(options.candidatePrincipal === true ? { uid: 1000, gid: 1000 } : {}),",
+    );
+    expect(source).toContain("{ ...options, candidatePrincipal: true },");
+    expect(source).toContain(
+      '["harness", "status", "codex", "--output", "json"],\n    { candidatePrincipal: true },',
+    );
+    expect(source).toContain(
+      "fchownSync(codexDiagnosticLogDirectoryDescriptor, 1000, 1000);",
+    );
+    expect(source).toContain(
+      "fchownSync(configurationDescriptor, 1000, 1000);",
+    );
+    expect(source).toContain("codexHomeStatus.uid !== 1000");
+    expect(source).toContain("hookStatus.uid !== 1000");
+    expect(source).toContain("launcherStatus.uid !== 1000");
+    expect(source).toContain("(hookStatus.mode & 0o7777) !== 0o600");
+    expect(source).toContain("(launcherStatus.mode & 0o7777) !== 0o700");
+    expect(dropperSource).toContain(
+      "process.setgid(1000);\nprocess.setuid(1000);",
+    );
     const challengeRead = source.indexOf(
       "const readinessChallenge = await readReadinessChallenge();\n",
     );

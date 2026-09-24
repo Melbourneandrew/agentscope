@@ -4,8 +4,9 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
-  chmodSync,
   existsSync,
+  fchmodSync,
+  fchownSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -367,6 +368,7 @@ const run = (executable, arguments_, options = {}) => {
     const child = spawn(executable, arguments_, {
       cwd: options.cwd,
       env: options.env ?? process.env,
+      ...(options.candidatePrincipal === true ? { uid: 1000, gid: 1000 } : {}),
       stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
     });
     childPid = child.pid;
@@ -582,7 +584,7 @@ const cli = async (arguments_, command, options) => {
   const { stdout } = await run(
     agentscope,
     [...arguments_, "--output", "json"],
-    options,
+    { ...options, candidatePrincipal: true },
   );
   const monotonicDeadline = options?.monotonicDeadline;
   if (
@@ -1364,7 +1366,26 @@ try {
   await cli(["routing", "set", "local"], "agentscope routing set");
   recordInteractivePhase("install");
   await cli(["install", "codex", "--yes"], "agentscope install");
+  const codexHomeStatus = lstatSync(codexHome);
+  if (
+    !codexHomeStatus.isDirectory() ||
+    codexHomeStatus.isSymbolicLink() ||
+    codexHomeStatus.uid !== 1000 ||
+    codexHomeStatus.gid !== 1000 ||
+    (codexHomeStatus.mode & 0o7777) !== 0o700
+  )
+    throw new Error("integration.codex.candidate-home");
   const hookPath = join(codexHome, "hooks.json");
+  const hookStatus = lstatSync(hookPath);
+  if (
+    !hookStatus.isFile() ||
+    hookStatus.isSymbolicLink() ||
+    hookStatus.nlink !== 1 ||
+    hookStatus.uid !== 1000 ||
+    hookStatus.gid !== 1000 ||
+    (hookStatus.mode & 0o7777) !== 0o600
+  )
+    throw new Error("integration.codex.candidate-home");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
   if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))
@@ -1373,7 +1394,10 @@ try {
   if (
     !launcherStatus.isFile() ||
     launcherStatus.isSymbolicLink() ||
-    (launcherStatus.mode & 0o111) === 0
+    launcherStatus.nlink !== 1 ||
+    launcherStatus.uid !== 1000 ||
+    launcherStatus.gid !== 1000 ||
+    (launcherStatus.mode & 0o7777) !== 0o700
   )
     throw new Error("integration.codex.hook-configuration");
   localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
@@ -1381,13 +1405,11 @@ try {
   operationalStateBaseline = localSqliteAcceptanceBaseline(
     operationalStateHealthDescriptor,
   );
-  const { stdout: installedStatusOutput } = await run(agentscope, [
-    "harness",
-    "status",
-    "codex",
-    "--output",
-    "json",
-  ]);
+  const { stdout: installedStatusOutput } = await run(
+    agentscope,
+    ["harness", "status", "codex", "--output", "json"],
+    { candidatePrincipal: true },
+  );
   const installedStatusRecords = parseMachine(
     installedStatusOutput,
     "agentscope harness status",
@@ -1405,6 +1427,24 @@ try {
       constants.O_NOFOLLOW |
       constants.O_NONBLOCK,
   );
+  const diagnosticBefore = fstatSync(codexDiagnosticLogDirectoryDescriptor);
+  if (
+    !diagnosticBefore.isDirectory() ||
+    diagnosticBefore.uid !== 0 ||
+    diagnosticBefore.gid !== 0 ||
+    (diagnosticBefore.mode & 0o7777) !== 0o700
+  )
+    throw new Error("integration.codex.candidate-home");
+  fchownSync(codexDiagnosticLogDirectoryDescriptor, 1000, 1000);
+  const diagnosticAfter = fstatSync(codexDiagnosticLogDirectoryDescriptor);
+  if (
+    diagnosticAfter.dev !== diagnosticBefore.dev ||
+    diagnosticAfter.ino !== diagnosticBefore.ino ||
+    diagnosticAfter.uid !== 1000 ||
+    diagnosticAfter.gid !== 1000 ||
+    (diagnosticAfter.mode & 0o7777) !== 0o700
+  )
+    throw new Error("integration.codex.candidate-home");
   recordInteractivePhase("model-gate-start");
   const modelAdmissionCutoff = Math.floor(deadline - 5_000);
   if (
@@ -1430,7 +1470,36 @@ try {
     flag: "wx",
     mode: 0o600,
   });
-  chmodSync(configurationPath, 0o600);
+  const configurationDescriptor = openSync(
+    configurationPath,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const before = fstatSync(configurationDescriptor);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      before.uid !== 0 ||
+      before.gid !== 0 ||
+      before.size !== Buffer.byteLength(configuration) ||
+      (before.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.codex.candidate-home");
+    fchownSync(configurationDescriptor, 1000, 1000);
+    fchmodSync(configurationDescriptor, 0o600);
+    const after = fstatSync(configurationDescriptor);
+    if (
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.uid !== 1000 ||
+      after.gid !== 1000 ||
+      after.size !== before.size ||
+      (after.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.codex.candidate-home");
+  } finally {
+    closeSync(configurationDescriptor);
+  }
   const traceDeadline = deadline - 3_000;
   await new Promise((resolve, reject) => {
     process.stdout.write(
