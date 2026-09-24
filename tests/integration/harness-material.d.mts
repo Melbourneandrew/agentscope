@@ -63,3 +63,7 @@ export declare const stagePreparedHarnessMaterial: (
 export declare const retirePreparedHarnessMaterial: (
   token: PreparedHarnessMaterial,
 ) => void;
+
+export declare const retireEmptyAuthenticatedHarnessMaterialDirectory: (
+  identity: Readonly<{ dev: number; ino: number; path: string }>,
+) => void;
