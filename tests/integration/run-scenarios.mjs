@@ -70,6 +70,7 @@ import {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
+  interactivePtyIdleObservationDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -1803,10 +1804,9 @@ const captureFailedScenarioReceipt = (
   if (plan.scenarioId === "codex-tui-trace-smoke") {
     const progress = interactivePtyActionPrefixDiagnostic(receipt);
     if (progress !== undefined) process.stderr.write(`${progress}\n`);
-    if (receipt.postSubmissionIdleDiagnostic !== undefined)
-      process.stderr.write(
-        `integration.isolation.pty-idle-diagnostic:${receipt.postSubmissionIdleDiagnostic}\n`,
-      );
+    const idleDiagnostic = interactivePtyIdleObservationDiagnostic(receipt);
+    if (idleDiagnostic !== undefined)
+      process.stderr.write(`${idleDiagnostic}\n`);
   }
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
