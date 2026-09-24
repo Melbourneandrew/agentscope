@@ -109,6 +109,93 @@ describe("Codex machine-output failure containment", () => {
   );
 });
 
+describe("historical Codex PTY readiness", () => {
+  it("uses only the completed challenged topology checkpoint as historical Codex readiness", () => {
+    const actions = [
+      { action: "input" },
+      {
+        action: "checkpoint-process-topology",
+        topology: "root-with-contained-process-set",
+      },
+      { action: "wait-for-semantic-completion" },
+    ];
+    const historical = {
+      ...completed,
+      scenarioId: "codex-tui-trace-smoke",
+      readinessObserved: false,
+      request: {
+        readiness: { kind: "challenge-styled-text" },
+        interaction: { trigger: "immediate", actions },
+      },
+      actions,
+    };
+    expect(interactivePtyArtifactReadinessMatches(historical)).toBe(true);
+    expect(interactivePtyArtifactReadinessMatches(historical, true)).toBe(
+      false,
+    );
+    const rejected = [
+      { ...historical, scenarioId: "fixture-process-interactive" },
+      {
+        ...historical,
+        request: {
+          ...historical.request,
+          readiness: { kind: "challenge-marker" },
+        },
+      },
+      {
+        ...historical,
+        request: {
+          ...historical.request,
+          interaction: { trigger: "semantic-ready", actions },
+        },
+      },
+      { ...historical, actions: actions.slice(0, 2) },
+      {
+        ...historical,
+        actions: actions.filter(
+          ({ action }) => action !== "checkpoint-process-topology",
+        ),
+      },
+      {
+        ...historical,
+        request: {
+          ...historical.request,
+          interaction: {
+            trigger: "immediate",
+            actions: [actions[0], actions[2]],
+          },
+        },
+        actions: [actions[0], actions[2]],
+      },
+      {
+        ...historical,
+        request: {
+          ...historical.request,
+          interaction: {
+            trigger: "immediate",
+            actions: [actions[0], actions[1], actions[1], actions[2]],
+          },
+        },
+        actions: [actions[0], actions[1], actions[1], actions[2]],
+      },
+      {
+        ...historical,
+        actions: [
+          actions[0],
+          { ...actions[1], topology: "substituted" },
+          actions[2],
+        ],
+      },
+      { ...historical, cleanup: "uncertain" },
+      { ...historical, exitCode: 1 },
+      { ...historical, finalSnapshot: null },
+      { ...historical, readinessObserved: undefined },
+    ];
+    for (const receipt of rejected)
+      expect(interactivePtyArtifactReadinessMatches(receipt)).toBe(false);
+  });
+});
+
 describe("interactive PTY artifact diagnostics", () => {
   it("reports only fixed readiness and terminal categories", () => {
     const secret = "do-not-print-this-receipt-content";
