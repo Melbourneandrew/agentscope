@@ -67,7 +67,6 @@ type ChallengeScreenRevocationKind =
   | "reverse-index"
   | "tab-stop-set"
   | "charset"
-  | "frame-line-break"
   | "tab"
   | "untrusted-cell"
   | "rendition";
@@ -1214,14 +1213,14 @@ export class BoundedTerminalEmulator {
   #consumeGround(character: string): void {
     if (character === "\r") {
       if (this.#challengeSynchronizedOutputFrameActive)
-        this.#revokeChallengeScreenAuthority("frame-line-break");
+        this.#resetChallengeOutputObservation();
       else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = 0;
       return;
     }
     if (character === "\n") {
       if (this.#challengeSynchronizedOutputFrameActive)
-        this.#revokeChallengeScreenAuthority("frame-line-break");
+        this.#resetChallengeOutputObservation();
       else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#lineFeed();
       return;
