@@ -560,11 +560,16 @@ describe("selected PTY transport", () => {
     20_000,
   );
 
+  // eslint-disable-next-line max-lines-per-function -- one closed positive/negative post-turn witness matrix
   it("waits for a fresh bounded idle prompt before post-turn input", async () => {
     const selected = protocolPromptRequest();
     const now = performance.now();
     const gated: SelectedPtyExecutionRequest = {
       ...selected,
+      readiness: {
+        ...selected.readiness,
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"a".repeat(64)}`,
+      } as SelectedPtyExecutionRequest["readiness"],
       process: {
         ...selected.process,
         monotonicStartupDeadlineMs: now + 5_000,
@@ -618,6 +623,41 @@ describe("selected PTY transport", () => {
       "wait-for-post-submission-idle-prompt",
     );
     expect(stale.inputBytesWritten).toBe(137);
+    for (const seed of [
+      "terminal-preenter-buffered-idle",
+      "terminal-response-after-idle-frame",
+    ] as const) {
+      const bufferedNow = performance.now();
+      const buffered = await executeSelectedPtyTransportForTest(
+        {
+          ...gated,
+          process: {
+            ...gated.process,
+            monotonicStartupDeadlineMs: bufferedNow + 100,
+            monotonicExecutionDeadlineMs: bufferedNow + 300,
+            monotonicShutdownDeadlineMs: bufferedNow + 700,
+          },
+        },
+        seed,
+      );
+      expect(buffered.actions.map(({ action }) => action)).not.toContain(
+        "wait-for-post-submission-idle-prompt",
+      );
+      expect(buffered.inputBytesWritten).toBe(137);
+    }
+    for (const readiness of [
+      selected.readiness,
+      {
+        ...gated.readiness,
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"b".repeat(64)}`,
+      },
+    ])
+      await expect(
+        executeSelectedPtyTransportForTest(
+          { ...gated, readiness },
+          "terminal-post-completion-idle",
+        ),
+      ).rejects.toMatchObject({ code: "testkit.pty.request" });
     for (const actions of [
       [
         { action: "wait-for-post-submission-idle-prompt" as const },

@@ -14,6 +14,7 @@ export type PtyTerminalReadinessMatcher =
       challenge: string;
       text: string;
       requiredText: string;
+      postSubmissionResponseText?: string;
       requiredTerminalProtocol: "csi-u-flags-7-query-v1";
       bold: boolean;
       dim: boolean;
@@ -354,6 +355,7 @@ const csiHasUnmodeledScreenMutation = (
   (csiIsPrivateModeControl(final, prefix, intermediate) &&
     (values.includes(7) || values.includes(1049)));
 
+/* eslint-disable complexity -- closed challenged-response fields add fail-closed validation */
 const validateReadinessMatcher = (
   value: PtyTerminalReadinessMatcher,
 ): PtyTerminalReadinessMatcher => {
@@ -379,6 +381,7 @@ const validateReadinessMatcher = (
     });
   }
   if (value.kind === "challenge-styled-text") {
+    const hasResponseText = Object.hasOwn(value, "postSubmissionResponseText");
     const record = strictRecord(
       value,
       [
@@ -386,6 +389,7 @@ const validateReadinessMatcher = (
         "challenge",
         "dim",
         "kind",
+        ...(hasResponseText ? ["postSubmissionResponseText"] : []),
         "requiredTerminalProtocol",
         "requiredText",
         "text",
@@ -408,6 +412,14 @@ const validateReadinessMatcher = (
         (character) => !trustedSingleCellCharacter(character),
       ) ||
       record.requiredTerminalProtocol !== "csi-u-flags-7-query-v1" ||
+      (hasResponseText &&
+        (typeof record.postSubmissionResponseText !== "string" ||
+          record.postSubmissionResponseText.length < 65 ||
+          record.postSubmissionResponseText.length > 128 ||
+          !record.postSubmissionResponseText.endsWith(record.challenge) ||
+          [...record.postSubmissionResponseText].some(
+            (character) => !trustedSingleCellCharacter(character),
+          ))) ||
       typeof record.bold !== "boolean" ||
       typeof record.dim !== "boolean"
     )
@@ -417,6 +429,12 @@ const validateReadinessMatcher = (
       challenge: record.challenge,
       text,
       requiredText,
+      ...(hasResponseText
+        ? {
+            postSubmissionResponseText:
+              record.postSubmissionResponseText as string,
+          }
+        : {}),
       requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: record.bold,
       dim: record.dim,
@@ -444,6 +462,7 @@ const validateReadinessMatcher = (
     dim: record.dim,
   });
 };
+/* eslint-enable complexity */
 
 export class BoundedTerminalEmulator {
   readonly #decoder = new TextDecoderAuthority("utf-8", { fatal: true });
@@ -496,6 +515,8 @@ export class BoundedTerminalEmulator {
   #postSubmissionIdleObservationArmed = false;
   #postSubmissionIdleFrameEligible = false;
   #postSubmissionIdlePromptObserved = false;
+  #postSubmissionResponseTail = "";
+  #postSubmissionResponseObserved = false;
   #completionTail = "";
   #bold = false;
   #dim = false;
@@ -796,7 +817,10 @@ export class BoundedTerminalEmulator {
     this.#resetChallengeOutputObservation();
     this.#challengeSynchronizedOutputFrameActive = true;
     this.#postSubmissionIdleFrameEligible =
-      this.#postSubmissionIdleObservationArmed;
+      this.#postSubmissionIdleObservationArmed &&
+      (this.#readinessMatcher.kind !== "challenge-styled-text" ||
+        this.#readinessMatcher.postSubmissionResponseText === undefined ||
+        this.#postSubmissionResponseObserved);
   }
 
   #invalidateChallengeSynchronizedOutputFrame(): void {
@@ -1064,6 +1088,7 @@ export class BoundedTerminalEmulator {
     }
   }
 
+  // eslint-disable-next-line complexity -- response witness is parsed beside the bounded terminal character
   #consumeGround(character: string): void {
     if (character === "\r") {
       if (this.#challengeSynchronizedOutputFrameActive)
@@ -1111,6 +1136,24 @@ export class BoundedTerminalEmulator {
     this.#cellBold[cellIndex] = this.#bold;
     this.#cellDim[cellIndex] = this.#dim;
     this.#appendRecent(character);
+    if (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      this.#readinessMatcher.postSubmissionResponseText !== undefined &&
+      this.#postSubmissionIdleObservationArmed &&
+      !this.#postSubmissionResponseObserved
+    ) {
+      const expected = this.#readinessMatcher.postSubmissionResponseText;
+      this.#postSubmissionResponseTail =
+        `${this.#postSubmissionResponseTail}${character}`.slice(
+          -expected.length,
+        );
+      if (this.#postSubmissionResponseTail === expected) {
+        this.#postSubmissionResponseObserved = true;
+        this.#postSubmissionIdleFrameEligible =
+          this.#challengeSynchronizedOutputFrameActive;
+        this.#resetChallengeOutputObservation();
+      }
+    }
     this.#observeChallengePrintableOutput(character, cellIndex);
     const expectedReadinessMarker =
       this.#readinessMatcher.kind === "challenge-marker" ||
