@@ -266,11 +266,31 @@ const registerSocket = (socket) => {
     eof: false,
     generation,
     parserOutcome: "not-parsed",
+    rawRejectedBytes: 0,
     requestReady: undefined,
     socket,
   };
   connections.set(generation, connection);
   connectionBySocket.set(socket, connection);
+  const emitBeforeIngressGuard = socket.emit;
+  socket.emit = (event, ...arguments_) => {
+    if (
+      event === "data" &&
+      cutoff !== undefined &&
+      (bootNow() >= cutoff || state === "draining" || state === "denied")
+    ) {
+      cutoffUnsettled = true;
+      const bytes = arguments_[0];
+      if (Buffer.isBuffer(bytes)) {
+        connection.rawRejectedBytes += bytes.length;
+        mutationGeneration += 1;
+      }
+      enforceCutoff();
+      socket.destroy();
+      return false;
+    }
+    return emitBeforeIngressGuard.call(socket, event, ...arguments_);
+  };
   socket.once("end", () => {
     connection.eof = true;
     mutationGeneration += 1;
@@ -411,12 +431,20 @@ const waitForSettlement = async () => {
 };
 const connectionReceipt = () =>
   [...connections.values()].map(
-    ({ admission, closed, eof, generation, parserOutcome }) => ({
+    ({
       admission,
       closed,
       eof,
       generation,
       parserOutcome,
+      rawRejectedBytes,
+    }) => ({
+      admission,
+      closed,
+      eof,
+      generation,
+      parserOutcome,
+      rawRejectedBytes,
     }),
   );
 const configure = async (request, response) => {

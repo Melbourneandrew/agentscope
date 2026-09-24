@@ -860,6 +860,44 @@ describe("gate-capable exact-build MockServer", () => {
     });
   });
 
+  it("rejects post-cutoff raw input before HTTP parsing when the timer is delayed", async () => {
+    const { child, controlSocket, modelPort } = await startGate();
+    await configure(controlSocket, 1_000);
+    const socket = await connect(modelPort);
+    const completion = collect(socket).then(
+      () => "closed",
+      (error: NodeJS.ErrnoException) => error.code ?? "error",
+    );
+    await armGate(controlSocket);
+    socket.write(exactRequest());
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const observed = await request(
+        controlSocket,
+        "/requests",
+        {},
+        challenge,
+        "PUT",
+      );
+      if ((observed.value.ledger as unknown[]).length === 1) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(child.kill("SIGSTOP")).toBe(true);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_050));
+    socket.write(exactRequest({ model: "late", input: "late" }));
+    expect(child.kill("SIGCONT")).toBe(true);
+    expect(["closed", "ECONNRESET"]).toContain(await completion);
+    expect(await request(controlSocket, "/seal", { runId })).toMatchObject({
+      status: 409,
+    });
+    expect(await request(controlSocket, "/deny", { runId })).toMatchObject({
+      status: 200,
+      value: {
+        ledger: [{}],
+        receipt: { cutoffUnsettled: true, ledgerCount: 1 },
+      },
+    });
+  });
+
   it("seals within the original reserve despite an incomplete later socket", async () => {
     const { controlSocket, modelPort } = await startGate();
     await configure(controlSocket, 1_500);
