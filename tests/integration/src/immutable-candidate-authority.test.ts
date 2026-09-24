@@ -16,6 +16,7 @@ const {
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
+  interactivePtyEnvelopeRejectionCode,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
@@ -116,6 +117,45 @@ describe("interactive PTY receipt settlement", () => {
 });
 
 describe("interactive PTY receipt rejection diagnostics", () => {
+  it("uses closed envelope field names and stops at the first failed field", () => {
+    const calls: string[] = [];
+    const fields = [
+      "identity",
+      "deadline",
+      "completion",
+      "readiness",
+      "trigger",
+      "requested-actions",
+      "observed-actions",
+      "terminal-action",
+      "tty",
+      "canonical-mode",
+    ];
+    const predicates = Object.fromEntries(
+      fields.map((field) => [
+        field,
+        () => {
+          calls.push(field);
+          return field !== "readiness";
+        },
+      ]),
+    );
+    expect(interactivePtyEnvelopeRejectionCode(predicates)).toBe("readiness");
+    expect(calls).toEqual(["identity", "deadline", "completion", "readiness"]);
+    expect(interactivePtyEnvelopeRejectionCode({})).toBe("identity");
+    const passing = Object.fromEntries(
+      fields.map((field) => [field, () => true]),
+    );
+    expect(interactivePtyEnvelopeRejectionCode(passing)).toBeNull();
+    for (const field of fields)
+      expect(
+        interactivePtyEnvelopeRejectionCode({
+          ...passing,
+          [field]: () => false,
+        }),
+      ).toBe(field);
+  });
+
   it("keeps a late exact envelope only for failure diagnosis", () => {
     expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 99)).toBe(true);
     expect(interactivePtyEnvelopeDeadlineMatches(100, 100, 100)).toBe(false);

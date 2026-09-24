@@ -67,6 +67,7 @@ import {
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
+  interactivePtyEnvelopeRejectionCode,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
@@ -1070,12 +1071,16 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   );
 };
 const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
-  // eslint-disable-next-line complexity -- exact closed receipt predicate
   (() => {
     const selectedScenario = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === plan.scenarioId,
     );
-    if (selectedScenario === undefined) return false;
+    if (selectedScenario === undefined) {
+      process.stderr.write(
+        "integration.isolation.pty-envelope-rejection:scenario\n",
+      );
+      return false;
+    }
     const challenge = receipt?.request?.readiness?.challenge;
     const input = Buffer.concat([
       ...((selectedScenario.nativeReadiness?.kind ===
@@ -1129,38 +1134,52 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
     const requiresCanonicalEof = expectedActions.some(
       ({ action }) => action === "eof",
     );
-    return (
-      receipt?.receiptVersion === 1 &&
-      receipt?.transport === "pty" &&
-      receipt?.scenarioId === plan.scenarioId &&
-      receipt?.runId === plan.runId &&
-      interactivePtyEnvelopeDeadlineMatches(
-        receipt?.outerMonotonicDeadlineMs,
-        expected.outerMonotonicDeadline,
-        linuxBootMonotonicMilliseconds(),
-        failed,
-      ) &&
-      receipt?.request?.completion?.kind === "semantic-marker" &&
-      expectedReadiness !== null &&
-      JSON.stringify(receipt?.request?.readiness) ===
-        JSON.stringify(expectedReadiness) &&
-      receipt?.request?.interaction?.trigger ===
+    const rejection = interactivePtyEnvelopeRejectionCode({
+      identity: () =>
+        receipt?.receiptVersion === 1 &&
+        receipt?.transport === "pty" &&
+        receipt?.scenarioId === plan.scenarioId &&
+        receipt?.runId === plan.runId,
+      deadline: () =>
+        interactivePtyEnvelopeDeadlineMatches(
+          receipt?.outerMonotonicDeadlineMs,
+          expected.outerMonotonicDeadline,
+          linuxBootMonotonicMilliseconds(),
+          failed,
+        ),
+      completion: () =>
+        receipt?.request?.completion?.kind === "semantic-marker",
+      readiness: () =>
+        expectedReadiness !== null &&
+        JSON.stringify(receipt?.request?.readiness) ===
+          JSON.stringify(expectedReadiness),
+      trigger: () =>
+        receipt?.request?.interaction?.trigger ===
         (selectedScenario.nativeReadiness?.kind ===
           "challenge-process-topology" ||
         selectedScenario.nativeReadiness?.kind === "challenge-marker" ||
         selectedScenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
           ? "immediate"
-          : "semantic-ready") &&
-      JSON.stringify(receipt?.request?.interaction?.actions) ===
-        JSON.stringify(expectedActions) &&
-      JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
-        JSON.stringify(expectedActions.map(({ action }) => action)) &&
-      receipt?.eofByteWritten ===
-        !selectedScenario.waitForSemanticCompletionBeforeTerminalAction &&
-      receipt?.isTTY === true &&
-      typeof receipt?.observedCanonicalMode === "boolean" &&
-      (!requiresCanonicalEof || receipt.observedCanonicalMode === true)
-    );
+          : "semantic-ready"),
+      "requested-actions": () =>
+        JSON.stringify(receipt?.request?.interaction?.actions) ===
+        JSON.stringify(expectedActions),
+      "observed-actions": () =>
+        JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
+        JSON.stringify(expectedActions.map(({ action }) => action)),
+      "terminal-action": () =>
+        receipt?.eofByteWritten ===
+        !selectedScenario.waitForSemanticCompletionBeforeTerminalAction,
+      tty: () => receipt?.isTTY === true,
+      "canonical-mode": () =>
+        typeof receipt?.observedCanonicalMode === "boolean" &&
+        (!requiresCanonicalEof || receipt.observedCanonicalMode === true),
+    });
+    if (rejection !== null)
+      process.stderr.write(
+        `integration.isolation.pty-envelope-rejection:${rejection}\n`,
+      );
+    return rejection === null;
   })();
 const interactivePtyGeometryMatches = (receipt) =>
   JSON.stringify(receipt?.request?.initialGeometry) ===

@@ -177,6 +177,25 @@ export const interactivePtyEnvelopeDeadlineMatches = (
   observedDeadline === expectedDeadline &&
   (failed || observationNow < expectedDeadline);
 
+const interactivePtyEnvelopeFields = Object.freeze([
+  "identity",
+  "deadline",
+  "completion",
+  "readiness",
+  "trigger",
+  "requested-actions",
+  "observed-actions",
+  "terminal-action",
+  "tty",
+  "canonical-mode",
+]);
+
+export const interactivePtyEnvelopeRejectionCode = (predicates) => {
+  for (const field of interactivePtyEnvelopeFields)
+    if (predicates?.[field]?.() !== true) return field;
+  return null;
+};
+
 // Failure-only diagnostics: never include receipt fields or terminal output.
 export const interactivePtyReceiptRejectionCode = (
   receipt,
