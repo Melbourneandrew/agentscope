@@ -665,7 +665,10 @@ describe("bounded semantic terminal emulator", () => {
       ["\u001b[?1049l", "idle-revoked-alternate-screen-exit"],
       ["\u001b[?7h", "idle-revoked-autowrap-enable"],
       ["\u001b[?7l", "idle-revoked-autowrap-disable"],
-      ["\u001b[r", "idle-revoked-scroll-region"],
+      ["\u001b[2;7r", "idle-revoked-scroll-region"],
+      ["\u001b[;8r", "idle-revoked-scroll-region"],
+      ["\u001b[0;8r", "idle-revoked-scroll-region"],
+      ["\u001b[?6h\u001b[r", "idle-revoked-scroll-region"],
       ["\u001b[@", "idle-revoked-screen-edit"],
     ] as const) {
       const terminal = new BoundedTerminalEmulator(
@@ -702,6 +705,86 @@ describe("bounded semantic terminal emulator", () => {
       );
       expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(category);
     }
+  });
+
+  it("models a canonical full-height scroll-region reset without losing the idle screen", () => {
+    const challenge = "a".repeat(64);
+    for (const reset of ["\u001b[r", "\u001b[1r", "\u001b[1;8r"]) {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(
+        bytes(
+          "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+        ),
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+      terminal.write(
+        bytes(
+          "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+        ),
+      );
+      expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+      terminal.write(bytes(reset));
+      expect(terminal.snapshot().cursor).toEqual({ column: 0, row: 0 });
+      terminal.write(
+        bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+      );
+      expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+      terminal.write(bytes("x"));
+      expect(terminal.readinessObserved()).toBe(false);
+    }
+  });
+
+  it("requires a fresh complete synchronized prompt after a scroll reset inside a frame", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "fixture-model default",
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[r\u001b[?2026l",
+      ),
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-frame-rejected");
+    terminal.write(
+      bytes(
+        "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+      ),
+    );
+    expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
   });
 
   it("does not mistake mismatched styled text for post-completion readiness", () => {
