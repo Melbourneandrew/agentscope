@@ -448,7 +448,7 @@ const ptyChallengeReceiptFor = () => {
     inputSha256,
     // The Codex fixture must settle its selected-PTY failure receipt before
     // its own outer-minus-five-second terminal cutoff.
-    monotonicExecutionDeadlineMs: 6_000,
+    monotonicExecutionDeadlineMs: 26_000,
   };
   const rawProcessRequest = {
     runId: process.runId,
@@ -1410,6 +1410,10 @@ describe("selected PTY backend evidence", () => {
       ...ptyChallengeReceiptFor(),
       readinessObserved: false,
     };
+    expect(
+      receipt.request.process.monotonicShutdownDeadlineMs -
+        receipt.request.process.monotonicExecutionDeadlineMs,
+    ).toBe(5_000);
     const interactive = {
       ...evidence,
       scenarioId: "codex-tui-trace-smoke",
@@ -1656,7 +1660,7 @@ describe("selected PTY backend evidence", () => {
       ),
       refingerprintPtyProcessDeadline(
         "monotonicExecutionDeadlineMs",
-        26_000,
+        6_000,
         receipt,
       ),
       {
