@@ -350,6 +350,9 @@ const ptyRequestedActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("eof") }),
   z.strictObject({ action: z.literal("wait-for-semantic-completion") }),
   z.strictObject({
+    action: z.literal("wait-for-idle-prompt-after-completion"),
+  }),
+  z.strictObject({
     action: z.literal("checkpoint-process-topology"),
     topology: z.literal("root-with-contained-process-set"),
   }),
@@ -377,6 +380,10 @@ const ptyObservedActionSchema = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("wait-for-semantic-completion"),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("wait-for-idle-prompt-after-completion"),
     monotonicAtMs: z.number().finite().nonnegative(),
   }),
   z.strictObject({

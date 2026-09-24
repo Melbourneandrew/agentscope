@@ -235,6 +235,7 @@ describe("integration capability manifest", () => {
       "input",
       "input",
       "wait-for-semantic-completion",
+      "wait-for-idle-prompt-after-completion",
       "input",
       "input",
     ]);

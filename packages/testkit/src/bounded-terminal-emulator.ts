@@ -493,6 +493,7 @@ export class BoundedTerminalEmulator {
   #readinessChallengeObserved = false;
   #readinessTail = "";
   #completionObserved = false;
+  #readinessGenerationAtCompletion = -1;
   #completionTail = "";
   #bold = false;
   #dim = false;
@@ -689,6 +690,11 @@ export class BoundedTerminalEmulator {
   /** Package-private causal observation used by the selected PTY kernel. */
   public readinessObservationGeneration(): number {
     return this.#readinessObservationGeneration;
+  }
+
+  /** Package-private ordering witness for an idle redraw after completion. */
+  public readinessGenerationAtCompletion(): number {
+    return this.#readinessGenerationAtCompletion;
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -1110,7 +1116,11 @@ export class BoundedTerminalEmulator {
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
     );
-    this.#completionObserved ||= this.#completionTail === completedMarker;
+    if (!this.#completionObserved && this.#completionTail === completedMarker) {
+      this.#completionObserved = true;
+      this.#readinessGenerationAtCompletion =
+        this.#readinessObservationGeneration;
+    }
     if (
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
       character === this.#readinessMatcher.text &&
