@@ -588,6 +588,7 @@ describe("selected PTY transport", () => {
     };
     for (const seed of [
       "terminal-post-completion-idle",
+      "terminal-title-completion-after-idle",
       "terminal-post-submission-readiness-revoked",
       "terminal-idle-before-completion-marker",
     ] as const) {

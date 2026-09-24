@@ -545,7 +545,7 @@ describe("integration capability manifest", () => {
       'recordInteractivePhase("trace-search-',
     );
     const terminalCompletion = source.indexOf(
-      "    process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error) =>",
+      "`\\u001b]2;${terminalCompletionMarker}\\u001b\\\\`",
       terminalObservation,
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);

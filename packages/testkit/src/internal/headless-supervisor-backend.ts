@@ -4916,6 +4916,7 @@ type SelectedPtyTestSeed =
   | "terminal-redraw-enter-fragmented"
   | "terminal-prompt-partial"
   | "terminal-post-completion-idle"
+  | "terminal-title-completion-after-idle"
   | "terminal-post-submission-readiness-revoked"
   | "terminal-post-submission-idle-missing"
   | "terminal-idle-before-completion-marker"
@@ -5520,6 +5521,7 @@ const selectedPtyRuntimeForTest = (
         );
       if (
         (seed === "terminal-post-completion-idle" ||
+          seed === "terminal-title-completion-after-idle" ||
           seed === "terminal-post-submission-readiness-revoked" ||
           seed === "terminal-post-submission-idle-missing" ||
           seed === "terminal-idle-before-completion-marker" ||
@@ -5531,7 +5533,16 @@ const selectedPtyRuntimeForTest = (
         const responseFrame = safeBufferFrom(
           `\u001b[?2026h\u001b[2J\u001b[H${readiness.postSubmissionResponseText}\r\n${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
         );
-        if (seed === "terminal-post-completion-idle")
+        if (seed === "terminal-title-completion-after-idle")
+          chunks.splice(
+            4,
+            1,
+            responseFrame,
+            safeBufferFrom(
+              `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
+            ),
+          );
+        else if (seed === "terminal-post-completion-idle")
           chunks.splice(5, 1, responseFrame);
         else if (
           seed === "terminal-post-submission-readiness-revoked" ||
@@ -5784,6 +5795,7 @@ const selectedPtyRuntimeForTest = (
             return { status: "would-block" as const };
           if (
             (seed === "terminal-post-completion-idle" ||
+              seed === "terminal-title-completion-after-idle" ||
               seed === "terminal-post-submission-readiness-revoked" ||
               seed === "terminal-post-submission-idle-missing" ||
               seed === "terminal-idle-before-completion-marker" ||
