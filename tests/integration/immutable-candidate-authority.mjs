@@ -66,6 +66,10 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-model-gate-start",
   "integration.fixture.codex-model-gate-configured",
   "integration.fixture.codex-control-plane-closed",
+  "integration.fixture.codex-candidate-config-render",
+  "integration.fixture.codex-candidate-config-create",
+  "integration.fixture.codex-candidate-config-open",
+  "integration.fixture.codex-candidate-config-prove",
   "integration.fixture.codex-tui-run-created",
   "integration.fixture.codex-tui-readiness-challenge-published",
   "integration.fixture.codex-tui-checkpoint",
@@ -217,6 +221,7 @@ export const selectInteractiveFailureDiagnostic = (
       ptyExecutionFailurePredicates.includes(value) &&
       value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
       value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
+      !value.startsWith("integration.fixture.codex-candidate-config-") &&
       value !== "integration.fixture.codex-tui-join-deadline" &&
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       value !== "integration.fixture.codex-tui-child-rejected",
@@ -744,6 +749,7 @@ const interactiveFixtureFailurePredicates = Object.freeze(
       value.startsWith("integration.fixture.codex-") &&
       value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
       value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
+      !value.startsWith("integration.fixture.codex-candidate-config-") &&
       !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       !interactivePostTraceFailurePredicates.includes(value),
@@ -751,6 +757,13 @@ const interactiveFixtureFailurePredicates = Object.freeze(
 );
 const interactiveFailureExitCodeBase = 64;
 const interactivePostTraceExitCodeBase = 160;
+const candidateConfigExitCodeBase = 150;
+const candidateConfigStages = Object.freeze([
+  "render",
+  "create",
+  "open",
+  "prove",
+]);
 
 const codexJoinDeadlineDiagnosticStates = Object.freeze([
   "log-unavailable",
@@ -838,6 +851,12 @@ export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
       return 139;
     if (diagnostic === "integration.fixture.codex-tui-checkpoint-not-witnessed")
       return 140;
+    const candidateConfigIndex = candidateConfigStages.findIndex(
+      (stage) =>
+        diagnostic === `integration.fixture.codex-candidate-config-${stage}`,
+    );
+    if (candidateConfigIndex >= 0)
+      return candidateConfigExitCodeBase + candidateConfigIndex;
   }
   if (
     scenarioId === "codex-tui-trace-smoke" &&
@@ -864,6 +883,10 @@ export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
       return "integration.fixture.codex-tui-exit-before-checkpoint";
     if (exitCode === 140)
       return "integration.fixture.codex-tui-checkpoint-not-witnessed";
+    const candidateConfigStage =
+      candidateConfigStages[exitCode - candidateConfigExitCodeBase];
+    if (candidateConfigStage !== undefined)
+      return `integration.fixture.codex-candidate-config-${candidateConfigStage}`;
     const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
     if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
     const postTraceDiagnostic =

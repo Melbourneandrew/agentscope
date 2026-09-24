@@ -33,6 +33,7 @@ let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
+let candidateConfigStage;
 let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
 const interactivePhases = Object.freeze([
@@ -132,8 +133,14 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       ? (codexUninstallFailureDiagnostic(error?.message) ??
         codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep))
       : undefined;
+  const candidateConfigDiagnostic =
+    interactiveFailurePhase === "control-plane-closed" &&
+    candidateConfigStage !== undefined
+      ? `integration.fixture.codex-candidate-config-${candidateConfigStage}`
+      : undefined;
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
+    candidateConfigDiagnostic ??
     projectionDiagnostic ??
     uninstallDiagnostic;
   if (ownedDiagnostic !== undefined) {
@@ -1498,6 +1505,7 @@ try {
   recordInteractivePhase("model-gate-configured");
   await proveControlPlaneClosed();
   recordInteractivePhase("control-plane-closed");
+  candidateConfigStage = "render";
   // TOML has no syntax for returning to the root table. Keep every root key
   // ahead of the first table emitted by the provider configuration; appending
   // log_dir after it would silently make the key part of model_providers.
@@ -1507,15 +1515,18 @@ try {
       model: "fixture-model",
     },
   )}\n[projects."/worktree"]\ntrust_level = "trusted"\n`;
+  candidateConfigStage = "create";
   const configurationPath = join(codexHome, "config.toml");
   writeFileSync(configurationPath, configuration, {
     flag: "wx",
     mode: 0o600,
   });
+  candidateConfigStage = "open";
   const configurationDescriptor = openSync(
     configurationPath,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
+  candidateConfigStage = "prove";
   try {
     const before = fstatSync(configurationDescriptor);
     if (
@@ -1542,6 +1553,7 @@ try {
   } finally {
     closeSync(configurationDescriptor);
   }
+  candidateConfigStage = undefined;
   const traceDeadline = deadline - 3_000;
   await new Promise((resolve, reject) => {
     process.stdout.write(

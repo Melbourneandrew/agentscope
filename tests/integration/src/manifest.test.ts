@@ -355,6 +355,11 @@ describe("integration capability manifest", () => {
     expect(source.indexOf("fchmodSync(ledgerDescriptor, 0o700);")).toBeLessThan(
       source.indexOf('recordInteractivePhase("init")'),
     );
+    expect(source).toContain('candidateConfigStage = "render";');
+    expect(source).toContain('candidateConfigStage = "create";');
+    expect(source).toContain('candidateConfigStage = "open";');
+    expect(source).toContain('candidateConfigStage = "prove";');
+    expect(source).toContain("candidateConfigStage = undefined;");
     expect(source).toContain("codexHomeStatus.uid !== 1000");
     expect(source).toContain("hookStatus.uid !== 1000");
     expect(source).toContain("launcherStatus.uid !== 1000");
@@ -458,7 +463,7 @@ describe("integration capability manifest", () => {
     );
     expect(source).toContain("codexUninstallFailureDiagnostic(error?.message)");
     expect(source).toContain(
-      "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    projectionDiagnostic ??\n    uninstallDiagnostic;",
+      "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    projectionDiagnostic ??\n    uninstallDiagnostic;",
     );
     expect(source).toContain(
       "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",

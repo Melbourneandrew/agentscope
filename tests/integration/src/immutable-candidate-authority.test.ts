@@ -1362,10 +1362,43 @@ describe("pre-checkpoint failure diagnostic transport", () => {
         ),
       ).toBeUndefined();
       expect(
+        selectInteractiveFailureDiagnostic(diagnostic, undefined, undefined),
+      ).toBeUndefined();
+      expect(
         extractInteractiveChildDiagnostic(
           `integration.runner.interactive-diagnostic:${diagnostic}\n`,
         ),
       ).toBe(diagnostic);
+    },
+  );
+});
+
+describe("candidate configuration diagnostic transport", () => {
+  it.each([
+    ["render", 150],
+    ["create", 151],
+    ["open", 152],
+    ["prove", 153],
+  ] as const)(
+    "keeps %s in a separate bounded Codex exit-code range",
+    (stage, exitCode) => {
+      const diagnostic = `integration.fixture.codex-candidate-config-${stage}`;
+      expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBe(exitCode);
+      expect(
+        decodeInteractiveFailureExitCode(exitCode, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exitCode,
+          "fixture-process-interactive",
+        ),
+      ).toBeUndefined();
+      expect(
+        selectInteractiveFailureDiagnostic(diagnostic, undefined, undefined),
+      ).toBeUndefined();
     },
   );
 });

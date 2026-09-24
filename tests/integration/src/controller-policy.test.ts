@@ -608,6 +608,7 @@ describe("Codex interactive diagnostic order", () => {
     };
     expect(phases(scenario)).toEqual(expected);
     expect(phases(runner)).toEqual(expected);
+    expect(64 + expected.length - 1).toBeLessThan(139);
     for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
     }
