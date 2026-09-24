@@ -569,6 +569,31 @@ const refingerprintPtyEnvelope = (
   return { ...receipt, request, requestFingerprint };
 };
 
+const refingerprintPtyActions = (
+  receipt: ReturnType<typeof ptyChallengeReceiptFor>,
+  actions: typeof receipt.request.interaction.actions,
+  observedActions: typeof receipt.actions,
+) => {
+  const interaction = { ...receipt.request.interaction, actions };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness: request.readiness,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return { ...receipt, request, requestFingerprint, actions: observedActions };
+};
+
 const ptyControlReceiptFor = () => {
   const receipt = ptyReceiptFor();
   const interaction = {
@@ -1379,6 +1404,65 @@ describe("selected headless backend evidence", () => {
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY backend evidence", () => {
+  it("retains the authenticated Codex checkpoint after live prompt readiness is revoked", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = {
+      ...ptyChallengeReceiptFor(),
+      readinessObserved: false,
+    };
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive" as const,
+      terminalAction: "post-completion-input" as const,
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
+      interactive,
+    );
+    for (const ptyTerminalReceipt of [
+      refingerprintPtyActions(
+        receipt,
+        receipt.request.interaction.actions.filter(
+          ({ action }) => action !== "checkpoint-process-topology",
+        ),
+        receipt.actions.filter(
+          ({ action }) => action !== "checkpoint-process-topology",
+        ),
+      ),
+      { ...receipt, actions: receipt.actions.slice(0, 2) },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "checkpoint-process-topology"
+            ? { ...action, action: "wait-for-semantic-completion" }
+            : action,
+        ),
+      },
+      { ...receipt, outcome: "input-incomplete" },
+      { ...receipt, cleanup: "uncertain" },
+      { ...receipt, processJoined: false },
+      {
+        ...receipt,
+        request: {
+          ...receipt.request,
+          interaction: {
+            ...receipt.request.interaction,
+            trigger: "semantic-ready",
+          },
+        },
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+
   it("rejects cross-mode, missing, substituted, and raw terminal evidence", () => {
     const { evidence } = compiledEvidenceFixture();
     const pty = ptyReceiptFor();
