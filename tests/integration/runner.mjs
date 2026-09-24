@@ -22,6 +22,7 @@ import {
   decodeCodexJoinDeadlineExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  interactivePtyExecutionReserveMilliseconds,
   interactivePtyReceiptFailed,
   readBoundedInteractiveFailureMarker,
   selectInteractiveFailureDiagnostic,
@@ -523,7 +524,7 @@ try {
     // receipt can be emitted and joined before that fixture cutoff.
     monotonicExecutionDeadlineMs:
       headlessShutdownDeadline -
-      (scenarioId === "codex-tui-trace-smoke" ? 25_000 : 5_000),
+      interactivePtyExecutionReserveMilliseconds(scenarioId),
     monotonicShutdownDeadlineMs: headlessShutdownDeadline,
     terminationGraceMs: 1_000,
   };

@@ -69,6 +69,7 @@ import {
   extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
   interactivePtyArtifactRejectionCode,
@@ -1070,7 +1071,8 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
         processRequest.monotonicShutdownDeadlineMs - 5_000,
       ) &&
     processRequest?.monotonicExecutionDeadlineMs ===
-      processRequest.monotonicShutdownDeadlineMs - 5_000 &&
+      processRequest.monotonicShutdownDeadlineMs -
+        interactivePtyExecutionReserveMilliseconds(plan.scenarioId) &&
     processRequest?.terminationGraceMs === 1_000
   );
 };

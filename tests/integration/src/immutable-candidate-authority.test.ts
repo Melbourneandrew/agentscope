@@ -21,6 +21,7 @@ const {
   extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
   interactivePtyArtifactRejectionCode,
@@ -178,6 +179,14 @@ describe("interactive PTY receipt settlement", () => {
 });
 
 describe("interactive PTY action prefix diagnostics", () => {
+  it("keeps the Codex receipt-settlement reserve exact and scenario-bound", () => {
+    expect(
+      interactivePtyExecutionReserveMilliseconds("codex-tui-trace-smoke"),
+    ).toBe(25_000);
+    for (const other of ["fixture-process-interactive", "", undefined])
+      expect(interactivePtyExecutionReserveMilliseconds(other)).toBe(5_000);
+  });
+
   it("requires full successful PTY actions but an exact failure prefix", () => {
     const expected = [
       { action: "resize" },
