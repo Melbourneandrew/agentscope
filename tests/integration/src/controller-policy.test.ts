@@ -346,6 +346,27 @@ describe("integration cleanup authority", () => {
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
+  it("validates the failed PTY receipt before reporting a Codex join subtype", () => {
+    const controller = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const receipt = controller.indexOf(
+      "const receipt = captureAvailableFailedScenarioReceipt(",
+    );
+    const decode = controller.indexOf(
+      "? decodeInteractiveFailureExitCode(receipt.exitCode, plan.scenarioId)",
+    );
+    const report = controller.indexOf(
+      "const recordedDiagnostic = recordInteractiveExecutionFailure(",
+    );
+    expect(receipt).toBeGreaterThan(-1);
+    expect(controller).toContain("? captureFailedScenarioReceipt(");
+    expect(decode).toBeGreaterThan(receipt);
+    expect(report).toBeGreaterThan(decode);
+    expect(controller).toContain("receipt.exitCode === error?.code");
+  });
+
   it("gives only interactive fixtures one exact capable terminal identity", () => {
     const scenarios = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
