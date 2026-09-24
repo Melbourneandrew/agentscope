@@ -18,6 +18,8 @@ const {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyObservedActionsMatch,
+  interactivePtyArtifactReadinessMatches,
+  interactivePtyArtifactRejectionCode,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
@@ -41,6 +43,59 @@ const completed = {
   terminalOutputJoined: true,
   terminalTransportClosed: true,
 };
+
+describe("interactive PTY artifact diagnostics", () => {
+  it("requires readiness for success but retains a false observation for a settled failure", () => {
+    const unreadyFailure = {
+      ...completed,
+      outcome: "deadline",
+      finalSnapshot: { semanticState: "active" },
+      readinessObserved: false,
+    };
+    expect(interactivePtyArtifactReadinessMatches(unreadyFailure, true)).toBe(
+      true,
+    );
+    expect(interactivePtyArtifactReadinessMatches(unreadyFailure)).toBe(false);
+    expect(
+      interactivePtyArtifactReadinessMatches(
+        { ...completed, readinessObserved: false },
+        true,
+      ),
+    ).toBe(false);
+    for (const invalid of [undefined, null, 0, "false"])
+      expect(
+        interactivePtyArtifactReadinessMatches(
+          { ...unreadyFailure, readinessObserved: invalid },
+          true,
+        ),
+      ).toBe(false);
+  });
+  it("classifies only the first failed artifact field without emitting its content", () => {
+    const predicates = {
+      "process-fingerprint": () => true,
+      "input-bytes": () => true,
+      "input-digest": () => true,
+      readiness: () => true,
+      interpreter: () => true,
+      "script-digest": () => true,
+    };
+    expect(interactivePtyArtifactRejectionCode(predicates)).toBeNull();
+    for (const field of Object.keys(predicates))
+      expect(
+        interactivePtyArtifactRejectionCode({
+          ...predicates,
+          [field]: () => false,
+        }),
+      ).toBe(field);
+    expect(
+      interactivePtyArtifactRejectionCode({
+        ...predicates,
+        "input-bytes": () => false,
+        readiness: () => false,
+      }),
+    ).toBe("input-bytes");
+  });
+});
 
 describe("interactive PTY receipt settlement", () => {
   it("admits retained success evidence only for an exact completed receipt", () => {

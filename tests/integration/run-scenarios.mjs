@@ -69,6 +69,8 @@ import {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyObservedActionsMatch,
+  interactivePtyArtifactReadinessMatches,
+  interactivePtyArtifactRejectionCode,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
@@ -1190,26 +1192,39 @@ const interactivePtyGeometryMatches = (receipt) =>
     JSON.stringify({ columns: 80, rows: 24 }) &&
   JSON.stringify(receipt?.observedGeometry) ===
     JSON.stringify({ columns: 100, rows: 30 });
-const interactivePtyArtifactAuthorityMatches = (receipt) =>
-  receipt?.processRequestFingerprint ===
-    receipt?.request?.process?.requestFingerprint &&
-  receipt?.inputBytes === receipt?.request?.process?.inputBytes &&
-  receipt?.inputSha256 === receipt?.request?.process?.inputSha256 &&
-  receipt?.readinessObserved === true &&
-  receipt?.request?.interpreter?.path === "/usr/local/bin/node" &&
-  receipt?.request?.scriptSha256 ===
-    createHash("sha256")
-      .update(
-        readFileSync(
-          resolve(
-            integrationRoot,
-            manifest.scenarios.find(
-              (scenario) => scenario.scenarioId === receipt.scenarioId,
-            )?.scenarioProcess.path ?? "__invalid__",
+const interactivePtyArtifactAuthorityMatches = (receipt, failed) => {
+  const rejection = interactivePtyArtifactRejectionCode({
+    "process-fingerprint": () =>
+      receipt?.processRequestFingerprint ===
+      receipt?.request?.process?.requestFingerprint,
+    "input-bytes": () =>
+      receipt?.inputBytes === receipt?.request?.process?.inputBytes,
+    "input-digest": () =>
+      receipt?.inputSha256 === receipt?.request?.process?.inputSha256,
+    readiness: () => interactivePtyArtifactReadinessMatches(receipt, failed),
+    interpreter: () =>
+      receipt?.request?.interpreter?.path === "/usr/local/bin/node",
+    "script-digest": () =>
+      receipt?.request?.scriptSha256 ===
+      createHash("sha256")
+        .update(
+          readFileSync(
+            resolve(
+              integrationRoot,
+              manifest.scenarios.find(
+                (scenario) => scenario.scenarioId === receipt.scenarioId,
+              )?.scenarioProcess.path ?? "__invalid__",
+            ),
           ),
-        ),
-      )
-      .digest("hex");
+        )
+        .digest("hex"),
+  });
+  if (rejection !== null)
+    process.stderr.write(
+      `integration.isolation.pty-artifact-rejection:${rejection}\n`,
+    );
+  return rejection === null;
+};
 const interactivePtyFingerprintMatches = (receipt) =>
   receipt?.requestFingerprint ===
   fingerprintSelectedPtyAuthority({
@@ -1248,7 +1263,7 @@ const captureInteractivePtyReceipt = (
       envelope: interactivePtyEnvelopeMatches(receipt, plan, expected, failed),
       process: interactivePtyProcessMatches(processRequest, plan, receipt),
       geometry: interactivePtyGeometryMatches(receipt),
-      artifact: interactivePtyArtifactAuthorityMatches(receipt),
+      artifact: interactivePtyArtifactAuthorityMatches(receipt, failed),
       fingerprint: interactivePtyFingerprintMatches(receipt),
     };
   } catch {
