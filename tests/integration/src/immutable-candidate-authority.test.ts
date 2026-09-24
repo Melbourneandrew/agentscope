@@ -21,6 +21,7 @@ const {
   extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyActionPrefixDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -179,6 +180,36 @@ describe("interactive PTY receipt settlement", () => {
 });
 
 describe("interactive PTY action prefix diagnostics", () => {
+  it("emits only bounded counts for an authenticated failed-action prefix", () => {
+    const requested = [
+      { action: "resize" },
+      { action: "input", secret: "never-print" },
+      { action: "wait-for-semantic-completion" },
+    ];
+    expect(
+      interactivePtyActionPrefixDiagnostic({
+        actions: requested.slice(0, 2),
+        request: { interaction: { actions: requested } },
+      }),
+    ).toBe("integration.isolation.pty-action-prefix:2/3");
+    expect(
+      interactivePtyActionPrefixDiagnostic({
+        actions: [{ action: "input" }],
+        request: { interaction: { actions: requested } },
+      }),
+    ).toBeUndefined();
+    expect(
+      interactivePtyActionPrefixDiagnostic({
+        actions: [],
+        request: {
+          interaction: {
+            actions: Array.from({ length: 33 }, () => ({ action: "input" })),
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps the Codex receipt-settlement reserve exact and scenario-bound", () => {
     expect(
       interactivePtyExecutionReserveMilliseconds("codex-tui-trace-smoke"),
