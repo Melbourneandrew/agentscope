@@ -76,6 +76,16 @@ export function classifyCodexShutdownLogSource(
   | "session-end-active"
   | "session-end-completed";
 
+export function codexStopHookReadyForExit(
+  state:
+    | "log-unavailable"
+    | "stop-unseen"
+    | "stop-active"
+    | "stop-completed"
+    | "session-end-active"
+    | "session-end-completed",
+): boolean;
+
 export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

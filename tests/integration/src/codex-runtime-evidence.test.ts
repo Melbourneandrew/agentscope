@@ -23,6 +23,7 @@ import {
   classifyCodexStopHookCommand,
   classifyCodexShutdownAtJoinDeadline,
   classifyCodexShutdownLogSource,
+  codexStopHookReadyForExit,
   classifyMissingOperationalStateByHookDuration,
   classifyLocalSqliteOutcomeAfterBaseline,
   inspectCodexRootHookLifecycle,
@@ -69,8 +70,22 @@ describe("Codex bounded native ledgers", () => {
       [`${sessionStart}${stop}`, "stop-completed"],
       [`${sessionStart}${stop}${start("SessionEnd")}`, "session-end-active"],
       [`${sessionStart}${stop}${sessionEnd}`, "session-end-completed"],
-    ] as const)
+    ] as const) {
       expect(classifyCodexShutdownLogSource(source)).toBe(expected);
+      if (expected === "stop-completed")
+        expect(codexStopHookReadyForExit(expected)).toBe(true);
+      else if (
+        expected === "session-end-active" ||
+        expected === "session-end-completed"
+      )
+        expect(() => codexStopHookReadyForExit(expected)).toThrow(
+          "integration.codex.hook-lifecycle",
+        );
+      else expect(codexStopHookReadyForExit(expected)).toBe(false);
+    }
+    expect(() => codexStopHookReadyForExit("unknown" as never)).toThrow(
+      "integration.codex.hook-lifecycle",
+    );
     for (const source of [
       "TRACE unrelated: new\n",
       `${sessionStart}${sessionEnd}`,

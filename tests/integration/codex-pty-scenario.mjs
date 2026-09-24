@@ -418,6 +418,7 @@ const { createCodexInternalProviderConfiguration } = configurationModule;
 const {
   boundedRequestLedger,
   classifyCodexShutdownAtJoinDeadline,
+  codexStopHookReadyForExit,
   classifyLocalSqliteOutcomeAfterBaseline,
   classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
@@ -1000,6 +1001,25 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     remaining();
   }
 };
+const waitForCodexStopBeforeExit = async (traceDeadline) => {
+  while (true) {
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
+    const state = classifyCodexShutdownAtJoinDeadline({
+      directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+      directoryPath: codexDiagnosticLogDirectory,
+    });
+    if (codexStopHookReadyForExit(state)) return;
+    await waitWithinObservationDeadline({
+      deadline: traceDeadline,
+      maximumWaitMilliseconds: 20,
+      now: bootNow,
+      wait: (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    });
+    remaining();
+  }
+};
 const waitForTraceObservation = (traceDeadline) =>
   waitWithinObservationDeadline({
     deadline: traceDeadline,
@@ -1295,6 +1315,11 @@ try {
   // and Testkit joins Codex so its vendor Stop hook has run.
   await waitForCodexTurnTerminal(traceDeadline);
   recordInteractivePhase("trace-terminal");
+  // The rollout can record a completed turn while Codex is still executing
+  // its Stop hook. Releasing /exit at that point can race the TUI composer.
+  // Consume the same deadline and require the exact Stop completion first;
+  // the final lifecycle remains independently checked after process join.
+  await waitForCodexStopBeforeExit(traceDeadline);
   await publishTerminalCompletionBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,

@@ -549,6 +549,19 @@ describe("integration capability manifest", () => {
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
+    const stopBeforeExit = source.indexOf(
+      "  await waitForCodexStopBeforeExit(traceDeadline);\n",
+      traceTerminalPhase,
+    );
+    expect(stopBeforeExit).toBeGreaterThan(traceTerminalPhase);
+    expect(stopBeforeExit).toBeLessThan(terminalCompletion);
+    const stopWait = source.slice(
+      source.indexOf("const waitForCodexStopBeforeExit ="),
+      source.indexOf("const waitForTraceObservation ="),
+    );
+    expect(stopWait).toContain("codexStopHookReadyForExit(state)");
+    expect(stopWait).toContain("deadline: traceDeadline,");
+    expect(stopWait).toContain("maximumWaitMilliseconds: 20,");
     const postJoinDeadline = source.indexOf(
       "  recordTerminalObservationBeforeDeadline({\n",
       codexJoin,
