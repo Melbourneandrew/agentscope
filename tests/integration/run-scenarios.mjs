@@ -1120,6 +1120,7 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
               challenge,
               text: "›",
               requiredText: "Ask Codex to do anything",
+              postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
               requiredTerminalProtocol: "csi-u-flags-7-query-v1",
               bold: true,
               dim: false,

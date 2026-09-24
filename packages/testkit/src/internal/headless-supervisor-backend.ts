@@ -1990,14 +1990,21 @@ const snapshotPtyRequest = (
     ]);
   } else if (
     readinessKind === "challenge-styled-text" &&
-    readinessKeys ===
-      "bold\0challenge\0dim\0kind\0requiredTerminalProtocol\0requiredText\0text"
+    (readinessKeys ===
+      "bold\0challenge\0dim\0kind\0requiredTerminalProtocol\0requiredText\0text" ||
+      readinessKeys ===
+        "bold\0challenge\0dim\0kind\0postSubmissionResponseText\0requiredTerminalProtocol\0requiredText\0text")
   ) {
     const challenge = ownData(readiness, "challenge");
     const readinessText = ownData(readiness, "text");
     const readinessBold = ownData(readiness, "bold");
     const readinessDim = ownData(readiness, "dim");
     const requiredText = ownData(readiness, "requiredText");
+    const postSubmissionResponseText = readinessKeys.includes(
+      "postSubmissionResponseText",
+    )
+      ? ownData(readiness, "postSubmissionResponseText")
+      : undefined;
     const requiredTerminalProtocol = ownData(
       readiness,
       "requiredTerminalProtocol",
@@ -2014,6 +2021,14 @@ const snapshotPtyRequest = (
       typeof requiredText !== "string" ||
       requiredText.length < 1 ||
       requiredText.length > 32 ||
+      (postSubmissionResponseText !== undefined &&
+        (typeof postSubmissionResponseText !== "string" ||
+          postSubmissionResponseText.length < 65 ||
+          postSubmissionResponseText.length > 128 ||
+          !postSubmissionResponseText.endsWith(challenge) ||
+          safeBufferFrom(process_.stdin)
+            .toString("utf8")
+            .includes(postSubmissionResponseText))) ||
       [...requiredText].some(
         (character) =>
           (character.codePointAt(0) ?? 0) < 0x20 ||
@@ -2029,6 +2044,9 @@ const snapshotPtyRequest = (
         challenge,
         text: readinessText,
         requiredText,
+        ...(postSubmissionResponseText === undefined
+          ? {}
+          : { postSubmissionResponseText }),
         requiredTerminalProtocol,
         bold: readinessBold,
         dim: readinessDim,
@@ -2283,6 +2301,8 @@ const snapshotPtyRequest = (
     eofCount > 1 ||
     (idlePromptWaitCount !== 0 &&
       (readinessKind !== "challenge-styled-text" ||
+        (stableReadiness as { postSubmissionResponseText?: string })
+          .postSubmissionResponseText === undefined ||
         idlePromptWaitCount !== 1 ||
         idlePromptWaitIndex !== semanticWaitIndex + 1 ||
         stableActions[idlePromptWaitIndex + 1]?.action !== "input")) ||
@@ -4867,6 +4887,8 @@ type SelectedPtyTestSeed =
   | "terminal-post-completion-idle"
   | "terminal-idle-before-completion-marker"
   | "terminal-preenter-frame-late-close"
+  | "terminal-preenter-buffered-idle"
+  | "terminal-response-after-idle-frame"
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
@@ -5463,6 +5485,31 @@ const selectedPtyRuntimeForTest = (
             `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered AGENTSCOPE_PTY_COMPLETE\u001b[?2026l`,
           ),
         );
+      if (
+        (seed === "terminal-post-completion-idle" ||
+          seed === "terminal-idle-before-completion-marker" ||
+          seed === "terminal-preenter-buffered-idle" ||
+          seed === "terminal-response-after-idle-frame") &&
+        readiness.kind === "challenge-styled-text" &&
+        readiness.postSubmissionResponseText !== undefined
+      ) {
+        const responseFrame = safeBufferFrom(
+          `\u001b[?2026h\u001b[2J\u001b[H${readiness.postSubmissionResponseText}\r\n${styledPrompt.toString()} prompt-rendered\u001b[?2026l`,
+        );
+        if (seed === "terminal-post-completion-idle")
+          chunks.splice(5, 1, responseFrame);
+        else if (seed === "terminal-idle-before-completion-marker")
+          chunks.splice(4, 0, responseFrame);
+        else if (seed === "terminal-response-after-idle-frame")
+          chunks.splice(
+            4,
+            0,
+            safeBufferFrom(
+              `\u001b[?2026h\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered\r\n${readiness.postSubmissionResponseText}\u001b[?2026l`,
+            ),
+          );
+        else chunks.splice(4, 0, synchronizedPromptRendered);
+      }
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
@@ -5639,7 +5686,7 @@ const selectedPtyRuntimeForTest = (
               : currentGeometry.rows,
           eofByte: 4,
         }),
-        // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
+        // eslint-disable-next-line complexity, max-lines-per-function -- closed adversarial PTY schedule includes the queued pre-Enter frame
         read: (maximumBytes) => {
           assertNoReadDuringPartialSubmission();
           transportReads += 1;
@@ -5685,6 +5732,17 @@ const selectedPtyRuntimeForTest = (
               (seed === "keyboard-protocol-readiness-before-blocked" ? 2 : 3) &&
             submissionPromptAccepted < 67 &&
             seed !== "terminal-stale-prebuffer-no-redraw"
+          )
+            return { status: "would-block" as const };
+          if (
+            (seed === "terminal-post-completion-idle" ||
+              seed === "terminal-idle-before-completion-marker" ||
+              seed === "terminal-preenter-buffered-idle" ||
+              seed === "terminal-response-after-idle-frame") &&
+            readiness.kind === "challenge-styled-text" &&
+            readiness.postSubmissionResponseText !== undefined &&
+            chunkIndex >= 4 &&
+            submissionEnterAccepted < 5
           )
             return { status: "would-block" as const };
           if (
