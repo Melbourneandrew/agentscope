@@ -113,6 +113,8 @@ const emulatorArmPostSubmissionIdleObservation =
   BoundedTerminalEmulator.prototype.armPostSubmissionIdleObservation;
 const emulatorPostSubmissionIdlePromptObserved =
   BoundedTerminalEmulator.prototype.postSubmissionIdlePromptObserved;
+const emulatorPostSubmissionIdleDiagnostic =
+  BoundedTerminalEmulator.prototype.postSubmissionIdleDiagnostic;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -3477,6 +3479,19 @@ const armSelectedPty = (
           inputBytes: ptyAuthority.inputBytes,
           inputSha256: ptyAuthority.inputSha256,
           readinessObserved,
+          ...(request.readiness.kind === "challenge-styled-text" &&
+          request.interaction.actions.some(
+            (action) =>
+              action.action === "wait-for-post-submission-idle-prompt",
+          )
+            ? {
+                postSubmissionIdleDiagnostic: safeReflectApply(
+                  emulatorPostSubmissionIdleDiagnostic,
+                  terminal,
+                  [],
+                ),
+              }
+            : {}),
           actions: safeReflectApply(freeze, Object, [actionsApplied]),
           processStartIdentity: root?.startIdentity ?? "",
           isTTY: true,

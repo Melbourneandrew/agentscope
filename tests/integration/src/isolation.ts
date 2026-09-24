@@ -447,6 +447,16 @@ const ptyTerminalReceiptSchema = z
     inputBytes: z.number().int().nonnegative().max(1_048_576),
     inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
     readinessObserved: z.boolean(),
+    postSubmissionIdleDiagnostic: z
+      .enum([
+        "not-armed",
+        "response-not-observed",
+        "idle-frame-not-observed",
+        "idle-frame-rejected",
+        "idle-readiness-revoked",
+        "idle-ready",
+      ])
+      .optional(),
     actions: z.array(ptyObservedActionSchema).max(64),
     outerMonotonicDeadlineMs: z.number().finite().positive(),
     requestConstructedAtMs: z.number().finite().nonnegative(),
