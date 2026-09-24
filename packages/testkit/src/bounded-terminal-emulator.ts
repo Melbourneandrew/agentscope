@@ -1471,8 +1471,20 @@ export class BoundedTerminalEmulator {
     } else if (selector === "11" && title === "?") {
       this.#observeRequiredTerminalProtocolStep(4);
       this.#enqueueTerminalResponse("\u001b]11;rgb:0000/0000/0000\u001b\\");
-    } else if (selector === "0" || selector === "2")
+    } else if (selector === "0" || selector === "2") {
       this.#titleSha256 = hash(title);
+      // The selected Codex fixture publishes its challenge-bound completion
+      // as a title update so it cannot overwrite the already-proved live
+      // composer. This is only semantic completion, never input readiness.
+      if (
+        selector === "2" &&
+        this.#readinessMatcher.kind === "challenge-styled-text" &&
+        this.#postSubmissionIdleObservationArmed &&
+        this.#postSubmissionResponseObserved &&
+        title === `${completedMarker}:${this.#readinessMatcher.challenge}`
+      )
+        this.#completionObserved = true;
+    }
     this.#control = "";
     this.#state = "ground";
   }

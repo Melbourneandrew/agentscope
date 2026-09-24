@@ -563,6 +563,11 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "response-not-observed",
     );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+    );
+    expect(terminal.completionObserved()).toBe(false);
+    expect(terminal.readinessObserved()).toBe(true);
     terminal.write(bytes(response));
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "idle-frame-not-observed",
@@ -577,6 +582,17 @@ describe("bounded semantic terminal emulator", () => {
       ),
     );
     expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"b".repeat(64)}\u001b\\`),
+    );
+    expect(terminal.completionObserved()).toBe(false);
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b`),
+    );
+    terminal.write(bytes("\\"));
+    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.snapshot().semanticState).toBe("completed");
+    expect(terminal.postSubmissionIdlePromptObserved()).toBe(true);
     terminal.write(bytes("\u001b[?2026h\u001b[2J\u001b[Hbusy\u001b[?2026l"));
     expect(terminal.postSubmissionIdleDiagnostic()).toBe(
       "idle-readiness-revoked",

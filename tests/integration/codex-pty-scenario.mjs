@@ -1326,8 +1326,10 @@ try {
     record: () => remaining(),
     publish: () =>
       new Promise((resolve, reject) => {
-        process.stdout.write(`${terminalCompletionMarker}\r\n`, (error) =>
-          error === null || error === undefined ? resolve() : reject(error),
+        process.stdout.write(
+          `\u001b]2;${terminalCompletionMarker}\u001b\\`,
+          (error) =>
+            error === null || error === undefined ? resolve() : reject(error),
         );
       }),
   });
