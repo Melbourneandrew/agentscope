@@ -1507,6 +1507,18 @@ describe("selected PTY backend evidence", () => {
         evidence,
       ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
     ).toBe("idle-ready");
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            postSubmissionIdleAtTitleDiagnostic: "idle-revoked-unmodeled-csi",
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
+    ).toBe("idle-revoked-unmodeled-csi");
     expect(() =>
       compileWithPreparedAuthority(
         {

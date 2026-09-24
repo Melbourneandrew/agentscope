@@ -229,6 +229,16 @@ describe("interactive PTY action prefix diagnostics", () => {
     expect(interactivePtyIdleAtTitleDiagnostic(receipt)).toBe(
       "integration.isolation.pty-idle-at-title:idle-ready",
     );
+    for (const category of [
+      "idle-revoked-screen",
+      "idle-revoked-unmodeled-csi",
+    ])
+      expect(
+        interactivePtyIdleAtTitleDiagnostic({
+          ...receipt,
+          postSubmissionIdleAtTitleDiagnostic: category,
+        }),
+      ).toBe(`integration.isolation.pty-idle-at-title:${category}`);
     for (const substituted of [
       "terminal-content\nspoofed-output",
       "\u001b[31mredacted\u001b[0m",

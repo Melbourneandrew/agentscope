@@ -283,6 +283,21 @@ const ptyIdleDiagnosticCategories = Object.freeze([
   "idle-readiness-revoked",
   "idle-ready",
 ]);
+const ptyIdleAtTitleRevocationCategories = Object.freeze([
+  "idle-revoked-protocol",
+  "idle-revoked-screen",
+  "idle-revoked-unclassified",
+  "idle-revoked-combined-sync",
+  "idle-revoked-unmodeled-csi",
+  "idle-revoked-cursor-restore",
+  "idle-revoked-reverse-index",
+  "idle-revoked-tab-stop-set",
+  "idle-revoked-charset",
+  "idle-revoked-frame-line-break",
+  "idle-revoked-tab",
+  "idle-revoked-untrusted-cell",
+  "idle-revoked-rendition",
+]);
 export const interactivePtyIdleObservationDiagnostic = (receipt) => {
   if (
     receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
@@ -314,7 +329,8 @@ export const interactivePtyIdleAtTitleDiagnostic = (receipt) => {
   if (
     category !== "title-not-observed" &&
     (typeof category !== "string" ||
-      !ptyIdleDiagnosticCategories.includes(category))
+      (!ptyIdleDiagnosticCategories.includes(category) &&
+        !ptyIdleAtTitleRevocationCategories.includes(category)))
   )
     return "integration.isolation.pty-idle-at-title:missing-or-invalid";
   return `integration.isolation.pty-idle-at-title:${category}`;
