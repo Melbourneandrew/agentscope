@@ -22,6 +22,7 @@ const {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
+  interactivePtyIdleObservationDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -205,6 +206,43 @@ describe("interactive PTY action prefix diagnostics", () => {
           interaction: {
             actions: Array.from({ length: 33 }, () => ({ action: "input" })),
           },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("prints only closed post-submission idle categories from a failed receipt", () => {
+    const receipt = {
+      request: {
+        readiness: { kind: "challenge-styled-text" },
+        interaction: {
+          actions: [{ action: "wait-for-post-submission-idle-prompt" }],
+        },
+      },
+      postSubmissionIdleDiagnostic: "response-not-observed",
+    };
+    expect(interactivePtyIdleObservationDiagnostic(receipt)).toBe(
+      "integration.isolation.pty-idle-diagnostic:response-not-observed",
+    );
+    for (const substituted of [
+      "terminal-content\nspoofed-output",
+      "\u001b[31mredacted\u001b[0m",
+      { toString: () => "secret" },
+      null,
+      undefined,
+    ])
+      expect(
+        interactivePtyIdleObservationDiagnostic({
+          ...receipt,
+          postSubmissionIdleDiagnostic: substituted,
+        }),
+      ).toBe("integration.isolation.pty-idle-diagnostic:missing-or-invalid");
+    expect(
+      interactivePtyIdleObservationDiagnostic({
+        ...receipt,
+        request: {
+          ...receipt.request,
+          readiness: { kind: "semantic-marker" },
         },
       }),
     ).toBeUndefined();

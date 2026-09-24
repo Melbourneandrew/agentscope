@@ -273,6 +273,34 @@ export const interactivePtyActionPrefixDiagnostic = (receipt) => {
   return `integration.isolation.pty-action-prefix:${observed.length}/${requested.length}`;
 };
 
+// This optional receipt field is not part of the envelope authority checks.
+// Never interpolate it until it has been reduced to one closed category.
+const ptyIdleDiagnosticCategories = Object.freeze([
+  "not-armed",
+  "response-not-observed",
+  "idle-frame-not-observed",
+  "idle-frame-rejected",
+  "idle-readiness-revoked",
+  "idle-ready",
+]);
+export const interactivePtyIdleObservationDiagnostic = (receipt) => {
+  if (
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    !Array.isArray(receipt?.request?.interaction?.actions) ||
+    !receipt.request.interaction.actions.some(
+      (action) => action?.action === "wait-for-post-submission-idle-prompt",
+    )
+  )
+    return undefined;
+  const category = receipt.postSubmissionIdleDiagnostic;
+  if (
+    typeof category !== "string" ||
+    !ptyIdleDiagnosticCategories.includes(category)
+  )
+    return "integration.isolation.pty-idle-diagnostic:missing-or-invalid";
+  return `integration.isolation.pty-idle-diagnostic:${category}`;
+};
+
 export const interactivePtyArtifactReadinessMatches = (
   receipt,
   failed = false,
