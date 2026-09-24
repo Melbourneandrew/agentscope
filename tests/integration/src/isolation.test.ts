@@ -431,6 +431,9 @@ const ptyChallengeReceiptFor = () => {
     ...receipt.request.process,
     inputBytes: input.length,
     inputSha256,
+    // The Codex fixture must settle its selected-PTY failure receipt before
+    // its own outer-minus-five-second terminal cutoff.
+    monotonicExecutionDeadlineMs: 6_000,
   };
   const rawProcessRequest = {
     runId: process.runId,
@@ -656,8 +659,10 @@ const refingerprintPtyProcessDeadline = (
     | "monotonicShutdownDeadlineMs"
     | "terminationGraceMs",
   value: number,
+  receipt:
+    | ReturnType<typeof ptyReceiptFor>
+    | ReturnType<typeof ptyChallengeReceiptFor> = ptyReceiptFor(),
 ) => {
-  const receipt = ptyReceiptFor();
   const process = { ...receipt.request.process, [field]: value };
   const rawProcessRequest = {
     runId: process.runId,
@@ -665,7 +670,13 @@ const refingerprintPtyProcessDeadline = (
     arguments: process.arguments,
     cwd: process.cwd,
     environment: process.environment,
-    stdinBase64: "cnVuCg==",
+    stdinBase64:
+      receipt.scenarioId === "codex-tui-trace-smoke"
+        ? Buffer.concat([
+            Buffer.from(`${"b".repeat(64)}\n`),
+            Buffer.from([4]),
+          ]).toString("base64")
+        : "cnVuCg==",
     stdoutLimitBytes: process.stdoutLimitBytes,
     stderrLimitBytes: process.stderrLimitBytes,
     monotonicStartupDeadlineMs: process.monotonicStartupDeadlineMs,
@@ -1489,6 +1500,11 @@ describe("selected PTY backend evidence", () => {
         receipt,
         { kind: "semantic-marker" },
         "immediate",
+      ),
+      refingerprintPtyProcessDeadline(
+        "monotonicExecutionDeadlineMs",
+        26_000,
+        receipt,
       ),
       {
         ...receipt,

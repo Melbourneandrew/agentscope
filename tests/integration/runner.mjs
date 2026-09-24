@@ -518,7 +518,12 @@ try {
       now + 10_000,
       headlessShutdownDeadline - 5_000,
     ),
-    monotonicExecutionDeadlineMs: headlessShutdownDeadline - 5_000,
+    // The Codex fixture itself stops five seconds before the outer deadline.
+    // Retire a stalled selected PTY earlier so its bounded action-prefix
+    // receipt can be emitted and joined before that fixture cutoff.
+    monotonicExecutionDeadlineMs:
+      headlessShutdownDeadline -
+      (scenarioId === "codex-tui-trace-smoke" ? 25_000 : 5_000),
     monotonicShutdownDeadlineMs: headlessShutdownDeadline,
     terminationGraceMs: 1_000,
   };
