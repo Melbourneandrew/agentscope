@@ -493,7 +493,9 @@ export class BoundedTerminalEmulator {
   #readinessChallengeObserved = false;
   #readinessTail = "";
   #completionObserved = false;
-  #readinessGenerationAtCompletion = -1;
+  #postSubmissionIdleObservationArmed = false;
+  #postSubmissionIdleFrameEligible = false;
+  #postSubmissionIdlePromptObserved = false;
   #completionTail = "";
   #bold = false;
   #dim = false;
@@ -692,9 +694,17 @@ export class BoundedTerminalEmulator {
     return this.#readinessObservationGeneration;
   }
 
-  /** Package-private ordering witness for an idle redraw after completion. */
-  public readinessGenerationAtCompletion(): number {
-    return this.#readinessGenerationAtCompletion;
+  /** Package-private: arm only after the selected turn-submission input. */
+  public armPostSubmissionIdleObservation(): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    this.#postSubmissionIdleObservationArmed = true;
+    this.#postSubmissionIdleFrameEligible = false;
+    this.#postSubmissionIdlePromptObserved = false;
+  }
+
+  /** Package-private: one later synchronized challenged idle-prompt frame. */
+  public postSubmissionIdlePromptObserved(): boolean {
+    return this.#postSubmissionIdlePromptObserved && this.#readinessObserved;
   }
 
   public requiredTerminalProtocolReady(): boolean {
@@ -785,10 +795,13 @@ export class BoundedTerminalEmulator {
   #beginChallengeSynchronizedOutputFrame(): void {
     this.#resetChallengeOutputObservation();
     this.#challengeSynchronizedOutputFrameActive = true;
+    this.#postSubmissionIdleFrameEligible =
+      this.#postSubmissionIdleObservationArmed;
   }
 
   #invalidateChallengeSynchronizedOutputFrame(): void {
     this.#challengeSynchronizedOutputFrameActive = false;
+    this.#postSubmissionIdleFrameEligible = false;
     this.#resetChallengeOutputObservation();
   }
 
@@ -835,8 +848,11 @@ export class BoundedTerminalEmulator {
       this.#scrollRegionCanonical;
     if (outputAuthorityValid) this.#challengeScreenAuthorityRevoked = false;
     this.#refreshChallengeStyledReadiness();
-    if (this.#readinessObserved && outputAuthorityValid)
+    if (this.#readinessObserved && outputAuthorityValid) {
       this.#readinessObservationGeneration += 1;
+      if (this.#postSubmissionIdleFrameEligible)
+        this.#postSubmissionIdlePromptObserved = true;
+    }
     this.#invalidateChallengeSynchronizedOutputFrame();
   }
 
@@ -1116,11 +1132,7 @@ export class BoundedTerminalEmulator {
     this.#completionTail = `${this.#completionTail}${character}`.slice(
       -completedMarker.length,
     );
-    if (!this.#completionObserved && this.#completionTail === completedMarker) {
-      this.#completionObserved = true;
-      this.#readinessGenerationAtCompletion =
-        this.#readinessObservationGeneration;
-    }
+    this.#completionObserved ||= this.#completionTail === completedMarker;
     if (
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
       character === this.#readinessMatcher.text &&

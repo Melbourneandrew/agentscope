@@ -109,8 +109,10 @@ const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
 const emulatorReadinessObservationGeneration =
   BoundedTerminalEmulator.prototype.readinessObservationGeneration;
-const emulatorReadinessGenerationAtCompletion =
-  BoundedTerminalEmulator.prototype.readinessGenerationAtCompletion;
+const emulatorArmPostSubmissionIdleObservation =
+  BoundedTerminalEmulator.prototype.armPostSubmissionIdleObservation;
+const emulatorPostSubmissionIdlePromptObserved =
+  BoundedTerminalEmulator.prototype.postSubmissionIdlePromptObserved;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -2236,7 +2238,7 @@ const snapshotPtyRequest = (
           { action: "wait-for-semantic-completion" },
         ]) as SelectedPtyExecutionAction,
       );
-    } else if (actionKind === "wait-for-idle-prompt-after-completion") {
+    } else if (actionKind === "wait-for-post-submission-idle-prompt") {
       if (actionKeys !== "action") return fail("testkit.pty.request");
       idlePromptWaitCount += 1;
       idlePromptWaitIndex = index;
@@ -2244,7 +2246,7 @@ const snapshotPtyRequest = (
         stableActions,
         index,
         safeReflectApply(freeze, Object, [
-          { action: "wait-for-idle-prompt-after-completion" },
+          { action: "wait-for-post-submission-idle-prompt" },
         ]) as SelectedPtyExecutionAction,
       );
     } else if (actionKind === "interrupt-byte") {
@@ -2801,7 +2803,7 @@ const armSelectedPty = (
             )) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
           pendingActionBeforeRead.action ===
-            "wait-for-idle-prompt-after-completion" ||
+            "wait-for-post-submission-idle-prompt" ||
           pendingActionBeforeRead.action === "checkpoint-process-topology" ||
           requiresCausalInputDrain ||
           waitingForPriorInputOutput ||
@@ -2977,6 +2979,16 @@ const armSelectedPty = (
                 terminal,
                 [],
               );
+              // eslint-disable-next-line max-depth -- arm only after the exact completed submission input
+              if (
+                isBracketedPasteEnter &&
+                semanticCompletionObservedAtOutputBytes < 0
+              )
+                safeReflectApply(
+                  emulatorArmPostSubmissionIdleObservation,
+                  terminal,
+                  [],
+                );
               actionInputOffset = 0;
               actionIndex += 1;
             }
@@ -3076,28 +3088,22 @@ const armSelectedPty = (
               actionIndex += 1;
             }
           } else if (
-            action?.action === "wait-for-idle-prompt-after-completion"
+            action?.action === "wait-for-post-submission-idle-prompt"
           ) {
-            // A pre-turn prompt, even one still visible after the completion
-            // marker, is not authority to send the terminal action. Require a
-            // new synchronized challenged prompt frame after that marker.
+            // The Stop-completed marker may arrive after Codex has already
+            // redrawn its idle composer. Require a challenged frame that began
+            // after the selected turn submission, then the completion marker.
             if (
               request.readiness.kind === "challenge-styled-text" &&
               semanticCompletionObservedAtOutputBytes >= 0 &&
-              readinessObserved &&
               safeReflectApply(
-                emulatorReadinessObservationGeneration,
+                emulatorPostSubmissionIdlePromptObserved,
                 terminal,
                 [],
-              ) >
-                safeReflectApply(
-                  emulatorReadinessGenerationAtCompletion,
-                  terminal,
-                  [],
-                )
+              )
             ) {
               recordAction({
-                action: "wait-for-idle-prompt-after-completion",
+                action: "wait-for-post-submission-idle-prompt",
                 monotonicAtMs: safeReflectApply(
                   performanceNow,
                   performance,
@@ -3925,8 +3931,8 @@ const ptyTerminalControlActionMatches = (
   )
     return true;
   if (
-    expected.action === "wait-for-idle-prompt-after-completion" &&
-    observed.action === "wait-for-idle-prompt-after-completion"
+    expected.action === "wait-for-post-submission-idle-prompt" &&
+    observed.action === "wait-for-post-submission-idle-prompt"
   )
     return true;
   if (
@@ -4859,7 +4865,8 @@ type SelectedPtyTestSeed =
   | "terminal-redraw-enter-fragmented"
   | "terminal-prompt-partial"
   | "terminal-post-completion-idle"
-  | "terminal-post-completion-stale"
+  | "terminal-idle-before-completion-marker"
+  | "terminal-preenter-frame-late-close"
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
@@ -5444,6 +5451,18 @@ const selectedPtyRuntimeForTest = (
                         : seed === "silent-terminal"
                           ? []
                           : [ready, output];
+      if (
+        seed === "terminal-preenter-frame-late-close" &&
+        readiness.kind === "challenge-styled-text"
+      )
+        chunks.splice(
+          2,
+          3,
+          safeBufferFrom(`${synchronizedStyledPrompt.toString()}\u001b[?2026h`),
+          safeBufferFrom(
+            `\u001b[2J\u001b[H${styledPrompt.toString()} prompt-rendered AGENTSCOPE_PTY_COMPLETE\u001b[?2026l`,
+          ),
+        );
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
