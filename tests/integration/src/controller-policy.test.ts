@@ -266,6 +266,12 @@ describe("integration workflow policy", () => {
     expect(workflow).toContain(
       "node tests/integration/verify-substrate-certification.mjs fan-in",
     );
+    expect(workflow).toContain(
+      "run: pnpm --filter '@agentscope/integration...' build",
+    );
+    expect(workflow).not.toContain(
+      "run: pnpm --filter @agentscope/integration build",
+    );
     for (const certificationCase of SUBSTRATE_CERTIFICATION_CASES)
       expect(workflow).toContain(`          - ${certificationCase}`);
     const scenarios = readFileSync(
