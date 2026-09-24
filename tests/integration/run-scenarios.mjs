@@ -66,6 +66,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
+  interactivePtyReceiptFailed,
   selectInteractiveExecutionFailurePredicate,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -1196,14 +1197,21 @@ const interactivePtyFingerprintMatches = (receipt) =>
     inputBytes: receipt?.inputBytes,
     inputSha256: receipt?.inputSha256,
   });
-const interactivePtyTerminalMatches = (receipt) =>
+const interactivePtyAuthorityMatches = (receipt) =>
   interactivePtyGeometryMatches(receipt) &&
   interactivePtyArtifactAuthorityMatches(receipt) &&
-  interactivePtyFingerprintMatches(receipt) &&
+  interactivePtyFingerprintMatches(receipt);
+const interactivePtyTerminalMatches = (receipt) =>
+  interactivePtyAuthorityMatches(receipt) &&
   receipt?.returnedAtMs <=
     receipt?.request?.process?.monotonicShutdownDeadlineMs &&
   receipt?.finalSnapshot?.semanticState === "completed";
-const captureInteractivePtyReceipt = (output, plan, expected) => {
+const captureInteractivePtyReceipt = (
+  output,
+  plan,
+  expected,
+  failed = false,
+) => {
   let receipt;
   try {
     receipt = decodeInteractivePtyReceipt(output);
@@ -1214,7 +1222,10 @@ const captureInteractivePtyReceipt = (output, plan, expected) => {
   if (
     !interactivePtyEnvelopeMatches(receipt, plan, expected) ||
     !interactivePtyProcessMatches(processRequest, plan, receipt) ||
-    !interactivePtyTerminalMatches(receipt)
+    !(failed
+      ? interactivePtyAuthorityMatches(receipt) &&
+        interactivePtyReceiptFailed(receipt)
+      : interactivePtyTerminalMatches(receipt))
   )
     throw new Error("integration.isolation.pty-receipt");
   return Object.freeze(receipt);
@@ -1713,7 +1724,12 @@ const captureFailedScenarioReceipt = (
 ) => {
   const receipt =
     plan.executionMode === "interactive"
-      ? captureInteractivePtyReceipt(output, plan, { outerMonotonicDeadline })
+      ? captureInteractivePtyReceipt(
+          output,
+          plan,
+          { outerMonotonicDeadline },
+          true,
+        )
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
