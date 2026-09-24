@@ -32,6 +32,8 @@ import {
   mapWithConcurrency,
   sanitizeFixtureResult,
   scenarioContainerTerminalWitness,
+  SCENARIO_HOME,
+  scenarioTmpfsIsExecutable,
   selectCapabilityScenarios,
   verifyManifestEvidence,
   verifyPreparedCandidate,
@@ -282,11 +284,10 @@ const labelArguments = (plan) => [
   "--label",
   `com.agentscope.integration.run=${plan.runId}`,
 ];
-const tmpfsIsExecutable = (path) => path === "/agentscope-home";
 const tmpfsArguments = (limits, ownership = true) =>
   limits.tmpfs.flatMap(({ path, bytes }) => [
     "--tmpfs",
-    `${path}:rw,${tmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
+    `${path}:rw,${scenarioTmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
 const confinementArguments = (plan) => [
   "--network",
@@ -645,7 +646,7 @@ const assertContainer = async (
   const expectedPaths = limits.tmpfs.map(({ path }) => path).sort();
   const tmpfsMatches = limits.tmpfs.every(({ path, bytes }) => {
     const options = new Set(String(tmpfs[path] ?? "").split(","));
-    const executable = tmpfsIsExecutable(path);
+    const executable = scenarioTmpfsIsExecutable(path);
     return (
       options.has("rw") &&
       options.has(executable ? "exec" : "noexec") &&
@@ -795,7 +796,7 @@ const expectedHeadlessEnvironment = (plan, outerMonotonicDeadlineMs) => ({
   ),
   AGENTSCOPE_WORKTREE: "/worktree",
   HARNESS_HOME: "/harness-home",
-  HOME: "/home/agentscope",
+  HOME: SCENARIO_HOME,
   LANG: "C.UTF-8",
   NO_COLOR: "1",
   PATH:
@@ -1647,7 +1648,7 @@ const createScenarioContainer = async (
       ...labelArguments(plan),
       ...confinementArguments(plan),
       "--env",
-      "HOME=/home/agentscope",
+      `HOME=${SCENARIO_HOME}`,
       "--env",
       "XDG_CONFIG_HOME=/harness-home",
       "--env",

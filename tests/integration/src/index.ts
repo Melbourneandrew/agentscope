@@ -40,7 +40,9 @@ export {
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
   scenarioContainerTerminalWitness,
+  SCENARIO_HOME,
   SCENARIO_TMPFS_MOUNTS,
+  scenarioTmpfsIsExecutable,
 } from "./isolation.js";
 export type {
   IsolationCleanupInventory,
