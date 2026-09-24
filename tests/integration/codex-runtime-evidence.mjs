@@ -355,6 +355,23 @@ export const classifyCodexShutdownAtJoinDeadline = (input) => {
   return classifyCodexShutdownLogSource(source ?? "");
 };
 
+/**
+ * A turn-terminal rollout record is not evidence that Codex has returned to
+ * its input composer. Do not release the graceful /exit action while its Stop
+ * hook is still active. This only gates test input; final admission still
+ * requires the independent, complete lifecycle after process join.
+ */
+export const codexStopHookReadyForExit = (state) => {
+  if (state === "stop-completed") return true;
+  if (
+    state === "log-unavailable" ||
+    state === "stop-unseen" ||
+    state === "stop-active"
+  )
+    return false;
+  throw new Error("integration.codex.hook-lifecycle");
+};
+
 export const codexSessionStartCheckpointMatchesLifecycle = (
   checkpoint,
   lifecycle,
