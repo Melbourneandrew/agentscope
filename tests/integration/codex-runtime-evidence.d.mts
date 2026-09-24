@@ -54,6 +54,28 @@ export function codexSessionStartMediationUpperBoundMilliseconds(input: {
   directoryPath: string;
 }): number | undefined;
 
+export function classifyCodexShutdownAtJoinDeadline(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | "log-unavailable"
+  | "stop-unseen"
+  | "stop-active"
+  | "stop-completed"
+  | "session-end-active"
+  | "session-end-completed";
+
+export function classifyCodexShutdownLogSource(
+  source: string,
+):
+  | "log-unavailable"
+  | "stop-unseen"
+  | "stop-active"
+  | "stop-completed"
+  | "session-end-active"
+  | "session-end-completed";
+
 export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

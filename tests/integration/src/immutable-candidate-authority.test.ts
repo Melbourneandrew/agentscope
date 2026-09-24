@@ -14,6 +14,7 @@ const {
   encodeInteractiveFailureExitCode,
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptFailed,
+  selectCodexJoinDeadlineDiagnostic,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -289,6 +290,45 @@ describe("interactive PTY receipt transport", () => {
 });
 
 describe("interactive PTY failure diagnostic transport", () => {
+  it("selects only a closed failure-only shutdown classification", () => {
+    const generic = "integration.fixture.codex-tui-join-deadline";
+    for (const state of [
+      "log-unavailable",
+      "hook-log-invalid",
+      "stop-unseen",
+      "stop-active",
+      "stop-completed",
+      "session-end-active",
+      "session-end-completed",
+    ]) {
+      const specific = `${generic}-${state}`;
+      expect(selectCodexJoinDeadlineDiagnostic(generic, specific)).toBe(
+        specific,
+      );
+      expect(encodeInteractiveFailureExitCode(specific)).toBeUndefined();
+      expect(
+        extractInteractiveChildDiagnostic(
+          `integration.runner.interactive-diagnostic:${specific}\n`,
+        ),
+      ).toBe(specific);
+    }
+    for (const untrusted of [
+      undefined,
+      "integration.fixture.codex-tui-join-deadline-success",
+      "integration.fixture.codex-tui-join-deadline-session-end-completed-extra",
+      "testkit.pty.receipt-terminal",
+    ])
+      expect(selectCodexJoinDeadlineDiagnostic(generic, untrusted)).toBe(
+        generic,
+      );
+    expect(
+      selectCodexJoinDeadlineDiagnostic(
+        "integration.fixture.codex-tui-child-rejected",
+        `${generic}-session-end-completed`,
+      ),
+    ).toBe("integration.fixture.codex-tui-child-rejected");
+  });
+
   it.each([
     "integration.fixture.codex-tui-exit-published",
     "integration.fixture.codex-tui-joined",

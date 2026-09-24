@@ -21,6 +21,7 @@ let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
+let joinDeadlineHookState;
 const interactivePhases = Object.freeze([
   "bootstrap",
   "bootstrap-arguments",
@@ -101,7 +102,7 @@ if (process.hasUncaughtExceptionCaptureCallback())
 process.setUncaughtExceptionCaptureCallback(() => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
   try {
-    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;
+    const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}${joinDeadlineHookState === undefined ? "" : `-${joinDeadlineHookState}`}`;
     if (ledger !== undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
@@ -402,6 +403,7 @@ const [configurationModule, evidenceModule, oracleModule, adapterModule] =
 const { createCodexInternalProviderConfiguration } = configurationModule;
 const {
   boundedRequestLedger,
+  classifyCodexShutdownAtJoinDeadline,
   classifyLocalSqliteOutcomeAfterBaseline,
   classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
@@ -1295,9 +1297,17 @@ try {
     await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    if (message === "integration.codex.diagnostic-deadline")
+    if (message === "integration.codex.diagnostic-deadline") {
       recordInteractivePhase("tui-join-deadline");
-    else if (message === "integration.codex.child")
+      try {
+        joinDeadlineHookState = classifyCodexShutdownAtJoinDeadline({
+          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
+          directoryPath: codexDiagnosticLogDirectory,
+        });
+      } catch {
+        joinDeadlineHookState = "hook-log-invalid";
+      }
+    } else if (message === "integration.codex.child")
       recordInteractivePhase("tui-child-rejected");
     throw error;
   }
