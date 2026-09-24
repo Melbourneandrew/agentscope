@@ -214,8 +214,11 @@ export const decodeCodexJoinDeadlineExitCode = (exitCode) => {
     : `integration.fixture.codex-tui-join-deadline-${state}`;
 };
 
-export const encodeInteractiveFailureExitCode = (diagnostic) => {
-  if (typeof diagnostic === "string") {
+export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (
+    scenarioId === "codex-tui-trace-smoke" &&
+    typeof diagnostic === "string"
+  ) {
     const prefix = "integration.fixture.codex-tui-join-deadline-";
     if (diagnostic.startsWith(prefix))
       return encodeCodexJoinDeadlineExitCode(diagnostic.slice(prefix.length));
@@ -224,10 +227,12 @@ export const encodeInteractiveFailureExitCode = (diagnostic) => {
   return index < 0 ? undefined : interactiveFailureExitCodeBase + index;
 };
 
-export const decodeInteractiveFailureExitCode = (exitCode) => {
+export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
-  const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
-  if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
+  if (scenarioId === "codex-tui-trace-smoke") {
+    const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
+    if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
+  }
   return interactiveFixtureFailurePredicates[
     exitCode - interactiveFailureExitCodeBase
   ];

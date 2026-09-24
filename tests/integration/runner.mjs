@@ -124,7 +124,10 @@ const retainedInteractivePhase = (ledger) => {
 };
 const decodeScenarioFailureExitCode = (exitCode) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
-  const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
+  const joinDeadlineDiagnostic =
+    scenarioId === "codex-tui-trace-smoke"
+      ? decodeCodexJoinDeadlineExitCode(exitCode)
+      : undefined;
   if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
   const phase = interactivePhases[exitCode - 64];
   return phase === undefined ? undefined : `integration.fixture.codex-${phase}`;
@@ -745,7 +748,7 @@ const fixtureResult = fixtureOutput
   .at(-1);
 const interactiveFailureExitCode =
   scenario.executionMode === "interactive" && fixtureFailure !== undefined
-    ? encodeInteractiveFailureExitCode(interactiveFailureDiagnostic)
+    ? encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)
     : undefined;
 if (!fixtureResult && interactiveFailureExitCode === undefined)
   throw new Error("integration.runner.fixture-result");

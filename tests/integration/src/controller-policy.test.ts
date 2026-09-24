@@ -245,9 +245,10 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("encodeCodexJoinDeadlineExitCode(");
     expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode)");
     expect(source).toContain(
-      "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic)",
+      "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
     );
     expect(source).not.toContain("readRetainedJoinDiagnostic");
+    expect(source).toContain('scenarioId === "codex-tui-trace-smoke"');
     expect(scenario).toContain(
       '} else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
     );
