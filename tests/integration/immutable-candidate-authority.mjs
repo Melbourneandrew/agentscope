@@ -220,6 +220,30 @@ export const interactivePtyObservedActionsMatch = (
   );
 };
 
+export const interactivePtyArtifactReadinessMatches = (
+  receipt,
+  failed = false,
+) =>
+  receipt?.readinessObserved === true ||
+  (failed &&
+    receipt?.readinessObserved === false &&
+    interactivePtyReceiptFailed(receipt));
+
+const interactivePtyArtifactFields = Object.freeze([
+  "process-fingerprint",
+  "input-bytes",
+  "input-digest",
+  "readiness",
+  "interpreter",
+  "script-digest",
+]);
+
+export const interactivePtyArtifactRejectionCode = (predicates) => {
+  for (const field of interactivePtyArtifactFields)
+    if (predicates?.[field]?.() !== true) return field;
+  return null;
+};
+
 // Failure-only diagnostics: never include receipt fields or terminal output.
 export const interactivePtyReceiptRejectionCode = (
   receipt,
