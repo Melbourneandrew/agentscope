@@ -17,6 +17,7 @@ const {
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptFailed,
   interactivePtyReceiptAuthorityMatches,
+  interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
   selectInteractiveFailureDiagnostic,
   selectedRuntimeFiles,
@@ -25,20 +26,20 @@ const {
 
 const hex = (character: string): string => character.repeat(64);
 
-describe("interactive PTY receipt settlement", () => {
-  const completed = {
-    outcome: "completed",
-    finalSnapshot: { semanticState: "completed" },
-    exitCode: 0,
-    signal: null,
-    cleanup: "clean",
-    residualProcessCount: 0,
-    processJoined: true,
-    terminalInputJoined: true,
-    terminalOutputJoined: true,
-    terminalTransportClosed: true,
-  };
+const completed = {
+  outcome: "completed",
+  finalSnapshot: { semanticState: "completed" },
+  exitCode: 0,
+  signal: null,
+  cleanup: "clean",
+  residualProcessCount: 0,
+  processJoined: true,
+  terminalInputJoined: true,
+  terminalOutputJoined: true,
+  terminalTransportClosed: true,
+};
 
+describe("interactive PTY receipt settlement", () => {
   it("admits retained success evidence only for an exact completed receipt", () => {
     expect(interactivePtyReceiptFailed(completed)).toBe(false);
   });
@@ -110,6 +111,53 @@ describe("interactive PTY receipt settlement", () => {
     expect(
       interactivePtyReceiptAuthorityMatches(timelySuccess, checks, true),
     ).toBe(false);
+  });
+});
+
+describe("interactive PTY receipt rejection diagnostics", () => {
+  it("classifies rejected receipt authority with closed content-free codes", () => {
+    const checks = {
+      envelope: true,
+      process: true,
+      geometry: true,
+      artifact: true,
+      fingerprint: true,
+    };
+    const failed = {
+      ...completed,
+      outcome: "deadline",
+      finalSnapshot: { semanticState: "active" },
+    };
+    expect(interactivePtyReceiptRejectionCode(failed, checks, true)).toBeNull();
+    expect(interactivePtyReceiptRejectionCode(completed, checks, true)).toBe(
+      "terminal-state",
+    );
+    for (const key of Object.keys(checks))
+      expect(
+        interactivePtyReceiptRejectionCode(
+          failed,
+          { ...checks, [key]: false },
+          true,
+        ),
+      ).toBe(key);
+    expect(
+      interactivePtyReceiptRejectionCode(
+        failed,
+        {
+          ...checks,
+          envelope: false,
+          fingerprint: false,
+        },
+        true,
+      ),
+    ).toBe("envelope");
+    expect(
+      interactivePtyReceiptRejectionCode(
+        { ...completed, finalSnapshot: null },
+        checks,
+        true,
+      ),
+    ).toBe("terminal-state");
   });
 });
 

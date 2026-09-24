@@ -67,6 +67,7 @@ import {
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
   interactivePtyReceiptAuthorityMatches,
+  interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -1207,23 +1208,42 @@ const captureInteractivePtyReceipt = (
   try {
     receipt = decodeInteractivePtyReceipt(output);
   } catch {
+    process.stderr.write(
+      "integration.isolation.pty-receipt-rejection:decode\n",
+    );
     throw new Error("integration.isolation.pty-receipt");
   }
   const processRequest = receipt?.request?.process;
-  if (
-    !interactivePtyReceiptAuthorityMatches(
-      receipt,
-      {
-        envelope: interactivePtyEnvelopeMatches(receipt, plan, expected),
-        process: interactivePtyProcessMatches(processRequest, plan, receipt),
-        geometry: interactivePtyGeometryMatches(receipt),
-        artifact: interactivePtyArtifactAuthorityMatches(receipt),
-        fingerprint: interactivePtyFingerprintMatches(receipt),
-      },
-      failed,
-    )
-  )
+  let checks;
+  try {
+    checks = {
+      envelope: interactivePtyEnvelopeMatches(receipt, plan, expected),
+      process: interactivePtyProcessMatches(processRequest, plan, receipt),
+      geometry: interactivePtyGeometryMatches(receipt),
+      artifact: interactivePtyArtifactAuthorityMatches(receipt),
+      fingerprint: interactivePtyFingerprintMatches(receipt),
+    };
+  } catch {
+    process.stderr.write(
+      "integration.isolation.pty-receipt-rejection:predicate-error\n",
+    );
     throw new Error("integration.isolation.pty-receipt");
+  }
+  let matches;
+  try {
+    matches = interactivePtyReceiptAuthorityMatches(receipt, checks, failed);
+  } catch {
+    process.stderr.write(
+      "integration.isolation.pty-receipt-rejection:terminal-state\n",
+    );
+    throw new Error("integration.isolation.pty-receipt");
+  }
+  if (!matches) {
+    process.stderr.write(
+      `integration.isolation.pty-receipt-rejection:${interactivePtyReceiptRejectionCode(receipt, checks, failed)}\n`,
+    );
+    throw new Error("integration.isolation.pty-receipt");
+  }
   return Object.freeze(receipt);
 };
 const preparedImageFor = async (image, signal) => {
