@@ -305,8 +305,26 @@ describe("interactive PTY failure diagnostic transport", () => {
       const specific = `${generic}-${state}`;
       expect(encodeCodexJoinDeadlineExitCode(state)).toBe(32 + index);
       expect(decodeCodexJoinDeadlineExitCode(32 + index)).toBe(specific);
-      expect(encodeInteractiveFailureExitCode(specific)).toBe(32 + index);
-      expect(decodeInteractiveFailureExitCode(32 + index)).toBe(specific);
+      expect(
+        encodeInteractiveFailureExitCode(specific, "codex-tui-trace-smoke"),
+      ).toBe(32 + index);
+      expect(
+        decodeInteractiveFailureExitCode(32 + index, "codex-tui-trace-smoke"),
+      ).toBe(specific);
+      expect(encodeInteractiveFailureExitCode(specific)).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(
+          specific,
+          "fixture-process-interactive",
+        ),
+      ).toBeUndefined();
+      expect(decodeInteractiveFailureExitCode(32 + index)).toBeUndefined();
+      expect(
+        decodeInteractiveFailureExitCode(
+          32 + index,
+          "fixture-process-interactive",
+        ),
+      ).toBeUndefined();
       expect(
         extractInteractiveChildDiagnostic(
           `integration.runner.interactive-diagnostic:${specific}\n`,

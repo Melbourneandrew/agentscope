@@ -1693,8 +1693,14 @@ const recordInteractiveExecutionFailure = (
   retainedDiagnostic,
 ) => {
   if (plan.executionMode !== "interactive") return;
-  const diagnostic =
+  const candidate =
     retainedDiagnostic ?? contentFreeChildFailureCode(error, output);
+  const diagnostic =
+    candidate.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+    (plan.scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== candidate)
+      ? "child-failure"
+      : candidate;
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
@@ -1922,7 +1928,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
       const fixtureCaptured = captureFixtureResult(output, plan);
       const retainedDiagnostic =
         plan.executionMode === "interactive"
-          ? decodeInteractiveFailureExitCode(error?.code)
+          ? decodeInteractiveFailureExitCode(error?.code, plan.scenarioId)
           : undefined;
       recordInteractiveExecutionFailure(
         plan,
