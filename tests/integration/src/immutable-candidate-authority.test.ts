@@ -806,6 +806,48 @@ describe("interactive PTY failure diagnostic provenance", () => {
       ),
     ).toBe(specific);
   });
+  it("rejects a Codex post-trace subtype from a different scenario receipt or stdout", () => {
+    const specific = "integration.fixture.codex-verify-adapter-observation";
+    expect(
+      encodeInteractiveFailureExitCode(specific, "fixture-process-interactive"),
+    ).toBeUndefined();
+    expect(
+      decodeInteractiveFailureExitCode(160, "fixture-process-interactive"),
+    ).toBeUndefined();
+    expect(decodeInteractiveFailureExitCode(160)).toBeUndefined();
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        "integration.runner.fixture-failed",
+        specific,
+        "fixture-process-interactive",
+      ),
+    ).toBe("child-failure");
+    const stdoutDiagnostic = extractInteractiveChildDiagnostic(
+      `integration.runner.interactive-diagnostic:${specific}\n`,
+    );
+    expect(stdoutDiagnostic).toBe(specific);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        stdoutDiagnostic,
+        undefined,
+        "fixture-process-interactive",
+      ),
+    ).toBe("child-failure");
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        stdoutDiagnostic,
+        undefined,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        "integration.runner.fixture-failed",
+        specific,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe(specific);
+  });
 });
 
 describe("interactive PTY failure diagnostic transport", () => {
@@ -957,21 +999,26 @@ describe("interactive trace failure-marker transport", () => {
 
 describe("Codex uninstall failure diagnostic transport", () => {
   it.each([
-    ["integration.codex.child", "child", 142],
-    ["integration.codex.child-deadline", "child-deadline", 143],
-    ["integration.codex.deadline", "deadline", 144],
-    ["integration.codex.trace-deadline", "trace-deadline", 145],
-    ["integration.codex.cli-output", "cli-output", 146],
-    ["integration.codex.uninstall", "result", 147],
-    ["integration.codex.child-spawn", "child-spawn", 148],
+    ["integration.codex.child", "child", 167],
+    ["integration.codex.child-deadline", "child-deadline", 168],
+    ["integration.codex.deadline", "deadline", 169],
+    ["integration.codex.trace-deadline", "trace-deadline", 170],
+    ["integration.codex.cli-output", "cli-output", 171],
+    ["integration.codex.uninstall", "result", 172],
+    ["integration.codex.child-spawn", "child-spawn", 173],
   ] as const)(
     "maps only the exact owned uninstall failure %s",
     (error, category, expectedExitCode) => {
       const diagnostic = `integration.fixture.codex-verify-uninstall-${category}`;
       expect(codexUninstallFailureDiagnostic(error)).toBe(diagnostic);
-      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(
+        diagnostic,
+        "codex-tui-trace-smoke",
+      );
       expect(exitCode).toBe(expectedExitCode);
-      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exitCode, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
     },
   );
 
@@ -986,17 +1033,22 @@ describe("Codex uninstall failure diagnostic transport", () => {
   });
 
   it.each([
-    ["cli", "during-cli-unclassified", 149],
-    ["result", "during-result-unclassified", 150],
-    ["hook", "during-hook-unclassified", 151],
+    ["cli", "during-cli-unclassified", 174],
+    ["result", "during-result-unclassified", 175],
+    ["hook", "during-hook-unclassified", 176],
   ] as const)(
     "keeps an unclassified error during %s content-free and failure-only",
     (stage, category, expectedExitCode) => {
       const diagnostic = `integration.fixture.codex-verify-uninstall-${category}`;
       expect(codexUninstallUnclassifiedStageDiagnostic(stage)).toBe(diagnostic);
-      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(
+        diagnostic,
+        "codex-tui-trace-smoke",
+      );
       expect(exitCode).toBe(expectedExitCode);
-      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exitCode, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
     },
   );
   for (const stage of [undefined, null, "else", "cli-secret"]) {
@@ -1038,12 +1090,39 @@ describe("Codex uninstall failure diagnostic transport", () => {
   });
 });
 
+it("reserves specialist codes beyond every scenario phase exit", () => {
+  const runner = readFileSync(
+    resolve(import.meta.dirname, "..", "runner.mjs"),
+    "utf8",
+  );
+  const phaseDeclaration =
+    runner
+      .split("const interactivePhases = Object.freeze([", 2)[1]
+      ?.split("]);", 1)[0] ?? "";
+  expect(phaseDeclaration.length).toBeGreaterThan(0);
+  const phaseCount = [...phaseDeclaration.matchAll(/^ {2}"[a-z-]+",$/gmu)]
+    .length;
+  expect(64 + phaseCount - 1).toBeLessThan(160);
+  expect(
+    encodeInteractiveFailureExitCode(
+      "integration.fixture.codex-verify-adapter-observation",
+      "codex-tui-trace-smoke",
+    ),
+  ).toBe(160);
+  expect(
+    encodeInteractiveFailureExitCode(
+      "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
+      "codex-tui-trace-smoke",
+    ),
+  ).toBe(176);
+});
+
 describe("interactive PTY failure exit-code transport", () => {
   it.each([
     [
       "integration.codex.adapter-observation",
       "integration.fixture.codex-verify-adapter-observation",
-      135,
+      160,
     ],
     ...[
       "scenario",
@@ -1055,15 +1134,20 @@ describe("interactive PTY failure exit-code transport", () => {
     ].map((predicate, index) => [
       `integration.codex.oracle-${predicate}`,
       `integration.fixture.codex-verify-oracle-${predicate}`,
-      136 + index,
+      161 + index,
     ]),
   ])(
     "maps only exact owned projection failure %s",
     (error, diagnostic, expectedExitCode) => {
       expect(codexProjectionFailureDiagnostic(error)).toBe(diagnostic);
-      const exitCode = encodeInteractiveFailureExitCode(diagnostic);
+      const exitCode = encodeInteractiveFailureExitCode(
+        diagnostic,
+        "codex-tui-trace-smoke",
+      );
       expect(exitCode).toBe(expectedExitCode);
-      expect(decodeInteractiveFailureExitCode(exitCode)).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exitCode, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
     },
   );
 
@@ -1113,7 +1197,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 31, 39, 63, 152, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 135, 136, 137, 138, 139, 159, 177, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

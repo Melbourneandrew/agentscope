@@ -546,15 +546,25 @@ export const installedPtyFailurePredicates = Object.freeze({
   "pty-execution": ptyExecutionFailurePredicates,
 });
 
+const interactivePostTraceFailurePredicates = Object.freeze(
+  ptyExecutionFailurePredicates.filter(
+    (value) =>
+      value === "integration.fixture.codex-verify-adapter-observation" ||
+      value.startsWith("integration.fixture.codex-verify-oracle-") ||
+      value.startsWith("integration.fixture.codex-verify-uninstall-"),
+  ),
+);
 const interactiveFixtureFailurePredicates = Object.freeze(
   ptyExecutionFailurePredicates.filter(
     (value) =>
       value.startsWith("integration.fixture.codex-") &&
       !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
-      !value.startsWith("integration.fixture.codex-tui-join-deadline-"),
+      !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+      !interactivePostTraceFailurePredicates.includes(value),
   ),
 );
 const interactiveFailureExitCodeBase = 64;
+const interactivePostTraceExitCodeBase = 160;
 
 const codexJoinDeadlineDiagnosticStates = Object.freeze([
   "log-unavailable",
@@ -625,6 +635,12 @@ export const selectInteractiveExecutionFailurePredicate = (
       retainedDiagnostic !== diagnostic)
   )
     return "child-failure";
+  if (
+    interactivePostTraceFailurePredicates.includes(diagnostic) &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
   return ptyExecutionFailurePredicates.includes(diagnostic)
     ? diagnostic
     : "child-failure";
@@ -639,6 +655,12 @@ export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
     if (diagnostic.startsWith(prefix))
       return encodeCodexJoinDeadlineExitCode(diagnostic.slice(prefix.length));
   }
+  const postTraceIndex =
+    interactivePostTraceFailurePredicates.indexOf(diagnostic);
+  if (postTraceIndex >= 0)
+    return scenarioId === "codex-tui-trace-smoke"
+      ? interactivePostTraceExitCodeBase + postTraceIndex
+      : undefined;
   const index = interactiveFixtureFailurePredicates.indexOf(diagnostic);
   return index < 0 ? undefined : interactiveFailureExitCodeBase + index;
 };
@@ -648,6 +670,11 @@ export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   if (scenarioId === "codex-tui-trace-smoke") {
     const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
     if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
+    const postTraceDiagnostic =
+      interactivePostTraceFailurePredicates[
+        exitCode - interactivePostTraceExitCodeBase
+      ];
+    if (postTraceDiagnostic !== undefined) return postTraceDiagnostic;
   }
   return interactiveFixtureFailurePredicates[
     exitCode - interactiveFailureExitCodeBase

@@ -191,6 +191,12 @@ describe("integration cleanup authority", () => {
       ),
     );
     expect(source).toContain("decodeScenarioFailureExitCode(receipt.exitCode)");
+    expect(source).toContain(
+      "decodeInteractiveFailureExitCode(exitCode, scenarioId)",
+    );
+    expect(source).toMatch(
+      /const phase = interactivePhases\[exitCode - 64\];\s+return phase === undefined\s+\? decodeInteractiveFailureExitCode\(exitCode, scenarioId\)/u,
+    );
     expect(source).toContain("if (interactivePtyReceiptFailed(receipt)) {");
     expect(source).toContain(
       "} else fixtureOutput = recoverRetainedFixtureOutput();",
@@ -247,7 +253,9 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        `${diagnostic}\\n`',
     );
-    expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode)");
+    expect(source).toContain(
+      "decodeInteractiveFailureExitCode(exitCode, scenarioId)",
+    );
     expect(source).toContain("integration.runner.untrusted-join-hint:");
     expect(source).toContain("const hint = untrustedCodexJoinHint(ledger);");
     expect(source).toContain(
