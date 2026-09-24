@@ -75,6 +75,7 @@ import {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
+  interactivePtyReadinessProgressDiagnostic,
   interactivePtyIdleObservationDiagnostic,
   interactivePtyIdleAtTitleDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
@@ -1990,6 +1991,8 @@ const captureFailedScenarioReceipt = (
   if (plan.scenarioId === "codex-tui-trace-smoke") {
     const progress = interactivePtyActionPrefixDiagnostic(receipt);
     if (progress !== undefined) process.stderr.write(`${progress}\n`);
+    const readiness = interactivePtyReadinessProgressDiagnostic(receipt);
+    if (readiness !== undefined) process.stderr.write(`${readiness}\n`);
     const idleDiagnostic = interactivePtyIdleObservationDiagnostic(receipt);
     if (idleDiagnostic !== undefined)
       process.stderr.write(`${idleDiagnostic}\n`);

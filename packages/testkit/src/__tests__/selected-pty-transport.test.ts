@@ -647,7 +647,9 @@ describe("selected PTY transport", () => {
           ...gated.process,
           monotonicStartupDeadlineMs: staleNow + 100,
           monotonicExecutionDeadlineMs: staleNow + 300,
-          monotonicShutdownDeadlineMs: staleNow + 700,
+          // The 300 ms execution cutoff is the negative being tested;
+          // settlement has a separate bounded window under CI contention.
+          monotonicShutdownDeadlineMs: staleNow + 3_000,
         },
       },
       "terminal-preenter-frame-late-close",
@@ -657,7 +659,7 @@ describe("selected PTY transport", () => {
     );
     expect(stale.inputBytesWritten).toBe(137);
     expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
-  });
+  }, 10_000);
 
   it("rejects substituted post-turn readiness and action order", async () => {
     const selected = protocolPromptRequest();

@@ -1430,7 +1430,7 @@ try {
   const checkpointWitness = waitForCheckpointWitness();
   await new Promise((resolve, reject) => {
     process.stdout.write(
-      `AGENTSCOPE_PTY_TOPOLOGY:${readinessChallenge}\r\n`,
+      `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
       (error) =>
         error === null || error === undefined ? resolve() : reject(error),
     );

@@ -32,6 +32,7 @@ const {
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyActionPrefixDiagnostic,
+  interactivePtyReadinessProgressDiagnostic,
   interactivePtyIdleObservationDiagnostic,
   interactivePtyIdleAtTitleDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
@@ -385,6 +386,59 @@ describe("interactive PTY receipt settlement", () => {
     expect(
       interactivePtyReceiptAuthorityMatches(timelySuccess, checks, true),
     ).toBe(false);
+  });
+});
+
+describe("interactive PTY readiness progress diagnostics", () => {
+  it("reduces failed readiness to fixed content-free categories", () => {
+    const receipt = {
+      outputBytes: 256,
+      readinessObserved: false,
+      finalSnapshot: {
+        printableCellCount: 12,
+        nonEmptyLineCount: 2,
+        sawCursorPositionQuery: false,
+        semanticState: "active",
+        screenText: "never-print",
+      },
+    };
+    expect(interactivePtyReadinessProgressDiagnostic(receipt)).toBe(
+      "integration.isolation.pty-readiness-progress:output-present:printable-present:lines-present:cursor-query-absent:readiness-absent:semantic-active",
+    );
+    expect(
+      interactivePtyReadinessProgressDiagnostic({
+        ...receipt,
+        outputBytes: 0,
+        readinessObserved: true,
+        finalSnapshot: {
+          ...receipt.finalSnapshot,
+          printableCellCount: 0,
+          nonEmptyLineCount: 0,
+          sawCursorPositionQuery: true,
+          semanticState: "ready",
+        },
+      }),
+    ).toBe(
+      "integration.isolation.pty-readiness-progress:output-absent:printable-absent:lines-absent:cursor-query-observed:readiness-observed:semantic-ready",
+    );
+    for (const malformed of [
+      { ...receipt, outputBytes: -1 },
+      { ...receipt, readinessObserved: "true" },
+      {
+        ...receipt,
+        finalSnapshot: { ...receipt.finalSnapshot, printableCellCount: -1 },
+      },
+      {
+        ...receipt,
+        finalSnapshot: {
+          ...receipt.finalSnapshot,
+          semanticState: "never-print",
+        },
+      },
+    ])
+      expect(
+        interactivePtyReadinessProgressDiagnostic(malformed),
+      ).toBeUndefined();
   });
 });
 

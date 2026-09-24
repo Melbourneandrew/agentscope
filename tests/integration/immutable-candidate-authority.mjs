@@ -405,6 +405,33 @@ export const interactivePtyActionPrefixDiagnostic = (receipt) => {
   return `integration.isolation.pty-action-prefix:${observed.length}/${requested.length}`;
 };
 
+// Failure-only categories from the already validated PTY receipt. These
+// distinguish no child output from a rendered-but-unready terminal without
+// retaining terminal bytes, screen text, hashes, or process identities.
+export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
+  const snapshot = receipt?.finalSnapshot;
+  if (
+    !Number.isSafeInteger(receipt?.outputBytes) ||
+    receipt.outputBytes < 0 ||
+    typeof receipt?.readinessObserved !== "boolean" ||
+    !Number.isSafeInteger(snapshot?.printableCellCount) ||
+    snapshot.printableCellCount < 0 ||
+    !Number.isSafeInteger(snapshot?.nonEmptyLineCount) ||
+    snapshot.nonEmptyLineCount < 0 ||
+    typeof snapshot?.sawCursorPositionQuery !== "boolean" ||
+    ![
+      "active",
+      "ready",
+      "completed",
+      "credential-prompt",
+      "malformed-control",
+      "output-limit",
+    ].includes(snapshot?.semanticState)
+  )
+    return undefined;
+  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}`;
+};
+
 // This optional receipt field is not part of the envelope authority checks.
 // Never interpolate it until it has been reduced to one closed category.
 const ptyIdleDiagnosticCategories = Object.freeze([
