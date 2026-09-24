@@ -66,7 +66,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
-  interactivePtyReceiptFailed,
+  interactivePtyReceiptAuthorityMatches,
   selectInteractiveExecutionFailurePredicate,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -1197,15 +1197,6 @@ const interactivePtyFingerprintMatches = (receipt) =>
     inputBytes: receipt?.inputBytes,
     inputSha256: receipt?.inputSha256,
   });
-const interactivePtyAuthorityMatches = (receipt) =>
-  interactivePtyGeometryMatches(receipt) &&
-  interactivePtyArtifactAuthorityMatches(receipt) &&
-  interactivePtyFingerprintMatches(receipt);
-const interactivePtyTerminalMatches = (receipt) =>
-  interactivePtyAuthorityMatches(receipt) &&
-  receipt?.returnedAtMs <=
-    receipt?.request?.process?.monotonicShutdownDeadlineMs &&
-  receipt?.finalSnapshot?.semanticState === "completed";
 const captureInteractivePtyReceipt = (
   output,
   plan,
@@ -1220,12 +1211,17 @@ const captureInteractivePtyReceipt = (
   }
   const processRequest = receipt?.request?.process;
   if (
-    !interactivePtyEnvelopeMatches(receipt, plan, expected) ||
-    !interactivePtyProcessMatches(processRequest, plan, receipt) ||
-    !(failed
-      ? interactivePtyAuthorityMatches(receipt) &&
-        interactivePtyReceiptFailed(receipt)
-      : interactivePtyTerminalMatches(receipt))
+    !interactivePtyReceiptAuthorityMatches(
+      receipt,
+      {
+        envelope: interactivePtyEnvelopeMatches(receipt, plan, expected),
+        process: interactivePtyProcessMatches(processRequest, plan, receipt),
+        geometry: interactivePtyGeometryMatches(receipt),
+        artifact: interactivePtyArtifactAuthorityMatches(receipt),
+        fingerprint: interactivePtyFingerprintMatches(receipt),
+      },
+      failed,
+    )
   )
     throw new Error("integration.isolation.pty-receipt");
   return Object.freeze(receipt);
