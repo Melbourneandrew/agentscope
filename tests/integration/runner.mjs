@@ -103,6 +103,15 @@ const interactivePhases = Object.freeze([
   "trace-reporter-settled",
   "trace-search-result",
   "verify",
+  "verify-config",
+  "verify-gate",
+  "verify-trace-get",
+  "verify-correlation",
+  "verify-doctor",
+  "verify-uninstall",
+  "verify-status",
+  "verify-projection",
+  "verify-evidence",
 ]);
 const retainedInteractivePhase = (ledger) => {
   let retained;
