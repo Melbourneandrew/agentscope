@@ -78,6 +78,7 @@ import {
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
+  interactivePtyReadinessRejectionDiagnostic,
   interactivePtyArtifactRejectionCode,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
@@ -1228,6 +1229,10 @@ const interactivePtyArtifactAuthorityMatches = (receipt, failed) => {
         )
         .digest("hex"),
   });
+  if (rejection === "readiness")
+    process.stderr.write(
+      `integration.isolation.pty-readiness-diagnostic:${interactivePtyReadinessRejectionDiagnostic(receipt, failed)}\n`,
+    );
   if (rejection !== null)
     process.stderr.write(
       `integration.isolation.pty-artifact-rejection:${rejection}\n`,
