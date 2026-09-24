@@ -168,6 +168,15 @@ export const interactivePtyReceiptAuthorityMatches = (
         receipt?.request?.process?.monotonicShutdownDeadlineMs &&
       receipt?.finalSnapshot?.semanticState === "completed");
 
+export const interactivePtyEnvelopeDeadlineMatches = (
+  observedDeadline,
+  expectedDeadline,
+  observationNow,
+  failed = false,
+) =>
+  observedDeadline === expectedDeadline &&
+  (failed || observationNow < expectedDeadline);
+
 // Failure-only diagnostics: never include receipt fields or terminal output.
 export const interactivePtyReceiptRejectionCode = (
   receipt,

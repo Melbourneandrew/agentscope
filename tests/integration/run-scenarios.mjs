@@ -66,6 +66,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
+  interactivePtyEnvelopeDeadlineMatches,
   interactivePtyReceiptAuthorityMatches,
   interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
@@ -1068,7 +1069,7 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
     processRequest?.terminationGraceMs === 1_000
   );
 };
-const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
+const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
   // eslint-disable-next-line complexity -- exact closed receipt predicate
   (() => {
     const selectedScenario = manifest.scenarios.find(
@@ -1133,8 +1134,12 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
       receipt?.transport === "pty" &&
       receipt?.scenarioId === plan.scenarioId &&
       receipt?.runId === plan.runId &&
-      receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
-      linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
+      interactivePtyEnvelopeDeadlineMatches(
+        receipt?.outerMonotonicDeadlineMs,
+        expected.outerMonotonicDeadline,
+        linuxBootMonotonicMilliseconds(),
+        failed,
+      ) &&
       receipt?.request?.completion?.kind === "semantic-marker" &&
       expectedReadiness !== null &&
       JSON.stringify(receipt?.request?.readiness) ===
@@ -1217,7 +1222,7 @@ const captureInteractivePtyReceipt = (
   let checks;
   try {
     checks = {
-      envelope: interactivePtyEnvelopeMatches(receipt, plan, expected),
+      envelope: interactivePtyEnvelopeMatches(receipt, plan, expected, failed),
       process: interactivePtyProcessMatches(processRequest, plan, receipt),
       geometry: interactivePtyGeometryMatches(receipt),
       artifact: interactivePtyArtifactAuthorityMatches(receipt),
