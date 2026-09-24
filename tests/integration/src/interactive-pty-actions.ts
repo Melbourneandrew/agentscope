@@ -52,7 +52,7 @@ export const compileInteractivePtyActions = (
   const postCompletionInputActions =
     scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt"
       ? (() => {
-          const command = Buffer.from("/exit\x1b[13u");
+          const command = Buffer.from("\x1b[200~/exit\x1b[201~\x1b[13u");
           if (
             scenario.postCompletionInputByteLength !== command.byteLength ||
             !Buffer.from(input.subarray(postCompletionInputOffset)).equals(
@@ -60,8 +60,14 @@ export const compileInteractivePtyActions = (
             )
           )
             throw new Error("integration.manifest.interaction");
-          // One PTY write keeps the keyboard-enhanced Enter sequence intact.
-          return [inputAction(postCompletionInputOffset, command.byteLength)];
+          // The pinned Codex composer can consume Enter inside a rapid
+          // non-bracketed paste burst as a newline. Its bracketed-paste path
+          // followed by a distinct CSI-u Enter is already proved for the
+          // prompt and preserves slash-command submission here.
+          return [
+            inputAction(postCompletionInputOffset, command.byteLength - 5),
+            inputAction(postCompletionInputOffset + command.byteLength - 5, 5),
+          ];
         })()
       : Array.from(
           { length: scenario.postCompletionInputByteLength },
