@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { Agent, request as httpRequest } from "node:http";
 import { createConnection, createServer, type Socket } from "node:net";
 import { resolve } from "node:path";
@@ -11,6 +12,8 @@ const challenge = "a".repeat(64);
 const runId = "gate-test";
 const responseText =
   'data: {"type":"response.completed","response":{"output":[]}}\n\n';
+const prompt = "fixture prompt";
+const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const children = new Set<ChildProcess>();
 const agents = new Map<number, Agent>();
 
@@ -127,6 +130,7 @@ const configure = async (
       return await configureRequest(controlPort, "/configure", {
         challenge,
         cutoff,
+        promptSha256,
         responseText,
         runId,
       });
@@ -157,11 +161,14 @@ const expectConnectionRefused = (port: number) =>
       resolvePromise();
     });
   });
-const exactRequest = () => {
-  const body = Buffer.from('{"model":"fixture"}');
+const exactRequest = (
+  bodyValue: unknown = { model: "fixture", input: prompt },
+  extraHeaders = "",
+) => {
+  const body = Buffer.from(JSON.stringify(bodyValue));
   return Buffer.concat([
     Buffer.from(
-      `POST /v1/responses HTTP/1.1\r\nHost: model\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n`,
+      `POST /v1/responses HTTP/1.1\r\nHost: model\r\nContent-Type: application/json\r\n${extraHeaders}Content-Length: ${body.length}\r\nConnection: close\r\n\r\n`,
     ),
     body,
   ]);
@@ -274,8 +281,31 @@ describe("gate-capable exact-build MockServer", () => {
     expect((await completion).toString("utf8")).toContain(responseText);
     const sealed = await request(controlPort, "/seal", { runId });
     expect(sealed.status).toBe(200);
+    const nativeRequest = (sealed.value.ledger as Record<string, unknown>[])[0];
+    expect(nativeRequest).toBeDefined();
+    expect(Object.keys(nativeRequest!).sort()).toEqual([
+      "bodyBytes",
+      "bodySha256",
+      "credentialHeaderCount",
+      "method",
+      "modelSha256",
+      "path",
+      "promptOccurrenceCount",
+    ]);
+    expect(JSON.stringify(nativeRequest)).not.toContain(prompt);
     expect(sealed.value).toMatchObject({
-      ledger: [{ method: "POST", path: "/v1/responses" }],
+      ledger: [
+        {
+          method: "POST",
+          path: "/v1/responses",
+          bodyBytes: Buffer.byteLength(
+            JSON.stringify({ model: "fixture", input: prompt }),
+          ),
+          modelSha256: createHash("sha256").update("fixture").digest("hex"),
+          promptOccurrenceCount: 1,
+          credentialHeaderCount: 0,
+        },
+      ],
       receipt: {
         challengeSha256:
           "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb",
@@ -289,6 +319,78 @@ describe("gate-capable exact-build MockServer", () => {
     });
     expect(await childTerminal).toEqual({ code: 0, signal: null });
   });
+
+  it.each([
+    ["missing prompt", { model: "fixture", input: "other" }, "", 0, 0],
+    [
+      "duplicate prompt",
+      { model: "fixture", input: [prompt, prompt] },
+      "",
+      2,
+      0,
+    ],
+    [
+      "credential header",
+      { model: "fixture", input: prompt },
+      "Authorization: Bearer secret-canary\r\n",
+      1,
+      1,
+    ],
+    [
+      "long model field",
+      { model: "secret-canary".repeat(20_000), input: prompt },
+      "",
+      1,
+      0,
+    ],
+  ] as const)(
+    "projects %s from the admitted native request without retaining raw text",
+    async (
+      _name,
+      body,
+      extraHeaders,
+      expectedPromptCount,
+      expectedCredentialCount,
+    ) => {
+      const { child, controlPort, modelPort } = await startGate();
+      const childTerminal = terminal(child);
+      expect(await configure(controlPort)).toMatchObject({ status: 200 });
+      const socket = await connect(modelPort);
+      const completion = collect(socket);
+      socket.write(exactRequest(body, extraHeaders));
+      expect(
+        await request(controlPort, "/arm", {
+          runId,
+          sessionStartSpanSha256: "b".repeat(64),
+        }),
+      ).toMatchObject({ status: 200 });
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const observed = await request(
+          controlPort,
+          "/requests",
+          {},
+          challenge,
+          "PUT",
+        );
+        if ((observed.value.ledger as unknown[]).length === 1) break;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      }
+      expect(await request(controlPort, "/release", { runId })).toMatchObject({
+        status: 200,
+      });
+      await completion;
+      const sealed = await request(controlPort, "/seal", { runId });
+      expect(sealed.status).toBe(200);
+      const retained = (sealed.value.ledger as Record<string, unknown>[])[0];
+      expect(retained).toMatchObject({
+        promptOccurrenceCount: expectedPromptCount,
+        credentialHeaderCount: expectedCredentialCount,
+      });
+      expect(JSON.stringify(sealed.value)).not.toContain("secret-canary");
+      expect(JSON.stringify(sealed.value)).not.toContain(prompt);
+      expect(await childTerminal).toEqual({ code: 0, signal: null });
+    },
+  );
 
   it("rejects substituted control authority and duplicate initial sockets", async () => {
     const { controlPort, modelPort } = await startGate();

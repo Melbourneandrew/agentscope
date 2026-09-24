@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- checksum-bound runtime modules intentionally expose no TypeScript API */
@@ -11,6 +12,7 @@ const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
   "28e80ac9dd2867aa0163739ec137f67504a75b3465a840bd422e5eba6c724c35";
 const prompt = "Reply with one short confirmation and do not use tools.";
+const requestBody = JSON.stringify({ model: "fixture-model", input: prompt });
 const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   prompt,
@@ -20,8 +22,13 @@ const raw = () => ({
     {
       method: "POST",
       path: "/v1/responses",
-      body: JSON.stringify({ model: "fixture-model", input: prompt }),
-      headers: [] as Array<{ name: string }>,
+      bodyBytes: Buffer.byteLength(requestBody),
+      bodySha256: createHash("sha256").update(requestBody).digest("hex"),
+      modelSha256: createHash("sha256")
+        .update("fixture-model")
+        .digest("hex") as string | null,
+      promptOccurrenceCount: 1,
+      credentialHeaderCount: 0,
     },
   ],
   search: { completion: "complete", harness: "codex", spanCount: 2, traceId },
@@ -130,9 +137,9 @@ describe("Codex PTY scenario observation boundary", () => {
     }
   });
 
-  it("rejects malformed native request bodies in the adapter", () => {
+  it("rejects malformed content-free request projections in the adapter", () => {
     const value = raw();
-    value.modelRequests[0]!.body = "{";
+    value.modelRequests[0]!.bodySha256 = "{";
     expect(() => translateCodexPlatformObservations(value)).toThrow(
       "integration.codex.adapter-observation",
     );
@@ -142,16 +149,13 @@ describe("Codex PTY scenario observation boundary", () => {
     [
       "credential header",
       (value: RawObservation) => {
-        value.modelRequests[0]!.headers = [{ name: "Authorization" }];
+        value.modelRequests[0]!.credentialHeaderCount = 1;
       },
     ],
     [
       "duplicate prompt",
       (value: RawObservation) => {
-        value.modelRequests[0]!.body = JSON.stringify({
-          model: "fixture-model",
-          input: [prompt, prompt],
-        });
+        value.modelRequests[0]!.promptOccurrenceCount = 2;
       },
     ],
     [
@@ -163,10 +167,9 @@ describe("Codex PTY scenario observation boundary", () => {
     [
       "model identity",
       (value: RawObservation) => {
-        value.modelRequests[0]!.body = JSON.stringify({
-          model: "other",
-          input: prompt,
-        });
+        value.modelRequests[0]!.modelSha256 = createHash("sha256")
+          .update("other")
+          .digest("hex");
       },
     ],
     [

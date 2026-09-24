@@ -22,7 +22,8 @@ export const correlateCodexPlatformObservations = (
       observation.modelRequests.length === 1 &&
       request.method === "POST" &&
       request.path === "/v1/responses" &&
-      request.model === "fixture-model" &&
+      request.modelSha256 ===
+        "e6954ed9cce48114b2875996c433c4ada96795c4f7b5401b3ed7578086bbe242" &&
       request.promptOccurrenceCount === 1 &&
       request.credentialHeaderCount === 0,
     "model-request",
@@ -38,7 +39,7 @@ export const correlateCodexPlatformObservations = (
       observation.retrieval.parentLinked === true &&
       JSON.stringify(observation.retrieval.spanNames) ===
         JSON.stringify(["codex.turn", "codex.response"]) &&
-      observation.retrieval.modelName === request.model &&
+      observation.retrieval.modelName === "fixture-model" &&
       typeof observation.retrieval.sessionId === "string" &&
       observation.retrieval.sessionId.length > 0,
     "trace",
