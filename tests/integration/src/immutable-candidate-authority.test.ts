@@ -305,7 +305,8 @@ describe("interactive PTY failure diagnostic transport", () => {
       const specific = `${generic}-${state}`;
       expect(encodeCodexJoinDeadlineExitCode(state)).toBe(32 + index);
       expect(decodeCodexJoinDeadlineExitCode(32 + index)).toBe(specific);
-      expect(encodeInteractiveFailureExitCode(specific)).toBeUndefined();
+      expect(encodeInteractiveFailureExitCode(specific)).toBe(32 + index);
+      expect(decodeInteractiveFailureExitCode(32 + index)).toBe(specific);
       expect(
         extractInteractiveChildDiagnostic(
           `integration.runner.interactive-diagnostic:${specific}\n`,
@@ -398,7 +399,7 @@ describe("interactive PTY failure exit-code transport", () => {
     expect(encodeInteractiveFailureExitCode(diagnostic)).toBeUndefined();
   });
 
-  it.each([undefined, 1, 63, 126, 1.5])(
+  it.each([undefined, 1, 31, 39, 63, 126, 1.5])(
     "refuses to decode an unreserved exit code: %s",
     (exitCode) => {
       expect(decodeInteractiveFailureExitCode(exitCode)).toBeUndefined();

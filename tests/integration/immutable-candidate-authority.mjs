@@ -215,12 +215,19 @@ export const decodeCodexJoinDeadlineExitCode = (exitCode) => {
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic) => {
+  if (typeof diagnostic === "string") {
+    const prefix = "integration.fixture.codex-tui-join-deadline-";
+    if (diagnostic.startsWith(prefix))
+      return encodeCodexJoinDeadlineExitCode(diagnostic.slice(prefix.length));
+  }
   const index = interactiveFixtureFailurePredicates.indexOf(diagnostic);
   return index < 0 ? undefined : interactiveFailureExitCodeBase + index;
 };
 
 export const decodeInteractiveFailureExitCode = (exitCode) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
+  const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
+  if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
   return interactiveFixtureFailurePredicates[
     exitCode - interactiveFailureExitCodeBase
   ];
