@@ -343,6 +343,10 @@ const stageBuildContext = (plan) => {
       resolve(integrationRoot, "retained-fixture-result.mjs"),
     ],
     [
+      "retained-join-diagnostic.mjs",
+      resolve(integrationRoot, "retained-join-diagnostic.mjs"),
+    ],
+    [
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
     ],
@@ -545,7 +549,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs retained-join-diagnostic.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
       "COPY dist ./dist",

@@ -71,6 +71,13 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-trace-terminal",
   "integration.fixture.codex-tui-exit-published",
   "integration.fixture.codex-tui-join-deadline",
+  "integration.fixture.codex-tui-join-deadline-log-unavailable",
+  "integration.fixture.codex-tui-join-deadline-hook-log-invalid",
+  "integration.fixture.codex-tui-join-deadline-stop-unseen",
+  "integration.fixture.codex-tui-join-deadline-stop-active",
+  "integration.fixture.codex-tui-join-deadline-stop-completed",
+  "integration.fixture.codex-tui-join-deadline-session-end-active",
+  "integration.fixture.codex-tui-join-deadline-session-end-completed",
   "integration.fixture.codex-tui-child-rejected",
   "integration.fixture.codex-tui-joined",
   "integration.fixture.codex-tui-start",
@@ -176,10 +183,20 @@ const interactiveFixtureFailurePredicates = Object.freeze(
   ptyExecutionFailurePredicates.filter(
     (value) =>
       value.startsWith("integration.fixture.codex-") &&
-      !value.startsWith("integration.fixture.codex-model-gate-arm-"),
+      !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
+      !value.startsWith("integration.fixture.codex-tui-join-deadline-"),
   ),
 );
 const interactiveFailureExitCodeBase = 64;
+
+export const selectCodexJoinDeadlineDiagnostic = (decoded, retained) => {
+  if (decoded !== "integration.fixture.codex-tui-join-deadline") return decoded;
+  return typeof retained === "string" &&
+    retained.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+    ptyExecutionFailurePredicates.includes(retained)
+    ? retained
+    : decoded;
+};
 
 export const encodeInteractiveFailureExitCode = (diagnostic) => {
   const index = interactiveFixtureFailurePredicates.indexOf(diagnostic);

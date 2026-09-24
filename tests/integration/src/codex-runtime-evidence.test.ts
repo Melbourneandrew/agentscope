@@ -21,6 +21,8 @@ import {
   codexTraceSearchTimedOut,
   codexSessionStartCheckpointMatchesLifecycle,
   classifyCodexStopHookCommand,
+  classifyCodexShutdownAtJoinDeadline,
+  classifyCodexShutdownLogSource,
   classifyMissingOperationalStateByHookDuration,
   classifyLocalSqliteOutcomeAfterBaseline,
   inspectCodexRootHookLifecycle,
@@ -52,6 +54,95 @@ import {
 
 // eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
+  it("classifies shutdown progress without using terminal contents", () => {
+    const start = (event: string) =>
+      `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n`;
+    const close = (event: string) =>
+      `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed"}: close time.busy=1ms time.idle=1ms\n`;
+    const sessionStart = `${start("SessionStart")}${close("SessionStart")}`;
+    const stop = `${start("Stop")}${close("Stop")}`;
+    const sessionEnd = `${start("SessionEnd")}${close("SessionEnd")}`;
+    for (const [source, expected] of [
+      ["", "log-unavailable"],
+      [sessionStart, "stop-unseen"],
+      [`${sessionStart}${start("Stop")}`, "stop-active"],
+      [`${sessionStart}${stop}`, "stop-completed"],
+      [`${sessionStart}${stop}${start("SessionEnd")}`, "session-end-active"],
+      [`${sessionStart}${stop}${sessionEnd}`, "session-end-completed"],
+    ] as const)
+      expect(classifyCodexShutdownLogSource(source)).toBe(expected);
+    for (const source of [
+      "TRACE unrelated: new\n",
+      `${sessionStart}${sessionEnd}`,
+      `${stop}${sessionStart}`,
+      `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
+      `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
+    ])
+      expect(() => classifyCodexShutdownLogSource(source)).toThrow(
+        /integration\.codex\.hook-(?:log|lifecycle)/u,
+      );
+  });
+
+  it.runIf(process.platform === "linux")(
+    "classifies only exact root-hook progress at a failed TUI join",
+    () => {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-join-log-"));
+      const directory = join(root, "log");
+      mkdirSync(directory, { mode: 0o700 });
+      const descriptor = openSync(
+        directory,
+        constants.O_RDONLY |
+          constants.O_DIRECTORY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
+      );
+      const path = join(directory, "codex-tui.log");
+      const input = {
+        directoryDescriptor: descriptor,
+        directoryPath: directory,
+      };
+      const start = (event: string) =>
+        `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n`;
+      const close = (event: string) =>
+        `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed"}: close time.busy=1ms time.idle=1ms\n`;
+      const sessionStart = `${start("SessionStart")}${close("SessionStart")}`;
+      const stop = `${start("Stop")}${close("Stop")}`;
+      const sessionEnd = `${start("SessionEnd")}${close("SessionEnd")}`;
+      try {
+        expect(classifyCodexShutdownAtJoinDeadline(input)).toBe(
+          "log-unavailable",
+        );
+        for (const [source, expected] of [
+          [sessionStart, "stop-unseen"],
+          [`${sessionStart}${start("Stop")}`, "stop-active"],
+          [`${sessionStart}${stop}`, "stop-completed"],
+          [
+            `${sessionStart}${stop}${start("SessionEnd")}`,
+            "session-end-active",
+          ],
+          [`${sessionStart}${stop}${sessionEnd}`, "session-end-completed"],
+        ] as const) {
+          writeFileSync(path, source);
+          expect(classifyCodexShutdownAtJoinDeadline(input)).toBe(expected);
+        }
+        for (const source of [
+          `${sessionStart}${sessionEnd}`,
+          `${stop}${sessionStart}`,
+          `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
+          `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
+        ]) {
+          writeFileSync(path, source);
+          expect(() => classifyCodexShutdownAtJoinDeadline(input)).toThrow(
+            /integration\.codex\.hook-(?:log|lifecycle)/u,
+          );
+        }
+      } finally {
+        closeSync(descriptor);
+        rmSync(root, { recursive: true });
+      }
+    },
+  );
+
   it("classifies the closed Stop-hook latency buckets", () => {
     expect(classifyMissingOperationalStateByHookDuration(0)).toBe(
       "hook-no-operational-state-subsecond",

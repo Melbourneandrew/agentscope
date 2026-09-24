@@ -321,6 +321,37 @@ export const inspectCodexRootHookLifecycle = (input) => {
   });
 };
 
+/**
+ * Failure-only observation of how far the exact root-hook lifecycle progressed
+ * when the installed TUI did not join. This does not authorize admission.
+ */
+export const classifyCodexShutdownLogSource = (source) => {
+  if (typeof source !== "string") throw new Error("integration.codex.hook-log");
+  if (source.length === 0) return "log-unavailable";
+  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  const names = spans.map((span) => span.eventName);
+  if (
+    names.length === 0 ||
+    names.length > rootHookEvents.length ||
+    names.some((name, index) => name !== rootHookEvents[index]) ||
+    (activeEventName !== undefined &&
+      (activeOpen === undefined ||
+        activeEventName !== rootHookEvents[names.length])) ||
+    (activeEventName === undefined && activeOpen !== undefined)
+  )
+    throw new Error("integration.codex.hook-lifecycle");
+  if (names.includes("SessionEnd")) return "session-end-completed";
+  if (activeEventName === "SessionEnd") return "session-end-active";
+  if (names.includes("Stop")) return "stop-completed";
+  if (activeEventName === "Stop") return "stop-active";
+  return "stop-unseen";
+};
+
+export const classifyCodexShutdownAtJoinDeadline = (input) => {
+  const source = readCodexHookLog(input);
+  return classifyCodexShutdownLogSource(source ?? "");
+};
+
 export const codexSessionStartCheckpointMatchesLifecycle = (
   checkpoint,
   lifecycle,

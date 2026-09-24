@@ -237,10 +237,13 @@ describe("integration cleanup authority", () => {
       ),
     );
     expect(scenario).toContain(
-      'if (message === "integration.codex.diagnostic-deadline")\n      recordInteractivePhase("tui-join-deadline");',
+      'if (message === "integration.codex.diagnostic-deadline") {\n      recordInteractivePhase("tui-join-deadline");',
     );
     expect(scenario).toContain(
-      'else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
+      "joinDeadlineHookState = classifyCodexShutdownAtJoinDeadline({",
+    );
+    expect(scenario).toContain(
+      '} else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
     );
     expect(codexJoined).toBeGreaterThan(completionPublished);
     expect(codexJoined).toBeLessThan(

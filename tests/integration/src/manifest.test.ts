@@ -382,7 +382,7 @@ describe("integration capability manifest", () => {
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
     expect(source).toContain(
-      "const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}`;",
+      'const diagnostic = `integration.fixture.codex-${interactiveFailurePhase}${joinDeadlineHookState === undefined ? "" : `-${joinDeadlineHookState}`}`;',
     );
     expect(source).toContain("`${diagnostic}\\n`");
     expect(source).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
