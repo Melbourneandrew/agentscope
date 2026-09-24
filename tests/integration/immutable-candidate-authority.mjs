@@ -464,6 +464,7 @@ const closedChallengedReadinessProgress = (value) =>
 export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
   const snapshot = receipt?.finalSnapshot;
   const challenged = receipt?.challengedReadinessProgress;
+  const checkpoint = receipt?.checkpointProgressDiagnostic;
   if (
     !Number.isSafeInteger(receipt?.outputBytes) ||
     receipt.outputBytes < 0 ||
@@ -475,6 +476,20 @@ export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
     typeof snapshot?.sawCursorPositionQuery !== "boolean" ||
     (challenged !== undefined &&
       !closedChallengedReadinessProgress(challenged)) ||
+    (checkpoint !== undefined &&
+      ![
+        "not-requested",
+        "no-live-readiness",
+        "terminal-order-rejected",
+        "terminal-reply-unsettled",
+        "protocol-not-ready",
+        "deadline",
+        "ready-gate-other",
+        "ready-gate-open",
+        "topology-mismatch",
+        "publication-unsettled",
+        "advanced",
+      ].includes(checkpoint)) ||
     ![
       "active",
       "ready",
@@ -493,7 +508,7 @@ export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
         : challenged?.protocolRejectionKind === "reset"
           ? `reset-${challenged.protocolRejectedAtPhase}`
           : "none";
-  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:protocol-rejection-${protocolRejection}:ever-ready-${challenged.readinessEverObserved ? "observed" : "absent"}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}`;
+  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:protocol-rejection-${protocolRejection}:ever-ready-${challenged.readinessEverObserved ? "observed" : "absent"}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}${checkpoint === undefined ? "" : `:checkpoint-${checkpoint}`}`;
 };
 
 // This optional receipt field is not part of the envelope authority checks.

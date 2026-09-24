@@ -2829,6 +2829,17 @@ const armSelectedPty = (
       );
     };
     let readinessObserved = false;
+    let checkpointReadyAtGate = false;
+    let checkpointTopologyMismatchObserved = false;
+    let checkpointPublicationAttempted = false;
+    let checkpointActionAdvanced = false;
+    let checkpointFirstReadyGate:
+      | "terminal-order-rejected"
+      | "terminal-reply-unsettled"
+      | "protocol-not-ready"
+      | "deadline"
+      | "ready-gate-other"
+      | "ready-gate-open" = "ready-gate-other";
     const topologyReadinessMarker =
       request.readiness.kind === "challenge-process-topology"
         ? safeBufferFrom(
@@ -3128,6 +3139,30 @@ const armSelectedPty = (
             ) > lastCompletedInputReadinessGeneration);
         const adjacentNow = safeReflectApply(performanceNow, performance, []);
         if (
+          allowInput &&
+          pendingActionBeforeRead?.action === "checkpoint-process-topology" &&
+          readinessObserved &&
+          !checkpointReadyAtGate
+        ) {
+          checkpointReadyAtGate = true;
+          checkpointFirstReadyGate = terminalProtocolOrderingRejected
+            ? "terminal-order-rejected"
+            : pendingTerminalResponseOffset < pendingTerminalResponse.length
+              ? "terminal-reply-unsettled"
+              : requiresTerminalProtocol &&
+                  !safeReflectApply(
+                    emulatorRequiredTerminalProtocolReady,
+                    terminal,
+                    [],
+                  )
+                ? "protocol-not-ready"
+                : adjacentNow >= processRequest.monotonicExecutionDeadlineMs
+                  ? "deadline"
+                  : inputAdmitted
+                    ? "ready-gate-open"
+                    : "ready-gate-other";
+        }
+        if (
           inputAdmitted &&
           primaryFailure === undefined &&
           !aborted &&
@@ -3231,6 +3266,7 @@ const armSelectedPty = (
             )
               return fail("testkit.headless.execution.deadline");
             if (!topologyMatches) {
+              checkpointTopologyMismatchObserved = true;
               runtime.releaseFrozenProcessSet(
                 composition.namespaceIdentity,
                 processSet,
@@ -3250,6 +3286,7 @@ const armSelectedPty = (
               topology: action.topology,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
+            checkpointPublicationAttempted = true;
             publishTopologyCheckpointIfSelected(
               runtime,
               request,
@@ -3259,6 +3296,7 @@ const armSelectedPty = (
             if (request.readiness.kind === "challenge-process-topology")
               readinessObserved = true;
             actionIndex += 1;
+            checkpointActionAdvanced = true;
           } else if (action?.action === "eof") {
             eofAttempted = true;
             const eof = child.eof();
@@ -3657,6 +3695,19 @@ const armSelectedPty = (
                   terminal,
                   [],
                 ),
+                checkpointProgressDiagnostic: request.interaction.actions.some(
+                  (action) => action.action === "checkpoint-process-topology",
+                )
+                  ? checkpointActionAdvanced
+                    ? "advanced"
+                    : checkpointPublicationAttempted
+                      ? "publication-unsettled"
+                      : checkpointTopologyMismatchObserved
+                        ? "topology-mismatch"
+                        : checkpointReadyAtGate
+                          ? checkpointFirstReadyGate
+                          : "no-live-readiness"
+                  : "not-requested",
               }
             : {}),
           ...(request.readiness.kind === "challenge-styled-text" &&

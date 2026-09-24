@@ -297,6 +297,7 @@ describe("selected PTY transport", () => {
       inputBytesWritten: promptInput.length,
       outcome: "completed",
       readinessObserved: true,
+      checkpointProgressDiagnostic: "advanced",
       challengedReadinessProgress: {
         marker: true,
         synchronizedFrame: true,
@@ -809,6 +810,10 @@ describe("selected PTY transport", () => {
         inputBytesWritten: 65,
         outcome: "input-incomplete",
       });
+      if (seed === "keyboard-protocol-missing")
+        expect(rejected.checkpointProgressDiagnostic).toBe("no-live-readiness");
+      if (seed === "keyboard-protocol-after-readiness")
+        expect(rejected.checkpointProgressDiagnostic).toBe("advanced");
     },
     20_000,
   );

@@ -469,6 +469,21 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
       screenRevoked: z.boolean(),
     })
     .optional(),
+  checkpointProgressDiagnostic: z
+    .enum([
+      "not-requested",
+      "no-live-readiness",
+      "terminal-order-rejected",
+      "terminal-reply-unsettled",
+      "protocol-not-ready",
+      "deadline",
+      "ready-gate-other",
+      "ready-gate-open",
+      "topology-mismatch",
+      "publication-unsettled",
+      "advanced",
+    ])
+    .optional(),
   postSubmissionIdleDiagnostic: z
     .enum([
       "not-armed",
@@ -666,6 +681,26 @@ const challengedReadinessProgressConsistent = (
   );
 };
 
+const checkpointProgressConsistent = (
+  value: PtyTerminalReceiptRecord,
+): boolean => {
+  const diagnostic = value.checkpointProgressDiagnostic;
+  if (diagnostic === undefined) return true;
+  const requested = value.request.interaction.actions.some(
+    ({ action }) => action === "checkpoint-process-topology",
+  );
+  const observed = value.actions.some(
+    ({ action }) => action === "checkpoint-process-topology",
+  );
+  return (
+    value.request.readiness.kind === "challenge-styled-text" &&
+    (requested
+      ? diagnostic !== "not-requested"
+      : diagnostic === "not-requested") &&
+    ["advanced", "publication-unsettled"].includes(diagnostic) === observed
+  );
+};
+
 const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
   (value, context) => {
     const request = value.request.process;
@@ -714,6 +749,7 @@ const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
       !challengedReadinessProgressConsistent(
         value.challengedReadinessProgress,
       ) ||
+      !checkpointProgressConsistent(value) ||
       (!value.readinessObserved && !historicalCodexReadiness) ||
       (challengeReadiness
         ? value.request.interaction.trigger !== "immediate"

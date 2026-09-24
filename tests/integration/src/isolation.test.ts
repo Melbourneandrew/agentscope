@@ -1812,6 +1812,41 @@ describe("selected PTY backend evidence", () => {
       ).toThrow("integration.isolation.evidence");
   });
 
+  it("retains only a checkpoint category consistent with observed actions", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+    };
+    const withDiagnostic = (checkpointProgressDiagnostic: string) =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...receipt, checkpointProgressDiagnostic },
+        },
+        evidence,
+      );
+    expect(
+      withDiagnostic("advanced").ptyTerminalReceipt
+        ?.checkpointProgressDiagnostic,
+    ).toBe("advanced");
+    expect(
+      withDiagnostic("publication-unsettled").ptyTerminalReceipt
+        ?.checkpointProgressDiagnostic,
+    ).toBe("publication-unsettled");
+    expect(() => withDiagnostic("topology-mismatch")).toThrow(
+      "integration.isolation.evidence",
+    );
+    expect(() => withDiagnostic("raw-terminal-content")).toThrow(
+      "integration.isolation.evidence",
+    );
+  });
+
   it.each([
     ["monotonicStartupDeadlineMs", 11_001],
     ["monotonicExecutionDeadlineMs", 25_999],

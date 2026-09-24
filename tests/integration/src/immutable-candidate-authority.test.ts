@@ -522,8 +522,27 @@ it("reports only bounded CSI-u mode and historical readiness facts", () => {
         readinessEverObserved: true,
         screenRevoked: false,
       },
+      checkpointProgressDiagnostic: "topology-mismatch",
     }),
-  ).toContain(":protocol-rejection-mode-6-less-1:ever-ready-observed:");
+  ).toContain(
+    ":protocol-rejection-mode-6-less-1:ever-ready-observed:screen-intact:checkpoint-topology-mismatch",
+  );
+});
+
+it("rejects an unclosed checkpoint diagnostic before logging", () => {
+  expect(
+    interactivePtyReadinessProgressDiagnostic({
+      outputBytes: 1,
+      readinessObserved: false,
+      checkpointProgressDiagnostic: "raw-terminal-content",
+      finalSnapshot: {
+        printableCellCount: 1,
+        nonEmptyLineCount: 1,
+        sawCursorPositionQuery: false,
+        semanticState: "active",
+      },
+    }),
+  ).toBeUndefined();
 });
 
 it("rejects impossible historical readiness diagnostics", () => {
@@ -669,6 +688,9 @@ describe("Codex trace cutoff ordering", () => {
     const runner = readFileSync(join(integrationRoot, "runner.mjs"), "utf8");
     expect(runner).toContain(
       "challengedReadinessProgress: receipt.challengedReadinessProgress",
+    );
+    expect(runner).toContain(
+      "checkpointProgressDiagnostic: receipt.checkpointProgressDiagnostic",
     );
     const controller = readFileSync(
       join(integrationRoot, "run-scenarios.mjs"),

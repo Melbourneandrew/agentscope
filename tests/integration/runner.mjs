@@ -633,6 +633,11 @@ try {
         : {
             challengedReadinessProgress: receipt.challengedReadinessProgress,
           }),
+      ...(receipt.checkpointProgressDiagnostic === undefined
+        ? {}
+        : {
+            checkpointProgressDiagnostic: receipt.checkpointProgressDiagnostic,
+          }),
       ...(receipt.postSubmissionIdleDiagnostic === undefined
         ? {}
         : {

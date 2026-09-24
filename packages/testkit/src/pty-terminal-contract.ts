@@ -86,6 +86,19 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     readinessEverObserved: boolean;
     screenRevoked: boolean;
   }>;
+  /** Closed failure diagnostic for the challenged topology checkpoint; never admission authority. */
+  checkpointProgressDiagnostic?:
+    | "not-requested"
+    | "no-live-readiness"
+    | "terminal-order-rejected"
+    | "terminal-reply-unsettled"
+    | "protocol-not-ready"
+    | "deadline"
+    | "ready-gate-other"
+    | "ready-gate-open"
+    | "topology-mismatch"
+    | "publication-unsettled"
+    | "advanced";
   /** Fixed, content-free diagnostic only; never a PTY admission predicate. */
   postSubmissionIdleDiagnostic?:
     | "not-armed"
