@@ -109,6 +109,8 @@ const emulatorReadinessObserved =
   BoundedTerminalEmulator.prototype.readinessObserved;
 const emulatorReadinessObservationGeneration =
   BoundedTerminalEmulator.prototype.readinessObservationGeneration;
+const emulatorReadinessGenerationAtCompletion =
+  BoundedTerminalEmulator.prototype.readinessGenerationAtCompletion;
 const emulatorRequiredTerminalProtocolReady =
   BoundedTerminalEmulator.prototype.requiredTerminalProtocolReady;
 const emulatorCompletionObserved =
@@ -2091,6 +2093,8 @@ const snapshotPtyRequest = (
   let eofCount = 0;
   let semanticWaitCount = 0;
   let semanticWaitIndex = -1;
+  let idlePromptWaitCount = 0;
+  let idlePromptWaitIndex = -1;
   let describedInputBytesAtSemanticWait = -1;
   let topologyCheckpointCount = 0;
   let topologyCheckpointIndex = -1;
@@ -2232,6 +2236,17 @@ const snapshotPtyRequest = (
           { action: "wait-for-semantic-completion" },
         ]) as SelectedPtyExecutionAction,
       );
+    } else if (actionKind === "wait-for-idle-prompt-after-completion") {
+      if (actionKeys !== "action") return fail("testkit.pty.request");
+      idlePromptWaitCount += 1;
+      idlePromptWaitIndex = index;
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "wait-for-idle-prompt-after-completion" },
+        ]) as SelectedPtyExecutionAction,
+      );
     } else if (actionKind === "interrupt-byte") {
       if (actionKeys !== "action\0byte" || ownData(action, "byte") !== 3)
         return fail("testkit.pty.request");
@@ -2264,6 +2279,11 @@ const snapshotPtyRequest = (
     describedInputBytes !==
       safeReflectApply(typedArrayByteLength, process_.stdin, []) ||
     eofCount > 1 ||
+    (idlePromptWaitCount !== 0 &&
+      (readinessKind !== "challenge-styled-text" ||
+        idlePromptWaitCount !== 1 ||
+        idlePromptWaitIndex !== semanticWaitIndex + 1 ||
+        stableActions[idlePromptWaitIndex + 1]?.action !== "input")) ||
     ((readinessKind === "challenge-process-topology" ||
       readinessKind === "challenge-marker" ||
       readinessKind === "challenge-styled-text") &&
@@ -2780,6 +2800,8 @@ const armSelectedPty = (
               [],
             )) ||
           pendingActionBeforeRead.action === "wait-for-semantic-completion" ||
+          pendingActionBeforeRead.action ===
+            "wait-for-idle-prompt-after-completion" ||
           pendingActionBeforeRead.action === "checkpoint-process-topology" ||
           requiresCausalInputDrain ||
           waitingForPriorInputOutput ||
@@ -3045,6 +3067,37 @@ const armSelectedPty = (
             ) {
               recordAction({
                 action: "wait-for-semantic-completion",
+                monotonicAtMs: safeReflectApply(
+                  performanceNow,
+                  performance,
+                  [],
+                ),
+              });
+              actionIndex += 1;
+            }
+          } else if (
+            action?.action === "wait-for-idle-prompt-after-completion"
+          ) {
+            // A pre-turn prompt, even one still visible after the completion
+            // marker, is not authority to send the terminal action. Require a
+            // new synchronized challenged prompt frame after that marker.
+            if (
+              request.readiness.kind === "challenge-styled-text" &&
+              semanticCompletionObservedAtOutputBytes >= 0 &&
+              readinessObserved &&
+              safeReflectApply(
+                emulatorReadinessObservationGeneration,
+                terminal,
+                [],
+              ) >
+                safeReflectApply(
+                  emulatorReadinessGenerationAtCompletion,
+                  terminal,
+                  [],
+                )
+            ) {
+              recordAction({
+                action: "wait-for-idle-prompt-after-completion",
                 monotonicAtMs: safeReflectApply(
                   performanceNow,
                   performance,
@@ -3869,6 +3922,11 @@ const ptyTerminalControlActionMatches = (
   if (
     expected.action === "wait-for-semantic-completion" &&
     observed.action === "wait-for-semantic-completion"
+  )
+    return true;
+  if (
+    expected.action === "wait-for-idle-prompt-after-completion" &&
+    observed.action === "wait-for-idle-prompt-after-completion"
   )
     return true;
   if (
@@ -4800,6 +4858,8 @@ type SelectedPtyTestSeed =
   | "timeout"
   | "terminal-redraw-enter-fragmented"
   | "terminal-prompt-partial"
+  | "terminal-post-completion-idle"
+  | "terminal-post-completion-stale"
   | "terminal-no-prompt"
   | "terminal-stale-prebuffer-no-redraw"
   | "terminal-passive-control-no-redraw"
@@ -5341,6 +5401,9 @@ const selectedPtyRuntimeForTest = (
                                                                               )
                                                                             : synchronizedPromptRendered,
                     output,
+                    ...(seed === "terminal-post-completion-idle"
+                      ? [synchronizedPromptRendered]
+                      : []),
                   ]
           : seed === "challenge-marker-prompt"
             ? [ready, safeBufferFrom("prompt-accepted"), output]

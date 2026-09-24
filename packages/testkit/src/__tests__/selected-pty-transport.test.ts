@@ -560,6 +560,90 @@ describe("selected PTY transport", () => {
     20_000,
   );
 
+  it("waits for a fresh bounded idle prompt before post-turn input", async () => {
+    const selected = protocolPromptRequest();
+    const now = performance.now();
+    const gated: SelectedPtyExecutionRequest = {
+      ...selected,
+      process: {
+        ...selected.process,
+        monotonicStartupDeadlineMs: now + 5_000,
+        monotonicExecutionDeadlineMs: now + 10_000,
+        monotonicShutdownDeadlineMs: now + 15_000,
+      },
+      interaction: {
+        ...selected.interaction,
+        actions: [
+          ...selected.interaction.actions.slice(0, -1),
+          { action: "wait-for-idle-prompt-after-completion" },
+          selected.interaction.actions.at(-1)!,
+        ],
+      },
+    };
+    const completed = await executeSelectedPtyTransportForTest(
+      gated,
+      "terminal-post-completion-idle",
+    );
+    expect(completed).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      inputBytesWritten: 138,
+    });
+    expect(completed.actions.map(({ action }) => action)).toEqual([
+      "resize",
+      "input",
+      "checkpoint-process-topology",
+      "input",
+      "input",
+      "wait-for-semantic-completion",
+      "wait-for-idle-prompt-after-completion",
+      "input",
+    ]);
+    const staleNow = performance.now();
+    const stale = await executeSelectedPtyTransportForTest(
+      {
+        ...gated,
+        process: {
+          ...gated.process,
+          monotonicStartupDeadlineMs: staleNow + 100,
+          monotonicExecutionDeadlineMs: staleNow + 300,
+          monotonicShutdownDeadlineMs: staleNow + 700,
+        },
+      },
+      "terminal-post-completion-stale",
+    );
+    expect(stale.actions.map(({ action }) => action)).not.toContain(
+      "wait-for-idle-prompt-after-completion",
+    );
+    expect(stale.inputBytesWritten).toBe(137);
+    for (const actions of [
+      [
+        { action: "wait-for-idle-prompt-after-completion" as const },
+        ...selected.interaction.actions,
+      ],
+      [
+        ...gated.interaction.actions.slice(0, -1),
+        { action: "wait-for-idle-prompt-after-completion" as const },
+        selected.interaction.actions.at(-1)!,
+      ],
+    ])
+      await expect(
+        executeSelectedPtyTransportForTest(
+          { ...gated, interaction: { ...gated.interaction, actions } },
+          "terminal-post-completion-idle",
+        ),
+      ).rejects.toMatchObject({ code: "testkit.pty.request" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...gated,
+          readiness: { kind: "semantic-marker" },
+        },
+        "terminal-post-completion-idle",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.request" });
+  });
+
   it("does not submit the prompt without a drained live terminal", async () => {
     const selected = protocolPromptRequest();
     const now = performance.now();
