@@ -17,8 +17,10 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 import {
+  codexProjectionFailureDiagnostic,
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
+  encodeInteractiveFailureExitCode,
 } from "./immutable-candidate-authority.mjs";
 
 let ledger;
@@ -114,6 +116,17 @@ if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
 process.setUncaughtExceptionCaptureCallback((error) => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
+  const projectionDiagnostic =
+    interactiveFailurePhase === "verify-projection"
+      ? codexProjectionFailureDiagnostic(error?.message)
+      : undefined;
+  if (projectionDiagnostic !== undefined) {
+    const diagnosticCode = encodeInteractiveFailureExitCode(
+      projectionDiagnostic,
+      "codex-tui-trace-smoke",
+    );
+    if (diagnosticCode !== undefined) exitCode = diagnosticCode;
+  }
   if (interactiveFailurePhase === "tui-join-deadline") {
     const diagnosticCode = encodeCodexJoinDeadlineExitCode(
       joinDeadlineHookState,
@@ -127,7 +140,8 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       "hook-command-completed-near-budget-boundary",
     ].includes(interactiveFailurePhase);
     const diagnostic =
-      interactiveFailurePhase === "tui-join-deadline"
+      projectionDiagnostic ??
+      (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
         : traceFailure
@@ -138,7 +152,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
                 reporterSettled: traceWaitReporterSettled,
               },
             )}`
-          : `integration.fixture.codex-${interactiveFailurePhase}`;
+          : `integration.fixture.codex-${interactiveFailurePhase}`);
     if (ledger !== undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),

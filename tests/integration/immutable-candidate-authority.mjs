@@ -123,6 +123,13 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-status",
   "integration.fixture.codex-verify-projection",
   "integration.fixture.codex-verify-evidence",
+  "integration.fixture.codex-verify-adapter-observation",
+  "integration.fixture.codex-verify-oracle-scenario",
+  "integration.fixture.codex-verify-oracle-hook-mediation",
+  "integration.fixture.codex-verify-oracle-stimulus",
+  "integration.fixture.codex-verify-oracle-model-request",
+  "integration.fixture.codex-verify-oracle-trace",
+  "integration.fixture.codex-verify-oracle-lifecycle",
   "integration.runner.fixture-failed",
   "integration.runner.fixture-result",
   "integration.runner.pty-authority",
@@ -182,6 +189,29 @@ export const selectInteractiveFailureDiagnostic = (
       !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
       value !== "integration.fixture.codex-tui-child-rejected",
   );
+
+const codexProjectionFailureDiagnostics = new Map([
+  [
+    "integration.codex.adapter-observation",
+    "integration.fixture.codex-verify-adapter-observation",
+  ],
+  ...[
+    "scenario",
+    "hook-mediation",
+    "stimulus",
+    "model-request",
+    "trace",
+    "lifecycle",
+  ].map((predicate) => [
+    `integration.codex.oracle-${predicate}`,
+    `integration.fixture.codex-verify-oracle-${predicate}`,
+  ]),
+]);
+
+export const codexProjectionFailureDiagnostic = (message) =>
+  typeof message === "string"
+    ? codexProjectionFailureDiagnostics.get(message)
+    : undefined;
 
 // Research-only: this candidate-writable marker is never a receipt predicate.
 const untrustedCodexTraceHintPattern =
