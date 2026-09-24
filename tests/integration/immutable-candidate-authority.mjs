@@ -259,6 +259,20 @@ export const interactivePtyObservedActionsMatch = (
   );
 };
 
+// Failure-only, content-free progress after the exact receipt prefix has been
+// authenticated. Never print terminal bytes, input digests, or raw actions.
+export const interactivePtyActionPrefixDiagnostic = (receipt) => {
+  const observed = receipt?.actions;
+  const requested = receipt?.request?.interaction?.actions;
+  if (
+    !Array.isArray(requested) ||
+    requested.length > 32 ||
+    !interactivePtyObservedActionsMatch(observed, requested, true)
+  )
+    return undefined;
+  return `integration.isolation.pty-action-prefix:${observed.length}/${requested.length}`;
+};
+
 export const interactivePtyArtifactReadinessMatches = (
   receipt,
   failed = false,

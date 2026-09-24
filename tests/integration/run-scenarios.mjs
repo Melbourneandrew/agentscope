@@ -69,6 +69,7 @@ import {
   extractUntrustedCodexJoinHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
+  interactivePtyActionPrefixDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
@@ -1799,6 +1800,10 @@ const captureFailedScenarioReceipt = (
           true,
         )
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
+  if (plan.scenarioId === "codex-tui-trace-smoke") {
+    const progress = interactivePtyActionPrefixDiagnostic(receipt);
+    if (progress !== undefined) process.stderr.write(`${progress}\n`);
+  }
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
