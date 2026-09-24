@@ -9,6 +9,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -66,6 +67,13 @@ const exactDirectory = (path) => {
 const sameDirectory = (identity) => {
   const current = exactDirectory(identity.path);
   if (current.dev !== identity.dev || current.ino !== identity.ino) fail();
+};
+
+export const retireEmptyAuthenticatedHarnessMaterialDirectory = (identity) => {
+  sameDirectory(identity);
+  // rmdir refuses unexpected children; rm on a directory fails with EISDIR
+  // on Linux even when the authenticated verifier root is empty.
+  rmdirSync(identity.path);
 };
 
 const commandSourceAuthority = (() => {
@@ -573,8 +581,7 @@ export const stagePreparedNpmHarnessMaterial = (token, target) => {
 export const retirePreparedNpmHarnessMaterial = (token) => {
   const value = prepared(token);
   for (const bytes of value.tarballs.values()) bytes.fill(0);
-  sameDirectory(value.owned);
-  rmSync(value.owned.path);
+  retireEmptyAuthenticatedHarnessMaterialDirectory(value.owned);
   preparedMaterials.delete(token);
 };
 
@@ -609,7 +616,6 @@ export const retirePreparedHarnessMaterial = (token) => {
     return;
   }
   value.binary.fill(0);
-  sameDirectory(value.owned);
-  rmSync(value.owned.path);
+  retireEmptyAuthenticatedHarnessMaterialDirectory(value.owned);
   preparedMaterials.delete(token);
 };

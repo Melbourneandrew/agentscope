@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -11,6 +20,7 @@ import {
   prepareNpmHarnessMaterial,
   retirePreparedHarnessMaterial,
   retirePreparedNpmHarnessMaterial,
+  retireEmptyAuthenticatedHarnessMaterialDirectory,
   stagePreparedHarnessMaterial,
   stagePreparedNpmHarnessMaterial,
   type PreparedNpmHarnessMaterial,
@@ -32,6 +42,39 @@ const forged = (): PreparedNpmHarnessMaterial =>
 afterEach(() => {
   for (const path of roots.splice(0))
     rmSync(path, { force: true, recursive: true });
+});
+
+describe("authenticated harness material root retirement", () => {
+  it("retires only the same authenticated empty directory", () => {
+    const parent = root();
+    const path = resolve(parent, "material");
+    mkdirSync(path, { mode: 0o700 });
+    const status = lstatSync(path);
+    const identity = { dev: status.dev, ino: status.ino, path };
+    writeFileSync(resolve(path, "unexpected"), "sentinel");
+    expect(() => {
+      retireEmptyAuthenticatedHarnessMaterialDirectory(identity);
+    }).toThrow();
+    expect(existsSync(resolve(path, "unexpected"))).toBe(true);
+    rmSync(resolve(path, "unexpected"));
+    retireEmptyAuthenticatedHarnessMaterialDirectory(identity);
+    expect(existsSync(path)).toBe(false);
+
+    mkdirSync(path, { mode: 0o700 });
+    expect(() => {
+      retireEmptyAuthenticatedHarnessMaterialDirectory({
+        ...identity,
+        ino: lstatSync(path).ino + 1,
+      });
+    }).toThrow("integration.harness-material.failed");
+    expect(existsSync(path)).toBe(true);
+    rmSync(path, { recursive: true });
+    symlinkSync(parent, path);
+    expect(() => {
+      retireEmptyAuthenticatedHarnessMaterialDirectory(identity);
+    }).toThrow("integration.harness-material.failed");
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+  });
 });
 
 describe("authenticated harness material runtime", () => {
