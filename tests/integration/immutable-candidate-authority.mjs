@@ -229,6 +229,12 @@ export const interactivePtyEnvelopeRejectionCode = (predicates) => {
   return null;
 };
 
+// Reserve time for the Codex fixture to emit a failed selected-PTY receipt
+// before its own earlier trace cutoff. Other scenarios retain their existing
+// execution window; this does not extend the outer shutdown authority.
+export const interactivePtyExecutionReserveMilliseconds = (scenarioId) =>
+  scenarioId === "codex-tui-trace-smoke" ? 25_000 : 5_000;
+
 export const interactivePtyObservedActionsMatch = (
   observedActions,
   expectedActions,
