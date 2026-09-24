@@ -344,11 +344,13 @@ const passiveCsiIsSupported = (
     values.every((value) => value <= rows)) ||
   (["@", "L", "M", "P", "S", "T", "X"].includes(final) && values.length === 1);
 
-// Ratatui's Codex UI renders this closed set as one-cell glyphs. Any other
-// printable code point may be zero-, two-, or multi-cell and cannot preserve
-// screen-position authority without a complete width oracle.
+// Ratatui's pinned Codex UI renders this closed set as one-cell glyphs. The
+// status indicator at ff29a443 uses ellipsis, bullet, and corner; the turn
+// runtime uses the failure cross. Any other printable code point may be
+// zero-, two-, or multi-cell and cannot preserve screen-position authority
+// without a complete width oracle.
 const trustedSingleCellCharacter = (character: string): boolean =>
-  /^[\x20-\x7e›·─│╭╮╰╯⚠—]$/u.test(character);
+  /^[\x20-\x7e›·─│╭╮╰╯⚠—…•└✗]$/u.test(character);
 
 const csiIsPrivateModeControl = (
   final: string,

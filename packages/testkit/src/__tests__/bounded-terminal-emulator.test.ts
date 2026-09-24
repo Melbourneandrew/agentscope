@@ -877,6 +877,54 @@ describe("bounded semantic terminal emulator", () => {
     }
   });
 
+  it("admits only pinned one-cell Codex status glyphs beside a live prompt", () => {
+    const challenge = "a".repeat(64);
+    const readyTerminal = () => {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        {
+          kind: "challenge-styled-text",
+          challenge,
+          text: "›",
+          requiredText: "fixture-model default",
+          postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+          bold: true,
+          dim: false,
+        },
+      );
+      terminal.write(
+        bytes(
+          "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+        ),
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
+      terminal.write(
+        bytes(
+          "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l",
+        ),
+      );
+      expect(terminal.postSubmissionIdleDiagnostic()).toBe("idle-ready");
+      return terminal;
+    };
+    const title = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+    const pinned = readyTerminal();
+    pinned.write(bytes("\u001b[2;1H…•└✗"));
+    expect(pinned.snapshot().cursor).toEqual({ column: 4, row: 1 });
+    pinned.write(bytes(title));
+    expect(pinned.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+
+    const unknown = readyTerminal();
+    unknown.write(bytes("\u001b[2;1H界"));
+    unknown.write(bytes(title));
+    expect(unknown.postSubmissionIdleAtTitleDiagnostic()).toBe(
+      "idle-revoked-untrusted-cell",
+    );
+  });
+
   it("does not mistake mismatched styled text for post-completion readiness", () => {
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
