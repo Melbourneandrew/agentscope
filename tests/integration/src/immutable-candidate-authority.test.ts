@@ -1,7 +1,13 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // The authority is deliberately private integration JavaScript, not a package API.
@@ -313,13 +319,46 @@ describe("interactive PTY action prefix diagnostics", () => {
       }),
     ).toBeUndefined();
   });
+});
 
-  it("keeps the Codex receipt-settlement reserve exact and scenario-bound", () => {
+describe("Codex trace cutoff ordering", () => {
+  it("keeps the selected PTY alive through the actual Codex trace cutoff", () => {
     expect(
       interactivePtyExecutionReserveMilliseconds("codex-tui-trace-smoke"),
-    ).toBe(25_000);
+    ).toBe(5_000);
     for (const other of ["fixture-process-interactive", "", undefined])
       expect(interactivePtyExecutionReserveMilliseconds(other)).toBe(5_000);
+
+    const integrationRoot = resolve(import.meta.dirname, "..");
+    const runner = readFileSync(join(integrationRoot, "runner.mjs"), "utf8");
+    const controller = readFileSync(
+      join(integrationRoot, "run-scenarios.mjs"),
+      "utf8",
+    );
+    const fixture = readFileSync(
+      join(integrationRoot, "codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const runnerReserve = runner.match(
+      /AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String\(headlessOuterDeadline - ([\d_]+)\)/u,
+    )?.[1];
+    const controllerReserve = controller.match(
+      /AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String\(\s*outerMonotonicDeadlineMs - ([\d_]+),?\s*\)/u,
+    )?.[1];
+    const traceReserve = fixture.match(
+      /const traceDeadline = deadline - ([\d_]+);/u,
+    )?.[1];
+    expect(runnerReserve).toBeDefined();
+    expect(controllerReserve).toBe(runnerReserve);
+    expect(traceReserve).toBeDefined();
+    const traceCutoffReserve =
+      Number(runnerReserve?.replaceAll("_", "")) +
+      Number(traceReserve?.replaceAll("_", ""));
+    expect(traceCutoffReserve).toBe(8_000);
+    expect(
+      traceCutoffReserve -
+        interactivePtyExecutionReserveMilliseconds("codex-tui-trace-smoke"),
+    ).toBeGreaterThanOrEqual(3_000);
   });
 });
 
