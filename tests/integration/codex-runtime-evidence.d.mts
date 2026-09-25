@@ -117,6 +117,16 @@ export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: 
     }>
   | undefined;
 
+export function classifyCodexSessionStartAtFailedPty(input: {
+  afterRead?: () => void;
+  directoryDescriptor: number;
+  directoryPath: string;
+}):
+  | "arm-log-unavailable"
+  | "arm-hook-unseen"
+  | "arm-hook-open"
+  | "arm-hook-completed";
+
 export function inspectCodexRootHookLifecycle(input: {
   afterRead?: () => void;
   directoryDescriptor: number;

@@ -362,6 +362,27 @@ export const inspectCodexSessionStartBeforeFirstModelRequestAdmission = (
   });
 };
 
+// Failure-only snapshot after the selected PTY has stopped. This cannot arm
+// the model gate and never returns log contents or an admission identity.
+export const classifyCodexSessionStartAtFailedPty = (input) => {
+  const source = readCodexHookLog(input);
+  if (source === undefined) return "arm-log-unavailable";
+  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  if (spans.length === 0 && activeEventName === undefined)
+    return "arm-hook-unseen";
+  if (
+    spans.length === 0 &&
+    activeEventName === "SessionStart" &&
+    activeOpen !== undefined
+  )
+    return "arm-hook-open";
+  if (spans[0]?.eventName === "SessionStart") {
+    classifyCodexShutdownLogSource(source);
+    return "arm-hook-completed";
+  }
+  throw new Error("integration.codex.hook-lifecycle");
+};
+
 /**
  * Proves the one graceful root lifecycle from one authenticated log snapshot.
  */

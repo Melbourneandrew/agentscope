@@ -410,6 +410,30 @@ describe("integration cleanup authority", () => {
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
   });
 
+  it("keeps post-failure Codex hook snapshots outside gate admission", () => {
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    expect(runner).toContain("classifyCodexSessionStartAtFailedPty({");
+    expect(runner).toContain(
+      'await import("./runtime/codex-runtime-evidence.mjs")',
+    );
+    expect(runner).not.toContain('from "./codex-runtime-evidence.mjs"');
+    expect(runner).toContain(
+      '"integration.fixture.codex-model-gate-arm-health-pending"',
+    );
+    expect(runner).toContain("marker === undefined &&");
+    expect(runner).toContain(
+      'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+    );
+    expect(runner.indexOf("failedCodexSessionStartHint(home)")).toBeGreaterThan(
+      runner.indexOf(
+        'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+      ),
+    );
+  });
+
   it("stores optional Codex research hints only in retired-failure evidence", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
