@@ -72,21 +72,13 @@ import {
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexConfigHint,
-  extractUntrustedCodexJoinHint,
-  extractUntrustedCodexTraceHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
-  interactivePtyActionPrefixDiagnostic,
-  interactivePtyReadinessProgressDiagnostic,
-  interactivePtyIdleObservationDiagnostic,
-  interactivePtyIdleAtTitleDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyObservedActionsMatch,
   interactivePtyArtifactReadinessMatches,
-  interactivePtyReadinessRejectionDiagnostic,
   interactivePtyArtifactRejectionCode,
   interactivePtyReceiptAuthorityMatches,
-  interactivePtyReceiptRejectionCode,
   selectInteractiveExecutionFailurePredicate,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -1162,12 +1154,7 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
     const selectedScenario = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === plan.scenarioId,
     );
-    if (selectedScenario === undefined) {
-      process.stderr.write(
-        "integration.isolation.pty-envelope-rejection:scenario\n",
-      );
-      return false;
-    }
+    if (selectedScenario === undefined) return false;
     const challenge = receipt?.request?.readiness?.challenge;
     const input = Buffer.concat([
       ...((selectedScenario.nativeReadiness?.kind ===
@@ -1266,10 +1253,6 @@ const interactivePtyEnvelopeMatches = (receipt, plan, expected, failed) =>
         typeof receipt?.observedCanonicalMode === "boolean" &&
         (!requiresCanonicalEof || receipt.observedCanonicalMode === true),
     });
-    if (rejection !== null)
-      process.stderr.write(
-        `integration.isolation.pty-envelope-rejection:${rejection}\n`,
-      );
     return rejection === null;
   })();
 const interactivePtyGeometryMatches = (receipt) =>
@@ -1304,14 +1287,6 @@ const interactivePtyArtifactAuthorityMatches = (receipt, failed) => {
         )
         .digest("hex"),
   });
-  if (rejection === "readiness")
-    process.stderr.write(
-      `integration.isolation.pty-readiness-diagnostic:${interactivePtyReadinessRejectionDiagnostic(receipt, failed)}\n`,
-    );
-  if (rejection !== null)
-    process.stderr.write(
-      `integration.isolation.pty-artifact-rejection:${rejection}\n`,
-    );
   return rejection === null;
 };
 const interactivePtyFingerprintMatches = (receipt) =>
@@ -1340,9 +1315,6 @@ const captureInteractivePtyReceipt = (
   try {
     receipt = decodeInteractivePtyReceipt(output);
   } catch {
-    process.stderr.write(
-      "integration.isolation.pty-receipt-rejection:decode\n",
-    );
     throw new Error("integration.isolation.pty-receipt");
   }
   const processRequest = receipt?.request?.process;
@@ -1356,24 +1328,15 @@ const captureInteractivePtyReceipt = (
       fingerprint: interactivePtyFingerprintMatches(receipt),
     };
   } catch {
-    process.stderr.write(
-      "integration.isolation.pty-receipt-rejection:predicate-error\n",
-    );
     throw new Error("integration.isolation.pty-receipt");
   }
   let matches;
   try {
     matches = interactivePtyReceiptAuthorityMatches(receipt, checks, failed);
   } catch {
-    process.stderr.write(
-      "integration.isolation.pty-receipt-rejection:terminal-state\n",
-    );
     throw new Error("integration.isolation.pty-receipt");
   }
   if (!matches) {
-    process.stderr.write(
-      `integration.isolation.pty-receipt-rejection:${interactivePtyReceiptRejectionCode(receipt, checks, failed)}\n`,
-    );
     throw new Error("integration.isolation.pty-receipt");
   }
   return Object.freeze(receipt);
@@ -1963,23 +1926,6 @@ const recordInteractiveExecutionFailure = (
   });
   return predicate;
 };
-const emitUntrustedCodexJoinHint = (output) => {
-  const hint = extractUntrustedCodexJoinHint(output);
-  if (hint !== undefined)
-    process.stderr.write(`integration.isolation.untrusted-join-hint:${hint}\n`);
-};
-const emitUntrustedCodexTraceHint = (output, scenarioId) => {
-  if (scenarioId !== "codex-tui-trace-smoke") return;
-  const hint = extractUntrustedCodexTraceHint(output);
-  if (hint !== undefined)
-    process.stderr.write(
-      `integration.isolation.untrusted-trace-hint:${hint}\n`,
-    );
-};
-const emitUntrustedCodexFailureHints = (output, scenarioId) => {
-  emitUntrustedCodexJoinHint(output);
-  emitUntrustedCodexTraceHint(output, scenarioId);
-};
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   codexResearchDiagnostics.set(plan.runId, {
@@ -2005,17 +1951,6 @@ const captureFailedScenarioReceipt = (
           true,
         )
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
-  if (plan.scenarioId === "codex-tui-trace-smoke") {
-    const progress = interactivePtyActionPrefixDiagnostic(receipt);
-    if (progress !== undefined) process.stderr.write(`${progress}\n`);
-    const readiness = interactivePtyReadinessProgressDiagnostic(receipt);
-    if (readiness !== undefined) process.stderr.write(`${readiness}\n`);
-    const idleDiagnostic = interactivePtyIdleObservationDiagnostic(receipt);
-    if (idleDiagnostic !== undefined)
-      process.stderr.write(`${idleDiagnostic}\n`);
-    const idleAtTitle = interactivePtyIdleAtTitleDiagnostic(receipt);
-    if (idleAtTitle !== undefined) process.stderr.write(`${idleAtTitle}\n`);
-  }
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
   registerScenarioReceipt(plan, receipt);
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
@@ -2088,68 +2023,15 @@ const contentFreeChildFailureCode = (error, output) => {
     source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
-const terminalWitnessDiagnostic = ({
-  container,
-  containerId,
-  error,
-  plan,
-  waitOutput,
-}) => {
-  const record =
-    typeof container === "object" && container !== null ? container : {};
-  const state =
-    typeof record.State === "object" && record.State !== null
-      ? record.State
-      : {};
-  const labels =
-    typeof record.Config?.Labels === "object" && record.Config.Labels !== null
-      ? record.Config.Labels
-      : {};
-  return {
-    attachCode: Number.isSafeInteger(error?.code),
-    attachKilled: error?.killed === false,
-    attachName: error?.name === "Error",
-    attachSignal: error?.signal === null,
-    containerId: record.Id === containerId,
-    containerName: record.Name === `/${plan.scenarioName}`,
-    finishedAt:
-      typeof state.FinishedAt === "string" &&
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u.test(
-        state.FinishedAt,
-      ),
-    labels:
-      labels["com.agentscope.integration"] === "true" &&
-      labels["com.agentscope.integration.run"] === plan.runId,
-    restart: record.RestartCount === 0,
-    state:
-      state.Status === "exited" &&
-      state.Running === false &&
-      state.Paused === false &&
-      state.Restarting === false &&
-      state.OOMKilled === false &&
-      state.Dead === false &&
-      state.Pid === 0 &&
-      state.ExitCode === error?.code &&
-      state.Error === "",
-    wait: waitOutput === `${error?.code}\n`,
-  };
-};
 const proveFailedAttachSettled = async (error, plan, signal) => {
-  const reject = (reason) => {
-    process.stderr.write(
-      `integration.isolation.attach-terminal-diagnostic:${reason}\n`,
-    );
-    return false;
-  };
-  if (signal.aborted) return reject("signal-aborted");
+  if (signal.aborted) return false;
   const containerId = scenarioContainerIdentities.get(plan.runId);
-  if (!/^[a-f0-9]{64}$/u.test(containerId ?? ""))
-    return reject("container-identity-missing");
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) return false;
   let waited;
   try {
     waited = await dockerWithSignal(["container", "wait", containerId], signal);
   } catch {
-    return reject("wait-failed");
+    return false;
   }
   let inspected;
   try {
@@ -2158,13 +2040,13 @@ const proveFailedAttachSettled = async (error, plan, signal) => {
       signal,
     );
   } catch {
-    return reject("inspect-failed");
+    return false;
   }
   let records;
   try {
     records = JSON.parse(inspected.stdout);
   } catch {
-    return reject("inspect-malformed");
+    return false;
   }
   try {
     const container =
@@ -2177,21 +2059,9 @@ const proveFailedAttachSettled = async (error, plan, signal) => {
       scenarioName: plan.scenarioName,
       waitOutput: waited.stdout,
     });
-    if (proved) return true;
-    process.stderr.write(
-      `integration.isolation.attach-terminal-shape:${JSON.stringify(
-        terminalWitnessDiagnostic({
-          container,
-          containerId,
-          error,
-          plan,
-          waitOutput: waited.stdout,
-        }),
-      )}\n`,
-    );
-    return reject("witness-rejected");
+    return proved;
   } catch {
-    return reject("witness-error");
+    return false;
   }
 };
 const runScenario = async (plan, signal, scenarioDeadline) => {
@@ -2233,7 +2103,6 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           cause: error,
         });
       const output = `${error?.stdout ?? ""}`;
-      emitUntrustedCodexFailureHints(output, plan.scenarioId);
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,
@@ -2248,16 +2117,12 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
         receipt.exitCode === error?.code
           ? decodeInteractiveFailureExitCode(receipt.exitCode, plan.scenarioId)
           : undefined;
-      const recordedDiagnostic = recordInteractiveExecutionFailure(
+      recordInteractiveExecutionFailure(
         plan,
         error,
         output,
         retainedDiagnostic,
       );
-      if (recordedDiagnostic !== undefined)
-        process.stderr.write(
-          `integration.isolation.interactive-diagnostic:${recordedDiagnostic}\n`,
-        );
       if (
         substrateCertificationCase === "leaked-child" &&
         leakedChildReadinessWasObserved({
@@ -2915,9 +2780,6 @@ try {
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
   ) {
     retirementRequired = true;
-    process.stderr.write(
-      `integration.controller.causal-diagnostic:${failureCode(error)}\n`,
-    );
     primaryError = new Error("integration.controller.unsettled-operation", {
       cause: error,
     });

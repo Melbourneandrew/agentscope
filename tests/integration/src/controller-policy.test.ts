@@ -381,20 +381,16 @@ describe("integration cleanup authority", () => {
     );
     expect(runner).toContain("untrustedCodexTraceHint(");
     expect(runner).toContain("integration.runner.untrusted-trace-hint:");
-    expect(outer).toContain("emitUntrustedCodexTraceHint(output, scenarioId)");
-    expect(outer).toContain("integration.isolation.untrusted-trace-hint:");
     expect(runner).toContain("retainedCandidateConfigStage(ledger)");
     expect(runner).toContain("integration.runner.untrusted-config-hint:");
     expect(outer).toContain(
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
-    expect(outer).toContain(
-      "emitUntrustedCodexFailureHints(output, plan.scenarioId)",
-    );
     expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
     expect(outer).not.toContain("writeSync(2,");
     expect(outer).toContain("codexFailureExitPair(");
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
+    expect(outer).not.toContain("process.stderr.write(");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
     const researchCapture = outer.indexOf(
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
@@ -439,7 +435,8 @@ describe("integration cleanup authority", () => {
       "? decodeInteractiveFailureExitCode(receipt.exitCode, plan.scenarioId)",
     );
     const report = controller.indexOf(
-      "const recordedDiagnostic = recordInteractiveExecutionFailure(",
+      "recordInteractiveExecutionFailure(",
+      decode,
     );
     expect(receipt).toBeGreaterThan(-1);
     expect(controller).toContain("? captureFailedScenarioReceipt(");
@@ -847,9 +844,6 @@ describe("integration workflow policy", () => {
     const propagated = scenarios.indexOf("throw primaryError");
     const manifest = scenarios.lastIndexOf("publishControllerFailureManifest");
     const readinessReleased = scenarios.lastIndexOf("fixtureResults.delete");
-    const causalDiagnostic = scenarios.indexOf(
-      "integration.controller.causal-diagnostic:${failureCode(error)}",
-    );
     expect(scenarios).toContain(
       '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    ))',
     );
@@ -898,8 +892,7 @@ describe("integration workflow policy", () => {
       scenarios.indexOf('"USER node"'),
     );
     expect(required).toBeGreaterThanOrEqual(0);
-    expect(causalDiagnostic).toBeGreaterThanOrEqual(0);
-    expect(causalDiagnostic).toBeLessThan(required);
+    expect(scenarios).not.toContain("process.stderr.write(");
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
     expect(readinessReleased).toBeGreaterThan(manifest);
