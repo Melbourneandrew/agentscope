@@ -1,0 +1,60 @@
+---
+title: Hermes Harness Integration
+description: ADRs and admission blockers for observing the Hermes CLI without provider authority.
+---
+
+## Capability Summary
+
+Hermes integration must capture its documented CLI lifecycle through one reversible, user-consented hook while routing every model request to an internal mock. The candidate version is Hermes Agent 0.19.0. Its source and packaging provide an exact acquisition candidate, but artifact verification, dependency closure, and actual-binary isolation have not yet established a support claim.
+
+## Architecture Decision Records
+
+### ADR-001: Authenticate one exact public distribution before running it
+
+**Decision:** The candidate is the `hermes_agent-0.19.0-py3-none-any.whl` published on [PyPI](https://pypi.org/project/hermes-agent/0.19.0/) with SHA-256 `bd0bac012aee38a60894781f4597dc29ee7bedb3448540249921f10d3bef327f`. Trusted preparation must independently verify the wheel bytes against the index and the [release's Sigstore bundle](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20), including signer identity, certificate chain, signature, transparency entry, timestamp, and wheel digest. It must bind the resulting distribution to the signed `v2026.7.20` tag and commit [`3ef6bbd201263d354fd83ec55b3c306ded2eb72a`](https://github.com/NousResearch/hermes-agent/tree/3ef6bbd201263d354fd83ec55b3c306ded2eb72a), then close and authenticate the exact Python and native dependency set installed for each claimed platform. Installation occurs only in a disposable scenario without package-maintainer or network fallback authority. The public source declares MIT licensing; the release scenario does not persistently mirror or redistribute vendor or dependency bytes without a separately reviewed license and notice decision.
+
+**Context:** The signed tag, PyPI wheel digest, and release bundle form a candidate chain, not a completed verification. The newer `v2026.9.24` source declares 0.21.5, but its tag and commit are unsigned, its release has no downloadable asset, and PyPI has no matching 0.21.5 distribution. Its behavior and documentation cannot be used to certify 0.19.0.
+
+**Consequences:** No Hermes row enters the compatibility catalog or release support manifest on source research, an unsigned newer archive, a locally computed download hash, or a wheel whose dependencies and provenance are unresolved.
+
+### ADR-002: Keep classic interactive and one-shot claims distinct
+
+**Decision:** For the candidate version, the closed pairs are `classic-interactive` with `semantic-pty` through `hermes chat`, and `chat-one-shot` with bounded text through `hermes chat -q` on pipe stdio. Each pair requires its own actual-binary evidence. `hermes -z` final-text-only output, the separate TUI, gateway, Desktop, ACP, and any structured-stream output are not implied by either pair and need separate decisions and evidence before a support claim.
+
+**Context:** The [0.19.0 CLI reference](https://github.com/NousResearch/hermes-agent/blob/3ef6bbd201263d354fd83ec55b3c306ded2eb72a/website/docs/reference/cli-commands.md) calls `chat -q` a one-shot non-interactive prompt. A later version changes `-q` behavior on a real TTY and documents additional output modes; those later semantics do not apply backward.
+
+**Consequences:** A pipe run cannot certify a PTY run, and a plain-text answer cannot certify native tool or session observations. The exact pair is part of the support identity.
+
+### ADR-003: Select one internal model route without real credentials
+
+**Decision:** An isolated `HERMES_HOME` contains only the scenario-owned configuration: one `custom` model provider, one internal MockServer base URL, an exact test model, bounded toolsets, and no auxiliary-provider override to a public service. The child receives an explicit environment allowlist without provider keys, OAuth state, host `.env`, cloud credentials, or a shared Hermes profile. Preparation and execution deny public egress. The independent model ledger must account for every main, auxiliary, retry, and fallback request; any external attempt, unexpected endpoint, login prompt, or real-token requirement fails admission. A fixed non-authoritative sentinel may be supplied only if the selected local protocol requires an API-key-shaped value accepted by the mock.
+
+**Context:** The [candidate provider reference](https://github.com/NousResearch/hermes-agent/blob/3ef6bbd201263d354fd83ec55b3c306ded2eb72a/website/docs/integrations/providers.md) documents a custom local endpoint, but auxiliary model tasks and provider selection can take other paths. `--ignore-user-config` still loads `.env` credentials; `--safe-mode` disables the capture hooks. Neither is a substitute for isolation and a closed network ledger.
+
+**Consequences:** An endpoint-shaped setting or a successful response is not proof of zero external spend. No real user or provider credential enters the harness scenario.
+
+### ADR-004: Own one consented CLI shell-hook integration
+
+**Decision:** Agentscope installs one reversible set of observer-only shell-hook entries in the selected Hermes user-root configuration. Every entry names the exact absolute Agentscope launcher as a single command with no external arguments, shell interpolation, or `PATH` lookup. Hermes' JSON stdin is bounded untrusted input; the launcher returns only a bounded no-op response and fails open to Hermes. Installation requires explicit consent for each owned `(event, command)` pair and records only those exact approvals. It does not set global `hooks_auto_accept`, use `--accept-hooks`, enable an unrelated plugin, or alter foreign hook approvals. Repeated install, concurrent edits, conflicts with overlapping exporters, upgrade, and uninstall preserve every unowned entry and require an explicit migration when another exporter captures the same lifecycle.
+
+For Hermes 0.19.0, each eligible platform uses the exact vendor `timeout` in integer seconds `ceil((d + 10,000) / 1,000) + 2`, where `d` is the validated Agentscope hook duration in milliseconds from 50 through 60,000. The derived range is 13 through 72 seconds, below Hermes' documented 300-second cap. The formula reserves 10,000 milliseconds for Hermes dispatch, command mediation, and launcher startup before the launcher's first instruction, then at least 2,000 milliseconds after the entire Agentscope deadline for vendor settlement. The exact version, platform, duration, and derived timeout are bound and verified in the same owned configuration transaction. Candidate-bound actual-binary evidence on each claimed platform must measure dispatch-to-launcher entry at both duration boundaries and prove the reserve and terminal fail-open behavior; until that evidence exists, that platform is ineligible. A missing, default, clamped, mismatched, or unrepresentable timeout also rejects installation before mutation rather than shortening the launcher deadline.
+
+The owned events distinguish first-turn `on_session_start`, per-turn `post_llm_call` and `on_session_end`, tool observations such as `post_tool_call`, and final `on_session_finalize`. `on_session_end` alone never proves that the interactive session has closed. A missing, skipped, malformed, or unapproved hook cannot be silently treated as captured evidence.
+
+**Context:** The [0.19.0 hook contract](https://github.com/NousResearch/hermes-agent/blob/3ef6bbd201263d354fd83ec55b3c306ded2eb72a/website/docs/user-guide/features/hooks.md) runs shell hooks in the CLI through `shlex.split` with `shell=False`, supplies JSON stdin, and requires first-use approval of each event/command pair. Hook failures are logged without crashing Hermes. Gateway-only `HOOK.yaml` handlers do not run in the CLI, and the consent list keys on command text rather than script digest.
+
+**Consequences:** The installed launcher's own identity and upgrade lifecycle remain Agentscope responsibilities. Vendor fail-open behavior protects the agent but does not prove that Agentscope captured a trace; the latter needs independent hook and destination observations.
+
+### ADR-005: Deny updater, telemetry, and alternate execution paths
+
+**Decision:** The exact candidate's profile disables update checks, telemetry, external tools, remote plugins, MCP discovery, browser or OAuth login, gateway startup, and any other optional network path that can run in a claimed mode. The scenario additionally denies public egress and fails on every attempted external route or dynamic dependency installation. Missing or unproven candidate-version suppression controls remain admission blockers; a later-version flag is not accepted without exact-version behavior.
+
+**Context:** Hermes offers provider setup, auxiliary calls, skills, plugins, lazy dependencies, update flows, and multiple execution surfaces. An isolated profile reduces opportunities for those flows, but it is not the network boundary.
+
+### ADR-006: Admit only independently correlated actual-binary evidence
+
+**Decision:** For each closed mode/output pair, acceptance correlates the exact installed wheel and dependency identities, packed Agentscope installation, Hermes process and PTY or pipe outcome, internal model request ledger, denied-egress probe, hook invocation ledger, version-bound native session observations, redacted loopback OTLP receipt, configuration ownership, filesystem effects, and complete backend cleanup. Deliberate missing, duplicate, cross-session, skipped-consent, unexpected-provider, late-hook, and interrupted-turn negatives must fail. Raw prompts, transcripts, hook bodies, model responses, and credentials remain inside the disposable scenario and are not retained as acceptance artifacts.
+
+**Context:** A shell hook can fail open or be skipped; a CLI reply can succeed without a hook; a hook can fire without a complete model turn or destination receipt. None alone certifies capture.
+
+**Consequences:** Hermes remains unadmitted until artifact authentication, suppression, exact model routing, hook ownership, and both selected mode replays pass independently. Synthetic fixtures establish component behavior only, not harness compatibility.
