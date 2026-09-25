@@ -400,28 +400,35 @@ describe("untrusted Codex model-gate research hint transport", () => {
     );
     expect(codexArmPendingResearchHint(hostile)).toBe("arm-other");
   });
-  it.each(["seal-deadline", "seal-request", "receipt-shape", "ledger-shape"])(
-    "retains one closed failure hint without admission: %s",
-    (hint) => {
-      const line = `integration.runner.untrusted-gate-hint:${hint}\n`;
-      expect(extractUntrustedCodexGateHint(line)).toBe(hint);
-      for (const output of [
-        `${line}${line}`,
-        `${line}integration.runner.untrusted-gate-hint:other\n`,
-        `x:${line}`,
-        `integration.runner.untrusted-gate-hint:${hint}-extra\n`,
-        `integration.runner.untrusted-gate-hint:${hint}:secret\n`,
-      ])
-        expect(extractUntrustedCodexGateHint(output)).toBeUndefined();
-      expect(
-        selectInteractiveExecutionFailurePredicate(
-          `integration.fixture.codex-gate-research-${hint}`,
-          undefined,
-          "codex-tui-trace-smoke",
-        ),
-      ).toBe("child-failure");
-    },
-  );
+  it.each([
+    "arm-log-unavailable",
+    "arm-log-invalid",
+    "arm-hook-unseen",
+    "arm-hook-open",
+    "arm-hook-completed",
+    "seal-deadline",
+    "seal-request",
+    "receipt-shape",
+    "ledger-shape",
+  ])("retains one closed failure hint without admission: %s", (hint) => {
+    const line = `integration.runner.untrusted-gate-hint:${hint}\n`;
+    expect(extractUntrustedCodexGateHint(line)).toBe(hint);
+    for (const output of [
+      `${line}${line}`,
+      `${line}integration.runner.untrusted-gate-hint:other\n`,
+      `x:${line}`,
+      `integration.runner.untrusted-gate-hint:${hint}-extra\n`,
+      `integration.runner.untrusted-gate-hint:${hint}:secret\n`,
+    ])
+      expect(extractUntrustedCodexGateHint(output)).toBeUndefined();
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        `integration.fixture.codex-gate-research-${hint}`,
+        undefined,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
   it("rejects non-text and oversized attached output", () => {
     expect(extractUntrustedCodexGateHint(undefined)).toBeUndefined();
     expect(

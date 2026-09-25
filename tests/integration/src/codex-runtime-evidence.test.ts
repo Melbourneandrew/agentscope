@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
+  classifyCodexSessionStartAtFailedPty,
   classifyCodexTraceDeadlineObservation,
   classifyCodexTraceFailureHint,
   codexTraceSearchChildFailureCategory,
@@ -736,7 +737,13 @@ describe("Codex bounded native ledgers", () => {
         directoryPath: directory,
       };
       try {
+        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
+          "arm-log-unavailable",
+        );
         writeFileSync(path, "TRACE codex.startup: ready\n");
+        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
+          "arm-hook-unseen",
+        );
         expect(
           inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
         ).toBe(undefined);
@@ -751,14 +758,23 @@ describe("Codex bounded native ledgers", () => {
         expect(() =>
           inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
         ).toThrow("integration.codex.hook-log");
+        expect(() => classifyCodexSessionStartAtFailedPty(input)).toThrow(
+          "integration.codex.hook-log",
+        );
         writeFileSync(
           path,
           sessionStart.slice(0, sessionStart.indexOf("\n") + 1),
+        );
+        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
+          "arm-hook-open",
         );
         expect(
           inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
         ).toBe(undefined);
         writeFileSync(path, sessionStart);
+        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
+          "arm-hook-completed",
+        );
         const firstModelRequestCheckpoint =
           inspectCodexSessionStartBeforeFirstModelRequestAdmission(input);
         expect(firstModelRequestCheckpoint?.durationMilliseconds).toBe(150);

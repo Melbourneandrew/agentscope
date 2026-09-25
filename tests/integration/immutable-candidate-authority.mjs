@@ -842,6 +842,11 @@ export const extractUntrustedCodexConfigHint = (output) => {
 };
 
 export const codexGateResearchHints = Object.freeze([
+  "arm-log-unavailable",
+  "arm-log-invalid",
+  "arm-hook-unseen",
+  "arm-hook-open",
+  "arm-hook-completed",
   "arm-deadline",
   "arm-clock",
   "arm-phase",

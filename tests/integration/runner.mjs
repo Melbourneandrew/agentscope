@@ -203,6 +203,39 @@ const retainedCandidateConfigStage = (ledger) => {
   }
   return last;
 };
+// A post-failure, bounded and content-free snapshot only. The fixture's live
+// SessionStart checkpoint remains the sole authority for model-gate arming.
+const failedCodexSessionStartHint = async (home) => {
+  const directoryPath = join(home, ".codex", "diagnostic-log");
+  let directoryDescriptor;
+  try {
+    directoryDescriptor = openSync(
+      directoryPath,
+      constants.O_RDONLY |
+        constants.O_DIRECTORY |
+        constants.O_NOFOLLOW |
+        constants.O_NONBLOCK,
+    );
+    const directory = fstatSync(directoryDescriptor);
+    if (
+      !directory.isDirectory() ||
+      directory.uid !== 1000 ||
+      directory.gid !== 1000 ||
+      (directory.mode & 0o7777) !== 0o700
+    )
+      return "arm-log-invalid";
+    const { classifyCodexSessionStartAtFailedPty } =
+      await import("./runtime/codex-runtime-evidence.mjs");
+    return classifyCodexSessionStartAtFailedPty({
+      directoryDescriptor,
+      directoryPath,
+    });
+  } catch {
+    return "arm-log-invalid";
+  } finally {
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
 const untrustedCodexJoinHint = (ledger) => {
   if (scenarioId !== "codex-tui-trace-smoke") return undefined;
   const marker = readBoundedInteractiveFailureMarker(ledger);
@@ -856,7 +889,11 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)
-      : undefined;
+      : marker === undefined &&
+          retainedInteractivePhase(ledger) ===
+            "integration.fixture.codex-model-gate-arm-health-pending"
+        ? await failedCodexSessionStartHint(home)
+        : undefined;
     if (codexGateResearchHints.includes(gateHint))
       process.stdout.write(
         `integration.runner.untrusted-gate-hint:${gateHint}\n`,
