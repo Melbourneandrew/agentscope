@@ -349,6 +349,23 @@ describe("integration capability manifest", () => {
     expect(source).toContain(
       "fchownSync(configurationDescriptor, 1000, 1000);",
     );
+    // CAP_CHOWN is admitted but CAP_FOWNER is not: chmod must precede the
+    // ownership handoff, with the same final inode proof afterward.
+    const configMode = source.indexOf(
+      "fchmodSync(configurationDescriptor, 0o600);",
+    );
+    const configOwner = source.indexOf(
+      "fchownSync(configurationDescriptor, 1000, 1000);",
+    );
+    const configFinalProof = source.indexOf(
+      "const after = fstatSync(configurationDescriptor);",
+      configOwner,
+    );
+    expect(configMode).toBeGreaterThan(
+      source.indexOf('recordCandidateConfigStage("prove");'),
+    );
+    expect(configOwner).toBeGreaterThan(configMode);
+    expect(configFinalProof).toBeGreaterThan(configOwner);
     expect(source).toContain("fchownSync(ledgerDescriptor, 0, 0);");
     expect(source).toContain("fchmodSync(ledgerDescriptor, 0o700);");
     expect(source).toContain('ledger !== "/ledger"');

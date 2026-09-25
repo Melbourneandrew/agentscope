@@ -1557,8 +1557,10 @@ try {
       (before.mode & 0o7777) !== 0o600
     )
       throw new Error("integration.codex.candidate-home");
-    fchownSync(configurationDescriptor, 1000, 1000);
     fchmodSync(configurationDescriptor, 0o600);
+    // The closed container has CAP_CHOWN, not CAP_FOWNER. Normalize mode
+    // while root still owns the inode, then transfer ownership exactly once.
+    fchownSync(configurationDescriptor, 1000, 1000);
     const after = fstatSync(configurationDescriptor);
     if (
       after.dev !== before.dev ||
