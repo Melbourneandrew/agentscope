@@ -1,7 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   writeFileSync,
@@ -18,12 +22,18 @@ import {
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
+  codexGateResearchHints,
   compileCandidateInventory,
-  compileInstalledPtyFailureReceipt,
-  compileInstalledCliPtyReceiptFromExecution,
+  decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
+  encodeInteractiveFailureExitCode,
+  interactivePtyExecutionReserveMilliseconds,
+  interactivePtyReceiptFailed,
+  readBoundedInteractiveFailureMarker,
+  selectInteractiveFailureDiagnostic,
+  untrustedCodexTraceHint,
 } from "./immutable-candidate-authority.mjs";
-import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
+import { compileInteractivePtyActions } from "./dist/interactive-pty-actions.js";
 import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
 
@@ -31,57 +41,184 @@ const substrateCertificationCase = parseSubstrateCertificationCaseValue(
   process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
 );
 
-const ptyFailurePhases = Object.freeze([
-  "runner-bootstrap",
-  "candidate-inventory",
-  "immutable-candidate",
-  "installed-cli",
-  "pty-receipt",
+const interactivePhases = Object.freeze([
+  "bootstrap",
+  "bootstrap-arguments",
+  "bootstrap-deadline",
+  "bootstrap-readiness",
+  "bootstrap-environment",
+  "bootstrap-modules",
+  "bootstrap-artifact",
+  "bootstrap-pty",
+  "init",
+  "destination",
+  "routing",
+  "install",
+  "model-gate-start",
+  "model-gate-configured",
+  "control-plane-closed",
+  "tui-readiness-challenge-published",
+  "tui-start",
+  "tui-run-created",
+  "tui-checkpoint",
+  "model-gate-arm-start",
+  "model-gate-arm-health-pending",
+  "model-gate-arm-session-start",
+  "tui-exit-before-arm",
+  "model-gate-arm-complete",
+  "model-request-observed",
+  "model-request",
+  "trace-terminal",
+  "tui-exit-published",
+  "tui-join-deadline",
+  "tui-child-rejected",
+  "tui-joined",
+  "trace-settlement",
+  "trace-search",
+  "hook-command-timeout",
+  "hook-command-spawn-error",
+  "hook-command-stdin-error",
+  "hook-command-wait-error",
+  "hook-command-missing",
+  "hook-command-completed-before-budget-boundary",
+  "hook-command-completed-near-budget-boundary",
+  "hook-no-operational-state-subsecond",
+  "hook-no-operational-state-low-latency",
+  "hook-no-operational-state-mid-latency",
+  "hook-no-operational-state-high-latency",
+  "hook-no-operational-state-near-deadline",
+  "hook-start-suppressed",
+  "hook-start-deadline",
+  "hook-capture-suppressed",
+  "hook-capture-deadline",
+  "hook-redaction-suppressed",
+  "hook-redaction-deadline",
+  "hook-routing-no-route",
+  "hook-delivery-rejected",
+  "hook-delivery-unavailable",
+  "hook-delivery-deadline",
+  "hook-delivery-unknown",
+  "hook-accepted-without-trace",
+  "hook-operational-unclassified",
+  "trace-search-record-count",
+  "trace-search-shape",
+  "trace-search-ambiguous",
+  "trace-search-harness",
+  "trace-search-locator",
+  "trace-reporter-settled",
+  "trace-search-result",
+  "verify",
+  "verify-config",
+  "verify-gate",
+  "verify-trace-get",
+  "verify-correlation",
+  "verify-doctor",
+  "verify-uninstall",
+  "verify-status",
+  "verify-projection",
+  "verify-evidence",
 ]);
-let ptyFailurePhase = ptyFailurePhases[0];
-let ptyFailureTerminal = false;
-const advancePtyFailurePhase = (phase) => {
-  const current = ptyFailurePhases.indexOf(ptyFailurePhase);
-  const next = ptyFailurePhases.indexOf(phase);
-  if (next !== current + 1)
-    throw new Error("integration.runner.pty-failure-phase");
-  ptyFailurePhase = phase;
-};
-const defaultPtyFailurePredicate = Object.freeze({
-  "candidate-inventory": "candidate-rejected",
-  "immutable-candidate": "authority-rejected",
-  "installed-cli": "driver-input",
-  "pty-receipt": "receipt-rejected",
-  "runner-bootstrap": "runner-rejected",
-});
-const installedDriverPrefix = "integration.pty-installed-cli-driver.";
-const emitPtyFailureReceipt = (error) => {
-  if (ptyFailureTerminal) return;
-  ptyFailureTerminal = true;
-  const message = error instanceof Error ? error.message : "";
-  const predicate = message.startsWith(installedDriverPrefix)
-    ? message.slice(installedDriverPrefix.length)
-    : defaultPtyFailurePredicate[ptyFailurePhase];
-  let encoded;
-  try {
-    encoded = compileInstalledPtyFailureReceipt({
-      receiptVersion: 1,
-      phase: ptyFailurePhase,
-      predicate,
-    }).encoded;
-  } catch {
-    encoded = compileInstalledPtyFailureReceipt({
-      receiptVersion: 1,
-      phase: ptyFailurePhase,
-      predicate: defaultPtyFailurePredicate[ptyFailurePhase],
-    }).encoded;
+const retainedInteractivePhase = (ledger) => {
+  let retained;
+  for (const phase of interactivePhases) {
+    const path = join(ledger, `interactive-phase-${phase}.txt`);
+    try {
+      const status = lstatSync(path);
+      const content = readFileSync(path, "utf8");
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        status.size !== Buffer.byteLength(content) ||
+        content !== `integration.fixture.codex-${phase}\n`
+      )
+        throw new Error("integration.runner.interactive-phase");
+      retained = content.trim();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
   }
-  process.stdout.write(`AGENTSCOPE_PTY_FAILURE=${encoded}\n`);
-  process.exitCode = 1;
+  return retained;
 };
-if (process.hasUncaughtExceptionCaptureCallback())
-  throw new Error("integration.runner.pty-failure-capture");
-process.setUncaughtExceptionCaptureCallback(emitPtyFailureReceipt);
+// A root-ledger progress marker helps diagnose a failed replay. It does not
+// authenticate attached stdout or establish any scenario/checkpoint authority.
+const retainedCandidateConfigStage = (ledger) => {
+  if (scenarioId !== "codex-tui-trace-smoke" || ledger !== "/ledger")
+    return undefined;
+  try {
+    const root = lstatSync(ledger);
+    if (
+      !root.isDirectory() ||
+      root.isSymbolicLink() ||
+      root.uid !== 0 ||
+      root.gid !== 0 ||
+      (root.mode & 0o7777) !== 0o700
+    )
+      return undefined;
+  } catch {
+    return undefined;
+  }
+  let last;
+  let gap = false;
+  for (const stage of [
+    "closed-marker",
+    "render",
+    "create",
+    "open",
+    "prove",
+    "publish",
+  ]) {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        join(ledger, `candidate-config-${stage}.txt`),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      const before = fstatSync(descriptor);
+      const expected = `integration.fixture.codex-candidate-config-${stage}\n`;
+      if (
+        gap ||
+        !before.isFile() ||
+        before.nlink !== 1 ||
+        before.uid !== 0 ||
+        before.gid !== 0 ||
+        (before.mode & 0o7777) !== 0o600 ||
+        before.size !== Buffer.byteLength(expected) ||
+        readFileSync(descriptor, "utf8") !== expected
+      )
+        return undefined;
+      const after = fstatSync(descriptor);
+      if (
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        after.size !== before.size
+      )
+        return undefined;
+      last = stage;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return undefined;
+      gap = true;
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  }
+  return last;
+};
+const untrustedCodexJoinHint = (ledger) => {
+  if (scenarioId !== "codex-tui-trace-smoke") return undefined;
+  const marker = readBoundedInteractiveFailureMarker(ledger);
+  const prefix = "integration.fixture.codex-tui-join-deadline-";
+  return marker?.startsWith(prefix) &&
+    encodeInteractiveFailureExitCode(marker, scenarioId) !== undefined
+    ? marker.slice(prefix.length)
+    : undefined;
+};
+const decodeScenarioFailureExitCode = (exitCode) => {
+  if (!Number.isSafeInteger(exitCode)) return undefined;
+  const phase = interactivePhases[exitCode - 64];
+  return phase === undefined
+    ? decodeInteractiveFailureExitCode(exitCode, scenarioId)
+    : `integration.fixture.codex-${phase}`;
+};
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -142,6 +279,79 @@ const fingerprintSelectedPtyAuthority = (authority) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(authority))
     .digest("hex")}`;
+// eslint-disable-next-line complexity -- closed manifest-to-kernel readiness mapping
+const compileNativeReadiness = (scenario, challenge) => {
+  const readiness = scenario.nativeReadiness;
+  if (
+    readiness?.kind === "challenge-process-topology" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify(["kind"]) &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge)
+  )
+    return Object.freeze({ kind: "challenge-process-topology", challenge });
+  if (
+    readiness?.kind === "challenge-marker" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify(["kind"]) &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge)
+  )
+    return Object.freeze({ kind: "challenge-marker", challenge });
+  if (
+    readiness?.kind === "codex-challenge-idle-prompt" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    typeof challenge === "string" &&
+    /^[a-f0-9]{64}$/u.test(challenge) &&
+    readiness.harness === "codex" &&
+    readiness.exactHarnessVersion === "0.149.1" &&
+    readiness.text === "›" &&
+    readiness.bold === true &&
+    readiness.dim === false
+  )
+    return Object.freeze({
+      kind: "challenge-styled-text",
+      challenge,
+      text: "›",
+      requiredText: "Ask Codex to do anything",
+      postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+      bold: true,
+      dim: false,
+    });
+  if (
+    readiness?.kind === "semantic-marker" &&
+    JSON.stringify(Object.keys(readiness).sort()) === JSON.stringify(["kind"])
+  )
+    return Object.freeze({ kind: "semantic-marker" });
+  if (
+    readiness?.kind === "codex-idle-prompt" &&
+    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    JSON.stringify(Object.keys(readiness).sort()) ===
+      JSON.stringify([
+        "bold",
+        "dim",
+        "exactHarnessVersion",
+        "harness",
+        "kind",
+        "text",
+      ]) &&
+    readiness.harness === "codex" &&
+    readiness.exactHarnessVersion === "0.149.1" &&
+    readiness.text === "›" &&
+    readiness.bold === true &&
+    readiness.dim === false
+  )
+    return Object.freeze({
+      kind: "styled-text-after-completion",
+      text: "›",
+      bold: true,
+      dim: false,
+    });
+  throw new Error("integration.runner.native-readiness");
+};
 const assertEmptyDirectory = (path) => {
   if (readdirSync(path).length !== 0)
     throw new Error("integration.runner.home-not-empty");
@@ -162,7 +372,6 @@ writeFileSync(
 );
 writeFileSync(join(worktree, "README.md"), "isolated integration worktree\n");
 
-advancePtyFailurePhase("candidate-inventory");
 const pointer = JSON.parse(
   readFileSync(join(candidateRoot, "current-candidate.json"), "utf8"),
 );
@@ -243,7 +452,6 @@ for (const file of declared) {
     throw new Error("integration.runner.candidate-file");
 }
 const candidateInventorySha256 = compileCandidateInventory(evidence).sha256;
-advancePtyFailurePhase("immutable-candidate");
 const encodedImmutableCandidate = requiredEnvironment(
   "AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY",
 );
@@ -270,24 +478,6 @@ const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
   immutableCandidate,
 );
 
-advancePtyFailurePhase("installed-cli");
-const { receipt: ptyReceipt } = await runInstalledCliPtyProof({
-  capability: headlessCapability,
-  home,
-  runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
-  shutdownDeadline: headlessShutdownDeadline,
-});
-advancePtyFailurePhase("pty-receipt");
-const installedCliPtyReceipt = compileInstalledCliPtyReceiptFromExecution({
-  receipt: ptyReceipt,
-  scenarioId,
-  candidateBundleIdentity: evidence.bundleIdentity,
-  candidateInventorySha256,
-});
-console.log(`AGENTSCOPE_PTY_RECEIPT=${installedCliPtyReceipt.encoded}`);
-ptyFailureTerminal = true;
-process.setUncaughtExceptionCaptureCallback(null);
-
 for (const publicEndpoint of [
   "https://registry.npmjs.org/",
   "https://api.openai.com/",
@@ -305,6 +495,7 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+let interactiveFailureDiagnostic;
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
@@ -313,12 +504,16 @@ try {
     AGENTSCOPE_CANDIDATE_ROOT: candidateRoot,
     AGENTSCOPE_COLLECTOR_URL: requiredEnvironment("AGENTSCOPE_COLLECTOR_URL"),
     AGENTSCOPE_INGESTION_URL: requiredEnvironment("AGENTSCOPE_INGESTION_URL"),
+    AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(
+      "AGENTSCOPE_INTEGRATION_RUN_ID",
+    ),
     AGENTSCOPE_LEDGER: ledger,
     AGENTSCOPE_MODEL_SERVER_URL: requiredEnvironment(
       "AGENTSCOPE_MODEL_SERVER_URL",
     ),
     AGENTSCOPE_RETRIEVAL_URL: requiredEnvironment("AGENTSCOPE_RETRIEVAL_URL"),
     AGENTSCOPE_SCENARIO_ID: scenarioId,
+    AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String(headlessOuterDeadline - 5_000),
     AGENTSCOPE_WORKTREE: worktree,
     HARNESS_HOME: harnessHome,
     HOME: home,
@@ -331,6 +526,9 @@ try {
         ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
         : "/usr/local/bin:/usr/bin:/bin",
     XDG_CONFIG_HOME: requiredEnvironment("XDG_CONFIG_HOME"),
+    ...(scenario.executionMode === "interactive"
+      ? { TERM: "xterm-256color" }
+      : {}),
     ...(process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === undefined
       ? {}
       : {
@@ -356,6 +554,14 @@ try {
     "--artifact",
     join(directory, "files", selectedArtifact.fileName),
   ];
+  const readinessChallenge =
+    scenario.executionMode === "interactive" &&
+    (scenario.nativeReadiness?.kind === "challenge-process-topology" ||
+      scenario.nativeReadiness?.kind === "challenge-marker" ||
+      scenario.nativeReadiness?.kind === "codex-challenge-idle-prompt")
+      ? randomBytes(32).toString("hex")
+      : undefined;
+  const terminalInput = Buffer.from(scenario.terminalInputBase64, "base64");
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
     executable:
@@ -374,7 +580,14 @@ try {
         : childEnvironment,
     stdin:
       scenario.executionMode === "interactive"
-        ? new TextEncoder().encode("run\n")
+        ? new Uint8Array(
+            readinessChallenge === undefined
+              ? terminalInput
+              : Buffer.concat([
+                  Buffer.from(`${readinessChallenge}\n`),
+                  terminalInput,
+                ]),
+          )
         : new Uint8Array(),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
@@ -382,7 +595,12 @@ try {
       now + 10_000,
       headlessShutdownDeadline - 5_000,
     ),
-    monotonicExecutionDeadlineMs: headlessShutdownDeadline - 5_000,
+    // The Codex fixture's trace cutoff is eight seconds before the outer
+    // deadline. Keep the selected PTY alive through it, then reserve the
+    // remaining five seconds for bounded settlement and receipt emission.
+    monotonicExecutionDeadlineMs:
+      headlessShutdownDeadline -
+      interactivePtyExecutionReserveMilliseconds(scenarioId),
     monotonicShutdownDeadlineMs: headlessShutdownDeadline,
     terminationGraceMs: 1_000,
   };
@@ -413,20 +631,19 @@ try {
     const scriptSha256 = scenarioProcessSha256;
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
+    const readiness = compileNativeReadiness(scenario, readinessChallenge);
     const interaction = {
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        {
-          action: "input",
-          byteLength: 4,
-          inputSha256: rawSha256(request.stdin),
-        },
-        { action: "eof" },
-      ],
-      trigger: "semantic-ready",
+      actions: compileInteractivePtyActions(scenario, request.stdin),
+      trigger:
+        readiness.kind === "challenge-process-topology" ||
+        readiness.kind === "challenge-marker" ||
+        readiness.kind === "challenge-styled-text"
+          ? "immediate"
+          : "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
       completion,
+      readiness,
       initialGeometry,
       interaction,
       interpreter,
@@ -456,6 +673,7 @@ try {
     const ptyAuthority = {
       processRequestFingerprint: processAuthority.requestFingerprint,
       completion,
+      readiness,
       initialGeometry,
       interaction,
       interpreter,
@@ -479,6 +697,27 @@ try {
       inputBytes: receipt.inputBytes,
       inputSha256: receipt.inputSha256,
       readinessObserved: receipt.readinessObserved,
+      ...(receipt.challengedReadinessProgress === undefined
+        ? {}
+        : {
+            challengedReadinessProgress: receipt.challengedReadinessProgress,
+          }),
+      ...(receipt.checkpointProgressDiagnostic === undefined
+        ? {}
+        : {
+            checkpointProgressDiagnostic: receipt.checkpointProgressDiagnostic,
+          }),
+      ...(receipt.postSubmissionIdleDiagnostic === undefined
+        ? {}
+        : {
+            postSubmissionIdleDiagnostic: receipt.postSubmissionIdleDiagnostic,
+          }),
+      ...(receipt.postSubmissionIdleAtTitleDiagnostic === undefined
+        ? {}
+        : {
+            postSubmissionIdleAtTitleDiagnostic:
+              receipt.postSubmissionIdleAtTitleDiagnostic,
+          }),
       actions: receipt.actions,
       outerMonotonicDeadlineMs: headlessOuterDeadline,
       requestConstructedAtMs: now,
@@ -487,6 +726,7 @@ try {
       request: {
         process: processAuthority,
         completion,
+        readiness,
         initialGeometry,
         interaction,
         interpreter,
@@ -515,18 +755,18 @@ try {
     console.log(
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
-    fixtureOutput = recoverRetainedFixtureOutput();
-    if (
-      receipt.outcome !== "completed" ||
-      receipt.finalSnapshot.semanticState !== "completed" ||
-      receipt.cleanup !== "clean" ||
-      receipt.residualProcessCount !== 0 ||
-      !receipt.processJoined ||
-      !receipt.terminalInputJoined ||
-      !receipt.terminalOutputJoined ||
-      !receipt.terminalTransportClosed
-    )
+    if (interactivePtyReceiptFailed(receipt)) {
+      const diagnostic =
+        decodeScenarioFailureExitCode(receipt.exitCode) ??
+        retainedInteractivePhase(ledger);
+      interactiveFailureDiagnostic = diagnostic;
+      if (diagnostic !== undefined)
+        process.stdout.write(
+          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+        );
       fixtureFailure = new Error("integration.runner.fixture-failed");
+      fixtureOutput = "";
+    } else fixtureOutput = recoverRetainedFixtureOutput();
   } else {
     if (
       scenario.executionMode !== "headless" ||
@@ -576,24 +816,17 @@ try {
   }
 } catch (error) {
   if (scenario.executionMode === "interactive") {
-    let diagnostic = `${error?.message ?? ""}`.match(
+    const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
-    const failurePath = join(ledger, "interactive-failure.txt");
-    try {
-      const status = lstatSync(failurePath);
-      const content = readFileSync(failurePath, "utf8");
-      if (
-        status.isFile() &&
-        !status.isSymbolicLink() &&
-        status.size === Buffer.byteLength(content) &&
-        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
-      )
-        diagnostic = content.trim();
-    } catch {
-      // The selected PTY error remains the diagnostic if no fixture record exists.
-    }
-    process.stderr.write(
+    const fixtureFailure = readBoundedInteractiveFailureMarker(ledger);
+    const diagnostic = selectInteractiveFailureDiagnostic(
+      fixtureFailure,
+      retainedInteractivePhase(ledger),
+      selectedError,
+    );
+    interactiveFailureDiagnostic = diagnostic;
+    process.stdout.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
   }
@@ -609,18 +842,52 @@ try {
   } else fixtureOutput = "";
   fixtureFailure = error;
 }
+if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
+  const configHint = retainedCandidateConfigStage(ledger);
+  if (configHint !== undefined)
+    process.stdout.write(
+      `integration.runner.untrusted-config-hint:${configHint}\n`,
+    );
+  const hint = untrustedCodexJoinHint(ledger);
+  if (hint !== undefined)
+    process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);
+  if (scenarioId === "codex-tui-trace-smoke") {
+    const marker = readBoundedInteractiveFailureMarker(ledger);
+    const gatePrefix = "integration.fixture.codex-gate-research-";
+    const gateHint = marker?.startsWith(gatePrefix)
+      ? marker.slice(gatePrefix.length)
+      : undefined;
+    if (codexGateResearchHints.includes(gateHint))
+      process.stdout.write(
+        `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+      );
+    const traceHint = untrustedCodexTraceHint(marker);
+    if (traceHint !== undefined)
+      process.stdout.write(
+        `integration.runner.untrusted-trace-hint:${traceHint}\n`,
+      );
+  }
+}
 const fixtureResult = fixtureOutput
   .split("\n")
   .filter((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="))
   .at(-1);
-if (!fixtureResult) throw new Error("integration.runner.fixture-result");
-console.log(fixtureResult);
-if (fixtureFailure !== undefined)
-  throw new Error("integration.runner.fixture-failed");
-
-if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
-  throw new Error("integration.runner.expected-failure");
-if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
-  await new Promise(() => setInterval(() => {}, 1_000));
-writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
-console.log("Integration scenario passed with public egress denied.");
+const interactiveFailureExitCode =
+  scenario.executionMode === "interactive" && fixtureFailure !== undefined
+    ? encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)
+    : undefined;
+if (!fixtureResult && interactiveFailureExitCode === undefined)
+  throw new Error("integration.runner.fixture-result");
+if (fixtureResult) console.log(fixtureResult);
+if (fixtureFailure !== undefined) {
+  if (interactiveFailureExitCode === undefined)
+    throw new Error("integration.runner.fixture-failed");
+  process.exitCode = interactiveFailureExitCode;
+} else {
+  if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
+    throw new Error("integration.runner.expected-failure");
+  if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
+    await new Promise(() => setInterval(() => {}, 1_000));
+  writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
+  console.log("Integration scenario passed with public egress denied.");
+}

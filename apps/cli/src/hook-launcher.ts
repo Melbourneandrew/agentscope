@@ -125,7 +125,8 @@ const posixShebang = (nodeExecutable: string): string => {
 const launcherProgram = (
   nodeExecutable: string,
   machineEntryPath: string,
-): string => `${posixShebang(nodeExecutable)}const startedAt = performance.now();
+): string =>
+  `${posixShebang(nodeExecutable)}const startedAt = performance.now();
 const physicalPath = process.argv[1];
 const arguments_ = process.argv.slice(2);
 const match = /(?:^|\\/)agentscope-hook-v1-[a-f0-9]{64}-d(\\d+)$/.exec(physicalPath);

@@ -48,8 +48,12 @@ import {
   probePinnedRegistryTlsForTesting,
   readImageTimeoutSourceForTesting,
   readPreparedImageEvidence,
+  registerPreparedDockerNetwork,
+  registerPreparedDockerControlVolume,
   revalidatePreparedImageAdmission,
   retirePreparedDockerImage,
+  retirePreparedDockerNetwork,
+  retirePreparedDockerControlVolume,
   retirePreparedImageEvidence,
   runOwnedImageCommandForTesting,
   validatePreparedImageEvidence,
@@ -440,6 +444,20 @@ const engineFixture = ({
   lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
+  networkAttached = false,
+  networkAttachedAfterAdmissionUntilInspection = 0,
+  networkDisappearsAfterAdmission = false,
+  networkId = "a".repeat(64),
+  networkInternal = true,
+  networkInitiallyPresent = true,
+  networkName,
+  networkRunId,
+  controlVolumeName,
+  controlVolumeRunId,
+  controlVolumeInitiallyPresent = true,
+  controlVolumeSubstituted = false,
+  controlVolumeDisappearsAfterAdmission = false,
+  controlVolumeAttached = false,
   preexistingVolume = false,
   preexistingTag = false,
   pullCompletesThenDisconnect = false,
@@ -467,6 +485,20 @@ const engineFixture = ({
   lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
+  networkAttached?: boolean;
+  networkAttachedAfterAdmissionUntilInspection?: number;
+  networkDisappearsAfterAdmission?: boolean;
+  networkId?: string;
+  networkInternal?: boolean;
+  networkInitiallyPresent?: boolean;
+  networkName?: string;
+  networkRunId?: string;
+  controlVolumeName?: string;
+  controlVolumeRunId?: string;
+  controlVolumeInitiallyPresent?: boolean;
+  controlVolumeSubstituted?: boolean;
+  controlVolumeDisappearsAfterAdmission?: boolean;
+  controlVolumeAttached?: boolean;
   preexistingVolume?: boolean;
   preexistingTag?: boolean;
   pullCompletesThenDisconnect?: boolean;
@@ -476,7 +508,7 @@ const engineFixture = ({
   wrongMount?: boolean;
   wrongVolume?: boolean;
   wrongVolumeLabels?: boolean;
-  // eslint-disable-next-line max-lines-per-function
+  // eslint-disable-next-line complexity, max-lines-per-function -- one stateful daemon lifecycle fixture
 } = {}) => {
   const requests: Request[] = [];
   let infoCount = 0;
@@ -493,6 +525,10 @@ const engineFixture = ({
     createTimeoutAfterResources: boolean;
     diagnosticObservations: boolean;
     imageDeleted: boolean;
+    networkPresent: boolean;
+    networkInspectionCount: number;
+    controlVolumePresent: boolean;
+    controlVolumeInspectionCount: number;
     tagInspectionCount: number;
     unprovedContainment: boolean;
   } = {
@@ -506,6 +542,11 @@ const engineFixture = ({
     createTimeoutAfterResources,
     diagnosticObservations,
     imageDeleted: false,
+    networkPresent: networkName !== undefined && networkInitiallyPresent,
+    networkInspectionCount: 0,
+    controlVolumePresent:
+      controlVolumeName !== undefined && controlVolumeInitiallyPresent,
+    controlVolumeInspectionCount: 0,
     tagInspectionCount: 0,
     unprovedContainment,
   };
@@ -624,6 +665,69 @@ const engineFixture = ({
           }
         : { statusCode: 404, body: "{}" };
     }
+    if (
+      networkName !== undefined &&
+      entry.method === "GET" &&
+      entry.path === `/v1.50/networks/${encodeURIComponent(networkName)}`
+    ) {
+      state.networkInspectionCount += 1;
+      const present =
+        state.networkPresent &&
+        !(networkDisappearsAfterAdmission && state.networkInspectionCount > 1);
+      return present
+        ? {
+            statusCode: 200,
+            body: JSON.stringify({
+              Id: networkId,
+              Name: networkName,
+              Internal: networkInternal,
+              Labels: {
+                "com.agentscope.integration": "true",
+                "com.agentscope.integration.run": networkRunId,
+              },
+              Containers:
+                networkAttached ||
+                (state.networkInspectionCount > 1 &&
+                  state.networkInspectionCount <=
+                    networkAttachedAfterAdmissionUntilInspection)
+                  ? { fixture: {} }
+                  : {},
+            }),
+          }
+        : { statusCode: 404, body: "{}" };
+    }
+    if (
+      controlVolumeName !== undefined &&
+      entry.method === "GET" &&
+      entry.path === `/v1.50/volumes/${encodeURIComponent(controlVolumeName)}`
+    ) {
+      state.controlVolumeInspectionCount += 1;
+      return state.controlVolumePresent &&
+        !(
+          controlVolumeDisappearsAfterAdmission &&
+          state.controlVolumeInspectionCount > 1
+        )
+        ? {
+            statusCode: 200,
+            body: JSON.stringify({
+              Name: controlVolumeName,
+              Driver: "local",
+              Scope: "local",
+              CreatedAt:
+                controlVolumeSubstituted &&
+                state.controlVolumeInspectionCount > 1
+                  ? "2000-01-01T00:00:00Z"
+                  : fixtureCreatedAt,
+              Mountpoint: `/var/lib/docker/volumes/${controlVolumeName}/_data`,
+              Labels: {
+                "com.agentscope.integration": "true",
+                "com.agentscope.integration.run": controlVolumeRunId,
+              },
+              Options: {},
+            }),
+          }
+        : { statusCode: 404, body: "{}" };
+    }
     if (entry.method === "DELETE") {
       if (entry.path.includes("/containers/"))
         state.builderContainer = undefined;
@@ -640,6 +744,15 @@ const engineFixture = ({
               : [{ Untagged: buildTag }, { Deleted: configDigest }],
           ),
         };
+      }
+      if (entry.path.includes("/networks/")) state.networkPresent = false;
+      if (
+        controlVolumeName !== undefined &&
+        entry.path === `/v1.50/volumes/${encodeURIComponent(controlVolumeName)}`
+      ) {
+        if (controlVolumeAttached)
+          return { statusCode: 409, body: '{"message":"volume in use"}' };
+        state.controlVolumePresent = false;
       }
       return { statusCode: 204, body: "" };
     }
@@ -2040,6 +2153,349 @@ describe("authenticated buildx consumption", () => {
     expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
   });
 
+  it("retires an exact empty private network through the authenticated engine", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({ networkName, networkRunId });
+    const client = buildClient(engine);
+    try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
+      await expect(
+        retirePreparedDockerNetwork(client, {
+          deadline: performance.now() + 4_000,
+          name: networkName,
+          runId: networkRunId,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.some(
+          ({ method, path }) =>
+            method === "DELETE" && path.endsWith(`/networks/${networkName}`),
+        ),
+      ).toBe(true);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("retires an exact owned external network after hostile-policy evidence", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkInternal: false,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
+      await expect(
+        retirePreparedDockerNetwork(client, {
+          deadline: performance.now() + 4_000,
+          name: networkName,
+          runId: networkRunId,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.some(
+          ({ method, path }) =>
+            method === "DELETE" && path.endsWith(`/networks/${networkName}`),
+        ),
+      ).toBe(true);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("waits within the original deadline for exact network endpoint detachment", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkAttachedAfterAdmissionUntilInspection: 3,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    try {
+      await registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      });
+      await expect(
+        retirePreparedDockerNetwork(client, {
+          deadline: performance.now() + 4_000,
+          name: networkName,
+          runId: networkRunId,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.filter(
+          ({ method, path }) =>
+            method === "GET" && path.endsWith(`/networks/${networkName}`),
+        ),
+      ).toHaveLength(5);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("retires daemon authority when an exact network endpoint never detaches", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkAttachedAfterAdmissionUntilInspection: Number.MAX_SAFE_INTEGER,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerNetwork(client, {
+      deadline: performance.now() + 4_000,
+      name: networkName,
+      runId: networkRunId,
+    });
+    await expect(
+      retirePreparedDockerNetwork(client, {
+        deadline: performance.now() + 100,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.deadline");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/networks/${networkName}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority instead of deleting an attached network", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkAttached: true,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    await expect(
+      registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when a registered network becomes absent", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const engine = engineFixture({
+      networkDisappearsAfterAdmission: true,
+      networkName,
+      networkRunId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerNetwork(client, {
+      deadline: performance.now() + 4_000,
+      name: networkName,
+      runId: networkRunId,
+    });
+    await expect(
+      retirePreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects a missing network before recording retirement authority", async () => {
+    const networkRunId = "0123456789abcdef";
+    const networkName = `agentscope-int-${networkRunId}-network`;
+    const client = buildClient(
+      engineFixture({
+        networkInitiallyPresent: false,
+        networkName,
+        networkRunId,
+      }),
+    );
+    await expect(
+      registerPreparedDockerNetwork(client, {
+        deadline: performance.now() + 4_000,
+        name: networkName,
+        runId: networkRunId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("keeps an exact control volume pending until authenticated retirement", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+    });
+    const client = buildClient(engine);
+    const identity = await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    expect(identity.name).toBe(name);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires the exact control volume before closing the prepared client", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).resolves.toBeUndefined();
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).not.toThrow();
+  });
+
+  it("does not delete a substituted control volume", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeSubstituted: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects an absent control volume before recording authority", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const client = buildClient(
+      engineFixture({
+        controlVolumeName: name,
+        controlVolumeRunId: runId,
+        controlVolumeInitiallyPresent: false,
+      }),
+    );
+    await expect(
+      registerPreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when a registered control volume vanishes", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeDisappearsAfterAdmission: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(
+      engine.requests.some(
+        ({ method, path }) =>
+          method === "DELETE" && path.endsWith(`/volumes/${name}`),
+      ),
+    ).toBe(false);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("retires daemon authority when the exact control volume is still attached", async () => {
+    const runId = "0123456789abcdef";
+    const name = `agentscope-int-${runId}-control`;
+    const engine = engineFixture({
+      controlVolumeName: name,
+      controlVolumeRunId: runId,
+      controlVolumeAttached: true,
+    });
+    const client = buildClient(engine);
+    await registerPreparedDockerControlVolume(client, {
+      deadline: performance.now() + 4_000,
+      name,
+      runId,
+    });
+    await expect(
+      retirePreparedDockerControlVolume(client, {
+        deadline: performance.now() + 4_000,
+        name,
+        runId,
+      }),
+    ).rejects.toThrow();
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
   it("rejects verifier-image retirement after the caller deadline", async () => {
     const engine = engineFixture({ buildTag });
     const client = buildClient(engine);
@@ -2093,7 +2549,7 @@ describe("authenticated buildx consumption", () => {
     {
       buildFailure: true,
       daemonSwitch: false,
-      expected: "integration.images.build",
+      expected: "integration.images.build.image-build.unknown",
       noDestructiveCleanup: false,
     },
     {

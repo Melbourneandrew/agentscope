@@ -32,6 +32,9 @@ const installRoot = realpathSync(
 );
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
+// This bounds the packed topology proof, not the product hook. The installed
+// scenario and source tests retain and prove the production 5,000 ms authority.
+const packedCodexHookVerifierDeadlineMilliseconds = 5_000;
 let loopbackServer;
 mkdirSync(artifactDirectory, { recursive: true });
 
@@ -60,6 +63,45 @@ function run(command, arguments_, options = {}) {
     `${command} ${arguments_.join(" ")} failed:\n${result.stdout}${result.stderr}`,
   );
   return result;
+}
+
+function traceSearchUnavailable(result) {
+  if (result.status !== 5 || result.stdout !== "") return false;
+  try {
+    const diagnostic = JSON.parse(result.stderr);
+    return (
+      Object.keys(diagnostic).sort().join(",") ===
+        "category,code,command,schema" &&
+      diagnostic.category === "unavailable" &&
+      diagnostic.code === "traces.unavailable" &&
+      diagnostic.command === "agentscope traces search" &&
+      diagnostic.schema === "agentscope.cli.diagnostic.v1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function runTraceSearchUntilAvailable(command, arguments_, options = {}) {
+  const deadline = performance.now() + 5_000;
+  while (true) {
+    const remainingBeforeAttempt = deadline - performance.now();
+    assert.ok(remainingBeforeAttempt > 0);
+    const result = runRaw(command, arguments_, {
+      ...options,
+      timeout: Math.max(1, Math.ceil(remainingBeforeAttempt)),
+    });
+    const remainingMilliseconds = deadline - performance.now();
+    if (result.status === 0 || !traceSearchUnavailable(result))
+      return { result, timely: remainingMilliseconds > 0 };
+    if (remainingMilliseconds <= 0) return { result, timely: false };
+    Atomics.wait(
+      new Int32Array(new SharedArrayBuffer(4)),
+      0,
+      0,
+      Math.min(25, remainingMilliseconds),
+    );
+  }
 }
 
 function regularFiles(root) {
@@ -240,6 +282,16 @@ try {
   const machineEntryPath = join(
     installedInternal,
     "agentscope-hook-machine.js",
+  );
+  assert.ok(
+    lstatSync(machineEntryPath).size <= 1_600_000,
+    "the installed hook machine must retain its bounded cold-start artifact",
+  );
+  assert.ok(
+    lstatSync(
+      join(installedInternal, "local-sqlite-runtime", "reporter-child.js"),
+    ).size <= 570_000,
+    "the installed reporter child must retain its bounded cold-start artifact",
   );
   const verifierEntryPath = join(installRoot, "agentscope-hook-verifier.mjs");
   await build({
@@ -641,6 +693,11 @@ setTimeout(() => process.exit(3), 10_000).unref();
     const configurationBeforePlan = readFileSync(
       join(localHome, "config.json"),
     );
+    assert.equal(
+      JSON.parse(configurationBeforePlan).routing.hookDeadlineMilliseconds,
+      5_000,
+      "the packed product must retain the production default hook deadline",
+    );
     const plannedConfigure = run(
       executable,
       [
@@ -729,11 +786,33 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
       { name: "packed-local" },
     ]);
+    const packedTopologyConfigurationPath = join(localHome, "config.json");
+    const packedTopologyConfiguration = JSON.parse(
+      readFileSync(packedTopologyConfigurationPath, "utf8"),
+    );
+    packedTopologyConfiguration.routing.hookDeadlineMilliseconds =
+      packedCodexHookVerifierDeadlineMilliseconds;
+    writeFileSync(
+      packedTopologyConfigurationPath,
+      `${JSON.stringify(packedTopologyConfiguration)}\n`,
+      { mode: 0o600 },
+    );
+    assert.equal(
+      JSON.parse(readFileSync(packedTopologyConfigurationPath, "utf8")).routing
+        .hookDeadlineMilliseconds,
+      packedCodexHookVerifierDeadlineMilliseconds,
+      "the isolated packed topology configuration must match its launcher",
+    );
     const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
       ...launcherInput,
       agentscopeHome: localHome,
       harnessType: "@agentscope/harness-codex",
+      hookDeadlineMilliseconds: packedCodexHookVerifierDeadlineMilliseconds,
     });
+    assert.equal(
+      codexLauncher.metadata.hookDeadlineMilliseconds,
+      packedCodexHookVerifierDeadlineMilliseconds,
+    );
     writeFileSync(codexLauncher.launcherPath, codexLauncher.launcherBytes, {
       mode: codexLauncher.mode,
     });
@@ -776,7 +855,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
               },
       );
     let packedStopElapsedMilliseconds;
-    for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
+    const invokePackedHook = (hookEventName) => {
       const hookStartedAt = performance.now();
       const invokedHook = run(codexLauncher.launcherPath, [], {
         env: {
@@ -792,7 +871,9 @@ setTimeout(() => process.exit(3), 10_000).unref();
         );
       assert.equal(invokedHook.stdout, "");
       assert.equal(invokedHook.stderr, "");
-    }
+    };
+    for (const hookEventName of ["SessionStart", "Stop"])
+      invokePackedHook(hookEventName);
     const packedHookOperationalStatePath = join(
       localHome,
       "health",
@@ -807,10 +888,19 @@ setTimeout(() => process.exit(3), 10_000).unref();
       packedHookOperationalStatePath,
       "utf8",
     );
-    assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
+    const acceptedHookConnections = JSON.parse(
+      packedHookOperationalState,
+    ).health.filter(
+      (entry) =>
+        entry.scope === "connection" &&
+        entry.stage === "remote-acceptance" &&
+        entry.outcome === "accepted" &&
+        entry.receipt === "accepted",
+    );
+    assert.ok(acceptedHookConnections.length >= 1);
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
-    const searchedLocal = runRaw(
+    const searchedLocalObservation = runTraceSearchUntilAvailable(
       executable,
       [
         "traces",
@@ -824,14 +914,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
       ],
       { ...executableOptions, env: localEnvironment },
     );
-    if (searchedLocal.status !== 0) {
-      const diagnosedLocal = runRaw(
-        executable,
-        ["doctor", "--output", "json"],
-        { ...executableOptions, env: localEnvironment },
-      );
+    const searchedLocal = searchedLocalObservation.result;
+    if (!searchedLocalObservation.timely || searchedLocal.status !== 0) {
       assert.fail(
-        `installed Stop trace retrieval unavailable; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}; doctorStatus=${diagnosedLocal.status}; doctor=${diagnosedLocal.stdout}${diagnosedLocal.stderr}`,
+        `installed Stop trace retrieval unavailable; timely=${searchedLocalObservation.timely}; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}`,
       );
     }
     const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
@@ -871,6 +957,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
       stringAttribute(packedSpans[1].attributes, "llm.model_name"),
       "packed-model",
     );
+    invokePackedHook("SessionEnd");
     assert.equal(
       packedSpans
         .map(({ attributes }) => stringAttribute(attributes, "session.id"))

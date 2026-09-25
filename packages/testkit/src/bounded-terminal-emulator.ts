@@ -6,6 +6,26 @@ export type PtyTerminalGeometry = Readonly<{
   rows: number;
 }>;
 
+export type PtyTerminalReadinessMatcher =
+  | Readonly<{ kind: "semantic-marker" }>
+  | Readonly<{ kind: "challenge-marker"; challenge: string }>
+  | Readonly<{
+      kind: "challenge-styled-text";
+      challenge: string;
+      text: string;
+      requiredText: string;
+      postSubmissionResponseText?: string;
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1";
+      bold: boolean;
+      dim: boolean;
+    }>
+  | Readonly<{
+      kind: "styled-text-after-completion";
+      text: string;
+      bold: boolean;
+      dim: boolean;
+    }>;
+
 export type PtyTerminalEmulatorLimits = Readonly<{
   maximumCells: number;
   maximumColumns: number;
@@ -23,6 +43,41 @@ export type PtySemanticState =
   | "credential-prompt"
   | "malformed-control"
   | "output-limit";
+
+export type PtyMalformedControlReason =
+  | "control-limit"
+  | "csi-byte"
+  | "csi-parameters"
+  | "escape"
+  | "ground-control"
+  | "trailing-control"
+  | "utf8";
+
+export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
+
+type ChallengeScreenRevocationKind =
+  | "combined-sync"
+  | "alternate-screen-enter"
+  | "alternate-screen-exit"
+  | "autowrap-enable"
+  | "autowrap-disable"
+  | "scroll-region"
+  | "screen-edit"
+  | "cursor-restore"
+  | "reverse-index"
+  | "tab-stop-set"
+  | "charset"
+  | "tab"
+  | "untrusted-cell"
+  | "rendition";
+
+type PtyIdleAtTitleDiagnostic =
+  | ReturnType<BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]>
+  | "title-not-observed"
+  | "idle-revoked-protocol"
+  | "idle-revoked-screen"
+  | "idle-revoked-unclassified"
+  | `idle-revoked-${ChallengeScreenRevocationKind}`;
 
 export type PtyTerminalSemanticSnapshot = Readonly<{
   snapshotVersion: 1;
@@ -69,7 +124,10 @@ const defaultLimits: PtyTerminalEmulatorLimits = freezeAuthority({
 });
 const credentialPromptPattern =
   /(?:password|passphrase|user[ _-]?name|e[ -]?mail|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
+const maximumCredentialTailCodePoints = 128;
+const maximumTerminalResponseBytes = 4_096;
 const readyMarker = "AGENTSCOPE_PTY_READY";
+const readinessChallengePattern = /^[a-f0-9]{64}$/u;
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
 const getPrototypeOf = Reflect.getPrototypeOf;
@@ -80,8 +138,13 @@ const arrayBufferPrototype = ArrayBuffer.prototype;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const typedArraySet = Uint8Array.prototype.set;
 const TextDecoderAuthority = TextDecoder;
+const TextEncoderAuthority = TextEncoder;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const bufferByteLength = Buffer.byteLength;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const textDecoderDecode = TextDecoder.prototype.decode;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const textEncoderEncode = TextEncoder.prototype.encode;
 const typedArrayPrototype = getPrototypeOf(uint8ArrayPrototype);
 // Capturing the intrinsic getter prevents later prototype replacement from
 // becoming input-validation authority.
@@ -103,7 +166,8 @@ if (
 const typedArrayBufferGetter = typedArrayBufferGetterCandidate;
 const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
 
-type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
+type ParserState =
+  "ground" | "escape" | "charset" | "csi" | "osc" | "osc-escape";
 
 const fail = (code: string): never => {
   throw new BoundedTerminalEmulatorError(code);
@@ -248,10 +312,17 @@ const validateGeometry = (
 const parseCsiParameters = (
   value: string,
 ):
-  Readonly<{ privateMode: boolean; values: readonly number[] }> | undefined => {
-  const privateMode = value.startsWith("?");
-  const body = privateMode ? value.slice(1) : value;
-  if (!/^\d*(?:;\d*)*$/u.test(body)) return undefined;
+  | Readonly<{
+      intermediate: "" | " ";
+      prefix: "" | "<" | "=" | ">" | "?";
+      values: readonly number[];
+    }>
+  | undefined => {
+  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(value);
+  if (match === null) return undefined;
+  const prefix = match[1] as "" | "<" | "=" | ">" | "?";
+  const body = match[2]!;
+  const intermediate = match[3] as "" | " ";
   const parts = body.split(";");
   const values: number[] = [];
   for (let index = 0; index < parts.length; index += 1) {
@@ -259,40 +330,302 @@ const parseCsiParameters = (
     if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
     setOwnIndex(values, index, part);
   }
-  return { privateMode, values };
+  return { intermediate, prefix, values };
 };
+
+const passiveCsiIsSupported = (
+  final: string,
+  values: readonly number[],
+  rows: number,
+): boolean =>
+  (final === "c" && values.length === 1 && values[0] === 0) ||
+  (final === "r" &&
+    values.length <= 2 &&
+    values.every((value) => value <= rows)) ||
+  (["@", "L", "M", "P", "S", "T", "X"].includes(final) && values.length === 1);
+
+// Ratatui's pinned Codex UI renders this closed set as one-cell glyphs. The
+// status indicator at ff29a443 uses ellipsis, bullet, and corner; the turn
+// runtime uses the failure cross. Any other printable code point may be
+// zero-, two-, or multi-cell and cannot preserve screen-position authority
+// without a complete width oracle.
+const trustedSingleCellCharacter = (character: string): boolean =>
+  /^[\x20-\x7e›·─│╭╮╰╯⚠—…•└✗]$/u.test(character);
+
+const csiIsPrivateModeControl = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+): boolean =>
+  prefix === "?" && intermediate === "" && (final === "h" || final === "l");
+
+const csiIsExactSynchronizedOutputMode = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+): boolean =>
+  csiIsPrivateModeControl(final, prefix, intermediate) &&
+  values.length === 1 &&
+  values[0] === 2026;
+
+const csiHasUnmodeledScreenMutation = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+): boolean =>
+  (prefix === "" &&
+    intermediate === "" &&
+    (final === "r" || ["@", "L", "M", "P", "S", "T", "X"].includes(final))) ||
+  (csiIsPrivateModeControl(final, prefix, intermediate) &&
+    (values.includes(7) || values.includes(1049)));
+
+const trustedScrollRegion = (
+  final: string,
+  prefix: string,
+  intermediate: string,
+  values: readonly number[],
+  rows: number,
+): Readonly<{ top: number; bottom: number }> | null => {
+  if (prefix !== "" || intermediate !== "" || final !== "r") return null;
+  // The parser conflates an omitted top parameter with explicit zero. A
+  // two-parameter zero top cannot establish the exact region authority.
+  if (values.length === 2 && values[0] === 0) return null;
+  if (values.length < 1 || values.length > 2) return null;
+  const top = Math.max(1, values[0]!);
+  const bottom = values.length === 1 || values[1] === 0 ? rows : values[1]!;
+  if (top > rows || bottom > rows || (rows > 1 && top >= bottom)) return null;
+  return { top: top - 1, bottom: bottom - 1 };
+};
+
+const classifyUnmodeledScreenMutation = (
+  final: string,
+  prefix: string,
+  values: readonly number[],
+): ChallengeScreenRevocationKind => {
+  if (prefix === "?" && values.includes(1049))
+    return final === "h" ? "alternate-screen-enter" : "alternate-screen-exit";
+  if (prefix === "?" && values.includes(7))
+    return final === "h" ? "autowrap-enable" : "autowrap-disable";
+  if (final === "r") return "scroll-region";
+  return "screen-edit";
+};
+
+/* eslint-disable complexity -- closed challenged-response fields add fail-closed validation */
+const validateReadinessMatcher = (
+  value: PtyTerminalReadinessMatcher,
+): PtyTerminalReadinessMatcher => {
+  if (value.kind === "semantic-marker") {
+    strictRecord(value, ["kind"], "testkit.pty.emulator.readiness");
+    return freezeAuthority({ kind: "semantic-marker" as const });
+  }
+  if (value.kind === "challenge-marker") {
+    const record = strictRecord(
+      value,
+      ["challenge", "kind"],
+      "testkit.pty.emulator.readiness",
+    );
+    if (
+      record.kind !== "challenge-marker" ||
+      typeof record.challenge !== "string" ||
+      !readinessChallengePattern.test(record.challenge)
+    )
+      return fail("testkit.pty.emulator.readiness");
+    return freezeAuthority({
+      kind: "challenge-marker" as const,
+      challenge: record.challenge,
+    });
+  }
+  if (value.kind === "challenge-styled-text") {
+    const hasResponseText = Object.hasOwn(value, "postSubmissionResponseText");
+    const record = strictRecord(
+      value,
+      [
+        "bold",
+        "challenge",
+        "dim",
+        "kind",
+        ...(hasResponseText ? ["postSubmissionResponseText"] : []),
+        "requiredTerminalProtocol",
+        "requiredText",
+        "text",
+      ],
+      "testkit.pty.emulator.readiness",
+    );
+    const text = record.text;
+    const requiredText = record.requiredText;
+    if (
+      record.kind !== "challenge-styled-text" ||
+      typeof record.challenge !== "string" ||
+      !readinessChallengePattern.test(record.challenge) ||
+      typeof text !== "string" ||
+      [...text].length !== 1 ||
+      !trustedSingleCellCharacter(text) ||
+      typeof requiredText !== "string" ||
+      requiredText.length < 1 ||
+      requiredText.length > 32 ||
+      [...requiredText].some(
+        (character) => !trustedSingleCellCharacter(character),
+      ) ||
+      record.requiredTerminalProtocol !== "csi-u-flags-7-query-v1" ||
+      (hasResponseText &&
+        (typeof record.postSubmissionResponseText !== "string" ||
+          record.postSubmissionResponseText.length < 65 ||
+          record.postSubmissionResponseText.length > 128 ||
+          !record.postSubmissionResponseText.endsWith(record.challenge) ||
+          [...record.postSubmissionResponseText].some(
+            (character) => !trustedSingleCellCharacter(character),
+          ))) ||
+      typeof record.bold !== "boolean" ||
+      typeof record.dim !== "boolean"
+    )
+      return fail("testkit.pty.emulator.readiness");
+    return freezeAuthority({
+      kind: "challenge-styled-text" as const,
+      challenge: record.challenge,
+      text,
+      requiredText,
+      ...(hasResponseText
+        ? {
+            postSubmissionResponseText:
+              record.postSubmissionResponseText as string,
+          }
+        : {}),
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+      bold: record.bold,
+      dim: record.dim,
+    });
+  }
+  const record = strictRecord(
+    value,
+    ["bold", "dim", "kind", "text"],
+    "testkit.pty.emulator.readiness",
+  );
+  const text = record.text;
+  if (
+    record.kind !== "styled-text-after-completion" ||
+    typeof text !== "string" ||
+    [...text].length !== 1 ||
+    !trustedSingleCellCharacter(text) ||
+    typeof record.bold !== "boolean" ||
+    typeof record.dim !== "boolean"
+  )
+    return fail("testkit.pty.emulator.readiness");
+  return freezeAuthority({
+    kind: "styled-text-after-completion" as const,
+    text,
+    bold: record.bold,
+    dim: record.dim,
+  });
+};
+/* eslint-enable complexity */
 
 export class BoundedTerminalEmulator {
   readonly #decoder = new TextDecoderAuthority("utf-8", { fatal: true });
+  readonly #encoder = new TextEncoderAuthority();
   readonly #limits: PtyTerminalEmulatorLimits;
   #geometry: PtyTerminalGeometry;
   #cells: string[];
+  #cellBold: boolean[];
+  #cellDim: boolean[];
   #row = 0;
   #column = 0;
   #alternateScreen = false;
+  #cursorPositionTrusted = true;
+  #autoWrapEnabled = true;
+  #scrollRegionTrusted = true;
+  #scrollRegionTop = 0;
+  #scrollRegionBottom: number;
   #cursorVisible = true;
+  #savedColumn = 0;
+  #savedRow = 0;
+  #savedBold = false;
+  #savedDim = false;
+  #savedCharacterSetTrusted = true;
+  #savedRenditionTrusted = true;
+  #savedAutoWrapEnabled = true;
+  #savedCursorPositionTrusted = true;
   #state: ParserState = "ground";
   #control = "";
   #outputBytes = 0;
   #malformedControlCount = 0;
+  #malformedControlReason: PtyMalformedControlReason | null = null;
   #unsupportedControlCount = 0;
+  #unsupportedControlReason: PtyUnsupportedControlReason | null = null;
   #sawCursorPositionQuery = false;
   readonly #recentCodePoints: string[] = [];
   #recentStart = 0;
   #titleSha256: string | null = null;
   #ended = false;
   #outputLimitReached = false;
+  #readinessObserved = false;
+  #readinessObservationGeneration = 0;
+  #challengeScreenAuthorityRevoked = false;
+  #lastChallengeScreenRevocationKind: ChallengeScreenRevocationKind | null =
+    null;
+  #challengeSynchronizedOutputFrameActive = false;
+  #challengeSynchronizedOutputFrameEverObserved = false;
+  #challengeStyledTextObservedInOutput = false;
+  #challengeStyledTextEverObservedInOutput = false;
+  #challengeStyledTextOutputCellIndex: number | null = null;
+  #challengeRequiredTextObservedInOutput = false;
+  #challengeRequiredTextEverObservedInOutput = false;
+  #challengeRequiredTextOutputTail = "";
+  #challengeRequiredTextOutputStartCellIndex: number | null = null;
+  #readinessChallengeObserved = false;
+  #readinessTail = "";
+  #completionObserved = false;
+  #postSubmissionIdleObservationArmed = false;
+  #postSubmissionIdleFrameEligible = false;
+  #postSubmissionEligibleFrameAttempted = false;
+  #postSubmissionIdlePromptObserved = false;
+  #postSubmissionIdleAtTitleDiagnostic: PtyIdleAtTitleDiagnostic =
+    "title-not-observed";
+  #postSubmissionResponseTail = "";
+  #postSubmissionResponseObserved = false;
+  #completionTail = "";
+  #bold = false;
+  #dim = false;
+  #characterSetTarget: "(" | ")" | null = null;
+  #characterSetTrusted = true;
+  #renditionTrusted = true;
+  #credentialPromptObserved = false;
+  #credentialTail = "";
+  #pendingTerminalResponses = "";
+  #terminalResponseBytes = 0;
+  #terminalProtocolPhase = 0;
+  #terminalProtocolRejected = false;
+  #terminalProtocolRejectionKind: "none" | "order" | "mode" | "reset" = "none";
+  #terminalProtocolRejectedAtPhase: number | null = null;
+  #terminalProtocolRejectedStep: number | null = null;
+  #terminalProtocolRejectedModePrefix: "greater" | "less" | null = null;
+  #terminalProtocolRejectedModeValue: number | null = null;
+  readonly #readinessMatcher: PtyTerminalReadinessMatcher;
 
   public constructor(
     geometry: PtyTerminalGeometry,
     limits: PtyTerminalEmulatorLimits = defaultLimits,
+    readinessMatcher: PtyTerminalReadinessMatcher = {
+      kind: "semantic-marker",
+    },
   ) {
     this.#limits = validateLimits(limits);
     this.#geometry = validateGeometry(geometry, this.#limits);
+    this.#scrollRegionBottom = this.#geometry.rows - 1;
     this.#cells = filledOwnArray(
       this.#geometry.columns * this.#geometry.rows,
       " ",
     );
+    this.#cellBold = filledOwnArray(
+      this.#geometry.columns * this.#geometry.rows,
+      false,
+    );
+    this.#cellDim = filledOwnArray(
+      this.#geometry.columns * this.#geometry.rows,
+      false,
+    );
+    this.#readinessMatcher = validateReadinessMatcher(readinessMatcher);
   }
 
   public write(bytes: Uint8Array): void {
@@ -331,7 +664,7 @@ export class BoundedTerminalEmulator {
         },
       ]);
     } catch {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("utf8");
       return fail("testkit.pty.emulator.utf8");
     }
     for (const character of decoded) this.#consume(character);
@@ -340,20 +673,44 @@ export class BoundedTerminalEmulator {
   public resize(geometry: PtyTerminalGeometry): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
     const next = validateGeometry(geometry, this.#limits);
+    const previousRows = this.#geometry.rows;
     const cells = filledOwnArray(next.columns * next.rows, " ");
+    const cellBold = filledOwnArray(next.columns * next.rows, false);
+    const cellDim = filledOwnArray(next.columns * next.rows, false);
     const rows = Math.min(next.rows, this.#geometry.rows);
     const columns = Math.min(next.columns, this.#geometry.columns);
     for (let row = 0; row < rows; row += 1)
       for (let column = 0; column < columns; column += 1)
-        setOwnIndex(
-          cells,
-          row * next.columns + column,
-          this.#cells[row * this.#geometry.columns + column]!,
-        );
+        for (const [target, source] of [
+          [cells, this.#cells],
+          [cellBold, this.#cellBold],
+          [cellDim, this.#cellDim],
+        ] as const)
+          setOwnIndex(
+            target,
+            row * next.columns + column,
+            source[row * this.#geometry.columns + column]!,
+          );
     this.#geometry = next;
     this.#cells = cells;
+    this.#cellBold = cellBold;
+    this.#cellDim = cellDim;
     this.#row = Math.min(this.#row, next.rows - 1);
     this.#column = Math.min(this.#column, next.columns - 1);
+    if (next.rows !== previousRows) {
+      if (
+        this.#scrollRegionTrusted &&
+        this.#scrollRegionTop === 0 &&
+        this.#scrollRegionBottom === previousRows - 1
+      )
+        this.#scrollRegionBottom = next.rows - 1;
+      else {
+        this.#scrollRegionTrusted = false;
+        this.#revokeChallengeScreenAuthority("scroll-region");
+      }
+    }
+    this.#invalidateChallengeSynchronizedOutputFrame();
+    this.#refreshChallengeStyledReadiness();
   }
 
   public end(): PtyTerminalSemanticSnapshot {
@@ -362,17 +719,22 @@ export class BoundedTerminalEmulator {
         const final = applyFunction(textDecoderDecode, this.#decoder, []);
         for (const character of final) this.#consume(character);
       } catch {
-        this.#malformedControlCount += 1;
+        this.#recordMalformedControl("utf8");
       }
-      if (this.#state !== "ground") this.#malformedControlCount += 1;
+      if (this.#state !== "ground")
+        this.#recordMalformedControl("trailing-control");
       this.#state = "ground";
       this.#control = "";
       this.#ended = true;
     }
-    return this.snapshot();
+    return this.#snapshot();
   }
 
   public snapshot(): PtyTerminalSemanticSnapshot {
+    return this.#snapshot();
+  }
+
+  #snapshot(): PtyTerminalSemanticSnapshot {
     let printableCellCount = 0;
     let nonEmptyLineCount = 0;
     for (let row = 0; row < this.#geometry.rows; row += 1) {
@@ -390,9 +752,9 @@ export class BoundedTerminalEmulator {
       ? "output-limit"
       : this.#malformedControlCount > 0 || this.#unsupportedControlCount > 0
         ? "malformed-control"
-        : credentialPromptPattern.test(recent)
+        : this.#credentialPromptObserved || credentialPromptPattern.test(recent)
           ? "credential-prompt"
-          : containsText(recent, completedMarker)
+          : this.#completionObserved || containsText(recent, completedMarker)
             ? "completed"
             : containsText(recent, readyMarker)
               ? "ready"
@@ -422,9 +784,395 @@ export class BoundedTerminalEmulator {
     });
   }
 
+  public malformedControlReason(): PtyMalformedControlReason | null {
+    return this.#malformedControlReason;
+  }
+
+  public unsupportedControlReason(): PtyUnsupportedControlReason | null {
+    return this.#unsupportedControlReason;
+  }
+
+  public readinessObserved(): boolean {
+    return this.#readinessObserved;
+  }
+
+  /** Content-free observations for failure diagnosis; never admission authority. */
+  public challengedReadinessProgress(): Readonly<{
+    marker: boolean;
+    synchronizedFrame: boolean;
+    styledGlyph: boolean;
+    requiredText: boolean;
+    terminalProtocol: "complete" | "incomplete" | "rejected";
+    protocolRejectionKind: "none" | "order" | "mode" | "reset";
+    protocolRejectedAtPhase: number | null;
+    protocolRejectedStep: number | null;
+    protocolRejectedModePrefix: "greater" | "less" | null;
+    protocolRejectedModeValue: number | null;
+    readinessEverObserved: boolean;
+    screenRevoked: boolean;
+  }> {
+    return freezeAuthority({
+      marker: this.#readinessChallengeObserved,
+      synchronizedFrame: this.#challengeSynchronizedOutputFrameEverObserved,
+      styledGlyph: this.#challengeStyledTextEverObservedInOutput,
+      requiredText: this.#challengeRequiredTextEverObservedInOutput,
+      terminalProtocol: this.#terminalProtocolRejected
+        ? "rejected"
+        : this.#terminalProtocolPhase === 6
+          ? "complete"
+          : "incomplete",
+      protocolRejectionKind: this.#terminalProtocolRejectionKind,
+      protocolRejectedAtPhase: this.#terminalProtocolRejectedAtPhase,
+      protocolRejectedStep: this.#terminalProtocolRejectedStep,
+      protocolRejectedModePrefix: this.#terminalProtocolRejectedModePrefix,
+      protocolRejectedModeValue: this.#terminalProtocolRejectedModeValue,
+      readinessEverObserved: this.#readinessObservationGeneration > 0,
+      screenRevoked: this.#challengeScreenAuthorityRevoked,
+    });
+  }
+
+  /** Package-private causal observation used by the selected PTY kernel. */
+  public readinessObservationGeneration(): number {
+    return this.#readinessObservationGeneration;
+  }
+
+  /** Package-private: arm only after the selected turn-submission input. */
+  public armPostSubmissionIdleObservation(): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    this.#postSubmissionIdleObservationArmed = true;
+    this.#postSubmissionIdleFrameEligible = false;
+    this.#postSubmissionEligibleFrameAttempted = false;
+    this.#postSubmissionIdlePromptObserved = false;
+    this.#postSubmissionResponseTail = "";
+    this.#postSubmissionResponseObserved = false;
+  }
+
+  /** Package-private: one later synchronized challenged idle-prompt frame. */
+  public postSubmissionIdlePromptObserved(): boolean {
+    return this.#postSubmissionIdlePromptObserved && this.#readinessObserved;
+  }
+
+  /** Package-private, content-free failure diagnosis; never admission authority. */
+  public postSubmissionIdleDiagnostic():
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready" {
+    return this.#diagnosePostSubmissionIdle();
+  }
+
+  #diagnosePostSubmissionIdle(): ReturnType<
+    BoundedTerminalEmulator["postSubmissionIdleDiagnostic"]
+  > {
+    if (!this.#postSubmissionIdleObservationArmed) return "not-armed";
+    if (!this.#postSubmissionResponseObserved) return "response-not-observed";
+    if (!this.#postSubmissionIdlePromptObserved)
+      return this.#postSubmissionEligibleFrameAttempted
+        ? "idle-frame-rejected"
+        : "idle-frame-not-observed";
+    return this.#readinessObserved ? "idle-ready" : "idle-readiness-revoked";
+  }
+
+  /** Package-private, latched at the exact challenged title, before later output. */
+  public postSubmissionIdleAtTitleDiagnostic(): PtyIdleAtTitleDiagnostic {
+    return this.#postSubmissionIdleAtTitleDiagnostic;
+  }
+
+  #classifyPostSubmissionIdleAtTitle(): PtyIdleAtTitleDiagnostic {
+    const diagnostic = this.#diagnosePostSubmissionIdle();
+    if (diagnostic !== "idle-readiness-revoked") return diagnostic;
+    if (this.#terminalProtocolRejected || this.#terminalProtocolPhase !== 6)
+      return "idle-revoked-protocol";
+    if (!this.#challengeScreenAuthorityRevoked) return "idle-revoked-screen";
+    const kind = this.#lastChallengeScreenRevocationKind;
+    return kind === null ? "idle-revoked-unclassified" : `idle-revoked-${kind}`;
+  }
+
+  public requiredTerminalProtocolReady(): boolean {
+    return (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      !this.#terminalProtocolRejected &&
+      this.#terminalProtocolPhase === 6
+    );
+  }
+
+  public takeTerminalResponses(): Uint8Array {
+    const expectedBytes = applyFunction(bufferByteLength, Buffer, [
+      this.#pendingTerminalResponses,
+      "utf8",
+    ]);
+    const response = applyFunction(textEncoderEncode, this.#encoder, [
+      this.#pendingTerminalResponses,
+    ]);
+    if (
+      applyFunction(typedArrayByteLengthGetter, response, []) !==
+        expectedBytes ||
+      expectedBytes > maximumTerminalResponseBytes
+    )
+      return fail("testkit.pty.emulator.response-limit");
+    this.#pendingTerminalResponses = "";
+    return response;
+  }
+
+  #enqueueTerminalResponse(response: string): void {
+    const responseBytes = applyFunction(bufferByteLength, Buffer, [
+      response,
+      "utf8",
+    ]);
+    if (
+      this.#terminalResponseBytes + responseBytes >
+      maximumTerminalResponseBytes
+    )
+      return fail("testkit.pty.emulator.response-limit");
+    this.#terminalResponseBytes += responseBytes;
+    this.#pendingTerminalResponses += response;
+  }
+
+  #refreshChallengeStyledReadiness(): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    let styledTextObserved = false;
+    let requiredTextObserved = false;
+    for (let index = 0; index < this.#cells.length; index += 1)
+      if (
+        this.#cells[index] === this.#readinessMatcher.text &&
+        this.#cellBold[index] === this.#readinessMatcher.bold &&
+        this.#cellDim[index] === this.#readinessMatcher.dim
+      )
+        styledTextObserved = true;
+    for (let row = 0; row < this.#geometry.rows; row += 1) {
+      let line = "";
+      const start = row * this.#geometry.columns;
+      for (let column = 0; column < this.#geometry.columns; column += 1)
+        line += this.#cells[start + column];
+      requiredTextObserved ||= containsText(
+        line,
+        this.#readinessMatcher.requiredText,
+      );
+    }
+    const candidateReadiness =
+      this.#readinessChallengeObserved &&
+      styledTextObserved &&
+      requiredTextObserved;
+    const nextReadiness =
+      candidateReadiness &&
+      this.#terminalProtocolPhase === 6 &&
+      !this.#terminalProtocolRejected &&
+      !this.#challengeScreenAuthorityRevoked;
+    this.#readinessObserved = nextReadiness;
+  }
+
+  #resetChallengeOutputObservation(): void {
+    this.#challengeStyledTextObservedInOutput = false;
+    this.#challengeStyledTextOutputCellIndex = null;
+    this.#challengeRequiredTextObservedInOutput = false;
+    this.#challengeRequiredTextOutputTail = "";
+    this.#challengeRequiredTextOutputStartCellIndex = null;
+  }
+
+  #resetChallengeRequiredTextOutputTail(): void {
+    this.#challengeRequiredTextOutputTail = "";
+  }
+
+  #beginChallengeSynchronizedOutputFrame(): void {
+    this.#resetChallengeOutputObservation();
+    this.#challengeSynchronizedOutputFrameActive = true;
+    this.#challengeSynchronizedOutputFrameEverObserved = true;
+    this.#postSubmissionIdleFrameEligible =
+      this.#postSubmissionIdleObservationArmed &&
+      (this.#readinessMatcher.kind !== "challenge-styled-text" ||
+        this.#readinessMatcher.postSubmissionResponseText === undefined ||
+        this.#postSubmissionResponseObserved);
+    if (this.#postSubmissionIdleFrameEligible)
+      this.#postSubmissionEligibleFrameAttempted = true;
+  }
+
+  #invalidateChallengeSynchronizedOutputFrame(): void {
+    this.#challengeSynchronizedOutputFrameActive = false;
+    this.#postSubmissionIdleFrameEligible = false;
+    this.#resetChallengeOutputObservation();
+  }
+
+  #revokeChallengeScreenAuthority(kind: ChallengeScreenRevocationKind): void {
+    this.#challengeScreenAuthorityRevoked = true;
+    this.#lastChallengeScreenRevocationKind = kind;
+    // A semantic marker is historical readiness evidence, not a live screen
+    // assertion. Exiting an alternate screen after completion must not erase
+    // the marker that authorized the earlier input.
+    if (this.#readinessMatcher.kind !== "semantic-marker")
+      this.#readinessObserved = false;
+    this.#resetChallengeOutputObservation();
+  }
+
+  #commitChallengeSynchronizedOutputFrame(): void {
+    if (
+      !this.#challengeSynchronizedOutputFrameActive ||
+      this.#readinessMatcher.kind !== "challenge-styled-text"
+    )
+      return;
+    const styledCell = this.#challengeStyledTextOutputCellIndex;
+    const requiredStart = this.#challengeRequiredTextOutputStartCellIndex;
+    let requiredTextSurvives = requiredStart !== null;
+    if (requiredStart !== null)
+      for (
+        let offset = 0;
+        offset < this.#readinessMatcher.requiredText.length;
+        offset += 1
+      )
+        requiredTextSurvives &&=
+          this.#cells[requiredStart + offset] ===
+          this.#readinessMatcher.requiredText[offset];
+    const outputAuthorityValid =
+      this.#challengeStyledTextObservedInOutput &&
+      styledCell !== null &&
+      this.#cells[styledCell] === this.#readinessMatcher.text &&
+      this.#cellBold[styledCell] === this.#readinessMatcher.bold &&
+      this.#cellDim[styledCell] === this.#readinessMatcher.dim &&
+      this.#challengeRequiredTextObservedInOutput &&
+      requiredTextSurvives &&
+      this.#characterSetTrusted &&
+      this.#renditionTrusted &&
+      this.#cursorPositionTrusted &&
+      this.#autoWrapEnabled &&
+      this.#scrollRegionTrusted;
+    if (outputAuthorityValid) {
+      this.#challengeScreenAuthorityRevoked = false;
+      this.#lastChallengeScreenRevocationKind = null;
+    }
+    this.#refreshChallengeStyledReadiness();
+    if (this.#readinessObserved && outputAuthorityValid) {
+      this.#readinessObservationGeneration += 1;
+      if (this.#postSubmissionIdleFrameEligible)
+        this.#postSubmissionIdlePromptObserved = true;
+    }
+    this.#invalidateChallengeSynchronizedOutputFrame();
+  }
+
+  #observeChallengePrintableOutput(character: string, cellIndex: number): void {
+    if (
+      this.#readinessMatcher.kind !== "challenge-styled-text" ||
+      !this.#challengeSynchronizedOutputFrameActive
+    )
+      return;
+    if (
+      character === this.#readinessMatcher.text &&
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
+    ) {
+      this.#challengeStyledTextObservedInOutput = true;
+      this.#challengeStyledTextEverObservedInOutput = true;
+      this.#challengeStyledTextOutputCellIndex = cellIndex;
+      this.#challengeRequiredTextObservedInOutput = false;
+      this.#challengeRequiredTextOutputTail = "";
+      this.#challengeRequiredTextOutputStartCellIndex = null;
+    }
+    this.#challengeRequiredTextOutputTail =
+      `${this.#challengeRequiredTextOutputTail}${character}`.slice(
+        -this.#readinessMatcher.requiredText.length,
+      );
+    const requiredTextObservedNow =
+      this.#challengeStyledTextObservedInOutput &&
+      this.#challengeRequiredTextOutputTail ===
+        this.#readinessMatcher.requiredText;
+    this.#challengeRequiredTextObservedInOutput ||= requiredTextObservedNow;
+    this.#challengeRequiredTextEverObservedInOutput ||= requiredTextObservedNow;
+    if (requiredTextObservedNow) {
+      const requiredStart =
+        cellIndex - this.#readinessMatcher.requiredText.length + 1;
+      const rowStart = this.#row * this.#geometry.columns;
+      this.#challengeRequiredTextOutputStartCellIndex =
+        requiredStart >= rowStart ? requiredStart : null;
+    }
+  }
+
+  #observeChallengeSynchronizedOutputCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
+    values: readonly number[],
+  ): void {
+    const synchronizedOutputMode = csiIsExactSynchronizedOutputMode(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
+    const combinedSynchronizedOutputMode =
+      csiIsPrivateModeControl(final, prefix, intermediate) &&
+      values.includes(2026) &&
+      !synchronizedOutputMode;
+    if (combinedSynchronizedOutputMode) {
+      this.#invalidateChallengeSynchronizedOutputFrame();
+      if (values.includes(7)) this.#autoWrapEnabled = final === "h";
+      if (values.includes(1049)) {
+        this.#cursorPositionTrusted = false;
+      }
+      this.#revokeChallengeScreenAuthority("combined-sync");
+      return;
+    }
+    if (synchronizedOutputMode) {
+      if (final === "h") {
+        if (this.#challengeSynchronizedOutputFrameActive)
+          this.#invalidateChallengeSynchronizedOutputFrame();
+        else this.#beginChallengeSynchronizedOutputFrame();
+      } else this.#commitChallengeSynchronizedOutputFrame();
+      return;
+    }
+    const region = trustedScrollRegion(
+      final,
+      prefix,
+      intermediate,
+      values,
+      this.#geometry.rows,
+    );
+    if (
+      region !== null &&
+      this.#unsupportedControlCount === 0 &&
+      this.#malformedControlCount === 0
+    ) {
+      this.#scrollRegionTop = region.top;
+      this.#scrollRegionBottom = region.bottom;
+      this.#scrollRegionTrusted = true;
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#resetChallengeOutputObservation();
+      return;
+    }
+    const unmodeledScreenMutation = csiHasUnmodeledScreenMutation(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
+    if (unmodeledScreenMutation) {
+      if (prefix === "?" && values.includes(7))
+        this.#autoWrapEnabled = final === "h";
+      if (prefix === "?" && values.includes(1049))
+        this.#cursorPositionTrusted = false;
+      if (prefix === "" && final === "r") {
+        this.#cursorPositionTrusted = false;
+        this.#scrollRegionTrusted = false;
+      }
+      this.#revokeChallengeScreenAuthority(
+        classifyUnmodeledScreenMutation(final, prefix, values),
+      );
+      return;
+    }
+    if (
+      this.#challengeSynchronizedOutputFrameActive &&
+      !(prefix === "" && intermediate === "" && final === "m")
+    )
+      this.#resetChallengeRequiredTextOutputTail();
+  }
+
+  public completionObserved(): boolean {
+    return this.#completionObserved;
+  }
+
   #consume(character: string): void {
     if (this.#state === "ground") {
       if (character === "\u001b") {
+        this.#resetChallengeRequiredTextOutputTail();
         this.#state = "escape";
         return;
       }
@@ -436,10 +1184,62 @@ export class BoundedTerminalEmulator {
         this.#state = "csi";
         this.#control = "";
       } else if (character === "]") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
         this.#state = "osc";
         this.#control = "";
+      } else if (character === "7") {
+        this.#resetChallengeRequiredTextOutputTail();
+        this.#savedRow = this.#row;
+        this.#savedColumn = this.#column;
+        this.#savedBold = this.#bold;
+        this.#savedDim = this.#dim;
+        this.#savedCharacterSetTrusted = this.#characterSetTrusted;
+        this.#savedRenditionTrusted = this.#renditionTrusted;
+        this.#savedAutoWrapEnabled = this.#autoWrapEnabled;
+        this.#savedCursorPositionTrusted = this.#cursorPositionTrusted;
+        this.#state = "ground";
+      } else if (character === "8") {
+        this.#revokeChallengeScreenAuthority("cursor-restore");
+        this.#row = this.#savedRow;
+        this.#column = this.#savedColumn;
+        this.#bold = this.#savedBold;
+        this.#dim = this.#savedDim;
+        this.#characterSetTrusted = this.#savedCharacterSetTrusted;
+        this.#renditionTrusted = this.#savedRenditionTrusted;
+        this.#autoWrapEnabled = this.#savedAutoWrapEnabled;
+        this.#cursorPositionTrusted = this.#savedCursorPositionTrusted;
+        this.#state = "ground";
+      } else if (character === "(" || character === ")") {
+        this.#characterSetTarget = character;
+        this.#state = "charset";
+      } else if (character === "D") {
+        this.#resetChallengeRequiredTextOutputTail();
+        this.#lineFeed();
+        this.#state = "ground";
+      } else if (character === "E") {
+        this.#resetChallengeRequiredTextOutputTail();
+        this.#column = 0;
+        this.#lineFeed();
+        this.#state = "ground";
+      } else if (character === "M") {
+        this.#revokeChallengeScreenAuthority("reverse-index");
+        this.#row = Math.max(0, this.#row - 1);
+        this.#state = "ground";
+      } else if (character === "H" || character === "=" || character === ">") {
+        if (character === "H")
+          this.#revokeChallengeScreenAuthority("tab-stop-set");
+        else this.#resetChallengeRequiredTextOutputTail();
+        this.#state = "ground";
+      } else if (character === "c") {
+        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#rejectRequiredTerminalProtocol("reset");
+        this.#clearDisplay(2);
+        this.#row = 0;
+        this.#column = 0;
+        this.#state = "ground";
       } else {
-        this.#malformedControlCount += 1;
+        this.#invalidateChallengeSynchronizedOutputFrame();
+        this.#recordMalformedControl("escape");
         this.#state = "ground";
         this.#consumeGround(character);
       }
@@ -447,6 +1247,16 @@ export class BoundedTerminalEmulator {
     }
     if (this.#state === "csi") {
       this.#consumeCsi(character);
+      return;
+    }
+    if (this.#state === "charset") {
+      if (character !== "0" && character !== "A" && character !== "B")
+        this.#recordMalformedControl("escape");
+      this.#characterSetTrusted =
+        this.#characterSetTarget === "(" && character === "B";
+      this.#characterSetTarget = null;
+      this.#revokeChallengeScreenAuthority("charset");
+      this.#state = "ground";
       return;
     }
     if (this.#state === "osc") {
@@ -467,33 +1277,111 @@ export class BoundedTerminalEmulator {
     }
   }
 
+  // eslint-disable-next-line complexity -- response witness is parsed beside the bounded terminal character
   #consumeGround(character: string): void {
     if (character === "\r") {
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#resetChallengeOutputObservation();
+      else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = 0;
       return;
     }
     if (character === "\n") {
+      if (this.#challengeSynchronizedOutputFrameActive)
+        this.#resetChallengeOutputObservation();
+      else this.#invalidateChallengeSynchronizedOutputFrame();
       this.#lineFeed();
       return;
     }
     if (character === "\b") {
+      this.#invalidateChallengeSynchronizedOutputFrame();
       this.#column = Math.max(0, this.#column - 1);
       return;
     }
     if (character === "\t") {
+      this.#revokeChallengeScreenAuthority("tab");
       this.#column = Math.min(
         this.#geometry.columns - 1,
         Math.ceil((this.#column + 1) / 8) * 8,
       );
       return;
     }
-    const codePoint = character.codePointAt(0)!;
-    if (codePoint < 0x20 || codePoint === 0x7f) {
-      this.#malformedControlCount += 1;
+    if (character === "\u0007") {
+      this.#invalidateChallengeSynchronizedOutputFrame();
       return;
     }
-    this.#cells[this.#row * this.#geometry.columns + this.#column] = character;
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint < 0x20 || codePoint === 0x7f) {
+      this.#invalidateChallengeSynchronizedOutputFrame();
+      this.#recordMalformedControl("ground-control");
+      return;
+    }
+    if (!trustedSingleCellCharacter(character)) {
+      this.#cursorPositionTrusted = false;
+      this.#revokeChallengeScreenAuthority("untrusted-cell");
+    }
+    const cellIndex = this.#row * this.#geometry.columns + this.#column;
+    this.#cells[cellIndex] = character;
+    this.#cellBold[cellIndex] = this.#bold;
+    this.#cellDim[cellIndex] = this.#dim;
     this.#appendRecent(character);
+    if (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      this.#readinessMatcher.postSubmissionResponseText !== undefined &&
+      this.#postSubmissionIdleObservationArmed &&
+      !this.#postSubmissionResponseObserved
+    ) {
+      const expected = this.#readinessMatcher.postSubmissionResponseText;
+      this.#postSubmissionResponseTail =
+        `${this.#postSubmissionResponseTail}${character}`.slice(
+          -expected.length,
+        );
+      if (this.#postSubmissionResponseTail === expected) {
+        this.#postSubmissionResponseObserved = true;
+        this.#postSubmissionIdleFrameEligible =
+          this.#challengeSynchronizedOutputFrameActive;
+        if (this.#postSubmissionIdleFrameEligible)
+          this.#postSubmissionEligibleFrameAttempted = true;
+        this.#resetChallengeOutputObservation();
+      }
+    }
+    this.#observeChallengePrintableOutput(character, cellIndex);
+    const expectedReadinessMarker =
+      this.#readinessMatcher.kind === "challenge-marker" ||
+      this.#readinessMatcher.kind === "challenge-styled-text"
+        ? `${readyMarker}:${this.#readinessMatcher.challenge}`
+        : readyMarker;
+    this.#readinessTail = `${this.#readinessTail}${character}`.slice(
+      -expectedReadinessMarker.length,
+    );
+    if (
+      this.#readinessMatcher.kind === "semantic-marker" ||
+      this.#readinessMatcher.kind === "challenge-marker"
+    )
+      this.#readinessObserved ||=
+        this.#readinessTail === expectedReadinessMarker;
+    if (this.#readinessMatcher.kind === "challenge-styled-text")
+      this.#readinessChallengeObserved ||=
+        this.#readinessTail === expectedReadinessMarker;
+    this.#completionTail = `${this.#completionTail}${character}`.slice(
+      -completedMarker.length,
+    );
+    this.#completionObserved ||= this.#completionTail === completedMarker;
+    if (
+      this.#readinessMatcher.kind === "styled-text-after-completion" &&
+      character === this.#readinessMatcher.text &&
+      this.#completionObserved &&
+      this.#bold === this.#readinessMatcher.bold &&
+      this.#dim === this.#readinessMatcher.dim
+    )
+      this.#readinessObserved = true;
+    this.#refreshChallengeStyledReadiness();
+    this.#credentialTail = `${this.#credentialTail}${character}`.slice(
+      -maximumCredentialTailCodePoints,
+    );
+    this.#credentialPromptObserved ||= credentialPromptPattern.test(
+      this.#credentialTail,
+    );
     if (this.#column === this.#geometry.columns - 1) {
       this.#column = 0;
       this.#lineFeed();
@@ -504,14 +1392,21 @@ export class BoundedTerminalEmulator {
     const code = character.codePointAt(0)!;
     if (code >= 0x40 && code <= 0x7e) {
       const parameters = parseCsiParameters(this.#control);
-      if (parameters === undefined) this.#malformedControlCount += 1;
-      else this.#applyCsi(character, parameters.privateMode, parameters.values);
+      if (parameters === undefined)
+        this.#recordMalformedControl("csi-parameters");
+      else
+        this.#applyCsi(
+          character,
+          parameters.prefix,
+          parameters.intermediate,
+          parameters.values,
+        );
       this.#control = "";
       this.#state = "ground";
       return;
     }
     if (code < 0x20 || code > 0x3f) {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("csi-byte");
       this.#control = "";
       this.#state = "ground";
       return;
@@ -521,13 +1416,20 @@ export class BoundedTerminalEmulator {
 
   #applyCsi(
     final: string,
-    privateMode: boolean,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
     values: readonly number[],
   ): void {
     const first = values[0] ?? 0;
     const amount = Math.max(1, first);
-    if (privateMode) {
-      this.#applyPrivateCsi(final, first);
+    this.#observeChallengeSynchronizedOutputCsi(
+      final,
+      prefix,
+      intermediate,
+      values,
+    );
+    if (prefix !== "" || intermediate !== "") {
+      this.#applyExtendedCsi(final, prefix, intermediate, values);
       return;
     }
     if (final === "H" || final === "f") {
@@ -536,6 +1438,7 @@ export class BoundedTerminalEmulator {
         this.#geometry.columns - 1,
         Math.max(0, Math.max(1, values[1] ?? 1) - 1),
       );
+      this.#cursorPositionTrusted = true;
     } else if (final === "A") this.#row = Math.max(0, this.#row - amount);
     else if (final === "B")
       this.#row = Math.min(this.#geometry.rows - 1, this.#row + amount);
@@ -545,22 +1448,152 @@ export class BoundedTerminalEmulator {
         this.#column + amount,
       );
     else if (final === "D") this.#column = Math.max(0, this.#column - amount);
-    else if (final === "J" && (first === 0 || first === 2)) this.#clearScreen();
-    else if (final === "K" && (first === 0 || first === 2))
-      this.#clearLine(first === 2);
-    else if (final === "m") return;
-    else if (final === "n" && first === 6) this.#sawCursorPositionQuery = true;
-    else this.#unsupportedControlCount += 1;
+    else if (final === "E") {
+      this.#row = Math.min(this.#geometry.rows - 1, this.#row + amount);
+      this.#column = 0;
+    } else if (final === "F") {
+      this.#row = Math.max(0, this.#row - amount);
+      this.#column = 0;
+    } else if (final === "G")
+      this.#column = Math.min(this.#geometry.columns - 1, amount - 1);
+    else if (final === "d")
+      this.#row = Math.min(this.#geometry.rows - 1, amount - 1);
+    else if (final === "J" && first >= 0 && first <= 3)
+      this.#clearDisplay(first);
+    else if (final === "K" && first >= 0 && first <= 2) this.#clearLine(first);
+    else if (final === "m") this.#applySgr(values);
+    else if (final === "n" && first === 6) {
+      this.#observeRequiredTerminalProtocolStep(2);
+      this.#sawCursorPositionQuery = true;
+      this.#enqueueTerminalResponse(
+        `\u001b[${this.#row + 1};${this.#column + 1}R`,
+      );
+    } else if (final === "c" && first === 0) {
+      this.#observeRequiredTerminalProtocolStep(6);
+      this.#enqueueTerminalResponse("\u001b[?1;2c");
+    } else if (final === "r") this.#applyScrollRegionCsi(values);
+    else if (passiveCsiIsSupported(final, values, this.#geometry.rows)) return;
+    else if (final === "s") {
+      this.#savedRow = this.#row;
+      this.#savedColumn = this.#column;
+    } else if (final === "u") {
+      this.#row = this.#savedRow;
+      this.#column = this.#savedColumn;
+    } else this.#recordUnsupportedControl("csi");
   }
 
-  #applyPrivateCsi(final: string, first: number): void {
-    if (final !== "h" && final !== "l") {
-      this.#unsupportedControlCount += 1;
+  #applyScrollRegionCsi(values: readonly number[]): void {
+    if (!passiveCsiIsSupported("r", values, this.#geometry.rows)) {
+      this.#recordUnsupportedControl("csi");
       return;
     }
-    if (first === 1049) this.#alternateScreen = final === "h";
-    else if (first === 25) this.#cursorVisible = final === "h";
-    else this.#unsupportedControlCount += 1;
+    if (trustedScrollRegion("r", "", "", values, this.#geometry.rows) === null)
+      return;
+    this.#row = 0;
+    this.#column = 0;
+    this.#cursorPositionTrusted = true;
+  }
+
+  #applySgr(values: readonly number[]): void {
+    for (let index = 0; index < values.length; index += 1) {
+      const value = values[index]!;
+      if (value === 0) {
+        this.#bold = false;
+        this.#dim = false;
+        this.#renditionTrusted = true;
+      } else if (value === 1) {
+        this.#bold = true;
+      } else if (value === 2) {
+        this.#dim = true;
+      } else if (value === 22) {
+        this.#bold = false;
+        this.#dim = false;
+      } else if (value === 3 || value === 23 || value === 39 || value === 49) {
+        // Italic and color changes cannot change cell width, cursor position,
+        // or the bold/dim properties used by the closed readiness matcher.
+      } else if (
+        (value === 38 || value === 48) &&
+        values[index + 1] === 5 &&
+        Number.isInteger(values[index + 2]) &&
+        values[index + 2]! >= 0 &&
+        values[index + 2]! <= 255
+      ) {
+        index += 2;
+      } else if (
+        (value === 38 || value === 48) &&
+        values[index + 1] === 2 &&
+        values
+          .slice(index + 2, index + 5)
+          .every(
+            (component) =>
+              Number.isInteger(component) && component >= 0 && component <= 255,
+          ) &&
+        values.length >= index + 5
+      ) {
+        index += 4;
+      } else {
+        this.#renditionTrusted = false;
+        this.#revokeChallengeScreenAuthority("rendition");
+        return;
+      }
+    }
+  }
+
+  #applyExtendedCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    intermediate: "" | " ",
+    values: readonly number[],
+  ): void {
+    if (intermediate === " " && prefix === "" && final === "q") return;
+    if (intermediate !== "") {
+      this.#recordUnsupportedControl("extended-csi");
+      return;
+    }
+    if (prefix === "?" && (final === "h" || final === "l")) {
+      for (const mode of values) {
+        if (mode === 1049) this.#alternateScreen = final === "h";
+        else if (mode === 25) this.#cursorVisible = final === "h";
+        else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
+          this.#recordUnsupportedControl("extended-csi");
+          return;
+        }
+      }
+      return;
+    }
+    if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
+    if (
+      prefix === ">" &&
+      final === "m" &&
+      values.length === 2 &&
+      values[0] === 4 &&
+      (values[1] === 0 || values[1] === 2)
+    )
+      return;
+    this.#recordUnsupportedControl("extended-csi");
+  }
+
+  #applyRequiredTerminalProtocolCsi(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    values: readonly number[],
+  ): boolean {
+    if (final !== "u" || values.length !== 1) return false;
+    if (prefix === "?" && values[0] === 0) {
+      this.#observeRequiredTerminalProtocolStep(5);
+      this.#enqueueTerminalResponse("\u001b[?0u");
+      return true;
+    }
+    if ((prefix !== ">" && prefix !== "<") || values[0]! > 31) return false;
+    if (prefix === ">" && values[0] === 7)
+      this.#observeRequiredTerminalProtocolStep(1);
+    else
+      this.#rejectRequiredTerminalProtocol(
+        "mode",
+        prefix === ">" ? "greater" : "less",
+        values[0],
+      );
+    return true;
   }
 
   #appendControl(character: string): void {
@@ -569,9 +1602,54 @@ export class BoundedTerminalEmulator {
       Buffer.byteLength(this.#control, "utf8") >
       this.#limits.maximumControlBytes
     ) {
-      this.#malformedControlCount += 1;
+      this.#recordMalformedControl("control-limit");
       this.#control = "";
       this.#state = "ground";
+    }
+  }
+
+  #recordMalformedControl(reason: PtyMalformedControlReason): void {
+    this.#malformedControlCount += 1;
+    this.#malformedControlReason ??= reason;
+  }
+
+  #recordUnsupportedControl(reason: PtyUnsupportedControlReason): void {
+    this.#unsupportedControlCount += 1;
+    this.#unsupportedControlReason ??= reason;
+  }
+
+  #observeRequiredTerminalProtocolStep(step: number): void {
+    if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
+    if (
+      this.#terminalProtocolRejected ||
+      step !== this.#terminalProtocolPhase + 1
+    ) {
+      if (!this.#terminalProtocolRejected) {
+        this.#terminalProtocolRejected = true;
+        this.#terminalProtocolRejectionKind = "order";
+        this.#terminalProtocolRejectedAtPhase = this.#terminalProtocolPhase;
+        this.#terminalProtocolRejectedStep = step;
+      }
+      return;
+    }
+    this.#terminalProtocolPhase = step;
+    this.#refreshChallengeStyledReadiness();
+  }
+
+  #rejectRequiredTerminalProtocol(
+    kind: "mode" | "reset",
+    modePrefix: "greater" | "less" | null = null,
+    modeValue: number | null = null,
+  ): void {
+    if (
+      this.#readinessMatcher.kind === "challenge-styled-text" &&
+      !this.#terminalProtocolRejected
+    ) {
+      this.#terminalProtocolRejected = true;
+      this.#terminalProtocolRejectionKind = kind;
+      this.#terminalProtocolRejectedAtPhase = this.#terminalProtocolPhase;
+      this.#terminalProtocolRejectedModePrefix = modePrefix;
+      this.#terminalProtocolRejectedModeValue = modeValue;
     }
   }
 
@@ -580,11 +1658,37 @@ export class BoundedTerminalEmulator {
     const selector = separator < 0 ? "" : this.#control.slice(0, separator);
     const title = separator < 0 ? "" : this.#control.slice(separator + 1);
     if (
-      (selector !== "0" && selector !== "2") ||
+      (selector !== "0" &&
+        selector !== "2" &&
+        !((selector === "10" || selector === "11") && title === "?") &&
+        selector !== "8") ||
       Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
     )
-      this.#unsupportedControlCount += 1;
-    else this.#titleSha256 = hash(title);
+      this.#recordUnsupportedControl("osc");
+    else if (selector === "10" && title === "?") {
+      this.#observeRequiredTerminalProtocolStep(3);
+      this.#enqueueTerminalResponse("\u001b]10;rgb:ffff/ffff/ffff\u001b\\");
+    } else if (selector === "11" && title === "?") {
+      this.#observeRequiredTerminalProtocolStep(4);
+      this.#enqueueTerminalResponse("\u001b]11;rgb:0000/0000/0000\u001b\\");
+    } else if (selector === "0" || selector === "2") {
+      this.#titleSha256 = hash(title);
+      // The selected Codex fixture publishes its challenge-bound completion
+      // as a title update so it cannot overwrite the already-proved live
+      // composer. This is only semantic completion, never input readiness.
+      if (
+        selector === "2" &&
+        this.#readinessMatcher.kind === "challenge-styled-text" &&
+        this.#postSubmissionIdleObservationArmed &&
+        this.#postSubmissionResponseObserved &&
+        title === `${completedMarker}:${this.#readinessMatcher.challenge}`
+      ) {
+        if (this.#postSubmissionIdleAtTitleDiagnostic === "title-not-observed")
+          this.#postSubmissionIdleAtTitleDiagnostic =
+            this.#classifyPostSubmissionIdleAtTitle();
+        this.#completionObserved = true;
+      }
+    }
     this.#control = "";
     this.#state = "ground";
   }
@@ -614,30 +1718,61 @@ export class BoundedTerminalEmulator {
   }
 
   #lineFeed(): void {
-    if (this.#row < this.#geometry.rows - 1) {
-      this.#row += 1;
+    if (this.#row !== this.#scrollRegionBottom) {
+      if (this.#row < this.#geometry.rows - 1) this.#row += 1;
       return;
     }
-    const retained = this.#cells.length - this.#geometry.columns;
-    for (let index = 0; index < retained; index += 1)
-      this.#cells[index] = this.#cells[index + this.#geometry.columns]!;
-    for (let index = retained; index < this.#cells.length; index += 1)
+    if (!this.#scrollRegionTrusted) {
+      this.#revokeChallengeScreenAuthority("scroll-region");
+      return;
+    }
+    const start = this.#scrollRegionTop * this.#geometry.columns;
+    const retained = this.#scrollRegionBottom * this.#geometry.columns;
+    for (let index = start; index < retained; index += 1) {
+      const source = index + this.#geometry.columns;
+      this.#cells[index] = this.#cells[source]!;
+      this.#cellBold[index] = this.#cellBold[source]!;
+      this.#cellDim[index] = this.#cellDim[source]!;
+    }
+    for (
+      let index = retained;
+      index < retained + this.#geometry.columns;
+      index += 1
+    ) {
       this.#cells[index] = " ";
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 
-  #clearScreen(): void {
-    for (let index = 0; index < this.#cells.length; index += 1)
+  #clearDisplay(mode: number): void {
+    if (mode === 3) return;
+    if (mode === 2) {
+      this.#resetChallengeOutputObservation();
+    }
+    const cursor = this.#row * this.#geometry.columns + this.#column;
+    const start = mode === 0 ? cursor : 0;
+    const end = mode === 1 ? cursor + 1 : this.#cells.length;
+    for (let index = start; index < end; index += 1) {
       this.#cells[index] = " ";
-    this.#row = 0;
-    this.#column = 0;
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 
-  #clearLine(entire: boolean): void {
-    const start =
-      this.#row * this.#geometry.columns + (entire ? 0 : this.#column);
-    const end = (this.#row + 1) * this.#geometry.columns;
-    for (let index = start; index < end; index += 1) this.#cells[index] = " ";
-    if (entire) this.#column = 0;
+  #clearLine(mode: number): void {
+    const rowStart = this.#row * this.#geometry.columns;
+    const cursor = rowStart + this.#column;
+    const start = mode === 0 ? cursor : rowStart;
+    const end = mode === 1 ? cursor + 1 : rowStart + this.#geometry.columns;
+    for (let index = start; index < end; index += 1) {
+      this.#cells[index] = " ";
+      this.#cellBold[index] = false;
+      this.#cellDim[index] = false;
+    }
+    this.#refreshChallengeStyledReadiness();
   }
 }
 

@@ -457,13 +457,124 @@ export const buildPtyRuntime = ({
   return sha256(readFileSync(destination));
 };
 
+const glibcBuildArguments = Object.freeze([
+  "-O2",
+  "-fstack-protector-strong",
+  "-Wall",
+  "-Wextra",
+  "-fPIC",
+  "-std=gnu++17",
+  "-fvisibility=hidden",
+  "-ffile-prefix-map=/build=.",
+  "-fdebug-prefix-map=/build=.",
+  "-I/usr/local/include/node",
+  "-I/build/node-addon-api",
+  "-DNODE_GYP_MODULE_NAME=pty",
+  "-shared",
+  "-Wl,-z,relro,-z,now,--build-id=none",
+  "-static-libstdc++",
+  "-static-libgcc",
+  "-x",
+  "c++",
+  "-",
+  "-lutil",
+  "-o",
+  "/output/pty.node",
+]);
+
+export const buildGlibcPtyRuntime = ({ output, sourceRoot }) => {
+  if (
+    process.platform !== "linux" ||
+    process.arch !== "x64" ||
+    process.versions.modules !== "127" ||
+    process.version !== "v22.18.0"
+  )
+    throw new Error("PTY glibc runtime build host is not exact.");
+  const osRelease = readFileSync("/etc/os-release", "utf8");
+  if (
+    !osRelease.includes("ID=debian\n") ||
+    !osRelease.includes('VERSION_ID="12"\n') ||
+    inventorySha256("/usr/local/include/node") !==
+      policy.glibcCanonicalImage.nodeHeaderInventorySha256
+  )
+    throw new Error("PTY glibc runtime build image is not exact.");
+  const outputStat = lstatSync(output);
+  if (
+    outputStat.isSymbolicLink() ||
+    !outputStat.isDirectory() ||
+    (outputStat.mode & 0o077) !== 0
+  )
+    throw new Error("PTY glibc output root is not private.");
+  const { addonApi, destination, patch, source } = verifyCanonicalBuildPaths({
+    output,
+    sourceRoot,
+  });
+  const sourceBytes = verifyRegularFile(
+    source,
+    "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
+    0o644,
+    maximumSourceBytes,
+  );
+  const patchBytes = verifyRegularFile(
+    patch,
+    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
+    0o644,
+    maximumPatchBytes,
+  );
+  verifyRegularFile(
+    resolve(addonApi, "napi.h"),
+    "2f2f5d1e4ca96f315c51ad96c292c18294dbb999b98f8b2f33b80816a3189fb0",
+  );
+  verifyRegularFile(
+    resolve(addonApi, "napi-inl.h"),
+    "4b053c184dfed740fbd802fdcf97e85fb8c7b0eb1d83322000d932d31662eda7",
+  );
+  verifyExecutable(
+    "/usr/bin/x86_64-linux-gnu-g++-12",
+    policy.glibcBuild.gxxSha256,
+  );
+  verifyExecutable(
+    "/usr/lib/gcc/x86_64-linux-gnu/12/cc1plus",
+    policy.glibcBuild.cc1plusSha256,
+  );
+  verifyExecutable(
+    "/usr/bin/x86_64-linux-gnu-as",
+    policy.glibcBuild.assemblerSha256,
+  );
+  verifyExecutable(
+    "/usr/bin/x86_64-linux-gnu-ld.bfd",
+    policy.glibcBuild.linkerSha256,
+  );
+  const patchedSource = applyExactPtyPatch(
+    sourceBytes.toString("utf8"),
+    patchBytes.toString("utf8"),
+  );
+  execFileSync("/usr/bin/x86_64-linux-gnu-g++-12", glibcBuildArguments, {
+    cwd: "/",
+    env: { ...policy.build.environment },
+    input: patchedSource,
+    stdio: ["pipe", "inherit", "inherit"],
+    timeout: 120_000,
+  });
+  chmodSync(destination, 0o644);
+  return sha256(readFileSync(destination));
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 2)
-    throw new Error("build-pty-runtime.mjs accepts no arguments.");
-  const digest = buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
+  if (
+    process.argv.length > 3 ||
+    (process.argv.length === 3 && process.argv[2] !== "--glibc")
+  )
+    throw new Error("build-pty-runtime.mjs arguments are closed.");
+  const glibc = process.argv[2] === "--glibc";
+  const digest = glibc
+    ? buildGlibcPtyRuntime({ output: "/output", sourceRoot: "/build" })
+    : buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
   if (
     digest !==
-    "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"
+    (glibc
+      ? "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727"
+      : "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff")
   )
     throw new Error("PTY runtime build is not reproducible.");
 }

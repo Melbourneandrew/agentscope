@@ -6,6 +6,7 @@ import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
   type PtyTerminalGeometry,
+  type PtyTerminalReadinessMatcher,
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
 } from "./bounded-terminal-emulator.js";
@@ -17,6 +18,12 @@ export type SelectedPtyExecutionAction =
       geometry: PtyTerminalGeometry;
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-with-contained-process-set";
+    }>
+  | Readonly<{ action: "wait-for-semantic-completion" }>
+  | Readonly<{ action: "wait-for-post-submission-idle-prompt" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{
@@ -38,6 +45,9 @@ export type SelectedPtyExecutionRequest = Readonly<{
   }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
+  readiness:
+    | PtyTerminalReadinessMatcher
+    | Readonly<{ kind: "challenge-process-topology"; challenge: string }>;
   interpreter: Readonly<{ path: string; sha256: string }>;
   scriptSha256: string;
 }>;
@@ -61,6 +71,70 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   inputBytes: number;
   inputSha256: string;
   readinessObserved: boolean;
+  /** Fixed, content-free terminal observations; never an admission predicate. */
+  challengedReadinessProgress?: Readonly<{
+    marker: boolean;
+    synchronizedFrame: boolean;
+    styledGlyph: boolean;
+    requiredText: boolean;
+    terminalProtocol: "complete" | "incomplete" | "rejected";
+    protocolRejectionKind: "none" | "order" | "mode" | "reset";
+    protocolRejectedAtPhase: number | null;
+    protocolRejectedStep: number | null;
+    protocolRejectedModePrefix: "greater" | "less" | null;
+    protocolRejectedModeValue: number | null;
+    readinessEverObserved: boolean;
+    screenRevoked: boolean;
+  }>;
+  /** Closed failure diagnostic for the challenged topology checkpoint; never admission authority. */
+  checkpointProgressDiagnostic?:
+    | "not-requested"
+    | "no-live-readiness"
+    | "terminal-order-rejected"
+    | "terminal-reply-unsettled"
+    | "protocol-not-ready"
+    | "deadline"
+    | "ready-gate-other"
+    | "ready-gate-open"
+    | "topology-root-missing"
+    | "topology-nonroot-missing"
+    | "topology-identity-conflict"
+    | "publication-unsettled"
+    | "advanced";
+  /** Fixed, content-free diagnostic only; never a PTY admission predicate. */
+  postSubmissionIdleDiagnostic?:
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready";
+  /** Fixed category latched at the challenged title, not generic completion. */
+  postSubmissionIdleAtTitleDiagnostic?:
+    | "title-not-observed"
+    | "not-armed"
+    | "response-not-observed"
+    | "idle-frame-not-observed"
+    | "idle-frame-rejected"
+    | "idle-readiness-revoked"
+    | "idle-ready"
+    | "idle-revoked-protocol"
+    | "idle-revoked-screen"
+    | "idle-revoked-unclassified"
+    | "idle-revoked-combined-sync"
+    | "idle-revoked-alternate-screen-enter"
+    | "idle-revoked-alternate-screen-exit"
+    | "idle-revoked-autowrap-enable"
+    | "idle-revoked-autowrap-disable"
+    | "idle-revoked-scroll-region"
+    | "idle-revoked-screen-edit"
+    | "idle-revoked-cursor-restore"
+    | "idle-revoked-reverse-index"
+    | "idle-revoked-tab-stop-set"
+    | "idle-revoked-charset"
+    | "idle-revoked-tab"
+    | "idle-revoked-untrusted-cell"
+    | "idle-revoked-rendition";
   actions: readonly PtyTransportAction[];
   isTTY: true;
   initialGeometry: PtyTerminalGeometry;
@@ -103,6 +177,19 @@ export type PtyTransportAction =
       action: "input";
       byteLength: number;
       inputSha256: string;
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "checkpoint-process-topology";
+      topology: "root-with-contained-process-set";
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "wait-for-semantic-completion";
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "wait-for-post-submission-idle-prompt";
       monotonicAtMs: number;
     }>
   | Readonly<{ action: "eof"; monotonicAtMs: number }>

@@ -11,11 +11,27 @@ import {
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
+  scenarioContainerTerminalWitness,
+  SCENARIO_HOME,
+  SCENARIO_TMPFS_MOUNTS,
+  scenarioTmpfsIsExecutable,
   type IsolationDriver,
 } from "./isolation.js";
 import { compileCapabilityManifest } from "./manifest.js";
 
 const integrationRoot = resolve(import.meta.dirname, "..");
+
+describe("scenario writable mount execution policy", () => {
+  it("allows executable files only in the candidate HOME that owns the installed hook", () => {
+    expect(SCENARIO_HOME).toBe("/home/agentscope");
+    expect(SCENARIO_TMPFS_MOUNTS.filter(scenarioTmpfsIsExecutable)).toEqual([
+      SCENARIO_HOME,
+    ]);
+    expect(scenarioTmpfsIsExecutable("/agentscope-home")).toBe(false);
+    expect(scenarioTmpfsIsExecutable("/home/agentscope-other")).toBe(false);
+  });
+});
+
 const manifest = compileCapabilityManifest(
   JSON.parse(
     readFileSync(resolve(integrationRoot, "capability-manifest.json"), "utf8"),
@@ -55,7 +71,9 @@ const planFor = (
   executionMode: "headless" | "interactive" = "headless",
 ) => {
   const scenario = manifest.scenarios.find(
-    (candidate) => candidate.executionMode === executionMode,
+    (candidate) =>
+      candidate.executionMode === executionMode &&
+      candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
   return createIsolationPlan({
     scenario,
@@ -108,6 +126,121 @@ const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
   containers: ISOLATION_EXECUTOR_LIMITS.containers,
   requests: ISOLATION_EXECUTOR_LIMITS.requests,
+});
+
+const terminalContainer = (overrides: Record<string, unknown> = {}) => ({
+  Id: "a".repeat(64),
+  Name: "/agentscope-int-scenario",
+  RestartCount: 0,
+  Config: {
+    Labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": "0123456789abcdef",
+    },
+  },
+  State: {
+    Status: "exited",
+    Running: false,
+    Paused: false,
+    Restarting: false,
+    OOMKilled: false,
+    Dead: false,
+    Pid: 0,
+    ExitCode: 7,
+    Error: "",
+    FinishedAt: "2026-09-15T01:00:00.000000000Z",
+  },
+  ...overrides,
+});
+
+describe("scenario attach terminal witness", () => {
+  const witness = (overrides: Record<string, unknown> = {}) =>
+    scenarioContainerTerminalWitness({
+      attach: { code: 7, killed: false, name: "Error", signal: null },
+      container: terminalContainer(),
+      containerId: "a".repeat(64),
+      runId: "0123456789abcdef",
+      scenarioName: "agentscope-int-scenario",
+      waitOutput: "7\n",
+      ...overrides,
+    });
+
+  it("accepts an exact same-container wait and terminal state", () => {
+    expect(witness()).toBe(true);
+  });
+
+  it("rejects transport-only exit metadata without the daemon witness", () => {
+    expect(witness({ container: undefined })).toBe(false);
+    expect(witness({ waitOutput: "" })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: true, signal: null } })).toBe(
+      false,
+    );
+    expect(witness({ attach: { code: 7, signal: null } })).toBe(false);
+    expect(witness({ attach: { code: 7, killed: false, signal: null } })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        attach: { code: 7, killed: "false", name: "Error", signal: null },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: {
+          code: 7,
+          killed: false,
+          name: "UnexpectedError",
+          signal: null,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        attach: { code: 7, killed: false, name: "Error", signal: "SIGTERM" },
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects substituted, live, restarted, and mismatched containers", () => {
+    expect(witness({ containerId: "b".repeat(64) })).toBe(false);
+    expect(witness({ container: terminalContainer({ RestartCount: 1 }) })).toBe(
+      false,
+    );
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, Running: true },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: { ...terminalContainer().State, ExitCode: 8 },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "not-a-timestamp",
+          },
+        }),
+      }),
+    ).toBe(false);
+    expect(
+      witness({
+        container: terminalContainer({
+          State: {
+            ...terminalContainer().State,
+            FinishedAt: "2026-02-31T01:00:00Z",
+          },
+        }),
+      }),
+    ).toBe(false);
+  });
 });
 
 const emptyCleanupInventory = () => ({
@@ -196,6 +329,7 @@ const ptyReceiptFor = (
   };
   const geometry = { columns: 80, rows: 24 };
   const completion = { kind: "semantic-marker" as const };
+  const readiness = { kind: "semantic-marker" as const };
   const interaction = {
     actions: [
       { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
@@ -221,6 +355,7 @@ const ptyReceiptFor = (
         JSON.stringify({
           processRequestFingerprint,
           completion,
+          readiness,
           initialGeometry: geometry,
           interaction,
           interpreter,
@@ -256,6 +391,7 @@ const ptyReceiptFor = (
     request: {
       process: processRequest,
       completion,
+      readiness,
       initialGeometry: geometry,
       interaction,
       interpreter,
@@ -299,6 +435,263 @@ const ptyReceiptFor = (
   };
 };
 
+const ptyChallengeReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const challenge = "b".repeat(64);
+  const initialInput = Buffer.from(`${challenge}\n`);
+  const finalInput = Buffer.from([4]);
+  const input = Buffer.concat([initialInput, finalInput]);
+  const inputSha256 = createHash("sha256").update(input).digest("hex");
+  const process = {
+    ...receipt.request.process,
+    inputBytes: input.length,
+    inputSha256,
+    // The Codex fixture must settle its selected-PTY failure receipt before
+    // its own outer-minus-five-second terminal cutoff.
+    monotonicExecutionDeadlineMs: 26_000,
+  };
+  const rawProcessRequest = {
+    runId: process.runId,
+    executable: process.executable,
+    arguments: process.arguments,
+    cwd: process.cwd,
+    environment: process.environment,
+    stdinBase64: input.toString("base64"),
+    stdoutLimitBytes: process.stdoutLimitBytes,
+    stderrLimitBytes: process.stderrLimitBytes,
+    monotonicStartupDeadlineMs: process.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs: process.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: process.monotonicShutdownDeadlineMs,
+    terminationGraceMs: process.terminationGraceMs,
+  };
+  const processRequestFingerprint = `sha256:${createHash("sha256")
+    .update(JSON.stringify(rawProcessRequest))
+    .digest("hex")}` as const;
+  const readiness = {
+    kind: "challenge-styled-text" as const,
+    challenge,
+    text: "›",
+    requiredText: "Ask Codex to do anything",
+    requiredTerminalProtocol: "csi-u-flags-7-query-v1" as const,
+    bold: true,
+    dim: false,
+  };
+  const initialInputAction = {
+    action: "input" as const,
+    byteLength: initialInput.length,
+    inputSha256: createHash("sha256").update(initialInput).digest("hex"),
+  };
+  const finalInputAction = {
+    action: "input" as const,
+    byteLength: finalInput.length,
+    inputSha256: createHash("sha256").update(finalInput).digest("hex"),
+  };
+  const interaction = {
+    trigger: "immediate" as const,
+    actions: [
+      receipt.request.interaction.actions[0]!,
+      initialInputAction,
+      {
+        action: "checkpoint-process-topology" as const,
+        topology: "root-with-contained-process-set" as const,
+      },
+      { action: "wait-for-semantic-completion" as const },
+      finalInputAction,
+    ],
+  };
+  const request = {
+    ...receipt.request,
+    process: { ...process, requestFingerprint: processRequestFingerprint },
+    readiness,
+    interaction,
+  };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint,
+        completion: request.completion,
+        readiness,
+        initialGeometry: request.initialGeometry,
+        interaction: {
+          actions: interaction.actions,
+          trigger: interaction.trigger,
+        },
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: input.length,
+        inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    scenarioId: "codex-tui-trace-smoke",
+    request,
+    requestFingerprint,
+    processRequestFingerprint,
+    inputBytes: input.length,
+    inputSha256,
+    actions: interaction.actions.map((action, index) => ({
+      ...action,
+      monotonicAtMs: 2_000 + index,
+    })),
+    eofByteWritten: false,
+    inputBytesWritten: input.length,
+    observedCanonicalMode: false,
+  };
+};
+
+const refingerprintPtyEnvelope = (
+  receipt: ReturnType<typeof ptyChallengeReceiptFor>,
+  readiness: typeof receipt.request.readiness | { kind: "semantic-marker" },
+  trigger: "immediate" | "semantic-ready",
+) => {
+  const interaction = { ...receipt.request.interaction, trigger };
+  const request = { ...receipt.request, readiness, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness,
+        initialGeometry: request.initialGeometry,
+        interaction: {
+          actions: interaction.actions,
+          trigger: interaction.trigger,
+        },
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return { ...receipt, request, requestFingerprint };
+};
+
+const refingerprintPtyActions = (
+  receipt: ReturnType<typeof ptyChallengeReceiptFor>,
+  actions: typeof receipt.request.interaction.actions,
+  observedActions: typeof receipt.actions,
+) => {
+  const interaction = { ...receipt.request.interaction, actions };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness: request.readiness,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return { ...receipt, request, requestFingerprint, actions: observedActions };
+};
+
+const ptyControlReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      ...receipt.request.interaction.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const },
+      { action: "interrupt-byte" as const, byte: 3 as const },
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness: request.readiness,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    eofByteWritten: false,
+    actions: [
+      ...receipt.actions.slice(0, 2),
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      {
+        action: "interrupt-byte" as const,
+        byte: 3 as const,
+        monotonicAtMs: 2_003,
+      },
+    ],
+  };
+};
+
+const ptyPostInputReceiptFor = () => {
+  const receipt = ptyReceiptFor();
+  const input = Buffer.from("run\n");
+  const firstInput = {
+    action: "input" as const,
+    byteLength: 3,
+    inputSha256: createHash("sha256")
+      .update(input.subarray(0, 3))
+      .digest("hex"),
+  };
+  const finalInput = {
+    action: "input" as const,
+    byteLength: 1,
+    inputSha256: createHash("sha256").update(input.subarray(3)).digest("hex"),
+  };
+  const interaction = {
+    ...receipt.request.interaction,
+    actions: [
+      receipt.request.interaction.actions[0]!,
+      firstInput,
+      { action: "wait-for-semantic-completion" as const },
+      finalInput,
+    ],
+  };
+  const request = { ...receipt.request, interaction };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint: receipt.processRequestFingerprint,
+        completion: request.completion,
+        readiness: request.readiness,
+        initialGeometry: request.initialGeometry,
+        interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: receipt.inputBytes,
+        inputSha256: receipt.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return {
+    ...receipt,
+    request,
+    requestFingerprint,
+    actions: [
+      receipt.actions[0]!,
+      { ...firstInput, monotonicAtMs: 2_001 },
+      { action: "wait-for-semantic-completion" as const, monotonicAtMs: 2_002 },
+      { ...finalInput, monotonicAtMs: 2_003 },
+    ],
+    eofByteWritten: false,
+    observedCanonicalMode: false,
+  };
+};
+
 const refingerprintPtyProcessDeadline = (
   field:
     | "monotonicStartupDeadlineMs"
@@ -306,8 +699,10 @@ const refingerprintPtyProcessDeadline = (
     | "monotonicShutdownDeadlineMs"
     | "terminationGraceMs",
   value: number,
+  receipt:
+    | ReturnType<typeof ptyReceiptFor>
+    | ReturnType<typeof ptyChallengeReceiptFor> = ptyReceiptFor(),
 ) => {
-  const receipt = ptyReceiptFor();
   const process = { ...receipt.request.process, [field]: value };
   const rawProcessRequest = {
     runId: process.runId,
@@ -315,7 +710,13 @@ const refingerprintPtyProcessDeadline = (
     arguments: process.arguments,
     cwd: process.cwd,
     environment: process.environment,
-    stdinBase64: "cnVuCg==",
+    stdinBase64:
+      receipt.scenarioId === "codex-tui-trace-smoke"
+        ? Buffer.concat([
+            Buffer.from(`${"b".repeat(64)}\n`),
+            Buffer.from([4]),
+          ]).toString("base64")
+        : "cnVuCg==",
     stdoutLimitBytes: process.stdoutLimitBytes,
     stderrLimitBytes: process.stderrLimitBytes,
     monotonicStartupDeadlineMs: process.monotonicStartupDeadlineMs,
@@ -335,6 +736,7 @@ const refingerprintPtyProcessDeadline = (
       JSON.stringify({
         processRequestFingerprint,
         completion: request.completion,
+        readiness: request.readiness,
         initialGeometry: request.initialGeometry,
         interaction: request.interaction,
         interpreter: request.interpreter,
@@ -388,6 +790,10 @@ const driver = () => {
       calls.push("network");
       return Promise.resolve();
     }),
+    createControlVolume: vi.fn(() => {
+      calls.push("control-volume");
+      return Promise.resolve();
+    }),
     startCollector: vi.fn(() => {
       calls.push("collector");
       return Promise.resolve();
@@ -400,11 +806,19 @@ const driver = () => {
       calls.push("mockserver");
       return Promise.resolve();
     }),
+    joinMockServer: vi.fn(() => {
+      calls.push("mockserver-join");
+      return Promise.resolve();
+    }),
     runScenario,
     recordEvidence,
     removeContainer,
     removeNetwork: vi.fn((name) => {
       calls.push(`remove-network:${name}`);
+      return Promise.resolve();
+    }),
+    removeControlVolume: vi.fn((name) => {
+      calls.push(`remove-control-volume:${name}`);
       return Promise.resolve();
     }),
     removeImage: vi.fn((name) => {
@@ -450,6 +864,38 @@ describe("scenario isolation", () => {
     expect(() => planFor("not-a-token")).toThrow("integration.isolation.plan");
   });
 
+  it("reserves a control volume only for the real Codex gate scenario", () => {
+    const ordinary = planFor("0123456789abcdef");
+    const scenario = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    );
+    if (scenario === undefined) throw new Error("integration.test.scenario");
+    const codex = createIsolationPlan({
+      scenario,
+      manifestIdentity: manifest.manifestIdentity,
+      candidate,
+      runToken: "0123456789abcdef",
+      baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
+      mockServerImageIdentity: preparedIdentityFor(
+        scenario.mockServerImage,
+        "b",
+      ),
+      selection: {
+        selectionVersion: 2,
+        manifestIdentity: manifest.manifestIdentity,
+        mode: "scenario",
+        selector: { scenarioId: scenario.scenarioId },
+        scenarioIds: [scenario.scenarioId],
+      },
+      maximumParallelScenarios: 2,
+      scenarioTimeoutMilliseconds: 300_000,
+    });
+    expect(ordinary.controlVolumeName).toBeNull();
+    expect(codex.controlVolumeName).toBe(
+      "agentscope-int-0123456789abcdef-control",
+    );
+  });
+
   it("records digest-bound evidence and always tears down after success", async () => {
     const fixture = driver();
     const evidence = await executeIsolationPlan(
@@ -481,6 +927,7 @@ describe("scenario isolation", () => {
       "retrieval",
       "mockserver",
       "scenario",
+      "mockserver-join",
       "container:agentscope-int-0123456789abcdef-scenario",
       "container:agentscope-int-0123456789abcdef-collector",
       "container:agentscope-int-0123456789abcdef-retrieval",
@@ -592,6 +1039,7 @@ describe("scenario isolation outcomes", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
   it("records unavailable runtime inspection and still tears down", async () => {
     const fixture = driver();
@@ -621,6 +1069,7 @@ describe("scenario cleanup evidence", () => {
 
   it("surfaces cleanup failures after attempting every teardown step", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.removeContainer.mockRejectedValueOnce(new Error("cleanup failed"));
     await expect(
       executeIsolationPlan(
@@ -628,7 +1077,7 @@ describe("scenario cleanup evidence", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-scenario-container");
     expect(fixture.calls).toContain(
       "remove-network:agentscope-int-0123456789abcdef-network",
     );
@@ -638,6 +1087,63 @@ describe("scenario cleanup evidence", () => {
       removalFailureCount: 1,
       remaining: emptyCleanupInventory(),
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0}}\n',
+    );
+    diagnostic.mockRestore();
+  });
+
+  it("retains the fixed network cleanup removal subphase", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const causal = new Error("integration.images.deadline");
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: causal,
+      }),
+    );
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: causal,
+    });
+    diagnostic.mockRestore();
+  });
+
+  it("retains the work failure when cleanup also fails", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const workFailure = new Error("integration.isolation.pty-receipt");
+    fixture.runScenario.mockRejectedValueOnce(workFailure);
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      new Error("integration.isolation.cleanup-network-remove", {
+        cause: new Error("integration.images.docker-client"),
+      }),
+    );
+    let failure: unknown;
+    try {
+      await executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      );
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: "integration.isolation.cleanup-network-remove",
+      cause: workFailure,
+    });
+    diagnostic.mockRestore();
   });
 
   it("rejects a non-digest image result and still tears down", async () => {
@@ -752,6 +1258,7 @@ describe("scenario evidence validation", () => {
 
   it("records cleanup proof failure without inventing survivor counts", async () => {
     const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     fixture.inspectCleanup.mockRejectedValueOnce(
       new Error("proof unavailable"),
     );
@@ -761,12 +1268,41 @@ describe("scenario evidence validation", () => {
         fixture.implementation,
         new AbortController().signal,
       ),
-    ).rejects.toThrow("integration.isolation.cleanup");
+    ).rejects.toThrow("integration.isolation.cleanup-inventory");
     expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
       outcome: "verification-failed",
       removalFailureCount: 0,
       remaining: null,
     });
+    expect(diagnostic).toHaveBeenCalledWith(
+      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
+    );
+    diagnostic.mockRestore();
+  });
+
+  it("classifies a proven cleanup survivor separately from inventory failure", async () => {
+    const fixture = driver();
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    fixture.inspectCleanup.mockResolvedValueOnce({
+      ...emptyCleanupInventory(),
+      containers: 1,
+    });
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.cleanup-remaining");
+    expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
+      outcome: "failed",
+      removalFailureCount: 0,
+      remaining: {
+        ...emptyCleanupInventory(),
+        containers: 1,
+      },
+    });
+    diagnostic.mockRestore();
   });
 });
 
@@ -795,6 +1331,7 @@ const compiledEvidenceFixture = () => {
       candidateBundleIdentity: `sha256-${"2".repeat(64)}`,
       candidateRevision: "3".repeat(40),
       executionMode: "headless",
+      terminalAction: "none",
       baseImage: `node@sha256:${"4".repeat(64)}`,
       mockServerImage: `mockserver@sha256:${"5".repeat(64)}`,
       baseImageIdentity: preparedIdentityFor(
@@ -905,7 +1442,71 @@ describe("selected headless backend evidence", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function
 describe("selected PTY backend evidence", () => {
+  it("retains the authenticated Codex checkpoint after live prompt readiness is revoked", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = {
+      ...ptyChallengeReceiptFor(),
+      readinessObserved: false,
+    };
+    expect(
+      receipt.request.process.monotonicShutdownDeadlineMs -
+        receipt.request.process.monotonicExecutionDeadlineMs,
+    ).toBe(5_000);
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive" as const,
+      terminalAction: "post-completion-input" as const,
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
+      interactive,
+    );
+    for (const ptyTerminalReceipt of [
+      refingerprintPtyActions(
+        receipt,
+        receipt.request.interaction.actions.filter(
+          ({ action }) => action !== "checkpoint-process-topology",
+        ),
+        receipt.actions.filter(
+          ({ action }) => action !== "checkpoint-process-topology",
+        ),
+      ),
+      { ...receipt, actions: receipt.actions.slice(0, 2) },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "checkpoint-process-topology"
+            ? { ...action, action: "wait-for-semantic-completion" }
+            : action,
+        ),
+      },
+      { ...receipt, outcome: "input-incomplete" },
+      { ...receipt, cleanup: "uncertain" },
+      { ...receipt, processJoined: false },
+      {
+        ...receipt,
+        request: {
+          ...receipt.request,
+          interaction: {
+            ...receipt.request.interaction,
+            trigger: "semantic-ready",
+          },
+        },
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+
   it("rejects cross-mode, missing, substituted, and raw terminal evidence", () => {
     const { evidence } = compiledEvidenceFixture();
     const pty = ptyReceiptFor();
@@ -913,6 +1514,7 @@ describe("selected PTY backend evidence", () => {
       ...evidence,
       scenarioId: "fixture-process-interactive",
       executionMode: "interactive",
+      terminalAction: "eof",
       executionPolicy: executionPolicyFor("fixture-process-interactive"),
       headlessTerminalReceipt: null,
       ptyTerminalReceipt: pty,
@@ -920,6 +1522,60 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...pty, observedCanonicalMode: false },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          terminalAction: "post-completion-input",
+          ptyTerminalReceipt: ptyPostInputReceiptFor(),
+        },
+        evidence,
+      ),
+    ).toMatchObject({
+      terminalAction: "post-completion-input",
+      ptyTerminalReceipt: {
+        eofByteWritten: false,
+        observedCanonicalMode: false,
+      },
+    });
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, terminalAction: "post-completion-input" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    const controlled = {
+      ...interactive,
+      terminalAction: "post-completion-controls" as const,
+      ptyTerminalReceipt: ptyControlReceiptFor(),
+    };
+    expect(compileWithPreparedAuthority(controlled, evidence)).toEqual(
+      controlled,
+    );
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...controlled, ptyTerminalReceipt: pty },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...pty, eofByteWritten: false },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
     for (const ptyTerminalReceipt of [
       null,
       { ...pty, runId: "fedcba9876543210" },
@@ -960,6 +1616,235 @@ describe("selected PTY backend evidence", () => {
         evidence,
       ),
     ).toThrow("integration.isolation.evidence");
+  });
+
+  it("admits the exact styled challenge receipt and rejects trigger or kind substitution", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
+      interactive,
+    );
+    const contentFreeDiagnostic = {
+      ...receipt,
+      postSubmissionIdleDiagnostic: "idle-ready" as const,
+      postSubmissionIdleAtTitleDiagnostic: "idle-ready" as const,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        { ...interactive, ptyTerminalReceipt: contentFreeDiagnostic },
+        evidence,
+      ).ptyTerminalReceipt?.postSubmissionIdleDiagnostic,
+    ).toBe("idle-ready");
+    expect(
+      compileWithPreparedAuthority(
+        { ...interactive, ptyTerminalReceipt: contentFreeDiagnostic },
+        evidence,
+      ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
+    ).toBe("idle-ready");
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            postSubmissionIdleAtTitleDiagnostic:
+              "idle-revoked-alternate-screen-exit",
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.postSubmissionIdleAtTitleDiagnostic,
+    ).toBe("idle-revoked-alternate-screen-exit");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            postSubmissionIdleDiagnostic: "terminal-content",
+          },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            postSubmissionIdleAtTitleDiagnostic: "terminal-content",
+          },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    for (const ptyTerminalReceipt of [
+      refingerprintPtyEnvelope(
+        receipt,
+        receipt.request.readiness,
+        "semantic-ready",
+      ),
+      refingerprintPtyEnvelope(
+        receipt,
+        { kind: "semantic-marker" },
+        "immediate",
+      ),
+      refingerprintPtyProcessDeadline(
+        "monotonicExecutionDeadlineMs",
+        6_000,
+        receipt,
+      ),
+      {
+        ...receipt,
+        request: {
+          ...receipt.request,
+          readiness: { kind: "challenge-marker", challenge: "b".repeat(63) },
+        },
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+
+  it("keeps challenged readiness diagnostics closed and content-free", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    const progress = {
+      marker: true,
+      synchronizedFrame: true,
+      styledGlyph: false,
+      requiredText: false,
+      terminalProtocol: "incomplete" as const,
+      protocolRejectionKind: "none" as const,
+      protocolRejectedAtPhase: null,
+      protocolRejectedStep: null,
+      protocolRejectedModePrefix: null,
+      protocolRejectedModeValue: null,
+      readinessEverObserved: false,
+      screenRevoked: false,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            challengedReadinessProgress: progress,
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.challengedReadinessProgress,
+    ).toEqual(progress);
+    const rejectedProgress = {
+      ...progress,
+      terminalProtocol: "rejected" as const,
+      protocolRejectionKind: "order" as const,
+      protocolRejectedAtPhase: 1,
+      protocolRejectedStep: 4,
+      protocolRejectedModePrefix: null,
+      protocolRejectedModeValue: null,
+    };
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: {
+            ...receipt,
+            challengedReadinessProgress: rejectedProgress,
+          },
+        },
+        evidence,
+      ).ptyTerminalReceipt?.challengedReadinessProgress,
+    ).toEqual(rejectedProgress);
+    for (const malformed of [
+      { ...progress, terminalProtocol: "raw-terminal-content" },
+      { ...progress, rawTerminalText: "CANARY_SECRET" },
+      { ...progress, terminalProtocol: "rejected" },
+      { ...rejectedProgress, terminalProtocol: "complete" },
+      { ...rejectedProgress, protocolRejectedStep: null },
+      { ...rejectedProgress, protocolRejectedStep: 2 },
+      { ...progress, protocolRejectedModePrefix: "greater" },
+      { ...progress, readinessEverObserved: "true" },
+      { ...progress, readinessEverObserved: true },
+      { ...rejectedProgress, readinessEverObserved: true },
+      { ...rejectedProgress, protocolRejectedModeValue: 7 },
+      {
+        ...rejectedProgress,
+        protocolRejectionKind: "mode",
+        protocolRejectedStep: null,
+        protocolRejectedModePrefix: "greater",
+        protocolRejectedModeValue: 7,
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          {
+            ...interactive,
+            ptyTerminalReceipt: {
+              ...receipt,
+              challengedReadinessProgress: malformed,
+            },
+          },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+
+  it("retains only a checkpoint category consistent with observed actions", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const receipt = ptyChallengeReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "codex-tui-trace-smoke",
+      executionMode: "interactive",
+      terminalAction: "post-completion-input",
+      executionPolicy: executionPolicyFor("codex-tui-trace-smoke"),
+      headlessTerminalReceipt: null,
+    };
+    const withDiagnostic = (checkpointProgressDiagnostic: string) =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...receipt, checkpointProgressDiagnostic },
+        },
+        evidence,
+      );
+    expect(
+      withDiagnostic("advanced").ptyTerminalReceipt
+        ?.checkpointProgressDiagnostic,
+    ).toBe("advanced");
+    expect(
+      withDiagnostic("publication-unsettled").ptyTerminalReceipt
+        ?.checkpointProgressDiagnostic,
+    ).toBe("publication-unsettled");
+    expect(() => withDiagnostic("topology-nonroot-missing")).toThrow(
+      "integration.isolation.evidence",
+    );
+    expect(() => withDiagnostic("raw-terminal-content")).toThrow(
+      "integration.isolation.evidence",
+    );
   });
 
   it.each([

@@ -196,7 +196,7 @@ const readConfigurationWithinDeadline = async (
   });
 };
 
-type PreparedConfiguration = Readonly<{
+export type PreparedCaptureInvocationConfigurationForCore = Readonly<{
   ok: true;
   configuration: AgentscopeConfigurationSnapshot;
   deadline: ReporterDeadline;
@@ -204,9 +204,11 @@ type PreparedConfiguration = Readonly<{
   deadlineProvenance: CaptureInvocationSnapshot["deadlineProvenance"];
 }>;
 
-const prepareConfiguration = async (
+export const prepareCaptureInvocationConfigurationForCore = async (
   input: CaptureInvocationPreparationInput,
-): Promise<PreparedConfiguration | InvocationPreparationFailure> => {
+): Promise<
+  PreparedCaptureInvocationConfigurationForCore | InvocationPreparationFailure
+> => {
   let entryAuthority;
   try {
     entryAuthority = readHookEntryAuthorityForCore(input.hookEntryAuthority);
@@ -283,12 +285,11 @@ const prepareConfiguration = async (
   });
 };
 
-const resolveSnapshot = async (
+const resolveSnapshotFromPreparedConfiguration = async (
   input: CaptureInvocationPreparationInput,
+  prepared: PreparedCaptureInvocationConfigurationForCore,
   contextResolver: ContextResolver,
 ): Promise<InvocationPreparationResult> => {
-  const prepared = await prepareConfiguration(input);
-  if (!prepared.ok) return prepared;
   const { configuration, deadline, admissionTimeUnixNano, deadlineProvenance } =
     prepared;
   const effectiveRemainingMilliseconds = (): number =>
@@ -365,6 +366,36 @@ const resolveSnapshot = async (
     }),
   });
 };
+
+const resolveSnapshot = async (
+  input: CaptureInvocationPreparationInput,
+  contextResolver: ContextResolver,
+): Promise<InvocationPreparationResult> => {
+  const prepared = await prepareCaptureInvocationConfigurationForCore(input);
+  if (!prepared.ok) return prepared;
+  return await resolveSnapshotFromPreparedConfiguration(
+    input,
+    prepared,
+    contextResolver,
+  );
+};
+
+export const resolveCaptureInvocationSnapshotAfterConfigurationForCore = (
+  input: CaptureInvocationPreparationInput,
+  prepared: PreparedCaptureInvocationConfigurationForCore,
+): Promise<InvocationPreparationResult> =>
+  resolveSnapshotFromPreparedConfiguration(
+    input,
+    prepared,
+    resolveGitContextForCore,
+  );
+
+export const resolveCaptureInvocationSnapshotAfterConfigurationForTesting = (
+  input: CaptureInvocationPreparationInput,
+  prepared: PreparedCaptureInvocationConfigurationForCore,
+  contextResolver: ContextResolver,
+): Promise<InvocationPreparationResult> =>
+  resolveSnapshotFromPreparedConfiguration(input, prepared, contextResolver);
 
 export const resolveCaptureInvocationSnapshot = async (
   input: CaptureInvocationPreparationInput,

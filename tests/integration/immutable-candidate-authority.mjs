@@ -1,7 +1,713 @@
 import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
 
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
+};
+
+export const parseCodexMachineOutput = (bytes, command) => {
+  if (!Buffer.isBuffer(bytes) || bytes.length > 1024 * 1024)
+    throw new Error("integration.codex.cli-output");
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error("integration.codex.cli-output");
+  }
+  if (
+    value?.command !== command ||
+    value?.completion !== "complete" ||
+    !Array.isArray(value.records)
+  )
+    throw new Error("integration.codex.cli-output");
+  return value.records;
+};
+export const readBoundedInteractiveFailureMarker = (ledger) => {
+  let descriptor;
+  try {
+    descriptor = openSync(
+      join(ledger, "interactive-failure.txt"),
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size < 1 || before.size > 128)
+      return undefined;
+    const bytes = Buffer.alloc(before.size + 1);
+    const count = readSync(descriptor, bytes, 0, bytes.length, 0);
+    const after = fstatSync(descriptor);
+    if (
+      count !== before.size ||
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size
+    )
+      return undefined;
+    const content = bytes.subarray(0, count).toString("utf8");
+    return /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+      ? content.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+export const ptyExecutionFailurePredicates = Object.freeze([
+  "child-failure",
+  "integration.fixture.codex-bootstrap",
+  "integration.fixture.codex-bootstrap-arguments",
+  "integration.fixture.codex-bootstrap-artifact",
+  "integration.fixture.codex-bootstrap-deadline",
+  "integration.fixture.codex-bootstrap-environment",
+  "integration.fixture.codex-bootstrap-modules",
+  "integration.fixture.codex-bootstrap-pty",
+  "integration.fixture.codex-bootstrap-readiness",
+  "integration.fixture.codex-model-gate-start",
+  "integration.fixture.codex-model-gate-configured",
+  "integration.fixture.codex-control-plane-closed",
+  "integration.fixture.codex-candidate-config-render",
+  "integration.fixture.codex-candidate-config-create",
+  "integration.fixture.codex-candidate-config-open",
+  "integration.fixture.codex-candidate-config-prove",
+  "integration.fixture.codex-candidate-config-closed-marker",
+  "integration.fixture.codex-candidate-config-publish",
+  "integration.fixture.codex-tui-run-created",
+  "integration.fixture.codex-tui-readiness-challenge-published",
+  "integration.fixture.codex-tui-checkpoint",
+  "integration.fixture.codex-model-gate-arm-start",
+  "integration.fixture.codex-model-gate-arm-health-pending",
+  "integration.fixture.codex-model-gate-arm-session-start",
+  "integration.fixture.codex-model-gate-arm-hook-log",
+  "integration.fixture.codex-model-gate-arm-hook-mediation",
+  "integration.fixture.codex-model-gate-arm-control",
+  "integration.fixture.codex-model-gate-arm-session-start-missing",
+  "integration.fixture.codex-tui-exit-before-arm",
+  "integration.fixture.codex-model-gate-arm-complete",
+  "integration.fixture.codex-model-request-observed",
+  "integration.fixture.codex-destination",
+  "integration.fixture.codex-install",
+  "integration.fixture.codex-hook-command-spawn-error",
+  "integration.fixture.codex-hook-command-stdin-error",
+  "integration.fixture.codex-hook-command-timeout",
+  "integration.fixture.codex-hook-command-wait-error",
+  "integration.fixture.codex-hook-command-missing",
+  "integration.fixture.codex-hook-command-completed-before-budget-boundary",
+  "integration.fixture.codex-hook-command-completed-near-budget-boundary",
+  "integration.fixture.codex-hook-no-operational-state-subsecond",
+  "integration.fixture.codex-hook-no-operational-state-low-latency",
+  "integration.fixture.codex-hook-no-operational-state-mid-latency",
+  "integration.fixture.codex-hook-no-operational-state-high-latency",
+  "integration.fixture.codex-hook-no-operational-state-near-deadline",
+  "integration.fixture.codex-hook-start-suppressed",
+  "integration.fixture.codex-hook-start-deadline",
+  "integration.fixture.codex-hook-capture-suppressed",
+  "integration.fixture.codex-hook-capture-deadline",
+  "integration.fixture.codex-hook-redaction-suppressed",
+  "integration.fixture.codex-hook-redaction-deadline",
+  "integration.fixture.codex-hook-routing-no-route",
+  "integration.fixture.codex-hook-delivery-rejected",
+  "integration.fixture.codex-hook-delivery-unavailable",
+  "integration.fixture.codex-hook-delivery-deadline",
+  "integration.fixture.codex-hook-delivery-unknown",
+  "integration.fixture.codex-hook-accepted-without-trace",
+  "integration.fixture.codex-hook-operational-unclassified",
+  "integration.fixture.codex-init",
+  "integration.fixture.codex-routing",
+  "integration.fixture.codex-model-request",
+  "integration.fixture.codex-trace-search",
+  "integration.fixture.codex-trace-search-ambiguous",
+  "integration.fixture.codex-trace-search-harness",
+  "integration.fixture.codex-trace-search-locator",
+  "integration.fixture.codex-trace-search-record-count",
+  "integration.fixture.codex-trace-search-shape",
+  "integration.fixture.codex-trace-search-result",
+  "integration.fixture.codex-trace-reporter-settled",
+  "integration.fixture.codex-trace-settlement",
+  "integration.fixture.codex-trace-terminal",
+  "integration.fixture.codex-tui-exit-published",
+  "integration.fixture.codex-tui-join-deadline",
+  "integration.fixture.codex-tui-join-deadline-log-unavailable",
+  "integration.fixture.codex-tui-join-deadline-hook-log-invalid",
+  "integration.fixture.codex-tui-join-deadline-stop-unseen",
+  "integration.fixture.codex-tui-join-deadline-stop-active",
+  "integration.fixture.codex-tui-join-deadline-stop-completed",
+  "integration.fixture.codex-tui-join-deadline-session-end-active",
+  "integration.fixture.codex-tui-join-deadline-session-end-completed",
+  "integration.fixture.codex-tui-child-rejected",
+  "integration.fixture.codex-tui-joined",
+  "integration.fixture.codex-tui-start",
+  "integration.fixture.codex-verify",
+  "integration.fixture.codex-verify-config",
+  "integration.fixture.codex-verify-gate",
+  "integration.fixture.codex-verify-trace-get",
+  "integration.fixture.codex-verify-correlation",
+  "integration.fixture.codex-verify-doctor",
+  "integration.fixture.codex-verify-uninstall",
+  "integration.fixture.codex-verify-status",
+  "integration.fixture.codex-verify-projection",
+  "integration.fixture.codex-verify-evidence",
+  "integration.fixture.codex-verify-adapter-observation",
+  "integration.fixture.codex-verify-oracle-scenario",
+  "integration.fixture.codex-verify-oracle-hook-mediation",
+  "integration.fixture.codex-verify-oracle-stimulus",
+  "integration.fixture.codex-verify-oracle-model-request",
+  "integration.fixture.codex-verify-oracle-trace",
+  "integration.fixture.codex-verify-oracle-lifecycle",
+  "integration.fixture.codex-verify-uninstall-child",
+  "integration.fixture.codex-verify-uninstall-child-deadline",
+  "integration.fixture.codex-verify-uninstall-deadline",
+  "integration.fixture.codex-verify-uninstall-trace-deadline",
+  "integration.fixture.codex-verify-uninstall-cli-output",
+  "integration.fixture.codex-verify-uninstall-result",
+  "integration.fixture.codex-verify-uninstall-child-spawn",
+  "integration.fixture.codex-verify-uninstall-during-cli-unclassified",
+  "integration.fixture.codex-verify-uninstall-during-result-unclassified",
+  "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
+  "integration.runner.fixture-failed",
+  "integration.runner.fixture-result",
+  "integration.runner.pty-authority",
+  "testkit.headless.kernel.failure",
+  "testkit.pty.geometry",
+  "testkit.pty.immutable-candidate",
+  "testkit.pty.receipt-completion-state",
+  "testkit.pty.receipt-actions",
+  "testkit.pty.receipt-cleanup",
+  "testkit.pty.receipt-identity",
+  "testkit.pty.receipt-input",
+  "testkit.pty.receipt-outcome",
+  "testkit.pty.receipt-output",
+  "testkit.pty.receipt-output-state",
+  "testkit.pty.receipt-readiness",
+  "testkit.pty.receipt-signal",
+  "testkit.pty.receipt-signal-identity",
+  "testkit.pty.receipt-snapshot",
+  "testkit.pty.receipt-terminal",
+  "testkit.pty.receipt-terminal-action",
+  "testkit.pty.receipt-terminal-status",
+  "testkit.pty.request",
+  "testkit.pty.runtime.identity",
+  "testkit.pty.transport",
+  "testkit.pty.transport.exit",
+  "testkit.pty.transport.initialization",
+  "testkit.pty.transport.semantic-credential-prompt",
+  "testkit.pty.transport.semantic-incomplete",
+  "testkit.pty.transport.semantic-malformed-control-limit",
+  "testkit.pty.transport.semantic-malformed-csi-byte",
+  "testkit.pty.transport.semantic-malformed-csi-parameters",
+  "testkit.pty.transport.semantic-malformed-escape",
+  "testkit.pty.transport.semantic-malformed-ground-control",
+  "testkit.pty.transport.semantic-malformed-trailing-control",
+  "testkit.pty.transport.semantic-malformed-unknown",
+  "testkit.pty.transport.semantic-malformed-utf8",
+  "testkit.pty.transport.semantic-missing-readiness",
+  "testkit.pty.transport.semantic-missing-readiness-no-output",
+  "testkit.pty.transport.semantic-missing-readiness-with-output",
+  "testkit.pty.transport.semantic-nonzero",
+  "testkit.pty.transport.semantic-unsupported-csi",
+  "testkit.pty.transport.semantic-unsupported-extended-csi",
+  "testkit.pty.transport.semantic-unsupported-osc",
+  "testkit.pty.transport.semantic-unsupported-unknown",
+  "integration.fixture.codex-tui-exit-before-checkpoint",
+  "integration.fixture.codex-tui-checkpoint-not-witnessed",
+]);
+
+export const selectInteractiveFailureDiagnostic = (
+  fixtureFailure,
+  retainedPhase,
+  selectedError,
+) =>
+  [fixtureFailure, retainedPhase, selectedError].find(
+    (value) =>
+      typeof value === "string" &&
+      ptyExecutionFailurePredicates.includes(value) &&
+      value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
+      value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
+      !value.startsWith("integration.fixture.codex-candidate-config-") &&
+      value !== "integration.fixture.codex-tui-join-deadline" &&
+      !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+      value !== "integration.fixture.codex-tui-child-rejected",
+  );
+
+const codexProjectionFailureDiagnostics = new Map([
+  [
+    "integration.codex.adapter-observation",
+    "integration.fixture.codex-verify-adapter-observation",
+  ],
+  ...[
+    "scenario",
+    "hook-mediation",
+    "stimulus",
+    "model-request",
+    "trace",
+    "lifecycle",
+  ].map((predicate) => [
+    `integration.codex.oracle-${predicate}`,
+    `integration.fixture.codex-verify-oracle-${predicate}`,
+  ]),
+]);
+
+export const codexProjectionFailureDiagnostic = (message) =>
+  typeof message === "string"
+    ? codexProjectionFailureDiagnostics.get(message)
+    : undefined;
+
+const codexUninstallFailureDiagnostics = new Map([
+  [
+    "integration.codex.child",
+    "integration.fixture.codex-verify-uninstall-child",
+  ],
+  [
+    "integration.codex.child-deadline",
+    "integration.fixture.codex-verify-uninstall-child-deadline",
+  ],
+  [
+    "integration.codex.deadline",
+    "integration.fixture.codex-verify-uninstall-deadline",
+  ],
+  [
+    "integration.codex.trace-deadline",
+    "integration.fixture.codex-verify-uninstall-trace-deadline",
+  ],
+  [
+    "integration.codex.cli-output",
+    "integration.fixture.codex-verify-uninstall-cli-output",
+  ],
+  [
+    "integration.codex.uninstall",
+    "integration.fixture.codex-verify-uninstall-result",
+  ],
+  [
+    "integration.codex.child-spawn",
+    "integration.fixture.codex-verify-uninstall-child-spawn",
+  ],
+]);
+
+export const codexUninstallFailureDiagnostic = (message) =>
+  typeof message === "string"
+    ? codexUninstallFailureDiagnostics.get(message)
+    : undefined;
+
+const codexUninstallUnclassifiedStageDiagnostics = new Map([
+  ["cli", "integration.fixture.codex-verify-uninstall-during-cli-unclassified"],
+  [
+    "result",
+    "integration.fixture.codex-verify-uninstall-during-result-unclassified",
+  ],
+  [
+    "hook",
+    "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
+  ],
+]);
+
+export const codexUninstallUnclassifiedStageDiagnostic = (stage) =>
+  codexUninstallUnclassifiedStageDiagnostics.get(stage);
+
+// Research-only: this candidate-writable marker is never a receipt predicate.
+const untrustedCodexTraceHintPattern =
+  /^(?:hook|reporter|search)-(?:deadline|child|child-deadline|child-exit-5|child-exit-other|child-signal|child-output-limit|hook-log|other)$/u;
+export const untrustedCodexTraceHint = (marker) => {
+  if (typeof marker !== "string") return undefined;
+  const prefix = "integration.fixture.codex-trace-await-";
+  if (!marker.startsWith(prefix)) return undefined;
+  const hint = marker.slice(prefix.length);
+  return untrustedCodexTraceHintPattern.test(hint) ? hint : undefined;
+};
+export const interactivePtyReceiptFailed = (receipt) =>
+  receipt.outcome !== "completed" ||
+  receipt.finalSnapshot.semanticState !== "completed" ||
+  receipt.exitCode !== 0 ||
+  receipt.signal !== null ||
+  receipt.cleanup !== "clean" ||
+  receipt.residualProcessCount !== 0 ||
+  !receipt.processJoined ||
+  !receipt.terminalInputJoined ||
+  !receipt.terminalOutputJoined ||
+  !receipt.terminalTransportClosed;
+
+export const interactivePtyReceiptAuthorityMatches = (
+  receipt,
+  checks,
+  failed = false,
+) =>
+  checks?.envelope === true &&
+  checks.process === true &&
+  checks.geometry === true &&
+  checks.artifact === true &&
+  checks.fingerprint === true &&
+  (failed
+    ? interactivePtyReceiptFailed(receipt)
+    : receipt?.returnedAtMs <=
+        receipt?.request?.process?.monotonicShutdownDeadlineMs &&
+      receipt?.finalSnapshot?.semanticState === "completed");
+
+export const interactivePtyEnvelopeDeadlineMatches = (
+  observedDeadline,
+  expectedDeadline,
+  observationNow,
+  failed = false,
+) =>
+  observedDeadline === expectedDeadline &&
+  (failed || observationNow < expectedDeadline);
+
+const interactivePtyEnvelopeFields = Object.freeze([
+  "identity",
+  "deadline",
+  "completion",
+  "readiness",
+  "trigger",
+  "requested-actions",
+  "observed-actions",
+  "terminal-action",
+  "tty",
+  "canonical-mode",
+]);
+
+export const interactivePtyEnvelopeRejectionCode = (predicates) => {
+  for (const field of interactivePtyEnvelopeFields)
+    if (predicates?.[field]?.() !== true) return field;
+  return null;
+};
+
+// Keep the selected PTY alive through the Codex fixture's earlier trace
+// cutoff. The fixture has its own bounded failure/settlement window before
+// this PTY cutoff; the outer shutdown authority is unchanged.
+export const interactivePtyExecutionReserveMilliseconds = () => 5_000;
+
+export const interactivePtyObservedActionsMatch = (
+  observedActions,
+  expectedActions,
+  failed = false,
+) => {
+  if (
+    !Array.isArray(observedActions) ||
+    !Array.isArray(expectedActions) ||
+    observedActions.length > expectedActions.length ||
+    (!failed && observedActions.length !== expectedActions.length) ||
+    observedActions.some((entry) => typeof entry?.action !== "string") ||
+    expectedActions.some((entry) => typeof entry?.action !== "string")
+  )
+    return false;
+  return (
+    JSON.stringify(observedActions.map(({ action }) => action)) ===
+    JSON.stringify(
+      expectedActions
+        .slice(0, observedActions.length)
+        .map(({ action }) => action),
+    )
+  );
+};
+
+// Failure-only, content-free progress after the exact receipt prefix has been
+// authenticated. Never print terminal bytes, input digests, or raw actions.
+export const interactivePtyActionPrefixDiagnostic = (receipt) => {
+  const observed = receipt?.actions;
+  const requested = receipt?.request?.interaction?.actions;
+  if (
+    !Array.isArray(requested) ||
+    requested.length > 32 ||
+    !interactivePtyObservedActionsMatch(observed, requested, true)
+  )
+    return undefined;
+  return `integration.isolation.pty-action-prefix:${observed.length}/${requested.length}`;
+};
+
+// Failure-only categories from the already validated PTY receipt. These
+// distinguish no child output from a rendered-but-unready terminal without
+// retaining terminal bytes, screen text, hashes, or process identities.
+// eslint-disable-next-line complexity -- the closed diagnostic schema checks every field and cross-field invariant before logging
+const closedChallengedReadinessProgress = (value) =>
+  value !== null &&
+  Object.keys(value).sort().join(",") ===
+    "marker,protocolRejectedAtPhase,protocolRejectedModePrefix,protocolRejectedModeValue,protocolRejectedStep,protocolRejectionKind,readinessEverObserved,requiredText,screenRevoked,styledGlyph,synchronizedFrame,terminalProtocol" &&
+  typeof value.marker === "boolean" &&
+  typeof value.synchronizedFrame === "boolean" &&
+  typeof value.styledGlyph === "boolean" &&
+  typeof value.requiredText === "boolean" &&
+  typeof value.readinessEverObserved === "boolean" &&
+  (!value.readinessEverObserved ||
+    (value.marker &&
+      value.synchronizedFrame &&
+      value.styledGlyph &&
+      value.requiredText &&
+      value.terminalProtocol !== "incomplete" &&
+      (value.terminalProtocol !== "rejected" ||
+        value.protocolRejectedAtPhase === 6))) &&
+  ["complete", "incomplete", "rejected"].includes(value.terminalProtocol) &&
+  ["none", "order", "mode", "reset"].includes(value.protocolRejectionKind) &&
+  (value.protocolRejectionKind === "none"
+    ? value.terminalProtocol !== "rejected" &&
+      value.protocolRejectedAtPhase === null &&
+      value.protocolRejectedStep === null &&
+      value.protocolRejectedModePrefix === null &&
+      value.protocolRejectedModeValue === null
+    : value.terminalProtocol === "rejected" &&
+      Number.isInteger(value.protocolRejectedAtPhase) &&
+      value.protocolRejectedAtPhase >= 0 &&
+      value.protocolRejectedAtPhase <= 6 &&
+      (value.protocolRejectionKind === "order"
+        ? Number.isInteger(value.protocolRejectedStep) &&
+          value.protocolRejectedStep >= 1 &&
+          value.protocolRejectedStep <= 6 &&
+          value.protocolRejectedStep !== value.protocolRejectedAtPhase + 1 &&
+          value.protocolRejectedModePrefix === null &&
+          value.protocolRejectedModeValue === null
+        : value.protocolRejectionKind === "mode"
+          ? value.protocolRejectedStep === null &&
+            ["greater", "less"].includes(value.protocolRejectedModePrefix) &&
+            Number.isInteger(value.protocolRejectedModeValue) &&
+            value.protocolRejectedModeValue >= 0 &&
+            value.protocolRejectedModeValue <= 31 &&
+            !(
+              value.protocolRejectedModePrefix === "greater" &&
+              value.protocolRejectedModeValue === 7
+            )
+          : value.protocolRejectedStep === null &&
+            value.protocolRejectedModePrefix === null &&
+            value.protocolRejectedModeValue === null)) &&
+  typeof value.screenRevoked === "boolean";
+
+// eslint-disable-next-line complexity -- every category is validated before a failure-only log
+export const interactivePtyReadinessProgressDiagnostic = (receipt) => {
+  const snapshot = receipt?.finalSnapshot;
+  const challenged = receipt?.challengedReadinessProgress;
+  const checkpoint = receipt?.checkpointProgressDiagnostic;
+  if (
+    !Number.isSafeInteger(receipt?.outputBytes) ||
+    receipt.outputBytes < 0 ||
+    typeof receipt?.readinessObserved !== "boolean" ||
+    !Number.isSafeInteger(snapshot?.printableCellCount) ||
+    snapshot.printableCellCount < 0 ||
+    !Number.isSafeInteger(snapshot?.nonEmptyLineCount) ||
+    snapshot.nonEmptyLineCount < 0 ||
+    typeof snapshot?.sawCursorPositionQuery !== "boolean" ||
+    (challenged !== undefined &&
+      !closedChallengedReadinessProgress(challenged)) ||
+    (checkpoint !== undefined &&
+      ![
+        "not-requested",
+        "no-live-readiness",
+        "terminal-order-rejected",
+        "terminal-reply-unsettled",
+        "protocol-not-ready",
+        "deadline",
+        "ready-gate-other",
+        "ready-gate-open",
+        "topology-root-missing",
+        "topology-nonroot-missing",
+        "topology-identity-conflict",
+        "publication-unsettled",
+        "advanced",
+      ].includes(checkpoint)) ||
+    ![
+      "active",
+      "ready",
+      "completed",
+      "credential-prompt",
+      "malformed-control",
+      "output-limit",
+    ].includes(snapshot?.semanticState)
+  )
+    return undefined;
+  const protocolRejection =
+    challenged?.protocolRejectionKind === "order"
+      ? `order-${challenged.protocolRejectedAtPhase}-${challenged.protocolRejectedStep}`
+      : challenged?.protocolRejectionKind === "mode"
+        ? `mode-${challenged.protocolRejectedAtPhase}-${challenged.protocolRejectedModePrefix}-${challenged.protocolRejectedModeValue}`
+        : challenged?.protocolRejectionKind === "reset"
+          ? `reset-${challenged.protocolRejectedAtPhase}`
+          : "none";
+  return `integration.isolation.pty-readiness-progress:output-${receipt.outputBytes === 0 ? "absent" : "present"}:printable-${snapshot.printableCellCount === 0 ? "absent" : "present"}:lines-${snapshot.nonEmptyLineCount === 0 ? "absent" : "present"}:cursor-query-${snapshot.sawCursorPositionQuery ? "observed" : "absent"}:readiness-${receipt.readinessObserved ? "observed" : "absent"}:semantic-${snapshot.semanticState}${challenged === undefined ? "" : `:marker-${challenged.marker ? "observed" : "absent"}:frame-${challenged.synchronizedFrame ? "observed" : "absent"}:glyph-${challenged.styledGlyph ? "observed" : "absent"}:prompt-${challenged.requiredText ? "observed" : "absent"}:protocol-${challenged.terminalProtocol}:protocol-rejection-${protocolRejection}:ever-ready-${challenged.readinessEverObserved ? "observed" : "absent"}:screen-${challenged.screenRevoked ? "revoked" : "intact"}`}${checkpoint === undefined ? "" : `:checkpoint-${checkpoint}`}`;
+};
+
+// This optional receipt field is not part of the envelope authority checks.
+// Never interpolate it until it has been reduced to one closed category.
+const ptyIdleDiagnosticCategories = Object.freeze([
+  "not-armed",
+  "response-not-observed",
+  "idle-frame-not-observed",
+  "idle-frame-rejected",
+  "idle-readiness-revoked",
+  "idle-ready",
+]);
+const ptyIdleAtTitleRevocationCategories = Object.freeze([
+  "idle-revoked-protocol",
+  "idle-revoked-screen",
+  "idle-revoked-unclassified",
+  "idle-revoked-combined-sync",
+  "idle-revoked-alternate-screen-enter",
+  "idle-revoked-alternate-screen-exit",
+  "idle-revoked-autowrap-enable",
+  "idle-revoked-autowrap-disable",
+  "idle-revoked-scroll-region",
+  "idle-revoked-screen-edit",
+  "idle-revoked-cursor-restore",
+  "idle-revoked-reverse-index",
+  "idle-revoked-tab-stop-set",
+  "idle-revoked-charset",
+  "idle-revoked-tab",
+  "idle-revoked-untrusted-cell",
+  "idle-revoked-rendition",
+]);
+export const interactivePtyIdleObservationDiagnostic = (receipt) => {
+  if (
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    !Array.isArray(receipt?.request?.interaction?.actions) ||
+    !receipt.request.interaction.actions.some(
+      (action) => action?.action === "wait-for-post-submission-idle-prompt",
+    )
+  )
+    return undefined;
+  const category = receipt.postSubmissionIdleDiagnostic;
+  if (
+    typeof category !== "string" ||
+    !ptyIdleDiagnosticCategories.includes(category)
+  )
+    return "integration.isolation.pty-idle-diagnostic:missing-or-invalid";
+  return `integration.isolation.pty-idle-diagnostic:${category}`;
+};
+
+export const interactivePtyIdleAtTitleDiagnostic = (receipt) => {
+  if (
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    !Array.isArray(receipt?.request?.interaction?.actions) ||
+    !receipt.request.interaction.actions.some(
+      (action) => action?.action === "wait-for-post-submission-idle-prompt",
+    )
+  )
+    return undefined;
+  const category = receipt.postSubmissionIdleAtTitleDiagnostic;
+  if (
+    category !== "title-not-observed" &&
+    (typeof category !== "string" ||
+      (!ptyIdleDiagnosticCategories.includes(category) &&
+        !ptyIdleAtTitleRevocationCategories.includes(category)))
+  )
+    return "integration.isolation.pty-idle-at-title:missing-or-invalid";
+  return `integration.isolation.pty-idle-at-title:${category}`;
+};
+
+// Challenged styled-screen readiness is a live state and can be revoked when
+// the TUI exits its alternate screen. The selected kernel's exact topology
+// checkpoint is historical evidence: it is recorded only after challenged
+// live readiness and a frozen, authenticated process-set observation.
+const codexHistoricalPtyReadinessMatches = (receipt) => {
+  if (
+    receipt?.scenarioId !== "codex-tui-trace-smoke" ||
+    receipt?.readinessObserved !== false ||
+    receipt?.request?.readiness?.kind !== "challenge-styled-text" ||
+    receipt?.request?.interaction?.trigger !== "immediate"
+  )
+    return false;
+  const requested = receipt.request.interaction.actions;
+  const observed = receipt.actions;
+  if (
+    !Array.isArray(requested) ||
+    requested.length > 32 ||
+    !interactivePtyObservedActionsMatch(observed, requested)
+  )
+    return false;
+  try {
+    if (interactivePtyReceiptFailed(receipt)) return false;
+  } catch {
+    return false;
+  }
+  let checkpointCount = 0;
+  for (let index = 0; index < requested.length; index += 1) {
+    if (requested[index]?.action !== "checkpoint-process-topology") continue;
+    checkpointCount += 1;
+    if (
+      requested[index]?.topology !== "root-with-contained-process-set" ||
+      observed[index]?.action !== "checkpoint-process-topology" ||
+      observed[index]?.topology !== "root-with-contained-process-set"
+    )
+      return false;
+  }
+  return checkpointCount === 1;
+};
+
+export const interactivePtyArtifactReadinessMatches = (
+  receipt,
+  failed = false,
+) =>
+  receipt?.readinessObserved === true ||
+  (failed &&
+    receipt?.readinessObserved === false &&
+    interactivePtyReceiptFailed(receipt)) ||
+  (!failed && codexHistoricalPtyReadinessMatches(receipt));
+
+// Failure-only, content-free categories. Never emit a receipt, action, or
+// terminal byte while diagnosing a readiness rejection in hosted replay.
+export const interactivePtyReadinessRejectionDiagnostic = (
+  receipt,
+  failed = false,
+) => {
+  const readiness =
+    receipt?.readinessObserved === true
+      ? "true"
+      : receipt?.readinessObserved === false
+        ? "false"
+        : "invalid";
+  const trigger =
+    receipt?.request?.interaction?.trigger === "semantic-ready"
+      ? "semantic-ready"
+      : receipt?.request?.interaction?.trigger === "immediate"
+        ? "immediate"
+        : "invalid";
+  let terminal = "invalid";
+  if (
+    typeof receipt?.outcome === "string" &&
+    typeof receipt?.finalSnapshot?.semanticState === "string"
+  ) {
+    try {
+      terminal = interactivePtyReceiptFailed(receipt) ? "failed" : "completed";
+    } catch {
+      // A malformed receipt is diagnostic evidence, never a success authority.
+    }
+  }
+  return `entry-${failed ? "failed" : "normal"}:readiness-${readiness}:terminal-${terminal}:trigger-${trigger}`;
+};
+
+const interactivePtyArtifactFields = Object.freeze([
+  "process-fingerprint",
+  "input-bytes",
+  "input-digest",
+  "readiness",
+  "interpreter",
+  "script-digest",
+]);
+
+export const interactivePtyArtifactRejectionCode = (predicates) => {
+  for (const field of interactivePtyArtifactFields)
+    if (predicates?.[field]?.() !== true) return field;
+  return null;
+};
+
+// Failure-only diagnostics: never include receipt fields or terminal output.
+export const interactivePtyReceiptRejectionCode = (
+  receipt,
+  checks,
+  failed = false,
+) => {
+  for (const key of [
+    "envelope",
+    "process",
+    "geometry",
+    "artifact",
+    "fingerprint",
+  ])
+    if (checks?.[key] !== true) return key;
+  try {
+    if (failed)
+      return interactivePtyReceiptFailed(receipt) ? null : "terminal-state";
+    return receipt?.returnedAtMs <=
+      receipt?.request?.process?.monotonicShutdownDeadlineMs &&
+      receipt?.finalSnapshot?.semanticState === "completed"
+      ? null
+      : "terminal-state";
+  } catch {
+    return "terminal-state";
+  }
 };
 const plainRecord = (value) =>
   typeof value === "object" &&
@@ -14,62 +720,427 @@ const exactKeys = (value, expected) =>
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 export const installedPtyFailurePredicates = Object.freeze({
-  "candidate-inventory": Object.freeze(["candidate-rejected"]),
-  "immutable-candidate": Object.freeze(["authority-rejected"]),
-  "installed-cli": Object.freeze([
-    "bin-authority",
-    "cli-authority",
-    "cli-boundary",
-    "driver-input",
-    "execution-rejected",
-    "interpreter-authority",
-    "package-authority",
-    "package-manifest",
+  "pty-receipt": Object.freeze([
+    "cleanup",
+    "completion-state",
+    "eof-action",
+    "exit-code",
+    "fixture-result",
+    "process-join",
     "receipt-rejected",
+    "residual-process",
+    "signal",
+    "terminal-input-join",
+    "terminal-output-join",
+    "transport-close",
   ]),
-  "pty-receipt": Object.freeze(["receipt-rejected"]),
-  "runner-bootstrap": Object.freeze(["runner-rejected"]),
+  "pty-execution": ptyExecutionFailurePredicates,
 });
-const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];
 
-export const compileInstalledPtyFailureReceipt = (value) => {
-  if (
-    !exactKeys(value, installedPtyFailureKeys) ||
-    value.receiptVersion !== 1 ||
-    !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
-    !installedPtyFailurePredicates[value.phase].includes(value.predicate)
-  )
-    return fail();
-  const record = Object.freeze({
-    receiptVersion: value.receiptVersion,
-    phase: value.phase,
-    predicate: value.predicate,
-  });
-  return Object.freeze({
-    record,
-    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
-  });
+const interactivePostTraceFailurePredicates = Object.freeze(
+  ptyExecutionFailurePredicates.filter(
+    (value) =>
+      value === "integration.fixture.codex-verify-adapter-observation" ||
+      value.startsWith("integration.fixture.codex-verify-oracle-") ||
+      value.startsWith("integration.fixture.codex-verify-uninstall-"),
+  ),
+);
+const interactiveFixtureFailurePredicates = Object.freeze(
+  ptyExecutionFailurePredicates.filter(
+    (value) =>
+      value.startsWith("integration.fixture.codex-") &&
+      value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
+      value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
+      !value.startsWith("integration.fixture.codex-candidate-config-") &&
+      !value.startsWith("integration.fixture.codex-model-gate-arm-") &&
+      !value.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+      !interactivePostTraceFailurePredicates.includes(value),
+  ),
+);
+const interactiveFailureExitCodeBase = 64;
+const interactivePostTraceExitCodeBase = 160;
+const candidateConfigExitCodeBase = 150;
+const candidateConfigStages = Object.freeze([
+  "render",
+  "create",
+  "open",
+  "prove",
+  "closed-marker",
+  "publish",
+]);
+
+const codexJoinDeadlineDiagnosticStates = Object.freeze([
+  "log-unavailable",
+  "hook-log-invalid",
+  "stop-unseen",
+  "stop-active",
+  "stop-completed",
+  "session-end-active",
+  "session-end-completed",
+]);
+const codexJoinDeadlineExitCodeBase = 32;
+
+export const encodeCodexJoinDeadlineExitCode = (state) => {
+  const index = codexJoinDeadlineDiagnosticStates.indexOf(state);
+  return index < 0 ? undefined : codexJoinDeadlineExitCodeBase + index;
 };
 
-export const decodeInstalledPtyFailureReceipt = (output) => {
-  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
-    return fail();
-  const prefix = "AGENTSCOPE_PTY_FAILURE=";
-  if (output.includes("AGENTSCOPE_PTY_RECEIPT=")) return fail();
-  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
-  if (lines.length !== 1 || lines[0].length > 1_024) return fail();
+export const decodeCodexJoinDeadlineExitCode = (exitCode) => {
+  if (!Number.isSafeInteger(exitCode)) return undefined;
+  const state =
+    codexJoinDeadlineDiagnosticStates[exitCode - codexJoinDeadlineExitCodeBase];
+  return state === undefined
+    ? undefined
+    : `integration.fixture.codex-tui-join-deadline-${state}`;
+};
+
+// Research-only: candidate-writable fixture text cannot become a receipt claim.
+export const extractUntrustedCodexJoinHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const matches = [
+    ...output.matchAll(
+      /^integration\.runner\.untrusted-join-hint:([a-z-]{1,32})$/gmu,
+    ),
+  ];
+  const state = matches.length === 1 ? matches[0]?.[1] : undefined;
+  return encodeCodexJoinDeadlineExitCode(state) === undefined
+    ? undefined
+    : state;
+};
+
+// Research-only, content-free, and never a receipt or admission predicate.
+export const extractUntrustedCodexTraceHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-trace-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-trace-hint:([a-z0-9-]{1,32})$/u,
+  )?.[1];
+  return hint !== undefined && untrustedCodexTraceHintPattern.test(hint)
+    ? hint
+    : undefined;
+};
+
+// Research-only progress, never a receipt, checkpoint, or admission predicate.
+export const extractUntrustedCodexConfigHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(
+      /^integration\.runner\.untrusted-config-hint:[^\n]*$/gmu,
+    ),
+  ];
+  if (lines.length !== 1) return undefined;
+  const stage = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-config-hint:(closed-marker|render|create|open|prove|publish)$/u,
+  )?.[1];
+  return stage;
+};
+
+export const codexGateResearchHints = Object.freeze([
+  "arm-deadline",
+  "arm-clock",
+  "arm-phase",
+  "arm-hook-log",
+  "arm-hook-lifecycle",
+  "arm-hook-mediation",
+  "arm-session-missing",
+  "arm-control",
+  "arm-child",
+  "arm-filesystem",
+  "arm-other",
+  "seal-deadline",
+  "seal-request",
+  "response-shape",
+  "receipt-shape",
+  "cutoff-unsettled",
+  "state",
+  "connection-count",
+  "connection-shape",
+  "admission",
+  "connection-open",
+  "generation",
+  "parser-outcome",
+  "parser-open",
+  "raw-rejected",
+  "transport-bytes",
+  "ledger-count",
+  "parser-failures",
+  "mutation-generation",
+  "identity",
+  "ledger-shape",
+  "other",
+]);
+
+// Only an already-failing fixture may publish this fixed exception category.
+// No message, code, path, or timing value crosses the scenario boundary.
+export const codexArmPendingResearchHint = (error) => {
   try {
-    const encoded = lines[0].slice(prefix.length);
-    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
-    const bytes = Buffer.from(encoded, "base64url");
-    if (bytes.toString("base64url") !== encoded) return fail();
-    const serialized = bytes.toString("utf8");
-    const compiled = compileInstalledPtyFailureReceipt(JSON.parse(serialized));
-    if (JSON.stringify(compiled.record) !== serialized) return fail();
-    return compiled.record;
+    const message = error instanceof Error ? error.message : undefined;
+    const byMessage = {
+      "integration.codex.deadline": "arm-deadline",
+      "integration.codex.clock": "arm-clock",
+      "integration.codex.failure-phase": "arm-phase",
+      "integration.codex.hook-log": "arm-hook-log",
+      "integration.codex.hook-lifecycle": "arm-hook-lifecycle",
+      "integration.codex.hook-mediation": "arm-hook-mediation",
+      "integration.codex.hook-session-start-missing": "arm-session-missing",
+      "integration.codex.model-gate": "arm-control",
+      "integration.codex.model-gate-deadline": "arm-deadline",
+      "integration.codex.child": "arm-child",
+      "integration.codex.child-spawn": "arm-child",
+      "integration.codex.tui-child-rejected": "arm-child",
+      "integration.codex.tui-exit-before-arm": "arm-child",
+    };
+    if (Object.hasOwn(byMessage, message)) return byMessage[message];
+    if (
+      error instanceof Error &&
+      ["EACCES", "EEXIST", "EIO", "ENOSPC", "EROFS"].includes(error.code)
+    )
+      return "arm-filesystem";
   } catch {
-    return fail();
+    // An operationally hostile thrown value cannot suppress terminal evidence.
   }
+  return "arm-other";
+};
+
+// This pure classifier is called only after the production gate has rejected
+// a receipt. Its output is a fixed research category, never admission proof.
+export const gateReceiptResearchRejection = (receipt, expected) => {
+  if (
+    !exactKeys(receipt, [
+      "challengeSha256",
+      "connectionCount",
+      "connections",
+      "cutoffUnsettled",
+      "ledgerCount",
+      "mutationGeneration",
+      "parserFailures",
+      "runId",
+      "sessionStartSpanSha256",
+      "state",
+    ])
+  )
+    return "receipt-shape";
+  if (receipt.cutoffUnsettled !== false) return "cutoff-unsettled";
+  if (receipt.state !== "draining") return "state";
+  if (receipt.connectionCount !== 1 || receipt.connections?.length !== 1)
+    return "connection-count";
+  const connection = receipt.connections[0];
+  if (
+    !exactKeys(connection, [
+      "admission",
+      "closed",
+      "eof",
+      "generation",
+      "parserOutcome",
+      "parserTransportClosed",
+      "rawForwardedBytes",
+      "rawRejectedBytes",
+      "responseBytes",
+    ])
+  )
+    return "connection-shape";
+  if (connection.admission !== "admitted") return "admission";
+  if (connection.closed !== true) return "connection-open";
+  if (connection.generation !== 1) return "generation";
+  if (connection.parserOutcome !== "accepted") return "parser-outcome";
+  if (connection.parserTransportClosed !== true) return "parser-open";
+  if (connection.rawRejectedBytes !== 0) return "raw-rejected";
+  if (
+    !Number.isSafeInteger(connection.rawForwardedBytes) ||
+    connection.rawForwardedBytes <= 0 ||
+    !Number.isSafeInteger(connection.responseBytes) ||
+    connection.responseBytes <= 0
+  )
+    return "transport-bytes";
+  if (receipt.ledgerCount !== 1) return "ledger-count";
+  if (receipt.parserFailures !== 0) return "parser-failures";
+  if (
+    !Number.isSafeInteger(receipt.mutationGeneration) ||
+    receipt.mutationGeneration < 1
+  )
+    return "mutation-generation";
+  if (
+    receipt.challengeSha256 !== expected.challengeSha256 ||
+    receipt.runId !== expected.runId ||
+    receipt.sessionStartSpanSha256 !== expected.sessionStartSpanSha256
+  )
+    return "identity";
+  return "other";
+};
+
+// Candidate output is an untrusted research hint, never terminal authority.
+export const extractUntrustedCodexGateHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-gate-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-gate-hint:([a-z-]{1,32})$/u,
+  )?.[1];
+  return codexGateResearchHints.includes(hint) ? hint : undefined;
+};
+
+// Failure-only transport comparison. Neither number authorizes a receipt.
+export const codexFailureExitPair = (
+  fixtureExit,
+  containerExit,
+  scenarioId,
+) => {
+  if (
+    scenarioId !== "codex-tui-trace-smoke" ||
+    !Number.isSafeInteger(containerExit) ||
+    containerExit < 1 ||
+    containerExit > 255
+  )
+    return undefined;
+  const fixture =
+    Number.isSafeInteger(fixtureExit) && fixtureExit >= 0 && fixtureExit <= 255
+      ? String(fixtureExit)
+      : "none";
+  return `${fixture}:${containerExit}`;
+};
+
+// Strictly research-only failure evidence; never a receipt or admission input.
+// Preserve exact version-1 retired evidence while version 2 adds one closed hint.
+export const validCodexResearchDiagnostic = (value) =>
+  value === null ||
+  (typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    (value.diagnosticVersion === 1 || value.diagnosticVersion === 2) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify(
+        [
+          "diagnosticVersion",
+          "exitPair",
+          "untrustedConfigHint",
+          ...(value.diagnosticVersion === 2 ? ["untrustedGateHint"] : []),
+        ].sort(),
+      ) &&
+    (value.untrustedConfigHint === null ||
+      [
+        "closed-marker",
+        "render",
+        "create",
+        "open",
+        "prove",
+        "publish",
+      ].includes(value.untrustedConfigHint)) &&
+    (value.diagnosticVersion === 1 ||
+      value.untrustedGateHint === null ||
+      codexGateResearchHints.includes(value.untrustedGateHint)) &&
+    (value.exitPair === null ||
+      /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
+        value.exitPair,
+      )));
+
+export const selectInteractiveExecutionFailurePredicate = (
+  candidate,
+  retainedDiagnostic,
+  scenarioId,
+) => {
+  const diagnostic = retainedDiagnostic ?? candidate;
+  if (typeof diagnostic !== "string") return "child-failure";
+  if (
+    diagnostic.startsWith("integration.fixture.codex-tui-join-deadline-") &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
+  if (
+    diagnostic.startsWith("integration.fixture.codex-candidate-config-") &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
+  if (
+    interactivePostTraceFailurePredicates.includes(diagnostic) &&
+    (scenarioId !== "codex-tui-trace-smoke" ||
+      retainedDiagnostic !== diagnostic)
+  )
+    return "child-failure";
+  return ptyExecutionFailurePredicates.includes(diagnostic)
+    ? diagnostic
+    : "child-failure";
+};
+
+export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (scenarioId === "codex-tui-trace-smoke") {
+    if (diagnostic === "integration.fixture.codex-tui-exit-before-checkpoint")
+      return 139;
+    if (diagnostic === "integration.fixture.codex-tui-checkpoint-not-witnessed")
+      return 140;
+    const candidateConfigIndex = candidateConfigStages.findIndex(
+      (stage) =>
+        diagnostic === `integration.fixture.codex-candidate-config-${stage}`,
+    );
+    if (candidateConfigIndex >= 0)
+      return candidateConfigExitCodeBase + candidateConfigIndex;
+  }
+  if (
+    scenarioId === "codex-tui-trace-smoke" &&
+    typeof diagnostic === "string"
+  ) {
+    const prefix = "integration.fixture.codex-tui-join-deadline-";
+    if (diagnostic.startsWith(prefix))
+      return encodeCodexJoinDeadlineExitCode(diagnostic.slice(prefix.length));
+  }
+  const postTraceIndex =
+    interactivePostTraceFailurePredicates.indexOf(diagnostic);
+  if (postTraceIndex >= 0)
+    return scenarioId === "codex-tui-trace-smoke"
+      ? interactivePostTraceExitCodeBase + postTraceIndex
+      : undefined;
+  const index = interactiveFixtureFailurePredicates.indexOf(diagnostic);
+  return index < 0 ? undefined : interactiveFailureExitCodeBase + index;
+};
+
+export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
+  if (!Number.isSafeInteger(exitCode)) return undefined;
+  if (scenarioId === "codex-tui-trace-smoke") {
+    if (exitCode === 139)
+      return "integration.fixture.codex-tui-exit-before-checkpoint";
+    if (exitCode === 140)
+      return "integration.fixture.codex-tui-checkpoint-not-witnessed";
+    const candidateConfigStage =
+      candidateConfigStages[exitCode - candidateConfigExitCodeBase];
+    if (candidateConfigStage !== undefined)
+      return `integration.fixture.codex-candidate-config-${candidateConfigStage}`;
+    const joinDeadlineDiagnostic = decodeCodexJoinDeadlineExitCode(exitCode);
+    if (joinDeadlineDiagnostic !== undefined) return joinDeadlineDiagnostic;
+    const postTraceDiagnostic =
+      interactivePostTraceFailurePredicates[
+        exitCode - interactivePostTraceExitCodeBase
+      ];
+    if (postTraceDiagnostic !== undefined) return postTraceDiagnostic;
+  }
+  return interactiveFixtureFailurePredicates[
+    exitCode - interactiveFailureExitCodeBase
+  ];
+};
+
+export const extractInteractiveChildDiagnostic = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const matches = [
+    ...output.matchAll(
+      /^integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})$/gmu,
+    ),
+  ];
+  if (matches.length !== 1) return undefined;
+  const diagnostic = matches[0]?.[1];
+  return diagnostic !== undefined &&
+    ptyExecutionFailurePredicates.includes(diagnostic)
+    ? diagnostic
+    : undefined;
 };
 
 export const decodeInteractivePtyReceipt = (output) => {
@@ -100,6 +1171,7 @@ export const selectedRuntimeFiles = Object.freeze([
   "testkit/headless-supervisor.js",
   "testkit/internal/headless-supervisor-backend.js",
   "testkit/pty-terminal-contract.js",
+  "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
   "testkit/pty-runtime/node127-linux-x64-musl/pty.node",
 ]);
 
@@ -279,8 +1351,25 @@ export const decodeImmutableCandidateHandoff = (encoded, expected) => {
   return Object.freeze(record);
 };
 
+const selectedControlMountMatches = (container, controlVolume, handoff) => {
+  if (!Array.isArray(container?.Mounts)) return false;
+  if (handoff.scenarioId !== "codex-tui-trace-smoke")
+    return container.Mounts.length === 0 && controlVolume === undefined;
+  const mount = container.Mounts[0];
+  return (
+    controlVolume?.name === `agentscope-int-${handoff.runId}-control` &&
+    typeof controlVolume.mountpoint === "string" &&
+    container.Mounts.length === 1 &&
+    mount?.Type === "volume" &&
+    mount.Name === controlVolume.name &&
+    mount.Source === controlVolume.mountpoint &&
+    mount.Destination === "/control" &&
+    mount.RW === true
+  );
+};
 export const validateImmutableScenarioContainer = ({
   container,
+  controlVolume,
   handoff,
   image,
   networkName,
@@ -293,7 +1382,8 @@ export const validateImmutableScenarioContainer = ({
     image.Id !== handoff.imageId ||
     sha256(JSON.stringify(image.Config)) !== handoff.imageConfigSha256 ||
     container.Image !== handoff.imageId ||
-    container.Config?.User !== "1000:1000" ||
+    container.Config?.User !==
+      (handoff.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") ||
     !Array.isArray(container.Config?.Env) ||
     !container.Config.Env.includes(
       `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${handoff.encoded}`,
@@ -301,197 +1391,23 @@ export const validateImmutableScenarioContainer = ({
     container.HostConfig?.ReadonlyRootfs !== true ||
     container.HostConfig?.NetworkMode !== networkName ||
     JSON.stringify(container.HostConfig?.CapDrop) !== JSON.stringify(["ALL"]) ||
+    JSON.stringify(container.HostConfig?.CapAdd ?? []) !==
+      JSON.stringify(
+        handoff.scenarioId === "codex-tui-trace-smoke"
+          ? [
+              "CAP_CHOWN",
+              "CAP_DAC_OVERRIDE",
+              "CAP_KILL",
+              "CAP_SETGID",
+              "CAP_SETUID",
+            ]
+          : [],
+      ) ||
     !Array.isArray(container.HostConfig?.SecurityOpt) ||
     !container.HostConfig.SecurityOpt.includes("no-new-privileges") ||
-    !Array.isArray(container.Mounts) ||
-    container.Mounts.length !== 0 ||
+    !selectedControlMountMatches(container, controlVolume, handoff) ||
     !plainRecord(container.HostConfig?.Tmpfs) ||
     JSON.stringify(container.HostConfig.Tmpfs) !== JSON.stringify(tmpfs)
-  )
-    return fail();
-  return true;
-};
-
-const ptyReceiptKeys = [
-  "candidateBundleIdentity",
-  "candidateInventorySha256",
-  "caseId",
-  "cleanup",
-  "completionKind",
-  "eofByteWritten",
-  "initialGeometry",
-  "isTTY",
-  "outcome",
-  "outputBytes",
-  "outputSha256",
-  "processJoined",
-  "receiptVersion",
-  "residualProcessCount",
-  "runId",
-  "scenarioId",
-  "semanticState",
-  "terminalInputJoined",
-  "terminalOutputJoined",
-  "terminalTransportClosed",
-];
-
-export const compileInstalledCliPtyReceipt = (value) => {
-  if (
-    !exactKeys(value, ptyReceiptKeys) ||
-    value.receiptVersion !== 1 ||
-    !/^[a-f0-9]{16}$/u.test(value.runId) ||
-    !/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(value.scenarioId) ||
-    !/^sha256-[a-f0-9]{64}$/u.test(value.candidateBundleIdentity) ||
-    !/^[a-f0-9]{64}$/u.test(value.candidateInventorySha256) ||
-    value.caseId !== "installed-cli-version" ||
-    value.completionKind !== "exact-output" ||
-    value.outcome !== "completed" ||
-    value.semanticState !== "active" ||
-    value.cleanup !== "clean" ||
-    value.isTTY !== true ||
-    value.eofByteWritten !== true ||
-    value.processJoined !== true ||
-    value.terminalInputJoined !== true ||
-    value.terminalOutputJoined !== true ||
-    value.terminalTransportClosed !== true ||
-    value.residualProcessCount !== 0 ||
-    !exactKeys(value.initialGeometry, ["columns", "rows"]) ||
-    value.initialGeometry.columns !== 40 ||
-    value.initialGeometry.rows !== 12 ||
-    !Number.isSafeInteger(value.outputBytes) ||
-    value.outputBytes < 1 ||
-    value.outputBytes > 4_096 ||
-    !/^[a-f0-9]{64}$/u.test(value.outputSha256)
-  )
-    return fail();
-  const record = Object.freeze({ ...value });
-  return Object.freeze({
-    record,
-    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
-  });
-};
-
-const selectedPtyExecutionReceiptKeys = [
-  "actions",
-  "cleanup",
-  "eofByte",
-  "eofByteWritten",
-  "exitCode",
-  "finalSnapshot",
-  "initialGeometry",
-  "inputBytes",
-  "inputBytesWritten",
-  "inputSha256",
-  "isTTY",
-  "observedCanonicalMode",
-  "observedGeometry",
-  "outcome",
-  "outputBytes",
-  "outputSha256",
-  "processJoined",
-  "processRequestFingerprint",
-  "processStartIdentity",
-  "readinessObserved",
-  "receiptVersion",
-  "requestFingerprint",
-  "residualProcessCount",
-  "runId",
-  "signal",
-  "terminalInputJoined",
-  "terminalOutputJoined",
-  "terminalTransportClosed",
-];
-
-export const compileInstalledCliPtyReceiptFromExecution = (value) => {
-  if (
-    !exactKeys(value, [
-      "candidateBundleIdentity",
-      "candidateInventorySha256",
-      "receipt",
-      "scenarioId",
-    ]) ||
-    !exactKeys(value.receipt, selectedPtyExecutionReceiptKeys) ||
-    !plainRecord(value.receipt.finalSnapshot)
-  )
-    return fail();
-  return compileInstalledCliPtyReceipt({
-    receiptVersion: 1,
-    runId: value.receipt.runId,
-    scenarioId: value.scenarioId,
-    candidateBundleIdentity: value.candidateBundleIdentity,
-    candidateInventorySha256: value.candidateInventorySha256,
-    caseId: "installed-cli-version",
-    completionKind: "exact-output",
-    outcome: value.receipt.outcome,
-    semanticState: value.receipt.finalSnapshot.semanticState,
-    cleanup: value.receipt.cleanup,
-    isTTY: value.receipt.isTTY,
-    eofByteWritten: value.receipt.eofByteWritten,
-    processJoined: value.receipt.processJoined,
-    terminalInputJoined: value.receipt.terminalInputJoined,
-    terminalOutputJoined: value.receipt.terminalOutputJoined,
-    terminalTransportClosed: value.receipt.terminalTransportClosed,
-    residualProcessCount: value.receipt.residualProcessCount,
-    initialGeometry: value.receipt.initialGeometry,
-    outputBytes: value.receipt.outputBytes,
-    outputSha256: value.receipt.outputSha256,
-  });
-};
-
-export const decodeInstalledCliPtyReceipt = (output, expected) => {
-  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
-    return fail();
-  const prefix = "AGENTSCOPE_PTY_RECEIPT=";
-  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
-  if (lines.length !== 1 || lines[0].length > 8_192) return fail();
-  let value;
-  try {
-    const encoded = lines[0].slice(prefix.length);
-    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
-    const bytes = Buffer.from(encoded, "base64url");
-    if (bytes.toString("base64url") !== encoded) return fail();
-    value = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    return fail();
-  }
-  const receipt = compileInstalledCliPtyReceipt(value).record;
-  if (
-    !exactKeys(expected, [
-      "candidateBundleIdentity",
-      "candidateInventorySha256",
-      "runId",
-      "scenarioId",
-    ]) ||
-    Object.entries(expected).some(
-      ([key, expectedValue]) => receipt[key] !== expectedValue,
-    )
-  )
-    return fail();
-  return receipt;
-};
-
-export const validateInstalledCliBoundary = (facts) => {
-  if (
-    !exactKeys(facts, [
-      "argv",
-      "binIsSymlink",
-      "binTarget",
-      "cliDigest",
-      "cliMode",
-      "cliPrefix",
-      "expectedDigest",
-    ]) ||
-    facts.binIsSymlink !== true ||
-    facts.binTarget !== "../agentscope-cli/dist/bin/agentscope.js" ||
-    facts.cliMode !== 0o755 ||
-    facts.cliPrefix !== "#!/usr/bin/env node\n" ||
-    !/^[a-f0-9]{64}$/u.test(facts.expectedDigest) ||
-    facts.cliDigest !== facts.expectedDigest ||
-    JSON.stringify(facts.argv) !==
-      JSON.stringify([
-        "/opt/agentscope/installed/node_modules/.bin/agentscope",
-        "--version",
-      ])
   )
     return fail();
   return true;

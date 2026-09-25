@@ -112,7 +112,7 @@ describe("production Codex hook composition", () => {
     );
     const requests: Array<Readonly<{ body?: Uint8Array; method: string }>> = [];
     const authority = createOwnedHookEntryAuthorityForCli({
-      durationMilliseconds: 2_000,
+      durationMilliseconds: 5_000,
       homeRoot: root,
       platform: process.platform,
       startedAt: performance.now(),

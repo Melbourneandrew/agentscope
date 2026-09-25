@@ -30,6 +30,13 @@ const expectedArtifact = Object.freeze({
   sha256: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
   tuple: "node127-linux-x64-musl",
 });
+const expectedGlibcArtifact = Object.freeze({
+  bytes: 424_976,
+  needed: Object.freeze(["libc.so.6", "ld-linux-x86-64.so.2"]),
+  path: "pty-runtime/node127-linux-x64-glibc/pty.node",
+  sha256: "18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727",
+  tuple: "node127-linux-x64-glibc",
+});
 const expectedFaultArtifact = Object.freeze({
   bytes: 648_176,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
@@ -336,8 +343,8 @@ export const verifySourceAuthority = (sourceRoot) => {
 export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    8_860,
-    "7887af4db8a33cbbb7dcb1480765a67791501794d8764197901359163cf9f09d",
+    9_852,
+    "b951e49f0859137a9ec78d12b1dba5394abf0788685fa408c7b5a30d14c76198",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -346,6 +353,13 @@ export const verifyPolicy = (root) => {
     policy.target?.tuple !== expectedArtifact.tuple ||
     policy.target?.nodeVersion !== "22.23.2" ||
     policy.target?.nodeAbi !== 127 ||
+    policy.glibcTarget?.tuple !== expectedGlibcArtifact.tuple ||
+    policy.glibcTarget?.nodeVersion !== "22.18.0" ||
+    policy.glibcTarget?.nodeAbi !== 127 ||
+    policy.glibcCanonicalImage?.manifest !==
+      "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4" ||
+    policy.glibcBuild?.gxxSha256 !==
+      "dd91977c184e327710578363ad93ebb175c3a457b6236b874fd3911b7c055c65" ||
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
@@ -425,7 +439,56 @@ const verifyManifestAuthority = (authority, policy) => {
     throw new Error("PTY runtime artifact authority is not exact.");
 };
 
-const verifyArtifactRecord = (record) => {
+const verifyGlibcManifestAuthority = (authority, policy) => {
+  if (
+    !exactKeys(authority, [
+      "assemblerSha256",
+      "buildArgumentsSha256",
+      "buildEnvironmentSha256",
+      "canonicalImageConfig",
+      "canonicalImageIndex",
+      "canonicalImageManifest",
+      "cc1plusSha256",
+      "gxxSha256",
+      "linkerSha256",
+      "nativeExports",
+      "nodeAddonApiSourceManifestSha256",
+      "nodeHeaderInventorySha256",
+      "nodePtySourceManifestSha256",
+      "patchSha256",
+      "patchedSourceSha256",
+      "policySha256",
+      "tuple",
+    ]) ||
+    authority.tuple !== expectedGlibcArtifact.tuple ||
+    authority.canonicalImageIndex !== policy.glibcCanonicalImage.index ||
+    authority.canonicalImageManifest !== policy.glibcCanonicalImage.manifest ||
+    authority.canonicalImageConfig !== policy.glibcCanonicalImage.config ||
+    authority.policySha256 !==
+      "b951e49f0859137a9ec78d12b1dba5394abf0788685fa408c7b5a30d14c76198" ||
+    authority.buildArgumentsSha256 !==
+      "f1737d49aeacda8fa9e082ff71eedb5c8fbd4f93ab378b7c4850e377f9a5b082" ||
+    authority.buildEnvironmentSha256 !==
+      sha256(JSON.stringify(policy.build.environment)) ||
+    authority.nodeHeaderInventorySha256 !==
+      policy.glibcCanonicalImage.nodeHeaderInventorySha256 ||
+    authority.gxxSha256 !== policy.glibcBuild.gxxSha256 ||
+    authority.cc1plusSha256 !== policy.glibcBuild.cc1plusSha256 ||
+    authority.assemblerSha256 !== policy.glibcBuild.assemblerSha256 ||
+    authority.linkerSha256 !== policy.glibcBuild.linkerSha256 ||
+    authority.nodePtySourceManifestSha256 !==
+      "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4" ||
+    authority.patchSha256 !== policy.build.patch.sha256 ||
+    authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
+    JSON.stringify(authority.nativeExports) !==
+      JSON.stringify(policy.build.nativeExports) ||
+    authority.nodeAddonApiSourceManifestSha256 !==
+      "aff0d41e4e5c77313d51cf6cfd070d43798520b4a8b7734b4acc600ded9e9b6e"
+  )
+    throw new Error("PTY glibc runtime artifact authority is not exact.");
+};
+
+const verifyArtifactRecord = (record, expected = expectedArtifact) => {
   if (
     !exactKeys(record, [
       "bytes",
@@ -437,12 +500,12 @@ const verifyArtifactRecord = (record) => {
       "sha256",
       "tuple",
     ]) ||
-    record.tuple !== expectedArtifact.tuple ||
-    record.path !== expectedArtifact.path ||
-    record.bytes !== expectedArtifact.bytes ||
+    record.tuple !== expected.tuple ||
+    record.path !== expected.path ||
+    record.bytes !== expected.bytes ||
     record.mode !== "0644" ||
     record.format !== "elf64-x86-64" ||
-    record.sha256 !== expectedArtifact.sha256 ||
+    record.sha256 !== expected.sha256 ||
     !exactKeys(record.reproducibility, [
       "addonExecuted",
       "byteIdentical",
@@ -451,11 +514,11 @@ const verifyArtifactRecord = (record) => {
       "secondSha256",
     ]) ||
     record.reproducibility.independentCleanRoots !== 2 ||
-    record.reproducibility.firstSha256 !== expectedArtifact.sha256 ||
-    record.reproducibility.secondSha256 !== expectedArtifact.sha256 ||
+    record.reproducibility.firstSha256 !== expected.sha256 ||
+    record.reproducibility.secondSha256 !== expected.sha256 ||
     record.reproducibility.byteIdentical !== true ||
     record.reproducibility.addonExecuted !== false ||
-    JSON.stringify(record.needed) !== JSON.stringify(expectedArtifact.needed)
+    JSON.stringify(record.needed) !== JSON.stringify(expected.needed)
   )
     throw new Error("PTY runtime artifact record is not exact.");
 };
@@ -496,8 +559,8 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    2_702,
-    "d7ab6f5c9227143ea43574a4f8d2122c087190a8164a7a8d69f690688613421d",
+    5_057,
+    "c260e5a0edd26158fda75319dfead05970408965a32f5da43a3765a8cca48a2c",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
@@ -506,19 +569,23 @@ export const verifyPtyRuntime = ({
     !exactKeys(manifest, [
       "artifacts",
       "authority",
+      "glibcAuthority",
       "schemaVersion",
       "testArtifacts",
     ]) ||
     manifest.schemaVersion !== 1 ||
     !Array.isArray(manifest.artifacts) ||
-    manifest.artifacts.length !== 1 ||
+    manifest.artifacts.length !== 2 ||
     !Array.isArray(manifest.testArtifacts) ||
     manifest.testArtifacts.length !== 1
   )
     throw new Error("PTY runtime artifact manifest is not closed.");
   verifyManifestAuthority(manifest.authority, policy);
+  verifyGlibcManifestAuthority(manifest.glibcAuthority, policy);
   const record = manifest.artifacts[0];
-  verifyArtifactRecord(record);
+  const glibcRecord = manifest.artifacts[1];
+  verifyArtifactRecord(record, expectedArtifact);
+  verifyArtifactRecord(glibcRecord, expectedGlibcArtifact);
   const faultRecord = manifest.testArtifacts[0];
   verifyFaultArtifactRecord(faultRecord);
 
@@ -535,6 +602,23 @@ export const verifyPtyRuntime = ({
   const needed = inspectElf(bytes);
   if (JSON.stringify(needed) !== JSON.stringify(record.needed))
     throw new Error("PTY runtime dependency closure is not exact.");
+
+  const glibcSource = resolve(root, glibcRecord.path);
+  const glibcBytes = readBoundedRegular(
+    glibcSource,
+    maximumArtifactBytes,
+    0o644,
+  );
+  if (
+    glibcBytes.length !== glibcRecord.bytes ||
+    sha256(glibcBytes) !== glibcRecord.sha256 ||
+    glibcBytes.includes(Buffer.from("AGENTSCOPE_PTY_TEST_FAULTS")) ||
+    glibcBytes.includes(Buffer.from("testFault")) ||
+    !glibcBytes.includes(Buffer.from("reapAdoptedZombie")) ||
+    JSON.stringify(inspectElf(glibcBytes)) !==
+      JSON.stringify(glibcRecord.needed)
+  )
+    throw new Error("PTY glibc runtime artifact bytes are not exact.");
 
   const faultSource = resolve(root, faultRecord.path);
   const faultBytes = readBoundedRegular(
@@ -565,9 +649,13 @@ export const verifyPtyRuntime = ({
   ]);
 
   verifyClosedSourceDirectory(resolve(root, "pty-runtime"), [
+    "node127-linux-x64-glibc",
     "node127-linux-x64-musl",
   ]);
   verifyClosedSourceDirectory(resolve(root, dirname(record.path)), [
+    "pty.node",
+  ]);
+  verifyClosedSourceDirectory(resolve(root, dirname(glibcRecord.path)), [
     "pty.node",
   ]);
 
@@ -576,6 +664,10 @@ export const verifyPtyRuntime = ({
     mkdirSync(dirname(destination), { mode: 0o755, recursive: true });
     copyFileSync(source, destination, constants.COPYFILE_EXCL);
     chmodSync(destination, 0o644);
+    const glibcDestination = resolve(root, "dist", glibcRecord.path);
+    mkdirSync(dirname(glibcDestination), { mode: 0o755, recursive: true });
+    copyFileSync(glibcSource, glibcDestination, constants.COPYFILE_EXCL);
+    chmodSync(glibcDestination, 0o644);
   }
   return Object.freeze({
     ...record,

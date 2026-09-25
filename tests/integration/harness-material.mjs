@@ -9,6 +9,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   compileNpmAttestationAudit,
+  compileNpmVerifierPolicy,
   compileVerifiedNpmHarnessMaterial,
   compileVerifiedSignedManifestHarnessMaterial,
 } from "./dist/harness-material.js";
@@ -65,6 +67,13 @@ const exactDirectory = (path) => {
 const sameDirectory = (identity) => {
   const current = exactDirectory(identity.path);
   if (current.dev !== identity.dev || current.ino !== identity.ino) fail();
+};
+
+export const retireEmptyAuthenticatedHarnessMaterialDirectory = (identity) => {
+  sameDirectory(identity);
+  // rmdir refuses unexpected children; rm on a directory fails with EISDIR
+  // on Linux even when the authenticated verifier root is empty.
+  rmdirSync(identity.path);
 };
 
 const commandSourceAuthority = (() => {
@@ -202,15 +211,6 @@ const download = (descriptor, signal, deadline) =>
     requestHandle.end();
   });
 
-const canonical = (value) => {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null)
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`)
-      .join(",")}}`;
-  return JSON.stringify(value);
-};
 const verifierImage = (client, image) => {
   const matches = client?.evidence?.images?.filter(
     (candidate) => candidate.image === image,
@@ -257,9 +257,9 @@ const runMaterialVerification = async ({
     .update(`${runId}:${operation}:${commandSourceAuthority.sha256}`)
     .digest("hex")
     .slice(0, 24)}`;
-  const retirementDeadline = deadline - materialSettlementReserveMilliseconds;
+  const retirementBoundary = deadline - materialSettlementReserveMilliseconds;
   const buildDeadline =
-    retirementDeadline - materialRetirementReserveMilliseconds;
+    retirementBoundary - materialRetirementReserveMilliseconds;
   const imageId = await buildPreparedDockerImage(client, {
     buildArguments: { BASE_IMAGE: material.verifierImage },
     context,
@@ -274,6 +274,10 @@ const runMaterialVerification = async ({
     signal,
     tag,
   });
+  const retirementDeadline = Math.min(
+    retirementBoundary,
+    performance.now() + materialRetirementReserveMilliseconds,
+  );
   await retirePreparedDockerImage(client, {
     deadline: retirementDeadline,
     imageId,
@@ -292,7 +296,6 @@ const runMaterialVerification = async ({
 
 // One acquisition authority must span download, verification, publication,
 // and identity-checked cleanup without delegating a restartable sub-phase.
-// eslint-disable-next-line max-lines-per-function
 export const prepareNpmHarnessMaterial = async (input) => {
   let owned;
   try {
@@ -359,20 +362,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
       );
     }
     const audit = compileNpmAttestationAudit(material, attestations);
-    const policy = {
-      packages: material.packages.map((descriptor) => {
-        const verified = audit.verified.find(
-          (entry) => entry.name === descriptor.packageName,
-        );
-        return {
-          ...descriptor,
-          attestationBundleDigest: createHash("sha256")
-            .update(canonical(verified.attestationBundles))
-            .digest("hex"),
-        };
-      }),
-      registry: material.registry,
-    };
+    const policy = compileNpmVerifierPolicy(material, audit);
     const verifier = await runMaterialVerification({
       client: dockerClient,
       deadline,
@@ -591,8 +581,7 @@ export const stagePreparedNpmHarnessMaterial = (token, target) => {
 export const retirePreparedNpmHarnessMaterial = (token) => {
   const value = prepared(token);
   for (const bytes of value.tarballs.values()) bytes.fill(0);
-  sameDirectory(value.owned);
-  rmSync(value.owned.path);
+  retireEmptyAuthenticatedHarnessMaterialDirectory(value.owned);
   preparedMaterials.delete(token);
 };
 
@@ -627,7 +616,6 @@ export const retirePreparedHarnessMaterial = (token) => {
     return;
   }
   value.binary.fill(0);
-  sameDirectory(value.owned);
-  rmSync(value.owned.path);
+  retireEmptyAuthenticatedHarnessMaterialDirectory(value.owned);
   preparedMaterials.delete(token);
 };

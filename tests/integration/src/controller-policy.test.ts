@@ -15,7 +15,25 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
+import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
+
+const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
+  const reporterSettlement = scenario.indexOf(
+    "const reporterSettled = localSqliteReporterSettled(",
+  );
+  const settlementGate = scenario.indexOf(
+    'hookCommandObservation?.outcome !== "completed" ||',
+    reporterSettlement,
+  );
+  const traceSearchAdmission = scenario.indexOf(
+    "const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({",
+    settlementGate,
+  );
+  expect(reporterSettlement).toBeGreaterThan(-1);
+  expect(settlementGate).toBeGreaterThan(reporterSettlement);
+  expect(traceSearchAdmission).toBeGreaterThan(settlementGate);
+};
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const manifest = (path: string) =>
@@ -90,6 +108,10 @@ describe("integration controller policy", () => {
     expect(material).not.toContain("runSupervisedProcess");
     expect(command).toContain('root !== "/verify"');
     expect(command).toContain('NPM_CONFIG_IGNORE_SCRIPTS: "true"');
+    expect(command).toContain(
+      "npmVersion !== `${policy.verifierNpmVersion}\\n`",
+    );
+    expect(command).toContain("verified.attestationBundles");
     expect(command).toContain('"--no-auto-key-retrieve"');
   });
 
@@ -135,6 +157,542 @@ describe("integration controller policy", () => {
         "integration.outer-host.capability-required",
       );
     }
+  });
+});
+
+// eslint-disable-next-line max-lines-per-function -- closed integration authority matrix
+describe("integration cleanup authority", () => {
+  it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const recorder = source.slice(
+      source.indexOf("const recordInteractiveReceiptFailure ="),
+      source.indexOf("const recordInteractiveExecutionFailure ="),
+    );
+    expect(recorder).toContain("installedPtyFailures.has(plan.runId)");
+    expect(
+      recorder.indexOf("installedPtyFailures.has(plan.runId)"),
+    ).toBeLessThan(recorder.indexOf("installedPtyFailures.set(plan.runId"));
+  });
+
+  it("carries a semantically nonzero PTY receipt phase into the authenticated exit channel", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    expect(source).toContain("interactiveFailureDiagnostic = diagnostic;");
+    expect(
+      source.indexOf("interactiveFailureDiagnostic = diagnostic;"),
+    ).toBeLessThan(
+      source.indexOf(
+        'fixtureFailure = new Error("integration.runner.fixture-failed")',
+      ),
+    );
+    expect(source).toContain("decodeScenarioFailureExitCode(receipt.exitCode)");
+    expect(source).toContain(
+      "decodeInteractiveFailureExitCode(exitCode, scenarioId)",
+    );
+    expect(source).toMatch(
+      /const phase = interactivePhases\[exitCode - 64\];\s+return phase === undefined\s+\? decodeInteractiveFailureExitCode\(exitCode, scenarioId\)/u,
+    );
+    expect(source).toContain("if (interactivePtyReceiptFailed(receipt)) {");
+    expect(source).toContain(
+      "} else fixtureOutput = recoverRetainedFixtureOutput();",
+    );
+    expect(
+      source.indexOf("if (interactivePtyReceiptFailed(receipt)) {"),
+    ).toBeLessThan(
+      source.indexOf("} else fixtureOutput = recoverRetainedFixtureOutput();"),
+    );
+    expect(
+      source.indexOf("decodeScenarioFailureExitCode(receipt.exitCode)"),
+    ).toBeLessThan(
+      source.indexOf("} else fixtureOutput = recoverRetainedFixtureOutput();"),
+    );
+
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    expect(scenario).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
+    expect(scenario).toContain(
+      "process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error)",
+    );
+    expect(
+      scenario.indexOf(
+        "process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error)",
+      ),
+    ).toBeLessThan(scenario.indexOf("settle(error === null"));
+    expect(scenario).toContain(
+      "const timer = setTimeout(() => settle(1), 1_000)",
+    );
+    const completionPublished = scenario.indexOf(
+      'recordInteractivePhase("tui-exit-published");',
+    );
+    const codexJoined = scenario.indexOf(
+      'recordInteractivePhase("tui-joined");',
+    );
+    expect(completionPublished).toBeGreaterThan(
+      scenario.indexOf("await publishTerminalCompletionBeforeDeadline({"),
+    );
+    expect(completionPublished).toBeLessThan(
+      scenario.indexOf(
+        "await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);",
+      ),
+    );
+    expect(scenario).toContain(
+      'if (message === "integration.codex.diagnostic-deadline") {\n      recordInteractivePhase("tui-join-deadline");',
+    );
+    expect(scenario).toContain(
+      "joinDeadlineHookState = classifyCodexShutdownAtJoinDeadline({",
+    );
+    expect(scenario).toContain("encodeCodexJoinDeadlineExitCode(");
+    expect(scenario).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
+    expect(scenario).toContain(
+      'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        `${diagnostic}\\n`',
+    );
+    expect(source).toContain(
+      "decodeInteractiveFailureExitCode(exitCode, scenarioId)",
+    );
+    expect(source).toContain("integration.runner.untrusted-join-hint:");
+    expect(source).toContain("const hint = untrustedCodexJoinHint(ledger);");
+    expect(source).toContain(
+      "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
+    );
+    expect(source).toContain(
+      "encodeInteractiveFailureExitCode(interactiveFailureDiagnostic, scenarioId)",
+    );
+    expect(source).not.toContain("readRetainedJoinDiagnostic");
+    expect(source).toContain('scenarioId === "codex-tui-trace-smoke"');
+    expect(scenario).toContain(
+      '} else if (message === "integration.codex.child")\n      recordInteractivePhase("tui-child-rejected");',
+    );
+    expect(codexJoined).toBeGreaterThan(completionPublished);
+    expect(codexJoined).toBeLessThan(
+      scenario.indexOf(
+        "const rootHookLifecycle = inspectDiagnosticBeforeDeadline",
+      ),
+    );
+    expect(source).toContain(
+      'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
+    );
+    const controller = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(controller).toContain("AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,");
+    expect(scenario).toContain(
+      "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
+    );
+    expect(scenario).toContain(
+      "!Number.isSafeInteger(modelAdmissionCutoff) ||",
+    );
+  });
+
+  it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const authority = readFileSync(
+      resolve(
+        workspaceRoot,
+        "tests/integration/immutable-candidate-authority.mjs",
+      ),
+      "utf8",
+    );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    const outer = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    for (const phase of [
+      "trace-terminal",
+      "trace-settlement",
+      "trace-reporter-settled",
+      "trace-search",
+      "trace-search-result",
+    ]) {
+      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+    }
+    for (const phase of [
+      "hook-command-timeout",
+      "hook-command-spawn-error",
+      "hook-command-stdin-error",
+      "hook-command-wait-error",
+      "hook-command-missing",
+      "hook-command-completed-before-budget-boundary",
+      "hook-command-completed-near-budget-boundary",
+      "hook-no-operational-state-subsecond",
+      "hook-no-operational-state-low-latency",
+      "hook-no-operational-state-mid-latency",
+      "hook-no-operational-state-high-latency",
+      "hook-no-operational-state-near-deadline",
+      "hook-start-suppressed",
+      "hook-start-deadline",
+      "hook-capture-suppressed",
+      "hook-capture-deadline",
+      "hook-redaction-suppressed",
+      "hook-redaction-deadline",
+      "hook-routing-no-route",
+      "hook-delivery-rejected",
+      "hook-delivery-unavailable",
+      "hook-delivery-deadline",
+      "hook-delivery-unknown",
+      "hook-accepted-without-trace",
+      "hook-operational-unclassified",
+    ]) {
+      expect(scenario).toContain(`"${phase}"`);
+      expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
+    }
+    expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
+    expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
+    expect(scenario.indexOf("inspectDiagnosticBeforeDeadline({")).toBeLessThan(
+      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
+    );
+    expect(
+      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
+    ).toBeLessThan(
+      scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
+    );
+    expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
+    expect(scenario).toContain("classifyCodexTraceFailureHint(");
+    expect(scenario).toContain("codexTraceSearchChildFailureCategory({");
+    expect(scenario).toContain("errorMessage: error?.message,");
+    for (const phase of [
+      "trace-await-hook",
+      "trace-await-reporter",
+      "trace-await-search",
+    ])
+      expect(scenario).not.toContain(`recordInteractivePhase("${phase}")`);
+    expect(authority).toContain("codex-trace-await-");
+    const receiptPredicates = authority.slice(
+      authority.indexOf("export const ptyExecutionFailurePredicates"),
+      authority.indexOf("export const selectInteractiveFailureDiagnostic"),
+    );
+    expect(receiptPredicates).not.toContain(
+      '"integration.fixture.codex-trace-await-',
+    );
+    expect(runner).toContain("untrustedCodexTraceHint(");
+    expect(runner).toContain("integration.runner.untrusted-trace-hint:");
+    expect(runner).toContain("retainedCandidateConfigStage(ledger)");
+    expect(runner).toContain("integration.runner.untrusted-config-hint:");
+    expect(runner).toContain("integration.runner.untrusted-gate-hint:");
+    expect(scenario).toContain("codexArmPendingResearchHint(error)");
+    expect(outer).toContain(
+      "retainCodexResearchDiagnostic(plan, output, receipt, error)",
+    );
+    expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
+    expect(outer).not.toContain("writeSync(2,");
+    expect(outer).toContain("codexFailureExitPair(");
+    expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
+    expect(outer).not.toContain("process.stderr.write(");
+    expect(authority).toContain("extractUntrustedCodexConfigHint");
+    expect(authority).toContain("extractUntrustedCodexGateHint");
+    const researchCapture = outer.indexOf(
+      "retainCodexResearchDiagnostic(plan, output, receipt, error)",
+    );
+    expect(researchCapture).toBeLessThan(
+      outer.indexOf("recordInteractiveExecutionFailure(", researchCapture),
+    );
+    expect(scenario).toContain(
+      "const terminalCut = classifyCodexSettledTraceObservation({",
+    );
+    expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
+    for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
+      expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
+    expect(authority).not.toContain('"integration.fixture.codex-trace"');
+  });
+
+  it("stores optional Codex research hints only in retired-failure evidence", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
+    expect(source).toContain(
+      "untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null",
+    );
+    expect(source).toContain(
+      "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",
+    );
+    expect(source).toContain('controllerOutcome: "retired-failure"');
+    expect(source).not.toContain(
+      "integration.isolation.untrusted-config-hint:",
+    );
+    expect(source).not.toContain("integration.isolation.codex-exit-pair:");
+  });
+
+  it("validates the failed PTY receipt before reporting a Codex join subtype", () => {
+    const controller = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const receipt = controller.indexOf(
+      "const receipt = captureAvailableFailedScenarioReceipt(",
+    );
+    const decode = controller.indexOf(
+      "? decodeInteractiveFailureExitCode(receipt.exitCode, plan.scenarioId)",
+    );
+    const report = controller.indexOf(
+      "recordInteractiveExecutionFailure(",
+      decode,
+    );
+    expect(receipt).toBeGreaterThan(-1);
+    expect(controller).toContain("? captureFailedScenarioReceipt(");
+    expect(controller).toContain("interactivePtyReceiptAuthorityMatches(");
+    expect(controller).toContain(
+      "envelope: interactivePtyEnvelopeMatches(receipt, plan, expected, failed)",
+    );
+    expect(controller).toContain(
+      "fingerprint: interactivePtyFingerprintMatches(receipt)",
+    );
+    expect(controller).toContain(
+      "{ outerMonotonicDeadline },\n          true,",
+    );
+    expect(decode).toBeGreaterThan(receipt);
+    expect(report).toBeGreaterThan(decode);
+    expect(controller).toContain("receipt.exitCode === error?.code");
+  });
+
+  it("gives only interactive fixtures one exact capable terminal identity", () => {
+    const scenarios = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    expect(scenarios).toContain(
+      '...(plan.executionMode === "interactive" ? { TERM: "xterm-256color" } : {})',
+    );
+    expect(runner).toContain(
+      '...(scenario.executionMode === "interactive"\n      ? { TERM: "xterm-256color" }\n      : {})',
+    );
+    expect(scenarios.match(/TERM: "xterm-256color"/gu)).toHaveLength(1);
+    expect(runner.match(/TERM: "xterm-256color"/gu)).toHaveLength(1);
+  });
+
+  it("reserves the terminal controller window for Docker cleanup only", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(30_000, true)",
+    );
+    expect(source).toContain("terminal: true");
+    expect(source).toContain(
+      "remainingIntegrationOperationMilliseconds(\n        scenarioTimeoutMilliseconds,\n        terminal,\n      )",
+    );
+  });
+
+  it("does not reset a scenario deadline after preparation", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;",
+    );
+    expect(source).toContain(
+      "runScenario(selectedPlan, signal, scenarioDeadline)",
+    );
+    expect(source).toContain("scenarioDeadline - performance.now()");
+    expect(source).not.toContain(
+      "const remainingOuterMilliseconds = Math.min(\n    scenarioTimeoutMilliseconds,",
+    );
+  });
+
+  it("uses distinct closed npm configuration files for offline harness installation", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      '"--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig"',
+    );
+    expect(source).toContain('resolve(context, "harness/npm-userconfig")');
+    expect(source).toContain('resolve(context, "harness/npm-globalconfig")');
+    expect(source).not.toContain(
+      '"--userconfig=/dev/null", "--globalconfig=/dev/null"',
+    );
+  });
+
+  it("settles empty npm configuration identity despite a restrictive umask", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-npm-config-"));
+    const target = resolve(directory, "npm-userconfig");
+    const priorUmask = process.umask(0o777);
+    try {
+      writeExactRegularFile(target, Buffer.alloc(0), 0o600);
+      const status = lstatSync(target);
+      expect(status.isFile()).toBe(true);
+      expect(status.isSymbolicLink()).toBe(false);
+      expect(status.size).toBe(0);
+      expect(status.mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(priorUmask);
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+});
+
+// eslint-disable-next-line max-lines-per-function -- closed diagnostic phase order
+describe("Codex interactive diagnostic order", () => {
+  // eslint-disable-next-line max-lines-per-function -- closed diagnostic phase order
+  it("keeps retained phases in the writer's strict lifecycle order", () => {
+    const scenario = readFileSync(
+      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const runner = readFileSync(
+      resolve(workspaceRoot, "tests/integration/runner.mjs"),
+      "utf8",
+    );
+    const expected = [
+      "bootstrap",
+      "bootstrap-arguments",
+      "bootstrap-deadline",
+      "bootstrap-readiness",
+      "bootstrap-environment",
+      "bootstrap-modules",
+      "bootstrap-artifact",
+      "bootstrap-pty",
+      "init",
+      "destination",
+      "routing",
+      "install",
+      "model-gate-start",
+      "model-gate-configured",
+      "control-plane-closed",
+      "tui-readiness-challenge-published",
+      "tui-start",
+      "tui-run-created",
+      "tui-checkpoint",
+      "model-gate-arm-start",
+      "model-gate-arm-health-pending",
+      "model-gate-arm-session-start",
+      "tui-exit-before-arm",
+      "model-gate-arm-complete",
+      "model-request-observed",
+      "model-request",
+      "trace-terminal",
+      "tui-exit-published",
+      "tui-join-deadline",
+      "tui-child-rejected",
+      "tui-joined",
+      "trace-settlement",
+      "trace-search",
+      "hook-command-timeout",
+      "hook-command-spawn-error",
+      "hook-command-stdin-error",
+      "hook-command-wait-error",
+      "hook-command-missing",
+      "hook-command-completed-before-budget-boundary",
+      "hook-command-completed-near-budget-boundary",
+      "hook-no-operational-state-subsecond",
+      "hook-no-operational-state-low-latency",
+      "hook-no-operational-state-mid-latency",
+      "hook-no-operational-state-high-latency",
+      "hook-no-operational-state-near-deadline",
+      "hook-start-suppressed",
+      "hook-start-deadline",
+      "hook-capture-suppressed",
+      "hook-capture-deadline",
+      "hook-redaction-suppressed",
+      "hook-redaction-deadline",
+      "hook-routing-no-route",
+      "hook-delivery-rejected",
+      "hook-delivery-unavailable",
+      "hook-delivery-deadline",
+      "hook-delivery-unknown",
+      "hook-accepted-without-trace",
+      "hook-operational-unclassified",
+      "trace-search-record-count",
+      "trace-search-shape",
+      "trace-search-ambiguous",
+      "trace-search-harness",
+      "trace-search-locator",
+      "trace-reporter-settled",
+      "trace-search-result",
+      "verify",
+      "verify-config",
+      "verify-gate",
+      "verify-trace-get",
+      "verify-correlation",
+      "verify-doctor",
+      "verify-uninstall",
+      "verify-status",
+      "verify-projection",
+      "verify-evidence",
+    ];
+    const phases = (source: string) => {
+      const declaration = source.slice(
+        source.indexOf("const interactivePhases = Object.freeze(["),
+        source.indexOf("]);", source.indexOf("const interactivePhases")) + 3,
+      );
+      return [...declaration.matchAll(/^ {2}"([a-z-]+)",$/gmu)].map(
+        (match) => match[1],
+      );
+    };
+    expect(phases(scenario)).toEqual(expected);
+    expect(phases(runner)).toEqual(expected);
+    expect(64 + expected.length - 1).toBeLessThan(139);
+    for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
+      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
+    }
+    expect(scenario).toContain(
+      "if (phaseIndex <= interactiveFailurePhaseIndex)",
+    );
+    expect(scenario).not.toContain("recordInteractivePhase(classification)");
+    expectCodexSettlementBeforeTraceSearch(scenario);
+    const modelRequestObservation = scenario.indexOf(
+      "await waitForModelRequestBeforeDeadline({",
+    );
+    const modelRequestPhase = scenario.indexOf(
+      'recordInteractivePhase("model-request")',
+      modelRequestObservation,
+    );
+    const settlementPhase = scenario.indexOf(
+      'recordInteractivePhase("trace-settlement")',
+      modelRequestPhase,
+    );
+    const traceObservation = scenario.indexOf(
+      "await waitForTraceSummary(traceDeadline)",
+      modelRequestPhase,
+    );
+    const terminalLedgerRead = scenario.indexOf(
+      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+    );
+    const terminalDeadlinePrecheck = scenario.lastIndexOf(
+      "if (bootNow() >= traceDeadline)",
+      terminalLedgerRead,
+    );
+    const terminalObservation = scenario.indexOf(
+      "await waitForCodexTurnTerminal(traceDeadline)",
+      terminalLedgerRead,
+    );
+    const sessionCorrelation = scenario.indexOf(
+      "traceGraph.sessionId !== codexSessionId",
+      terminalObservation,
+    );
+    expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
+    expect(terminalDeadlinePrecheck).toBeGreaterThan(-1);
+    expect(terminalLedgerRead).toBeGreaterThan(terminalDeadlinePrecheck);
+    expect(terminalObservation).toBeGreaterThan(terminalLedgerRead);
+    expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
+    expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
+    expect(traceObservation).toBeGreaterThan(terminalObservation);
+    expect(settlementPhase).toBeLessThan(traceObservation);
+    for (let index = 0; index < expected.length; index += 1)
+      expect(expected.slice(0, index + 1).at(-1)).toBe(expected[index]);
   });
 });
 
@@ -210,6 +768,7 @@ describe("integration controller supervision", () => {
 // The workflow policy inventory is kept in one closed review surface.
 // eslint-disable-next-line max-lines-per-function
 describe("integration workflow policy", () => {
+  // eslint-disable-next-line max-lines-per-function -- one closed workflow and staged-runtime inventory
   it("routes candidate, clean replay, and controlled rejection through one command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -278,6 +837,10 @@ describe("integration workflow policy", () => {
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
       "utf8",
     );
+    const exactFile = readFileSync(
+      resolve(workspaceRoot, "tests/integration/exact-file.mjs"),
+      "utf8",
+    );
     const finalized = scenarios.indexOf(
       "finalizeControllerFailureEvidence(plan",
     );
@@ -287,7 +850,55 @@ describe("integration workflow policy", () => {
     const propagated = scenarios.indexOf("throw primaryError");
     const manifest = scenarios.lastIndexOf("publishControllerFailureManifest");
     const readinessReleased = scenarios.lastIndexOf("fixtureResults.delete");
+    expect(scenarios).toContain(
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName],\n      signal,\n    ))',
+    );
+    expect(scenarios).toContain(
+      "terminalMutationProved = await proveFailedAttachSettled(",
+    );
+    const attachStart = scenarios.indexOf(
+      '({ stdout } = await dockerWithSignal(\n      ["start", "--attach", plan.scenarioName]',
+    );
+    const attachCatch = scenarios.indexOf("  } catch (error) {", attachStart);
+    const successfulReceipt = scenarios.indexOf(
+      '  const receipt =\n    plan.executionMode === "interactive"',
+      attachCatch,
+    );
+    const rejectedAttachProof = scenarios.indexOf(
+      "terminalMutationProved = await proveFailedAttachSettled(",
+      attachCatch,
+    );
+    const rejectedAttachOutput = scenarios.indexOf(
+      'const output = `${error?.stdout ?? ""}`;',
+      attachCatch,
+    );
+    expect(attachStart).toBeGreaterThan(-1);
+    expect(attachCatch).toBeGreaterThan(attachStart);
+    expect(successfulReceipt).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachProof).toBeGreaterThan(attachCatch);
+    expect(rejectedAttachOutput).toBeGreaterThan(rejectedAttachProof);
+    expect(
+      scenarios
+        .slice(attachStart, attachCatch)
+        .includes("captureHeadlessReceipt"),
+    ).toBe(false);
+    expect(scenarios).toContain('["container", "wait", containerId]');
+    expect(scenarios).toContain('["container", "inspect", containerId]');
+    expect(scenarios).toContain('"COPY dist ./dist"');
+    expect(scenarios).toContain(
+      'const packageBoundaryPath = resolve(context, "dist/package.json")',
+    );
+    expect(scenarios).toContain(
+      "writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644)",
+    );
+    expect(exactFile).toContain("fchmodSync(descriptor, mode)");
+    expect(exactFile).toContain("constants.O_NOFOLLOW");
+    expect(exactFile).toContain("descriptorStatus.ino !== pathStatus.ino");
+    expect(scenarios.indexOf('"COPY dist ./dist"')).toBeLessThan(
+      scenarios.indexOf('"USER node"'),
+    );
     expect(required).toBeGreaterThanOrEqual(0);
+    expect(scenarios).not.toContain("process.stderr.write(");
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
     expect(readinessReleased).toBeGreaterThan(manifest);
@@ -305,7 +916,7 @@ describe("integration workflow policy", () => {
         mkdirSync(run, { recursive: true, mode: 0o700 });
         const path = resolve(run, "controller-failure.json");
         const content = `${JSON.stringify({
-          controllerFailureEvidenceVersion: 2,
+          controllerFailureEvidenceVersion: 3,
           runId,
           certificationCase: null,
           certificationPredicate: null,
@@ -313,8 +924,10 @@ describe("integration workflow policy", () => {
           scenarioOutcome: "not-complete",
           controllerOutcome: "retired-failure",
           primaryFailure: "integration.controller.failed",
+          causalFailure: null,
           cleanupFailure: null,
           installedPtyFailure: null,
+          codexResearchDiagnostic: null,
           privateCleanup: null,
         })}\n`;
         writeFileSync(path, content, { mode: 0o600 });
@@ -428,7 +1041,7 @@ describe("integration workflow policy", () => {
   // The fixture must rewrite one exact manifest repeatedly to prove every
   // cross-bound substitution against the same file identities.
   // eslint-disable-next-line max-lines-per-function
-  it("requires retirement-bound negatives to retain exact private authority evidence", () => {
+  it("separates unsettled retirement evidence from witnessed certification", () => {
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-retirement-"));
     const artifacts = resolve(directory, "artifacts/integration");
     const runId = "0123456789abcdef";
@@ -451,18 +1064,28 @@ describe("integration workflow policy", () => {
       images: diagnostic.authorityDigests.images,
       socket: diagnostic.authorityDigests.socket,
     };
-    const writeEvidence = (privateCleanup: unknown) => {
+    const writeEvidence = (
+      privateCleanup: unknown,
+      certification = {
+        certificationCase: null as string | null,
+        certificationPredicate: null as string | null,
+        primaryFailure: "integration.controller.unsettled-operation",
+      },
+      codexResearchDiagnostic: unknown = null,
+    ) => {
       const content = `${JSON.stringify({
-        controllerFailureEvidenceVersion: 2,
+        controllerFailureEvidenceVersion: 3,
         runId,
-        certificationCase: "wrong-argv",
-        certificationPredicate: "request-argv-mismatch",
+        certificationCase: certification.certificationCase,
+        certificationPredicate: certification.certificationPredicate,
         certificationReadiness: null,
         scenarioOutcome: "failed",
         controllerOutcome: "retired-failure",
-        primaryFailure: "integration.controller.unsettled-operation",
+        primaryFailure: certification.primaryFailure,
+        causalFailure: null,
         cleanupFailure: null,
         installedPtyFailure: null,
+        codexResearchDiagnostic,
         privateCleanup,
       })}\n`;
       writeFileSync(resolve(run, "controller-failure.json"), content, {
@@ -474,7 +1097,7 @@ describe("integration workflow policy", () => {
         `${JSON.stringify({
           controllerFailureManifestVersion: 1,
           controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
-          certificationCase: "wrong-argv",
+          certificationCase: certification.certificationCase,
           preparedAuthorityDigests,
           runIds: [runId],
           failureEvidence: [
@@ -490,7 +1113,7 @@ describe("integration workflow policy", () => {
         { mode: 0o600 },
       );
     };
-    const verify = () =>
+    const verify = (mode = "failure", certificationCase?: string) =>
       spawnSync(
         process.execPath,
         [
@@ -498,12 +1121,16 @@ describe("integration workflow policy", () => {
             workspaceRoot,
             "tests/integration/verify-substrate-certification.mjs",
           ),
-          "negative",
+          mode,
         ],
         {
           cwd: directory,
           env: {
-            AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: "wrong-argv",
+            ...(certificationCase === undefined
+              ? {}
+              : {
+                  AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
+                }),
             PATH: process.env.PATH,
           },
         },
@@ -512,6 +1139,24 @@ describe("integration workflow policy", () => {
       mkdirSync(run, { recursive: true, mode: 0o700 });
       writeEvidence(diagnostic);
       expect(verify()).toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render",
+        exitPair: "150:78",
+      });
+      expect(verify()).toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render:secret",
+        exitPair: "150:78",
+      });
+      expect(verify()).not.toBe(0);
+      writeEvidence(diagnostic, undefined, {
+        diagnosticVersion: 1,
+        untrustedConfigHint: "render",
+        exitPair: "150:0",
+      });
+      expect(verify()).not.toBe(0);
       writeEvidence(null);
       expect(verify()).not.toBe(0);
       writeEvidence({ ...diagnostic, outcome: "retired-success" });
@@ -584,6 +1229,18 @@ describe("integration workflow policy", () => {
         expectedResourceDigest: `sha256:${"a".repeat(64)}`,
       });
       expect(verify()).not.toBe(0);
+      const witnessedWrongArgv = {
+        certificationCase: "wrong-argv",
+        certificationPredicate: "request-argv-mismatch",
+        primaryFailure: "integration.certification.wrong-argv",
+      };
+      writeEvidence(null, witnessedWrongArgv);
+      expect(verify("negative", "wrong-argv")).toBe(0);
+      writeEvidence(diagnostic, {
+        ...witnessedWrongArgv,
+        primaryFailure: "integration.controller.unsettled-operation",
+      });
+      expect(verify("negative", "wrong-argv")).not.toBe(0);
     } finally {
       rmSync(directory, { force: true, recursive: true });
     }

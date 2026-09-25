@@ -55,6 +55,22 @@ const certificationReadiness = z.union([
     challengeSha256: z.string().regex(/^sha256:[a-f\d]{64}$/u),
   }),
 ]);
+const harnessObservation = z.strictObject({
+  observationVersion: z.literal(1),
+  kind: z.literal("codex-tui-trace"),
+  modelRequestBodySha256: z.string().regex(/^[a-f\d]{64}$/u),
+  traceId: z.string().regex(/^[a-f\d]{32}$/u),
+  resourceSpanCount: z.number().int().min(1).max(256),
+  spanNames: z.tuple([z.literal("codex.turn"), z.literal("codex.response")]),
+  parentLinked: z.literal(true),
+  doctorErrors: z.literal(0),
+  uninstallDisposition: z.literal("committed"),
+  sessionStartCommandDurationMilliseconds: z
+    .number()
+    .finite()
+    .min(0)
+    .max(1_000),
+});
 const fixtureResult = z
   .strictObject({
     evidenceVersion: z.literal(1),
@@ -64,6 +80,7 @@ const fixtureResult = z
     lifecycle,
     certificationReadiness,
     eventKinds: z.array(id).max(32),
+    harnessObservation: harnessObservation.optional(),
     modelLedger: z.strictObject({
       ledgerVersion: z.literal(1),
       scenarioId: id,
@@ -84,8 +101,9 @@ const fixtureResult = z
         value.lifecycle.length === lifecyclePhases.length &&
         eventKinds.safeParse(value.eventKinds).success &&
         value.modelLedger.entries.length > 0 &&
-        value.destinationLedger.ingestion.length > 0 &&
-        value.destinationLedger.retrieval.length > 0),
+        value.destinationLedger.ingestion.length +
+          value.destinationLedger.retrieval.length >
+          0),
   );
 
 export type SanitizedFixtureResult = z.infer<typeof fixtureResult>;

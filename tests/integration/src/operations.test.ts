@@ -134,6 +134,53 @@ describe("integration retained artifacts", () => {
     }
   });
 
+  it("accepts complete evidence with observed retrieval and no invented ingestion", () => {
+    const result = fixtureResult();
+    result.destinationLedger.ingestion = [];
+    expect(sanitizeFixtureResult(result, "fixture-process-smoke")).toEqual(
+      result,
+    );
+  });
+});
+
+describe("integration Codex retained evidence", () => {
+  it("retains the bounded Codex session-start command duration", () => {
+    const codex = {
+      ...fixtureResult(),
+      harnessObservation: {
+        observationVersion: 1,
+        kind: "codex-tui-trace",
+        modelRequestBodySha256: "a".repeat(64),
+        traceId: "b".repeat(32),
+        resourceSpanCount: 2,
+        spanNames: ["codex.turn", "codex.response"],
+        parentLinked: true,
+        doctorErrors: 0,
+        uninstallDisposition: "committed",
+        sessionStartCommandDurationMilliseconds: 125,
+      },
+    };
+    expect(sanitizeFixtureResult(codex, "fixture-process-smoke")).toEqual(
+      codex,
+    );
+    for (const duration of [-1, 1_001, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        sanitizeFixtureResult(
+          {
+            ...codex,
+            harnessObservation: {
+              ...codex.harnessObservation,
+              sessionStartCommandDurationMilliseconds: duration,
+            },
+          },
+          "fixture-process-smoke",
+        ),
+      ).toThrow("integration.operations.fixture-result");
+    }
+  });
+});
+
+describe("integration retained artifact planning", () => {
   it("plans deterministic bounded retention while protecting current", () => {
     const bundle = (digit: string) => `sha256-${digit.repeat(64)}`;
     const entries: ArtifactDirectoryEntry[] = [

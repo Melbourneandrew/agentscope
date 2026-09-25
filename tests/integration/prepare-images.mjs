@@ -2,7 +2,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { compileCapabilityManifest } from "./dist/index.js";
+import {
+  capabilityScenarioImages,
+  compileCapabilityManifest,
+} from "./dist/index.js";
 import {
   BUILDKIT_IMAGE,
   imagePreparationFailureRequiresOuterHostRetirement,
@@ -41,18 +44,9 @@ if (
   !Array.isArray(selection.scenarioIds)
 )
   throw new Error("integration.images.selection");
-const scenarios = new Map(
-  manifest.scenarios.map((scenario) => [scenario.scenarioId, scenario]),
-);
 const images = [
   BUILDKIT_IMAGE,
-  ...new Set(
-    selection.scenarioIds.flatMap((scenarioId) => {
-      const scenario = scenarios.get(scenarioId);
-      if (!scenario) throw new Error("integration.images.selection");
-      return [scenario.image, scenario.mockServerImage];
-    }),
-  ),
+  ...capabilityScenarioImages(manifest, selection.scenarioIds),
 ].sort();
 const controller = new AbortController();
 const interrupt = () => controller.abort();

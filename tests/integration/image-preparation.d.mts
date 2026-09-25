@@ -130,7 +130,7 @@ export declare const revalidatePreparedImageAdmission: (
   evidence: PreparedDockerImageSet,
   image: string,
   options?: PreparePinnedDockerImagesOptions,
-) => Promise<boolean>;
+) => Promise<void>;
 
 export interface PreparedDockerClient {
   readonly evidence: PreparedDockerImageSet;
@@ -152,6 +152,53 @@ export declare const prepareDockerInvocation: (
     environment: Readonly<Record<string, string>>;
   }>
 >;
+
+export declare const retirePreparedDockerNetwork: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<void>;
+
+export declare const registerPreparedDockerNetwork: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<boolean>;
+
+export declare const registerPreparedDockerControlVolume: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<
+  Readonly<{
+    name: string;
+    runId: string;
+    createdAt: string;
+    mountpoint: string;
+  }>
+>;
+
+export declare const retirePreparedDockerControlVolume: (
+  client: PreparedDockerClient,
+  input: Readonly<{
+    deadline: number;
+    name: string;
+    runId: string;
+    signal?: AbortSignal;
+  }>,
+) => Promise<void>;
 
 export declare const createBoundedBuildContext: (
   root: string,
