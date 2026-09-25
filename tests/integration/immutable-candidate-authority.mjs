@@ -842,6 +842,17 @@ export const extractUntrustedCodexConfigHint = (output) => {
 };
 
 export const codexGateResearchHints = Object.freeze([
+  "arm-deadline",
+  "arm-clock",
+  "arm-phase",
+  "arm-hook-log",
+  "arm-hook-lifecycle",
+  "arm-hook-mediation",
+  "arm-session-missing",
+  "arm-control",
+  "arm-child",
+  "arm-filesystem",
+  "arm-other",
   "seal-deadline",
   "seal-request",
   "response-shape",
@@ -864,6 +875,38 @@ export const codexGateResearchHints = Object.freeze([
   "ledger-shape",
   "other",
 ]);
+
+// Only an already-failing fixture may publish this fixed exception category.
+// No message, code, path, or timing value crosses the scenario boundary.
+export const codexArmPendingResearchHint = (error) => {
+  try {
+    const message = error instanceof Error ? error.message : undefined;
+    const byMessage = {
+      "integration.codex.deadline": "arm-deadline",
+      "integration.codex.clock": "arm-clock",
+      "integration.codex.failure-phase": "arm-phase",
+      "integration.codex.hook-log": "arm-hook-log",
+      "integration.codex.hook-lifecycle": "arm-hook-lifecycle",
+      "integration.codex.hook-mediation": "arm-hook-mediation",
+      "integration.codex.hook-session-start-missing": "arm-session-missing",
+      "integration.codex.model-gate": "arm-control",
+      "integration.codex.model-gate-deadline": "arm-deadline",
+      "integration.codex.child": "arm-child",
+      "integration.codex.child-spawn": "arm-child",
+      "integration.codex.tui-child-rejected": "arm-child",
+      "integration.codex.tui-exit-before-arm": "arm-child",
+    };
+    if (Object.hasOwn(byMessage, message)) return byMessage[message];
+    if (
+      error instanceof Error &&
+      ["EACCES", "EEXIST", "EIO", "ENOSPC", "EROFS"].includes(error.code)
+    )
+      return "arm-filesystem";
+  } catch {
+    // An operationally hostile thrown value cannot suppress terminal evidence.
+  }
+  return "arm-other";
+};
 
 // This pure classifier is called only after the production gate has rejected
 // a receipt. Its output is a fixed research category, never admission proof.

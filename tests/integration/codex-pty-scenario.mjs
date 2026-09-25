@@ -19,6 +19,7 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 import {
+  codexArmPendingResearchHint,
   codexProjectionFailureDiagnostic,
   codexUninstallFailureDiagnostic,
   codexUninstallUnclassifiedStageDiagnostic,
@@ -151,7 +152,9 @@ process.setUncaughtExceptionCaptureCallback((error) => {
   const gateResearchDiagnostic =
     interactiveFailurePhase === "verify-gate" && gateResearchHint !== undefined
       ? `integration.fixture.codex-gate-research-${gateResearchHint}`
-      : undefined;
+      : interactiveFailurePhase === "model-gate-arm-health-pending"
+        ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
+        : undefined;
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
     candidateConfigDiagnostic ??

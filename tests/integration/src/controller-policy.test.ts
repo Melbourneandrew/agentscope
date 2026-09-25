@@ -384,6 +384,7 @@ describe("integration cleanup authority", () => {
     expect(runner).toContain("retainedCandidateConfigStage(ledger)");
     expect(runner).toContain("integration.runner.untrusted-config-hint:");
     expect(runner).toContain("integration.runner.untrusted-gate-hint:");
+    expect(scenario).toContain("codexArmPendingResearchHint(error)");
     expect(outer).toContain(
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );

@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 
 const {
+  codexArmPendingResearchHint,
   codexFailureExitPair,
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
@@ -358,6 +359,47 @@ describe("untrusted Codex candidate configuration hint transport", () => {
 });
 
 describe("untrusted Codex model-gate research hint transport", () => {
+  it.each([
+    [new Error("integration.codex.deadline"), "arm-deadline"],
+    [new Error("integration.codex.clock"), "arm-clock"],
+    [new Error("integration.codex.failure-phase"), "arm-phase"],
+    [new Error("integration.codex.hook-log"), "arm-hook-log"],
+    [new Error("integration.codex.hook-lifecycle"), "arm-hook-lifecycle"],
+    [new Error("integration.codex.hook-mediation"), "arm-hook-mediation"],
+    [
+      new Error("integration.codex.hook-session-start-missing"),
+      "arm-session-missing",
+    ],
+    [new Error("integration.codex.model-gate"), "arm-control"],
+    [new Error("integration.codex.child"), "arm-child"],
+    [
+      Object.assign(new Error("untrusted path"), { code: "ENOSPC" }),
+      "arm-filesystem",
+    ],
+    [new Error("secret-bearing unrecognized error"), "arm-other"],
+    [null, "arm-other"],
+  ])(
+    "classifies an arm exception without retaining its text: %s",
+    (error, hint) => {
+      expect(codexArmPendingResearchHint(error)).toBe(hint);
+      expect(
+        extractUntrustedCodexGateHint(
+          `integration.runner.untrusted-gate-hint:${hint}\n`,
+        ),
+      ).toBe(hint);
+    },
+  );
+  it("collapses a hostile thrown object without invoking its content", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => {
+          throw new Error("secret");
+        },
+      },
+    );
+    expect(codexArmPendingResearchHint(hostile)).toBe("arm-other");
+  });
   it.each(["seal-deadline", "seal-request", "receipt-shape", "ledger-shape"])(
     "retains one closed failure hint without admission: %s",
     (hint) => {
