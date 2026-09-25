@@ -841,6 +841,110 @@ export const extractUntrustedCodexConfigHint = (output) => {
   return stage;
 };
 
+export const codexGateResearchHints = Object.freeze([
+  "seal-deadline",
+  "seal-request",
+  "response-shape",
+  "receipt-shape",
+  "cutoff-unsettled",
+  "state",
+  "connection-count",
+  "connection-shape",
+  "admission",
+  "connection-open",
+  "generation",
+  "parser-outcome",
+  "parser-open",
+  "raw-rejected",
+  "transport-bytes",
+  "ledger-count",
+  "parser-failures",
+  "mutation-generation",
+  "identity",
+  "ledger-shape",
+  "other",
+]);
+
+// This pure classifier is called only after the production gate has rejected
+// a receipt. Its output is a fixed research category, never admission proof.
+export const gateReceiptResearchRejection = (receipt, expected) => {
+  if (
+    !exactKeys(receipt, [
+      "challengeSha256",
+      "connectionCount",
+      "connections",
+      "cutoffUnsettled",
+      "ledgerCount",
+      "mutationGeneration",
+      "parserFailures",
+      "runId",
+      "sessionStartSpanSha256",
+      "state",
+    ])
+  )
+    return "receipt-shape";
+  if (receipt.cutoffUnsettled !== false) return "cutoff-unsettled";
+  if (receipt.state !== "draining") return "state";
+  if (receipt.connectionCount !== 1 || receipt.connections?.length !== 1)
+    return "connection-count";
+  const connection = receipt.connections[0];
+  if (
+    !exactKeys(connection, [
+      "admission",
+      "closed",
+      "eof",
+      "generation",
+      "parserOutcome",
+      "parserTransportClosed",
+      "rawForwardedBytes",
+      "rawRejectedBytes",
+      "responseBytes",
+    ])
+  )
+    return "connection-shape";
+  if (connection.admission !== "admitted") return "admission";
+  if (connection.closed !== true) return "connection-open";
+  if (connection.generation !== 1) return "generation";
+  if (connection.parserOutcome !== "accepted") return "parser-outcome";
+  if (connection.parserTransportClosed !== true) return "parser-open";
+  if (connection.rawRejectedBytes !== 0) return "raw-rejected";
+  if (
+    !Number.isSafeInteger(connection.rawForwardedBytes) ||
+    connection.rawForwardedBytes <= 0 ||
+    !Number.isSafeInteger(connection.responseBytes) ||
+    connection.responseBytes <= 0
+  )
+    return "transport-bytes";
+  if (receipt.ledgerCount !== 1) return "ledger-count";
+  if (receipt.parserFailures !== 0) return "parser-failures";
+  if (
+    !Number.isSafeInteger(receipt.mutationGeneration) ||
+    receipt.mutationGeneration < 1
+  )
+    return "mutation-generation";
+  if (
+    receipt.challengeSha256 !== expected.challengeSha256 ||
+    receipt.runId !== expected.runId ||
+    receipt.sessionStartSpanSha256 !== expected.sessionStartSpanSha256
+  )
+    return "identity";
+  return "other";
+};
+
+// Candidate output is an untrusted research hint, never terminal authority.
+export const extractUntrustedCodexGateHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-gate-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-gate-hint:([a-z-]{1,32})$/u,
+  )?.[1];
+  return codexGateResearchHints.includes(hint) ? hint : undefined;
+};
+
 // Failure-only transport comparison. Neither number authorizes a receipt.
 export const codexFailureExitPair = (
   fixtureExit,
@@ -862,16 +966,22 @@ export const codexFailureExitPair = (
 };
 
 // Strictly research-only failure evidence; never a receipt or admission input.
+// Preserve exact version-1 retired evidence while version 2 adds one closed hint.
 export const validCodexResearchDiagnostic = (value) =>
   value === null ||
   (typeof value === "object" &&
     value !== null &&
     Object.getPrototypeOf(value) === Object.prototype &&
+    (value.diagnosticVersion === 1 || value.diagnosticVersion === 2) &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(
-        ["diagnosticVersion", "exitPair", "untrustedConfigHint"].sort(),
+        [
+          "diagnosticVersion",
+          "exitPair",
+          "untrustedConfigHint",
+          ...(value.diagnosticVersion === 2 ? ["untrustedGateHint"] : []),
+        ].sort(),
       ) &&
-    value.diagnosticVersion === 1 &&
     (value.untrustedConfigHint === null ||
       [
         "closed-marker",
@@ -881,6 +991,9 @@ export const validCodexResearchDiagnostic = (value) =>
         "prove",
         "publish",
       ].includes(value.untrustedConfigHint)) &&
+    (value.diagnosticVersion === 1 ||
+      value.untrustedGateHint === null ||
+      codexGateResearchHints.includes(value.untrustedGateHint)) &&
     (value.exitPair === null ||
       /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
         value.exitPair,

@@ -22,6 +22,7 @@ import {
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
+  codexGateResearchHints,
   compileCandidateInventory,
   decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
@@ -851,9 +852,16 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
   if (hint !== undefined)
     process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);
   if (scenarioId === "codex-tui-trace-smoke") {
-    const traceHint = untrustedCodexTraceHint(
-      readBoundedInteractiveFailureMarker(ledger),
-    );
+    const marker = readBoundedInteractiveFailureMarker(ledger);
+    const gatePrefix = "integration.fixture.codex-gate-research-";
+    const gateHint = marker?.startsWith(gatePrefix)
+      ? marker.slice(gatePrefix.length)
+      : undefined;
+    if (codexGateResearchHints.includes(gateHint))
+      process.stdout.write(
+        `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+      );
+    const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)
       process.stdout.write(
         `integration.runner.untrusted-trace-hint:${traceHint}\n`,

@@ -25,6 +25,7 @@ import {
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
   encodeInteractiveFailureExitCode,
+  gateReceiptResearchRejection,
   parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
 
@@ -34,6 +35,7 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
+let gateResearchHint;
 const candidateConfigStages = Object.freeze([
   "closed-marker",
   "render",
@@ -146,6 +148,10 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     candidateConfigStage !== undefined
       ? `integration.fixture.codex-candidate-config-${candidateConfigStage}`
       : undefined;
+  const gateResearchDiagnostic =
+    interactiveFailurePhase === "verify-gate" && gateResearchHint !== undefined
+      ? `integration.fixture.codex-gate-research-${gateResearchHint}`
+      : undefined;
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
     candidateConfigDiagnostic ??
@@ -173,6 +179,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     const diagnostic =
       preCheckpointFailureDiagnostic ??
       ownedDiagnostic ??
+      gateResearchDiagnostic ??
       (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
@@ -1002,9 +1009,20 @@ const releaseModelResponse = async () => {
     throw new Error("integration.codex.model-gate");
 };
 const sealModelGate = async (checkpoint) => {
-  const value = await gateRequest("/seal", { runId: integrationRunId });
-  if (!exactKeys(value, ["ledger", "receipt"]))
+  let value;
+  try {
+    value = await gateRequest("/seal", { runId: integrationRunId });
+  } catch (error) {
+    gateResearchHint =
+      error?.message === "integration.codex.model-gate-deadline"
+        ? "seal-deadline"
+        : "seal-request";
+    throw error;
+  }
+  if (!exactKeys(value, ["ledger", "receipt"])) {
+    gateResearchHint = "response-shape";
     throw new Error("integration.codex.model-gate");
+  }
   const receipt = value.receipt;
   if (
     !exactKeys(receipt, [
@@ -1053,9 +1071,22 @@ const sealModelGate = async (checkpoint) => {
     receipt.runId !== integrationRunId ||
     receipt.sessionStartSpanSha256 !== checkpoint.spanSha256 ||
     receipt.state !== "draining"
-  )
+  ) {
+    gateResearchHint = gateReceiptResearchRejection(receipt, {
+      challengeSha256: createHash("sha256")
+        .update(readinessChallenge)
+        .digest("hex"),
+      runId: integrationRunId,
+      sessionStartSpanSha256: checkpoint.spanSha256,
+    });
     throw new Error("integration.codex.model-gate");
-  return boundedRequestLedger(value.ledger);
+  }
+  try {
+    return boundedRequestLedger(value.ledger);
+  } catch (error) {
+    gateResearchHint = "ledger-shape";
+    throw error;
+  }
 };
 const projectHarnessStatus = (
   records,

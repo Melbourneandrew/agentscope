@@ -29,8 +29,10 @@ const {
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexConfigHint,
+  extractUntrustedCodexGateHint,
   extractUntrustedCodexJoinHint,
   extractUntrustedCodexTraceHint,
+  gateReceiptResearchRejection,
   validCodexResearchDiagnostic,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
@@ -355,6 +357,115 @@ describe("untrusted Codex candidate configuration hint transport", () => {
   });
 });
 
+describe("untrusted Codex model-gate research hint transport", () => {
+  it.each(["seal-deadline", "seal-request", "receipt-shape", "ledger-shape"])(
+    "retains one closed failure hint without admission: %s",
+    (hint) => {
+      const line = `integration.runner.untrusted-gate-hint:${hint}\n`;
+      expect(extractUntrustedCodexGateHint(line)).toBe(hint);
+      for (const output of [
+        `${line}${line}`,
+        `${line}integration.runner.untrusted-gate-hint:other\n`,
+        `x:${line}`,
+        `integration.runner.untrusted-gate-hint:${hint}-extra\n`,
+        `integration.runner.untrusted-gate-hint:${hint}:secret\n`,
+      ])
+        expect(extractUntrustedCodexGateHint(output)).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          `integration.fixture.codex-gate-research-${hint}`,
+          undefined,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe("child-failure");
+    },
+  );
+  it("rejects non-text and oversized attached output", () => {
+    expect(extractUntrustedCodexGateHint(undefined)).toBeUndefined();
+    expect(
+      extractUntrustedCodexGateHint("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
+  });
+});
+
+describe("rejected Codex model-gate receipt classification", () => {
+  const expected = {
+    challengeSha256: "a".repeat(64),
+    runId: "run-1",
+    sessionStartSpanSha256: "b".repeat(64),
+  };
+  const connection = {
+    admission: "admitted",
+    closed: true,
+    eof: true,
+    generation: 1,
+    parserOutcome: "accepted",
+    parserTransportClosed: true,
+    rawForwardedBytes: 4,
+    rawRejectedBytes: 0,
+    responseBytes: 8,
+  };
+  const receipt = {
+    ...expected,
+    connectionCount: 1,
+    connections: [connection],
+    cutoffUnsettled: false,
+    ledgerCount: 1,
+    mutationGeneration: 1,
+    parserFailures: 0,
+    state: "draining",
+  };
+  it.each([
+    [null, "receipt-shape"],
+    [{ ...receipt, extra: "secret" }, "receipt-shape"],
+    [{ ...receipt, cutoffUnsettled: true }, "cutoff-unsettled"],
+    [{ ...receipt, state: "admitted" }, "state"],
+    [{ ...receipt, connectionCount: 2 }, "connection-count"],
+    [{ ...receipt, connections: [{}] }, "connection-shape"],
+    [
+      { ...receipt, connections: [{ ...connection, admission: "denied" }] },
+      "admission",
+    ],
+    [
+      { ...receipt, connections: [{ ...connection, closed: false }] },
+      "connection-open",
+    ],
+    [
+      { ...receipt, connections: [{ ...connection, generation: 2 }] },
+      "generation",
+    ],
+    [
+      { ...receipt, connections: [{ ...connection, parserOutcome: "failed" }] },
+      "parser-outcome",
+    ],
+    [
+      {
+        ...receipt,
+        connections: [{ ...connection, parserTransportClosed: false }],
+      },
+      "parser-open",
+    ],
+    [
+      { ...receipt, connections: [{ ...connection, rawRejectedBytes: 1 }] },
+      "raw-rejected",
+    ],
+    [
+      { ...receipt, connections: [{ ...connection, responseBytes: 0 }] },
+      "transport-bytes",
+    ],
+    [{ ...receipt, ledgerCount: 2 }, "ledger-count"],
+    [{ ...receipt, parserFailures: 1 }, "parser-failures"],
+    [{ ...receipt, mutationGeneration: 0 }, "mutation-generation"],
+    [{ ...receipt, runId: "other" }, "identity"],
+    [receipt, "other"],
+  ])(
+    "labels one rejected receipt without exposing values: %s",
+    (candidate, hint) => {
+      expect(gateReceiptResearchRejection(candidate, expected)).toBe(hint);
+    },
+  );
+});
+
 describe("Codex failure exit comparison", () => {
   it("keeps exact fixture and authenticated terminal container codes separate", () => {
     expect(codexFailureExitPair(150, 78, "codex-tui-trace-smoke")).toBe(
@@ -376,8 +487,9 @@ describe("Codex failure exit comparison", () => {
 
 describe("bounded research-only Codex failure evidence", () => {
   const valid = {
-    diagnosticVersion: 1,
+    diagnosticVersion: 2,
     untrustedConfigHint: "render",
+    untrustedGateHint: "receipt-shape",
     exitPair: "150:78",
   };
   it("accepts only the exact bounded record or null", () => {
@@ -386,17 +498,26 @@ describe("bounded research-only Codex failure evidence", () => {
     expect(
       validCodexResearchDiagnostic({
         diagnosticVersion: 1,
+        untrustedConfigHint: "render",
+        exitPair: "150:78",
+      }),
+    ).toBe(true);
+    expect(
+      validCodexResearchDiagnostic({
+        diagnosticVersion: 2,
         untrustedConfigHint: null,
+        untrustedGateHint: null,
         exitPair: "none:255",
       }),
     ).toBe(true);
   });
   it.each([
     { ...valid, untrustedConfigHint: "secret" },
+    { ...valid, untrustedGateHint: "secret" },
     { ...valid, exitPair: "150:0" },
     { ...valid, exitPair: "256:78" },
     { ...valid, extra: true },
-    { ...valid, diagnosticVersion: 2 },
+    { ...valid, diagnosticVersion: 1 },
     { ...valid, untrustedConfigHint: "render\nsecret" },
   ])("rejects substituted or expanded diagnostic authority", (record) => {
     expect(validCodexResearchDiagnostic(record)).toBe(false);

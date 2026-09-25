@@ -72,6 +72,7 @@ import {
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexConfigHint,
+  extractUntrustedCodexGateHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyExecutionReserveMilliseconds,
@@ -1929,8 +1930,9 @@ const recordInteractiveExecutionFailure = (
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   codexResearchDiagnostics.set(plan.runId, {
-    diagnosticVersion: 1,
+    diagnosticVersion: 2,
     untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
+    untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null,
     exitPair:
       codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
       null,

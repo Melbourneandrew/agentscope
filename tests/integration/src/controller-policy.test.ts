@@ -383,6 +383,7 @@ describe("integration cleanup authority", () => {
     expect(runner).toContain("integration.runner.untrusted-trace-hint:");
     expect(runner).toContain("retainedCandidateConfigStage(ledger)");
     expect(runner).toContain("integration.runner.untrusted-config-hint:");
+    expect(runner).toContain("integration.runner.untrusted-gate-hint:");
     expect(outer).toContain(
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
@@ -392,6 +393,7 @@ describe("integration cleanup authority", () => {
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
     expect(outer).not.toContain("process.stderr.write(");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
+    expect(authority).toContain("extractUntrustedCodexGateHint");
     const researchCapture = outer.indexOf(
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
@@ -413,6 +415,9 @@ describe("integration cleanup authority", () => {
       "utf8",
     );
     expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
+    expect(source).toContain(
+      "untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null",
+    );
     expect(source).toContain(
       "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",
     );
