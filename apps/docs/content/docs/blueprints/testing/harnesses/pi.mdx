@@ -1,0 +1,40 @@
+---
+title: Pi Harness Integration
+description: ADRs for authenticating, driving, and observing Pi without provider authority.
+---
+
+## Capability Summary
+
+The Pi integration must install an authenticated exact CLI, own a reversible local extension, and correlate Pi's settled agent behavior with Agentscope traces against one internal model-protocol service. Documentation and component tests alone do not admit a Pi version or execution mode; each claim requires the exact installed binary in an isolated product scenario.
+
+## Architecture Decision Records
+
+### ADR-001: Authenticate the current public Pi package
+
+**Decision:** Trusted preparation obtains the catalog-selected exact `@earendil-works/pi-coding-agent` npm package and dependency closure, authenticates registry integrity and signatures and any published provenance, and records the installed executable identity inside the disposable scenario. The moving installer, a global binary, package install/update during the isolated run, and a cache hit without reauthentication are not inputs. MIT source licensing does not alone settle redistribution rights for every dependency; persistent mirroring requires separate artifact and license review.
+
+**Context:** Pi's [current quickstart](https://pi.dev/docs/latest/quickstart) names `@earendil-works/pi-coding-agent`, permits npm installation with lifecycle scripts ignored, and requires Node.js 22.19 or newer. The [source license](https://github.com/earendil-works/pi/blob/main/LICENSE) is MIT. The previously used `@mariozechner` package name is not assumed to identify the current public CLI. The current release is research input, not a support pin; the compatibility catalog selects an admitted version.
+
+### ADR-002: Keep interactive and JSONL claims separate
+
+**Decision:** The closed canonical execution-mode/output-contract pairs are `interactive` with `semantic-pty` and `json` with `jsonl`. Interactive Pi is driven through the shared semantic PTY transport; `pi --mode json` is driven through the shared pipe transport. Each pair requires exact-version actual-binary evidence for startup, prompt, model, tool, error, cancellation, and terminal behavior. A text-only print, RPC, SDK, or attached session is not silently included. Pi's `agent_end` is not a terminal completion oracle: retry, recovery, compaction, and queued work can continue; only the version-proved `agent_settled` boundary may contribute to completion.
+
+**Context:** Pi documents [its CLI modes](https://pi.dev/docs/latest/cli) and [JSON event stream](https://pi.dev/docs/latest/json), including the distinction between `agent_end` and `agent_settled`. The version-bound event schema and terminal order still need actual-binary proof.
+
+### ADR-003: Route one model to the protected internal service
+
+**Decision:** The scenario uses a fresh private home, Pi agent directory, session directory, and Git worktree. An exact owned `models.json` entry defines one custom provider and model using Pi's built-in OpenAI Responses API against the controller-owned [MockServer](/docs/blueprints/testing/integration/mock-services); the selected CLI invocation names that provider and model explicitly. The protected service admits only the selected route under one namespace and ledger. A fixed nonsecret marker may satisfy Pi's local API-key parser if required by the exact version, but it is provider-invalid and the service rejects any other value. No `/login`, stored OAuth/API key, environment-sourced secret, credential command, model discovery, package update, public provider, alternate endpoint, or fallback is permitted. Egress is independently denied and probed, and the connection/parser receipt and ledger settle before native success is accepted.
+
+**Context:** Pi recommends [`models.json` for a supported API](https://pi.dev/docs/latest/custom-provider) and documents provider selection with [`--provider` and `--model`](https://pi.dev/docs/latest/cli). Configuring an internal endpoint does not itself prove that no other network path was used.
+
+### ADR-004: Own one local extension and capture only settled root work
+
+**Decision:** Agentscope transactionally installs one identifiable local Pi extension in the user's agent extension directory, preserves foreign resources, and requires explicit migration for overlapping capture. The extension uses a constant absolute Agentscope-owned launcher path with zero external arguments, one bounded EOF-framed stdin record, and the validated hook duration; it performs no hook-time `PATH` search, package installation, or shell-string interpolation. Its version-bound lifecycle observes root-session identity, agent and tool/message events, `agent_settled`, errors, cancellation, and shutdown; only completed root work becomes capture. The callback and launcher child are bounded, fail-open to Pi, and terminally joined. A missing or late event never becomes a synthetic completion. Install, upgrade, Doctor, and uninstall verify exact owned state and remove only owned state.
+
+**Context:** Pi [loads local extensions](https://pi.dev/docs/latest/extensions) with Pi-process privileges and documents `agent_settled` as final notification after automatic continuations. The selected binary must prove discovery and callback coverage rather than assuming that a documented event is emitted for every claimed mode or terminal class.
+
+### ADR-005: Suppress alternate state and independently correlate evidence
+
+**Decision:** Isolated configuration contains only the owned extension and internal model. It disables install telemetry and opt-in analytics, excludes packages and other extensions/resources, and admits no auth file, cloud account, updater operation, or project-supplied executable resource. The controller provides no ambient home, credential, or package cache. Any update check or other outbound path without a documented disable control is denied and observed at the network boundary; an attempted alternate route fails the scenario rather than proving suppression. Project-trust prompts and early session-directory selection are explicitly tested, not treated as a sandbox. The oracle independently correlates process/PTY terminal state, semantic TUI or JSONL observations, extension events and durable Agentscope acceptance, protected model ledger, loopback OTLP receipt, trace/destination joins, filesystem mutations, and complete owned-resource cleanup under one run identity. Pi session files may corroborate but never alone prove capture or define a cross-version schema.
+
+**Context:** Pi documents [resource settings and telemetry controls](https://pi.dev/docs/latest/settings) and warns that [project trust does not sandbox tools and some session configuration is read early](https://pi.dev/docs/latest/security). The exact packed Agentscope CLI and actual Pi binary must pass the disposable product scenario before the support manifest claims a version and mode.
