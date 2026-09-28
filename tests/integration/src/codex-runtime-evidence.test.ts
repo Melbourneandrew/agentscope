@@ -799,7 +799,10 @@ describe("Codex bounded native ledgers", () => {
         );
         writeFileSync(
           path,
-          sessionStart.slice(0, sessionStart.indexOf("\n") + 1),
+          sessionStart.slice(
+            0,
+            sessionStart.indexOf("\n", outerOpen.length) + 1,
+          ),
         );
         expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
           "arm-hook-open",
