@@ -12,6 +12,17 @@ export type PreparedNpmHarnessMaterial = Readonly<{
   [tokenBrand]: true;
 }>;
 
+export declare const classifyMaterialResponseForTesting: (
+  response: Readonly<{
+    statusCode?: number;
+    headers: Readonly<Record<string, string | string[] | undefined>>;
+  }>,
+  expectedBytes: number,
+) => string | undefined;
+export declare const classifyMaterialDownloadFailureForTesting: (
+  error: unknown,
+) => string;
+
 export declare const prepareNpmHarnessMaterial: (
   input: Readonly<{
     evidenceId: string;
