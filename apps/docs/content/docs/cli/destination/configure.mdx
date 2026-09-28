@@ -2,12 +2,12 @@
 title: Configure a destination
 description: Create a named connection from a first-party destination descriptor.
 command: agentscope destination configure
-commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
+commandContract: sha256:26053e3dcfcd9d235f5fb6e9df923c1a94685d6e66956c033b971090df300b1a
 ---
 
 The generic configure command resolves `<type>` through the compiled first-party registry, validates non-secret settings with the descriptor's detached strict schema, validates every declared credential slot, and commits one new configuration generation atomically.
 
-Langfuse and Local SQLite are registered first-party types. Local SQLite first returns a non-mutating plan containing its resolved display path, persistence notice, and effective retention policy. `--yes` presents that same plan before the package-owned lifecycle handler may create or publish data and commit configuration. Failure to admit the exact native candidate returns a fixed lifecycle diagnostic before filesystem or configuration mutation.
+Langfuse and Local SQLite are registered first-party types. In the 0.1.0 alpha, Local SQLite remains discoverable but cannot be configured: both planning and `--yes` return `destination.capability-unavailable` before a plan, filesystem write, or configuration mutation. Local SQLite lifecycle support requires a later, independently admitted release.
 
 ## Syntax
 
@@ -17,7 +17,7 @@ agentscope destination configure <type> --name <name> [--settings <json>] [--cre
 
 ## Output and exits
 
-For Local SQLite, an invocation without `--yes` reports `state: planned`, `applied: false`, and the lifecycle plan. With `--yes`, that plan is presented before mutation; machine modes write it to the plan channel on standard error. The applied `json` and `jsonl` result contains exactly one public connection record with `connectionId`, `destinationType`, `name`, `routed`, `settingsVersion`, and `transport`. `human` output reports the configured connection and configuration generation. Every mode derives from `agentscope.cli.destination-configure.v1`. Credential values are never output.
+For an admitted destination, `--yes` presents its plan before mutation; machine modes write that plan to standard error. The applied `json` and `jsonl` result contains exactly one public connection record with `connectionId`, `destinationType`, `name`, `routed`, `settingsVersion`, and `transport`. `human` output reports the configured connection and configuration generation. Every mode derives from `agentscope.cli.destination-configure.v1`. Credential values are never output.
 
 ## Automation
 
@@ -27,6 +27,7 @@ Unknown settings, duplicate slots, missing required slots, credential-shaped set
 
 - `configuration.conflict`, `configuration.missing`, and `configuration.unavailable` describe the Core configuration boundary.
 - `destination.connection-exists` rejects duplicate names.
+- `destination.capability-unavailable` rejects 0.1.0 alpha Local SQLite configuration before a plan or mutation.
 - `destination.credential-unavailable` means a declared CI credential reference could not be safely resolved before mutation.
 - `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, `destination.lifecycle-reconciliation-required`, and `destination.lifecycle-unavailable` are closed Local lifecycle outcomes.
 - `destination.type-missing` rejects a type absent from the first-party registry.
@@ -37,3 +38,5 @@ Unknown settings, duplicate slots, missing required slots, credential-shaped set
 agentscope destination configure local-sqlite --name local-history
 agentscope destination configure local-sqlite --name local-history --yes
 ```
+
+Both Local SQLite examples return `destination.capability-unavailable` in 0.1.0; they do not create a local trace database.

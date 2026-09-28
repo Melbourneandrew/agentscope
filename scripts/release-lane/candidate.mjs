@@ -427,6 +427,20 @@ export function verifyCandidateArtifact({
     inspected.inventoryDigest === manifest.tarball.inventoryDigest,
     "Candidate inventory digest mismatch",
   );
+  if (manifest.package.version === "0.1.0") {
+    assert(
+      inspected.inventory.every(
+        ({ path }) => {
+          const folded = path.toLowerCase();
+          return (
+            !folded.startsWith("package/dist/internal/local-sqlite/") &&
+            !folded.endsWith(".node")
+          );
+        },
+      ),
+      "Alpha candidate contains an unadmitted Local native artifact",
+    );
+  }
   const { packedManifest } = inspected;
   for (const field of Object.keys(packedManifest))
     assert(
