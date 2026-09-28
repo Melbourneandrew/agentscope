@@ -104,30 +104,34 @@ describe("authenticated harness material runtime", () => {
 
   it("rejects an already-aborted acquisition without network or residue", async () => {
     const privateRoot = root();
-    await expect(
-      prepareNpmHarnessMaterial({
-        dockerClient: {} as never,
-        evidenceId: "fixture",
-        material: {
-          kind: "npm",
-          platformIdentity: `sha256-${"9".repeat(64)}`,
-          verifierImage: `node@sha256:${"f".repeat(64)}`,
-          verifierNpmVersion: "11.19.1",
-          registry: "https://registry.npmjs.org/",
-          packages: [],
-          provenance: {
-            repository: "https://github.com/vendor/tool",
-            sourceCommit: "a".repeat(40),
-            tag: "v1.0.0",
-            workflowPath: ".github/workflows/release.yml",
-          },
+    const acquisition = prepareNpmHarnessMaterial({
+      dockerClient: {} as never,
+      evidenceId: "fixture",
+      material: {
+        kind: "npm",
+        platformIdentity: `sha256-${"9".repeat(64)}`,
+        verifierImage: `node@sha256:${"f".repeat(64)}`,
+        verifierNpmVersion: "11.19.1",
+        registry: "https://registry.npmjs.org/",
+        packages: [],
+        provenance: {
+          repository: "https://github.com/vendor/tool",
+          sourceCommit: "a".repeat(40),
+          tag: "v1.0.0",
+          workflowPath: ".github/workflows/release.yml",
         },
-        maximumMilliseconds: 1_000,
-        privateRoot,
-        runId: "0123456789abcdef",
-        signal: AbortSignal.abort(),
-      }),
-    ).rejects.toThrow("integration.harness-material.failed");
+      },
+      maximumMilliseconds: 1_000,
+      privateRoot,
+      runId: "0123456789abcdef",
+      signal: AbortSignal.abort(),
+    });
+    await expect(acquisition).rejects.toThrow(
+      "integration.harness-material.failed",
+    );
+    await expect(acquisition).rejects.toMatchObject({
+      cause: { message: "integration.harness-material.preflight" },
+    });
     expect(existsSync(resolve(privateRoot, "harness-fixture"))).toBe(false);
   });
 
@@ -169,5 +173,40 @@ describe("authenticated harness material runtime", () => {
     expect(existsSync(resolve(privateRoot, "harness-signed-fixture"))).toBe(
       false,
     );
+  });
+});
+
+describe("harness material failure-phase evidence", () => {
+  it("records a closed tarball phase when download identity rejects before network", async () => {
+    const privateRoot = root();
+    const acquisition = prepareNpmHarnessMaterial({
+      dockerClient: {} as never,
+      evidenceId: "fixture",
+      material: {
+        kind: "npm",
+        registry: "https://registry.npmjs.org/",
+        packages: [
+          {
+            packageName: "@openai/codex",
+            version: "0.149.1",
+            tarballUrl: "https://registry.npmjs.org/archive#fragment",
+            bytes: 1,
+            attestations: {
+              url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
+              bytes: 1,
+            },
+          },
+        ],
+      } as never,
+      maximumMilliseconds: 1_000,
+      privateRoot,
+      runId: "0123456789abcdef",
+      signal: new AbortController().signal,
+    });
+    await expect(acquisition).rejects.toMatchObject({
+      message: "integration.harness-material.failed",
+      cause: { message: "integration.harness-material.download-tarball" },
+    });
+    expect(existsSync(resolve(privateRoot, "harness-fixture"))).toBe(false);
   });
 });

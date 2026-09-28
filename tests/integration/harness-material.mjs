@@ -44,6 +44,10 @@ const preparedMaterials = new WeakMap();
 const fail = () => {
   throw new Error("integration.harness-material.failed");
 };
+const phaseFailure = (phase) =>
+  new Error("integration.harness-material.failed", {
+    cause: new Error(`integration.harness-material.${phase}`),
+  });
 
 const remaining = (deadline) => {
   const value = Math.floor(deadline - performance.now());
@@ -223,11 +227,13 @@ const runMaterialVerification = async ({
   deadline,
   material,
   operation,
+  onPhase = () => {},
   policy,
   root,
   runId,
   signal,
 }) => {
+  onPhase("verify-context");
   if (signal.aborted) fail();
   const image = verifierImage(client, material.verifierImage);
   const context = resolve(root, "verifier");
@@ -260,6 +266,7 @@ const runMaterialVerification = async ({
   const retirementBoundary = deadline - materialSettlementReserveMilliseconds;
   const buildDeadline =
     retirementBoundary - materialRetirementReserveMilliseconds;
+  onPhase("verify-build");
   const imageId = await buildPreparedDockerImage(client, {
     buildArguments: { BASE_IMAGE: material.verifierImage },
     context,
@@ -278,6 +285,7 @@ const runMaterialVerification = async ({
     retirementBoundary,
     performance.now() + materialRetirementReserveMilliseconds,
   );
+  onPhase("verify-retire");
   await retirePreparedDockerImage(client, {
     deadline: retirementDeadline,
     imageId,
@@ -298,6 +306,7 @@ const runMaterialVerification = async ({
 // and identity-checked cleanup without delegating a restartable sub-phase.
 export const prepareNpmHarnessMaterial = async (input) => {
   let owned;
+  let phase = "preflight";
   try {
     const {
       dockerClient,
@@ -344,8 +353,10 @@ export const prepareNpmHarnessMaterial = async (input) => {
           `https://registry.npmjs.org/-/npm/v1/attestations/${descriptor.packageName.replace("/", "%2f")}@${descriptor.version}`
       )
         fail();
+      phase = "download-tarball";
       const archive = await download(descriptor, signal, deadline);
       tarballs.set(`${descriptor.packageName}@${descriptor.version}`, archive);
+      phase = "download-attestation";
       const attestationBytes = await download(
         descriptor.attestations,
         signal,
@@ -361,18 +372,24 @@ export const prepareNpmHarnessMaterial = async (input) => {
         attestationBytes,
       );
     }
+    phase = "compile-audit";
     const audit = compileNpmAttestationAudit(material, attestations);
     const policy = compileNpmVerifierPolicy(material, audit);
+    phase = "verify";
     const verifier = await runMaterialVerification({
       client: dockerClient,
       deadline,
       material,
       operation: "npm-verify",
+      onPhase: (value) => {
+        phase = value;
+      },
       policy,
       root,
       runId,
       signal,
     });
+    phase = "compile-authority";
     const authority = compileVerifiedNpmHarnessMaterial({
       audit,
       evidenceId,
@@ -380,6 +397,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
       tarballs,
       verifier: { ...verifier, name: "npm" },
     });
+    phase = "publish";
     if (performance.now() >= deadline) fail();
     const token = Object.freeze({
       authorityVersion: 1,
@@ -395,7 +413,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
       fail();
     }
     return token;
-  } catch (error) {
+  } catch {
     if (owned !== undefined) {
       try {
         sameDirectory(owned);
@@ -405,12 +423,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
         // failure reconciliation when its identity can no longer be proved.
       }
     }
-    if (
-      error instanceof Error &&
-      error.message === "integration.harness-material.failed"
-    )
-      throw error;
-    fail(error);
+    throw phaseFailure(phase);
   }
 };
 
