@@ -25,9 +25,10 @@ Claude Code are the target harnesses for the first alpha, but neither is a publi
 support claim until its packed-CLI actual-binary admission finishes. Cursor and
 the other product-roster harnesses are later work and do not block 0.1.0.
 
-The current source-built CLI exposes the stable command surface and the Langfuse
-and Local SQLite destination descriptors. Its packed harness registry remains
-empty until admission completes.
+The source-built CLI exposes the command surface and a Langfuse destination
+descriptor. Local SQLite is deferred from 0.1.0: its descriptor is present for
+development, but the alpha will expose no executable Local SQLite capability or
+support claim. The packed harness registry remains empty until admission.
 
 ## Start here
 
@@ -37,8 +38,9 @@ empty until admission completes.
 - [Contributing](CONTRIBUTING.md)
 
 Do not install an unpublished artifact from an untrusted source. Once the alpha
-is published, this section and the getting-started guide will name the exact npm
-version and evidence-backed platform combinations.
+is published, use `agentscope-cli@alpha` or the exact `0.1.0` version on a
+platform listed in the release support manifest. A bare package install may
+resolve only the inert ownership bootstrap before the first stable release.
 
 ## How it works
 
@@ -54,10 +56,11 @@ replace an overlapping observability hook during ordinary installation. Setup is
 plan-first; mutation requires explicit confirmation, and uninstall removes only
 Agentscope-owned state.
 
-`~/.agentscope` stores non-secret machine configuration. Credentials use the
-governed credential backend or explicit CI references. `AGENTSCOPE_HOME` is an
-explicit override for portable installations, tests, and CI isolation—not an
-implicit source of ordinary user configuration.
+`~/.agentscope` stores non-secret machine configuration. The current CLI accepts
+explicit CI environment references for destination credentials; a secure
+interactive credential setup path is still required before the macOS alpha can
+be offered to ordinary users. `AGENTSCOPE_HOME` is an explicit override for
+portable installations, tests, and CI isolation.
 
 ## Development
 

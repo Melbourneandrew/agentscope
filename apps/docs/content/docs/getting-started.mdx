@@ -7,8 +7,10 @@ description: Installation status and the safe Agentscope setup sequence.
 
 Agentscope 0.1.0 is not published yet. Do not install an artifact from an
 untrusted source or treat source checkout behavior as a released support claim.
-The first alpha targets Codex and Claude Code; exact versions and supported
-platform combinations will be listed here only after actual-binary admission.
+The first alpha targets Codex and Claude Code with Langfuse delivery over OTLP.
+Exact harness versions, modes, and platforms will be listed here only after
+actual-binary admission. Local SQLite, Cursor, and the other harnesses are not
+0.1.0 support claims.
 
 Agentscope requires Node.js 22 or later. The public product is one npm package,
 `agentscope-cli`, which exposes the `agentscope` command. Internal workspace
@@ -18,13 +20,17 @@ packages are not separately supported products.
 
 Once the alpha is published, use this order:
 
-1. Install the exact published `agentscope-cli` version named by the release.
+1. Install `agentscope-cli@alpha` or the exact `0.1.0` version named by the
+   release, on a platform listed in its support manifest. A bare package
+   install may resolve the inert ownership bootstrap before a stable release.
 2. Run `agentscope --version` and `agentscope init`.
 3. Review the initialization plan. Repeat with `--yes` only when you intend to
    create the non-secret Agentscope configuration.
-4. Configure a named destination, then select it explicitly with `agentscope
-routing set <connection-name>`. Configuring a destination does not enable
-   delivery by itself; a bare `agentscope routing set` disables delivery.
+4. Configure a named Langfuse connection using the
+   [destination command](./cli/destination/configure) and the release's validated
+   secure credential flow. Select it explicitly with `agentscope routing set
+<connection-name>`. Configuring a destination does not enable delivery by
+   itself; a bare `agentscope routing set` disables delivery.
 5. Run `agentscope harness list` and `agentscope harness status <harness>`.
 6. Run `agentscope install <harness>` without `--yes` and inspect the plan.
    Repeat with `--yes` only when the current plan is acceptable.
@@ -36,11 +42,12 @@ hook. If installation reports an overlap, review it before using the separate
 
 ## Configuration and credentials
 
-Non-secret configuration lives under `~/.agentscope`. Credentials use the
-governed credential backend or an explicit CI environment-variable reference;
-Agentscope does not store credential values in its configuration or print them.
-`AGENTSCOPE_HOME` is an explicit override for portable installations, tests, and
-CI isolation.
+Non-secret configuration lives under `~/.agentscope`. The current source-built
+CLI accepts explicit CI environment-variable references for destination
+credentials. A validated secure interactive credential flow is required before
+ordinary macOS alpha setup is documented. Agentscope does not store credential
+values in its configuration or print them. `AGENTSCOPE_HOME` is an explicit
+override for portable installations, tests, and CI isolation.
 
 Routing is always explicit. An empty routing selection disables delivery, and
 Agentscope never chooses the first configured destination as a default.
@@ -51,20 +58,18 @@ Use `agentscope harness status <harness>` and `agentscope doctor` for read-only
 inspection. `agentscope uninstall <harness>` is also a dry run until `--yes` is
 present and removes only an exact Agentscope-owned integration.
 
-Destination unconfiguration and data deletion are separate operations. In
-particular, unconfiguring Local SQLite preserves its database; deletion requires
-the dedicated confirmed command.
+Destination unconfiguration and data deletion are separate operations. Local
+SQLite is unavailable in the 0.1.0 alpha, including its persistence and
+maintenance commands.
 
 ## Troubleshooting
 
 - Use `agentscope doctor --output json` for a bounded machine-readable report.
 - Treat `unsupported` and `indeterminate` as distinct from an absent harness.
 - A configured destination is inactive until routing selects it.
-- If Local SQLite reports a recoverable lifecycle state, inspect the documented
-  `agentscope destination recover` plan before applying it. For a harness
-  recovery requirement or an outcome-unknown/reconciliation state, stop mutation
-  and follow the state-specific suggested action; Doctor reports an action
-  identifier, not a shell command.
+- For a harness recovery requirement or an outcome-unknown/reconciliation state,
+  stop mutation and follow the state-specific suggested action. Doctor reports
+  an action identifier, not a shell command.
 - Never paste credential values into `--settings`, command arguments, issue
   reports, or logs.
 

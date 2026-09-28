@@ -7,6 +7,9 @@ commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616
 
 Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
 
+Local SQLite is deferred from 0.1.0. Its unconfiguration lifecycle is unavailable
+in the alpha; this page records the command contract for a later admitted tuple.
+
 ## Syntax
 
 ```bash
@@ -31,5 +34,5 @@ This command is safe for local data retention but is not equivalent to data dele
 ## Examples
 
 ```bash
-agentscope destination unconfigure local-history --yes
+agentscope destination unconfigure <connection-name>
 ```
