@@ -14,6 +14,8 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  classifyMaterialDownloadFailureForTesting,
+  classifyMaterialResponseForTesting,
   inspectPreparedHarnessMaterial,
   inspectPreparedNpmHarnessMaterial,
   prepareHarnessMaterial,
@@ -177,6 +179,46 @@ describe("authenticated harness material runtime", () => {
 });
 
 describe("harness material failure-phase evidence", () => {
+  it("maps only closed registry response and transport categories", () => {
+    const response = (statusCode: number, headers = {}) => ({
+      statusCode,
+      headers,
+    });
+    expect(classifyMaterialResponseForTesting(response(429), 1)).toBe(
+      "rate-limit",
+    );
+    expect(classifyMaterialResponseForTesting(response(503), 1)).toBe(
+      "upstream",
+    );
+    expect(classifyMaterialResponseForTesting(response(404), 1)).toBe("status");
+    expect(
+      classifyMaterialResponseForTesting(
+        response(200, { "content-encoding": "gzip" }),
+        1,
+      ),
+    ).toBe("encoding");
+    expect(
+      classifyMaterialResponseForTesting(
+        response(200, { "content-length": "2" }),
+        1,
+      ),
+    ).toBe("length-header");
+    expect(
+      classifyMaterialResponseForTesting(response(200), 1),
+    ).toBeUndefined();
+    expect(
+      classifyMaterialDownloadFailureForTesting(new Error("deadline")),
+    ).toBe("deadline");
+    expect(
+      classifyMaterialDownloadFailureForTesting(
+        new Error("integration.harness-material.failed"),
+      ),
+    ).toBe("deadline");
+    expect(classifyMaterialDownloadFailureForTesting(new Error("secret"))).toBe(
+      "transport",
+    );
+  });
+
   it("validates every package identity before any download", async () => {
     const privateRoot = root();
     const descriptor = {

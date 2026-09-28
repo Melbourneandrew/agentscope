@@ -133,6 +133,40 @@ const writeExclusive = (path, bytes) => {
     fail();
 };
 
+export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
+  if (response.statusCode === 429) return "rate-limit";
+  if (response.statusCode >= 500 && response.statusCode <= 599)
+    return "upstream";
+  if (response.statusCode !== 200) return "status";
+  if (response.headers.location !== undefined) return "redirect";
+  if (response.headers["content-encoding"] !== undefined) return "encoding";
+  if (
+    response.headers["content-length"] !== undefined &&
+    response.headers["content-length"] !== String(expectedBytes)
+  )
+    return "length-header";
+};
+
+const downloadFailureReasons = new Map([
+  ["registry identity", "identity"],
+  ["integration.harness-material.failed", "deadline"],
+  ...[
+    "rate-limit",
+    "upstream",
+    "status",
+    "redirect",
+    "encoding",
+    "length-header",
+    "size",
+    "incomplete",
+    "interrupted",
+    "deadline",
+  ].map((reason) => [reason, reason]),
+]);
+export const classifyMaterialDownloadFailureForTesting = (error) =>
+  downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
+  "transport";
+
 const download = (descriptor, signal, deadline) =>
   new Promise((resolveDownload, rejectDownload) => {
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
@@ -187,15 +221,13 @@ const download = (descriptor, signal, deadline) =>
       },
       (response) => {
         responseHandle = response;
-        if (
-          response.statusCode !== 200 ||
-          response.headers.location !== undefined ||
-          response.headers["content-encoding"] !== undefined ||
-          (response.headers["content-length"] !== undefined &&
-            response.headers["content-length"] !== String(descriptor.bytes))
-        ) {
+        const rejection = classifyMaterialResponseForTesting(
+          response,
+          descriptor.bytes,
+        );
+        if (rejection !== undefined) {
           response.destroy();
-          stop(new Error("response"));
+          stop(new Error(rejection));
           return;
         }
         response.on("data", (chunk) => {
@@ -224,6 +256,26 @@ const assertNpmPackageDescriptors = (material) => {
         `https://registry.npmjs.org/-/npm/v1/attestations/${descriptor.packageName.replace("/", "%2f")}@${descriptor.version}`
     )
       fail();
+};
+
+const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
+  onPhase("download-attestation");
+  let bytes;
+  try {
+    bytes = await download(descriptor.attestations, signal, deadline);
+  } catch (error) {
+    onPhase(
+      `download-attestation-${classifyMaterialDownloadFailureForTesting(error)}`,
+    );
+    throw error;
+  }
+  onPhase("attestation-digest");
+  if (
+    createHash("sha256").update(bytes).digest("hex") !==
+    descriptor.attestations.sha256
+  )
+    fail();
+  return bytes;
 };
 
 const verifierImage = (client, image) => {
@@ -362,17 +414,14 @@ export const prepareNpmHarnessMaterial = async (input) => {
       phase = "download-tarball";
       const archive = await download(descriptor, signal, deadline);
       tarballs.set(`${descriptor.packageName}@${descriptor.version}`, archive);
-      phase = "download-attestation";
-      const attestationBytes = await download(
-        descriptor.attestations,
+      const attestationBytes = await acquireNpmAttestation(
+        descriptor,
         signal,
         deadline,
+        (value) => {
+          phase = value;
+        },
       );
-      if (
-        createHash("sha256").update(attestationBytes).digest("hex") !==
-        descriptor.attestations.sha256
-      )
-        fail();
       attestations.set(
         `${descriptor.packageName}@${descriptor.version}`,
         attestationBytes,
