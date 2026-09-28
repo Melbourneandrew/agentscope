@@ -429,15 +429,13 @@ export function verifyCandidateArtifact({
   );
   if (manifest.package.version === "0.1.0") {
     assert(
-      inspected.inventory.every(
-        ({ path }) => {
-          const folded = path.toLowerCase();
-          return (
-            !folded.startsWith("package/dist/internal/local-sqlite/") &&
-            !folded.endsWith(".node")
-          );
-        },
-      ),
+      inspected.inventory.every(({ path }) => {
+        const folded = path.toLowerCase();
+        return (
+          !folded.startsWith("package/dist/internal/local-sqlite/") &&
+          !folded.endsWith(".node")
+        );
+      }),
       "Alpha candidate contains an unadmitted Local native artifact",
     );
   }
