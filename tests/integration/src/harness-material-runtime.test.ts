@@ -177,6 +177,47 @@ describe("authenticated harness material runtime", () => {
 });
 
 describe("harness material failure-phase evidence", () => {
+  it("validates every package identity before any download", async () => {
+    const privateRoot = root();
+    const descriptor = {
+      packageName: "@openai/codex",
+      version: "0.149.1",
+      tarballUrl: "https://registry.npmjs.org/archive",
+      bytes: 1,
+      attestations: {
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
+        bytes: 1,
+      },
+    };
+    const acquisition = prepareNpmHarnessMaterial({
+      dockerClient: {} as never,
+      evidenceId: "fixture",
+      material: {
+        kind: "npm",
+        registry: "https://registry.npmjs.org/",
+        packages: [
+          descriptor,
+          {
+            ...descriptor,
+            attestations: {
+              ...descriptor.attestations,
+              url: "https://invalid.example/",
+            },
+          },
+        ],
+      } as never,
+      maximumMilliseconds: 1_000,
+      privateRoot,
+      runId: "0123456789abcdef",
+      signal: new AbortController().signal,
+    });
+    await expect(acquisition).rejects.toMatchObject({
+      message: "integration.harness-material.failed",
+      cause: { message: "integration.harness-material.validate-package" },
+    });
+    expect(existsSync(resolve(privateRoot, "harness-fixture"))).toBe(false);
+  });
+
   it("records a closed tarball phase when download identity rejects before network", async () => {
     const privateRoot = root();
     const acquisition = prepareNpmHarnessMaterial({

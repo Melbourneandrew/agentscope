@@ -215,6 +215,17 @@ const download = (descriptor, signal, deadline) =>
     requestHandle.end();
   });
 
+const assertNpmPackageDescriptors = (material) => {
+  for (const descriptor of material.packages)
+    if (
+      new URL(descriptor.tarballUrl).origin !==
+        new URL(material.registry).origin ||
+      descriptor.attestations.url !==
+        `https://registry.npmjs.org/-/npm/v1/attestations/${descriptor.packageName.replace("/", "%2f")}@${descriptor.version}`
+    )
+      fail();
+};
+
 const verifierImage = (client, image) => {
   const matches = client?.evidence?.images?.filter(
     (candidate) => candidate.image === image,
@@ -343,16 +354,11 @@ export const prepareNpmHarnessMaterial = async (input) => {
       aggregateBytes > maximumAggregateArchiveBytes
     )
       fail();
+    phase = "validate-package";
+    assertNpmPackageDescriptors(material);
     const tarballs = new Map();
     const attestations = new Map();
     for (const descriptor of material.packages) {
-      if (
-        new URL(descriptor.tarballUrl).origin !==
-          new URL(material.registry).origin ||
-        descriptor.attestations.url !==
-          `https://registry.npmjs.org/-/npm/v1/attestations/${descriptor.packageName.replace("/", "%2f")}@${descriptor.version}`
-      )
-        fail();
       phase = "download-tarball";
       const archive = await download(descriptor, signal, deadline);
       tarballs.set(`${descriptor.packageName}@${descriptor.version}`, archive);
