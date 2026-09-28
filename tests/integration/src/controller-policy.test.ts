@@ -430,6 +430,25 @@ describe("integration cleanup authority", () => {
     );
     expect(runner).toContain("failedCodexSessionStartHint(home)");
     expect(runner).toContain("integration.runner.untrusted-pty-hint:");
+    const selectedPtyBoundary = runner.slice(
+      runner.indexOf("let receipt;"),
+      runner.indexOf("const returnedAtMs = performance.now();"),
+    );
+    expect(selectedPtyBoundary).toContain(
+      "receipt = await executeSelectedPtyProcess(headlessCapability, {",
+    );
+    expect(selectedPtyBoundary).toContain(
+      "codexPtyFailureHint = codexArmPtyResearchHint(error);",
+    );
+    expect(selectedPtyBoundary).toContain("throw error;");
+    expect(runner.split("codexArmPtyResearchHint(error)")).toHaveLength(2);
+    const otherInteractiveFailures = runner.slice(
+      runner.indexOf("const returnedAtMs = performance.now();"),
+      runner.indexOf(
+        'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+      ),
+    );
+    expect(otherInteractiveFailures).not.toContain("codexArmPtyResearchHint");
     expect(runner).toContain(
       'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
     );

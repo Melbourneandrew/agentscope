@@ -676,15 +676,26 @@ try {
           ? "immediate"
           : "semantic-ready",
     };
-    const receipt = await executeSelectedPtyProcess(headlessCapability, {
-      completion,
-      readiness,
-      initialGeometry,
-      interaction,
-      interpreter,
-      process: request,
-      scriptSha256,
-    });
+    let receipt;
+    try {
+      receipt = await executeSelectedPtyProcess(headlessCapability, {
+        completion,
+        readiness,
+        initialGeometry,
+        interaction,
+        interpreter,
+        process: request,
+        scriptSha256,
+      });
+    } catch (error) {
+      if (
+        scenarioId === "codex-tui-trace-smoke" &&
+        retainedInteractivePhase(ledger) ===
+          "integration.fixture.codex-model-gate-arm-health-pending"
+      )
+        codexPtyFailureHint = codexArmPtyResearchHint(error);
+      throw error;
+    }
     const returnedAtMs = performance.now();
     const processAuthority = {
       runId: serializedProcessRequest.runId,
@@ -851,12 +862,6 @@ try {
   }
 } catch (error) {
   if (scenario.executionMode === "interactive") {
-    if (
-      scenarioId === "codex-tui-trace-smoke" &&
-      retainedInteractivePhase(ledger) ===
-        "integration.fixture.codex-model-gate-arm-health-pending"
-    )
-      codexPtyFailureHint = codexArmPtyResearchHint(error);
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
