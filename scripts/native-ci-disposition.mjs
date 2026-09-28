@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +18,7 @@ import {
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const revisionPattern = /^[0-9a-f]{40}$/u;
+const blobPattern = /^[0-9a-f]{40}$/u;
 const nativeRoot = "package/dist/internal/local-sqlite/";
 const loader = `${nativeRoot}loader/owned-loader.cjs`;
 const supportManifest = `${nativeRoot}records/support-manifest.json`;
@@ -43,6 +51,30 @@ export function validateNativeCandidateProfile(profile) {
   )
     throw new Error("native-ci-profile-invalid");
   return profile;
+}
+
+export function readAuthenticatedNativeProfile(path, expectedBlob) {
+  if (
+    !blobPattern.test(expectedBlob) ||
+    typeof constants.O_NOFOLLOW !== "number"
+  )
+    throw new Error("native-ci-profile-source-invalid");
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!fstatSync(descriptor).isFile())
+      throw new Error("native-ci-profile-not-regular");
+    const bytes = readFileSync(descriptor);
+    const observedBlob = createHash("sha1")
+      .update(Buffer.from(`blob ${bytes.length}\0`))
+      .update(bytes)
+      .digest("hex");
+    if (observedBlob !== expectedBlob)
+      throw new Error("native-ci-profile-source-mismatch");
+    return bytes;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 function nativeInventoryState(inspected, profile) {
@@ -134,6 +166,7 @@ function parseArguments(argv) {
     if (
       ![
         "--profile",
+        "--profile-blob",
         "--packed-tarball",
         "--source-revision",
         "--artifact-root",
@@ -151,6 +184,7 @@ function parseArguments(argv) {
   }
   for (const key of [
     "--profile",
+    "--profile-blob",
     "--packed-tarball",
     "--source-revision",
     "--output",
@@ -172,7 +206,10 @@ function parseArguments(argv) {
 
 function run(argv) {
   const options = parseArguments(argv);
-  const profileBytes = readFileSync(resolve(root, options.get("--profile")));
+  const profileBytes = readAuthenticatedNativeProfile(
+    resolve(root, options.get("--profile")),
+    options.get("--profile-blob"),
+  );
   const profile = JSON.parse(profileBytes.toString("utf8"));
   const packed = inspectCandidateTarball(
     resolve(root, options.get("--packed-tarball")),

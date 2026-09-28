@@ -14,7 +14,7 @@ const forbiddenWorkflow = [
   /npm\s+publish/u,
   /npm\s+stage/u,
   /\bgh\s+/u,
-  /\bgit\s+(?!rev-parse\s+HEAD)/u,
+  /\bgit\s+(?!(?:rev-parse\s+HEAD|diff\s+--quiet\s+HEAD\s+--))/u,
   /curl\s/u,
   /wget\s/u,
 ];
@@ -35,7 +35,7 @@ const workflowContextCommand =
 const candidateCommand =
   'node scripts/verify-release-candidate.mjs --artifact-root artifacts/release-candidate --manifest-relative "$CANDIDATE_MANIFEST" --certification-relative "$CANDIDATE_CERTIFICATION" --tarball-relative "$CANDIDATE_TARBALL" --manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0';
 const dispositionCommand =
-  'node scripts/native-ci-disposition.mjs --profile scripts/native-candidate-release-profile.json --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz --source-revision "$SOURCE_REVISION" --artifact-root artifacts/release-candidate --candidate-manifest-relative "$CANDIDATE_MANIFEST" --candidate-tarball-relative "$CANDIDATE_TARBALL" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"';
+  'test "$(git rev-parse HEAD)" = "$SOURCE_REVISION" && git diff --quiet HEAD -- scripts/native-candidate-release-profile.json scripts/native-ci-disposition.mjs scripts/release-lane/candidate.mjs && node scripts/native-ci-disposition.mjs --profile scripts/native-candidate-release-profile.json --profile-blob "$(git rev-parse HEAD:scripts/native-candidate-release-profile.json)" --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz --source-revision "$SOURCE_REVISION" --artifact-root artifacts/release-candidate --candidate-manifest-relative "$CANDIDATE_MANIFEST" --candidate-tarball-relative "$CANDIDATE_TARBALL" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"';
 const recordsCommand =
   'node scripts/verify-release-records.mjs --artifact-root artifacts/release-candidate --record-set-relative "$REHEARSAL_RECORDS" --candidate-manifest-relative "$CANDIDATE_MANIFEST" --trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0 --workspace-root . --workflow-relative .github/workflows/release.yml';
 const allowedRunCommands = new Set([

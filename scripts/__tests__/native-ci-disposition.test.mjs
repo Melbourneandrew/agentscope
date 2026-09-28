@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "vitest";
 
 import {
   evaluateNativeCandidateDisposition,
+  readAuthenticatedNativeProfile,
   validateNativeCandidateProfile,
 } from "../native-ci-disposition.mjs";
 
@@ -54,6 +59,36 @@ function candidate(inspected) {
     certification: { state: "certified", recordDigest: digest },
   };
 }
+
+test("profile read binds exact opened regular bytes to the source blob", () => {
+  const directory = mkdtempSync(join(tmpdir(), "agentscope-native-profile-"));
+  try {
+    const path = join(directory, "profile.json");
+    const bytes = Buffer.from(JSON.stringify(profile));
+    writeFileSync(path, bytes);
+    const blob = createHash("sha1")
+      .update(Buffer.from(`blob ${bytes.length}\0`))
+      .update(bytes)
+      .digest("hex");
+    assert.deepEqual(readAuthenticatedNativeProfile(path, blob), bytes);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...profile,
+        localSqliteExecutableTuple: "proposed-unpublished",
+      }),
+    );
+    assert.throws(
+      () => readAuthenticatedNativeProfile(path, blob),
+      /native-ci-profile-source-mismatch/u,
+    );
+    const link = join(directory, "link.json");
+    symlinkSync(path, link);
+    assert.throws(() => readAuthenticatedNativeProfile(link, blob));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("excluded exact profile and absent fresh/candidate tuples report nonadmission", () => {
   const inspected = packed([bin]);

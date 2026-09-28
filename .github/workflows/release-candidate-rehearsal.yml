@@ -90,8 +90,11 @@ jobs:
           CANDIDATE_TARBALL: ${{ inputs.candidate-tarball-path }}
           SOURCE_REVISION: ${{ github.sha }}
         run: >-
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION" &&
+          git diff --quiet HEAD -- scripts/native-candidate-release-profile.json scripts/native-ci-disposition.mjs scripts/release-lane/candidate.mjs &&
           node scripts/native-ci-disposition.mjs
           --profile scripts/native-candidate-release-profile.json
+          --profile-blob "$(git rev-parse HEAD:scripts/native-candidate-release-profile.json)"
           --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz
           --source-revision "$SOURCE_REVISION"
           --artifact-root artifacts/release-candidate

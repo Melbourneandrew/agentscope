@@ -97,8 +97,11 @@ jobs:
         env:
           NATIVE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: >-
+          test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA" &&
+          git diff --quiet HEAD -- scripts/native-candidate-release-profile.json scripts/native-ci-disposition.mjs scripts/release-lane/candidate.mjs &&
           node scripts/native-ci-disposition.mjs
           --profile scripts/native-candidate-release-profile.json
+          --profile-blob "$(git rev-parse HEAD:scripts/native-candidate-release-profile.json)"
           --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz
           --source-revision "$NATIVE_HEAD_SHA"
           --output "$GITHUB_OUTPUT"

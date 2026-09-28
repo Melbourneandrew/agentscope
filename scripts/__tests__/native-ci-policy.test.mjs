@@ -272,6 +272,14 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     (step) => step.id === "disposition",
   );
   assert.match(disposition.run, /native-ci-disposition\.mjs/u);
+  assert.match(
+    disposition.run,
+    /git diff --quiet HEAD -- scripts\/native-candidate-release-profile\.json/u,
+  );
+  assert.match(
+    disposition.run,
+    /--profile-blob "\$\(git rev-parse HEAD:scripts\/native-candidate-release-profile\.json\)"/u,
+  );
   assert.match(disposition.run, /native-candidate-release-profile\.json/u);
   assert.match(disposition.run, /artifacts\/npm\/agentscope-cli-0\.1\.0\.tgz/u);
   assert.equal(
