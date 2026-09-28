@@ -14,10 +14,12 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  acceptsPinnedBodyLengthForTesting,
   classifyMaterialDownloadFailureForTesting,
   classifyMaterialResponseForTesting,
   inspectPreparedHarnessMaterial,
   inspectPreparedNpmHarnessMaterial,
+  matchesPinnedAttestationDigestForTesting,
   prepareHarnessMaterial,
   prepareNpmHarnessMaterial,
   retirePreparedHarnessMaterial,
@@ -184,28 +186,22 @@ describe("harness material failure-phase evidence", () => {
       statusCode,
       headers,
     });
-    expect(classifyMaterialResponseForTesting(response(429), 1)).toBe(
+    expect(classifyMaterialResponseForTesting(response(429))).toBe(
       "rate-limit",
     );
-    expect(classifyMaterialResponseForTesting(response(503), 1)).toBe(
-      "upstream",
-    );
-    expect(classifyMaterialResponseForTesting(response(404), 1)).toBe("status");
+    expect(classifyMaterialResponseForTesting(response(503))).toBe("upstream");
+    expect(classifyMaterialResponseForTesting(response(404))).toBe("status");
     expect(
       classifyMaterialResponseForTesting(
         response(200, { "content-encoding": "gzip" }),
-        1,
       ),
     ).toBe("encoding");
     expect(
       classifyMaterialResponseForTesting(
         response(200, { "content-length": "2" }),
-        1,
       ),
-    ).toBe("length-header");
-    expect(
-      classifyMaterialResponseForTesting(response(200), 1),
     ).toBeUndefined();
+    expect(classifyMaterialResponseForTesting(response(200))).toBeUndefined();
     expect(
       classifyMaterialDownloadFailureForTesting(new Error("deadline")),
     ).toBe("deadline");
@@ -291,5 +287,27 @@ describe("harness material failure-phase evidence", () => {
       cause: { message: "integration.harness-material.download-tarball" },
     });
     expect(existsSync(resolve(privateRoot, "harness-fixture"))).toBe(false);
+  });
+});
+
+describe("pinned attestation body authority", () => {
+  it("authenticates actual pinned bytes despite an advisory length header", () => {
+    const bytes = Buffer.from("x");
+    const digest =
+      "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
+    expect(
+      classifyMaterialResponseForTesting({
+        statusCode: 200,
+        headers: { "content-length": "2" },
+      }),
+    ).toBeUndefined();
+    expect(acceptsPinnedBodyLengthForTesting(1, 1, false)).toBe(true);
+    expect(acceptsPinnedBodyLengthForTesting(1, 1, true)).toBe(true);
+    expect(matchesPinnedAttestationDigestForTesting(bytes, digest)).toBe(true);
+    expect(acceptsPinnedBodyLengthForTesting(2, 1, false)).toBe(false);
+    expect(acceptsPinnedBodyLengthForTesting(0, 1, true)).toBe(false);
+    expect(
+      matchesPinnedAttestationDigestForTesting(bytes, "0".repeat(64)),
+    ).toBe(false);
   });
 });

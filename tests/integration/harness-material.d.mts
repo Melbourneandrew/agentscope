@@ -17,8 +17,16 @@ export declare const classifyMaterialResponseForTesting: (
     statusCode?: number;
     headers: Readonly<Record<string, string | string[] | undefined>>;
   }>,
-  expectedBytes: number,
 ) => string | undefined;
+export declare const acceptsPinnedBodyLengthForTesting: (
+  observedBytes: number,
+  expectedBytes: number,
+  complete: boolean,
+) => boolean;
+export declare const matchesPinnedAttestationDigestForTesting: (
+  bytes: Uint8Array,
+  sha256: string,
+) => boolean;
 export declare const classifyMaterialDownloadFailureForTesting: (
   error: unknown,
 ) => string;
