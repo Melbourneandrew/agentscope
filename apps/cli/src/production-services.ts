@@ -700,6 +700,12 @@ const createListService =
 const createConfigureService =
   (state: ProductionState): CliConfigurationServices["configureDestination"] =>
   async (input) => {
+    // Local remains discoverable, but the 0.1.0 alpha has no admitted Local
+    // capability. Reject before settings, credentials, plans, or mutation.
+    if (input.type === localSqliteDestinationDescriptor.commandName)
+      return failure(
+        diagnostic("unavailable", "destination.capability-unavailable"),
+      );
     try {
       const signal = new AbortController().signal;
       const candidate = {
