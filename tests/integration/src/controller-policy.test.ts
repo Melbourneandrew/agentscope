@@ -423,7 +423,7 @@ describe("integration cleanup authority", () => {
     expect(runner).toContain(
       '"integration.fixture.codex-model-gate-arm-health-pending"',
     );
-    expect(runner).toContain("marker === undefined &&");
+    expect(runner).toContain("codexPtyFailureHint ??");
     expect(runner).toContain(
       'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
     );

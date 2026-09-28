@@ -22,6 +22,7 @@ import {
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
+  codexArmPtyResearchHint,
   codexGateResearchHints,
   compileCandidateInventory,
   decodeInteractiveFailureExitCode,
@@ -529,6 +530,7 @@ if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
 let interactiveFailureDiagnostic;
+let codexPtyFailureHint;
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
@@ -849,6 +851,12 @@ try {
   }
 } catch (error) {
   if (scenario.executionMode === "interactive") {
+    if (
+      scenarioId === "codex-tui-trace-smoke" &&
+      retainedInteractivePhase(ledger) ===
+        "integration.fixture.codex-model-gate-arm-health-pending"
+    )
+      codexPtyFailureHint = codexArmPtyResearchHint(error);
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
@@ -889,11 +897,11 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)
-      : marker === undefined &&
-          retainedInteractivePhase(ledger) ===
-            "integration.fixture.codex-model-gate-arm-health-pending"
-        ? await failedCodexSessionStartHint(home)
-        : undefined;
+      : (codexPtyFailureHint ??
+        (retainedInteractivePhase(ledger) ===
+        "integration.fixture.codex-model-gate-arm-health-pending"
+          ? await failedCodexSessionStartHint(home)
+          : undefined));
     if (codexGateResearchHints.includes(gateHint))
       process.stdout.write(
         `integration.runner.untrusted-gate-hint:${gateHint}\n`,

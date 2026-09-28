@@ -858,6 +858,11 @@ export const codexGateResearchHints = Object.freeze([
   "arm-child",
   "arm-filesystem",
   "arm-other",
+  "arm-pty-reconciliation",
+  "arm-pty-startup",
+  "arm-pty-transport",
+  "arm-pty-kernel",
+  "arm-pty-other",
   "seal-deadline",
   "seal-request",
   "response-shape",
@@ -880,6 +885,24 @@ export const codexGateResearchHints = Object.freeze([
   "ledger-shape",
   "other",
 ]);
+
+// The selected PTY error is research-only after execution has already failed.
+// Map exact kernel codes to closed categories; never export an error message.
+export const codexArmPtyResearchHint = (error) => {
+  try {
+    const message = error instanceof Error ? error.message : undefined;
+    if (message === "testkit.headless.reconciliation.deadline")
+      return "arm-pty-reconciliation";
+    if (message === "testkit.headless.startup.deadline")
+      return "arm-pty-startup";
+    if (typeof message === "string" && message.startsWith("testkit.pty."))
+      return "arm-pty-transport";
+    if (message === "testkit.headless.kernel.failure") return "arm-pty-kernel";
+  } catch {
+    // A hostile thrown value cannot suppress terminal failure evidence.
+  }
+  return "arm-pty-other";
+};
 
 // Only an already-failing fixture may publish this fixed exception category.
 // No message, code, path, or timing value crosses the scenario boundary.
