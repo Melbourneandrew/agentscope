@@ -897,14 +897,17 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)
-      : (codexPtyFailureHint ??
-        (retainedInteractivePhase(ledger) ===
-        "integration.fixture.codex-model-gate-arm-health-pending"
-          ? await failedCodexSessionStartHint(home)
-          : undefined));
+      : retainedInteractivePhase(ledger) ===
+          "integration.fixture.codex-model-gate-arm-health-pending"
+        ? await failedCodexSessionStartHint(home)
+        : undefined;
     if (codexGateResearchHints.includes(gateHint))
       process.stdout.write(
         `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+      );
+    if (codexPtyFailureHint !== undefined)
+      process.stdout.write(
+        `integration.runner.untrusted-pty-hint:${codexPtyFailureHint}\n`,
       );
     const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)
