@@ -54,12 +54,48 @@ const delay = (milliseconds: number): Promise<void> =>
 const closeOf = (
   child: ChildProcess,
 ): Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>> =>
-  new Promise((resolve, reject) => {
-    child.once("error", reject);
+  new Promise((resolve) => {
+    // Readiness observes launch errors. Cleanup still waits for the distinct
+    // terminal close event, which Node emits after error or exit.
+    child.once("error", () => {});
     child.once("close", (code, signal) => {
       resolve({ code, signal });
     });
   });
+
+const awaitFixtureClose = async (
+  closed: ReturnType<typeof closeOf>,
+  maximumMilliseconds: number,
+): ReturnType<typeof closeOf> => {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      closed,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error("testkit.headless.seed.process-not-joined"));
+        }, maximumMilliseconds);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+};
+
+const stopAndJoinFixture = async (
+  child: ChildProcess | undefined,
+  closed: ReturnType<typeof closeOf> | undefined,
+): Promise<void> => {
+  if (child === undefined || closed === undefined) return;
+  if (
+    child.pid !== undefined &&
+    child.exitCode === null &&
+    child.signalCode === null
+  )
+    child.kill("SIGKILL");
+  await awaitFixtureClose(closed, 5_000);
+};
 
 const snapshots = (): readonly ProcessSnapshot[] => {
   const output = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,lstart="], {
@@ -131,10 +167,32 @@ const writeFixture = (
 
 const waitForReadyByte = (child: ChildProcess): Promise<void> =>
   new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.stderr?.once("data", () => {
+    const cleanup = () => {
+      child.off("error", onError);
+      child.off("close", onClose);
+      child.stderr?.off("data", onData);
+      clearTimeout(timeout);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error("testkit.headless.seed.ready-before-close"));
+    };
+    const onData = () => {
+      cleanup();
       resolve();
-    });
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("testkit.headless.seed.ready-timeout"));
+    }, 10_000);
+    timeout.unref();
+    child.once("error", onError);
+    child.once("close", onClose);
+    child.stderr?.once("data", onData);
   });
 
 const contractRun = (name: string): HeadlessSupervisorContractRun => {
@@ -493,13 +551,14 @@ describe("real-process timeout stimulus causality", () => {
       fixturePath: fixture.file,
     });
     let child: ChildProcess | undefined;
+    let closed: ReturnType<typeof closeOf> | undefined;
     try {
       child = spawn(process.execPath, [fixture.file], {
         cwd: fixture.root,
         env: {},
         stdio: ["ignore", "ignore", "pipe"],
       });
-      const closed = closeOf(child);
+      closed = closeOf(child);
       await waitForReadyByte(child);
       const termAtMs = performance.now();
       expect(child.kill("SIGTERM")).toBe(true);
@@ -510,15 +569,17 @@ describe("real-process timeout stimulus causality", () => {
       expect(performance.now() - termAtMs).toBeGreaterThanOrEqual(
         run.request.terminationGraceMs,
       );
-      expect(snapshotFor(child.pid!)).toBeDefined();
+      // The owned child handle plus SIGKILL close receipt proves survival
+      // without spawning a competing /bin/ps process during the 1 s grace.
+      expect(child.exitCode).toBeNull();
+      expect(child.signalCode).toBeNull();
       expect(child.kill("SIGKILL")).toBe(true);
       expect(await closed).toEqual({ code: null, signal: "SIGKILL" });
     } finally {
-      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
-        child.kill("SIGKILL");
+      await stopAndJoinFixture(child, closed);
       rmSync(fixture.root, { force: true, recursive: true });
     }
-  });
+  }, 20_000);
 
   it("proves the missing TERM-survival seed cannot satisfy escalation", async () => {
     if (process.platform === "win32") return;
@@ -529,27 +590,96 @@ describe("real-process timeout stimulus causality", () => {
     expect(defective).not.toBe(source);
     const fixture = writeFixture(defective);
     let child: ChildProcess | undefined;
+    let closed: ReturnType<typeof closeOf> | undefined;
     try {
       child = spawn(process.execPath, [fixture.file], {
         cwd: fixture.root,
         env: {},
         stdio: ["ignore", "ignore", "pipe"],
       });
-      const closed = closeOf(child);
+      closed = closeOf(child);
       await waitForReadyByte(child);
       child.kill("SIGTERM");
-      expect(
-        await Promise.race([
-          closed,
-          delay(500).then(() => ({ code: 999, signal: null })),
-        ]),
-      ).toEqual({ code: null, signal: "SIGTERM" });
+      expect(await awaitFixtureClose(closed, 12_000)).toEqual({
+        code: null,
+        signal: "SIGTERM",
+      });
     } finally {
-      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
-        child.kill("SIGKILL");
+      await stopAndJoinFixture(child, closed);
       rmSync(fixture.root, { force: true, recursive: true });
     }
-  });
+  }, 25_000);
+});
+
+describe("real-process timeout fixture readiness and cleanup", () => {
+  it("rejects silent exit before readiness and joins the owned child", async () => {
+    if (process.platform === "win32") return;
+    const fixture = writeFixture("process.exit(17);");
+    let child: ChildProcess | undefined;
+    let closed: ReturnType<typeof closeOf> | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      closed = closeOf(child);
+      await expect(waitForReadyByte(child)).rejects.toThrow(
+        "testkit.headless.seed.ready-before-close",
+      );
+      expect(await closed).toEqual({ code: 17, signal: null });
+    } finally {
+      await stopAndJoinFixture(child, closed);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  it("settles a no-PID spawn error before removing the owned fixture root", async () => {
+    if (process.platform === "win32") return;
+    const fixture = writeFixture("process.exit(0);");
+    let child: ChildProcess | undefined;
+    let closed: ReturnType<typeof closeOf> | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: join(fixture.root, "missing-directory"),
+        env: {},
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      closed = closeOf(child);
+      await expect(waitForReadyByte(child)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(child.pid).toBeUndefined();
+      expect(await closed).toEqual({ code: -2, signal: null });
+    } finally {
+      await stopAndJoinFixture(child, closed);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  it("joins an owned timeout fixture even when the grace assertion is skipped", async () => {
+    if (process.platform === "win32") return;
+    const source = cases.find(
+      ({ name }) => name === "headless:timeout-escalation",
+    )!.fixtureSource;
+    const fixture = writeFixture(source);
+    let child: ChildProcess | undefined;
+    let closed: ReturnType<typeof closeOf> | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      closed = closeOf(child);
+      await waitForReadyByte(child);
+      await stopAndJoinFixture(child, closed);
+      expect(await closed).toEqual({ code: null, signal: "SIGKILL" });
+    } finally {
+      await stopAndJoinFixture(child, closed);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 20_000);
 });
 
 describe("real-process descendant stimulus causality", () => {
