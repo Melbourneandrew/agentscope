@@ -29,11 +29,11 @@ When the affected graph includes the packed CLI production closure, pre-push als
 
 ### ADR-003: Keep environmental certification out of workstation hooks
 
-**Decision:** Mandatory workstation pre-push runs no live native candidate verification and no mutation-heavy integration scenario. Contributors run mutation-heavy development integration through the Crabbox path governed by [Workstation, CI, and Crabbox Execution](/docs/blueprints/testing/integration/ci-execution). GitHub CI independently applies the fail-closed `0.1.0` fresh packed-absence decision in the still-required `Native candidate verification` context and complete hermetic integration certification governed by [Continuous Integration](/docs/blueprints/operations/continuous-integration); every protected `main` revision and release candidate receives the packed-absence proof.
+**Decision:** Mandatory workstation pre-push runs no live native candidate verification and no mutation-heavy integration scenario. Contributors run mutation-heavy development integration through the Crabbox path governed by [Workstation, CI, and Crabbox Execution](/docs/blueprints/testing/integration/ci-execution). GitHub CI independently applies the fail-closed candidate-specific decision in the still-required `Native candidate verification` context and complete hermetic integration certification governed by [Continuous Integration](/docs/blueprints/operations/continuous-integration); every protected `main` revision and release candidate receives the selected native or packed-absence proof.
 
 **Context:** Live native and integration checks are materially slower and require disposable environmental authority that an ordinary workstation hook does not provide.
 
-**Consequences:** Packed artifact verification remains local because it is deterministic, but a local result cannot stand in for the required CI candidate's fresh no-Local-tuple disposition. A local success makes no native, provider, platform, compatibility, merge, or release claim. Later Local SQLite admission restores full native candidate execution through a prior Blueprint and protected-status migration rather than silently promoting alpha packed-absence evidence.
+**Consequences:** Packed artifact verification remains local because it is deterministic, but a local result cannot stand in for the required CI candidate's fresh native or no-Local-tuple evidence. A local success makes no native, provider, platform, compatibility, merge, or release claim. Later Local SQLite promotion restores full native candidate execution and protected-status coverage rather than silently promoting a packed-absence disposition.
 
 ### ADR-004: Remove the superseded validation orchestrator instead of preserving aliases
 
