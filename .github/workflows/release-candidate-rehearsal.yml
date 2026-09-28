@@ -67,8 +67,6 @@ jobs:
         run: pnpm nx build agentscope-cli --skip-nx-cache
       - name: Verify release-revision CLI artifact
         run: pnpm verify:cli-artifact
-      - name: Run fresh non-admitting native candidate verification
-        run: pnpm verify:native-candidate
       - name: Validate exact candidate without rebuilding
         env:
           CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}
@@ -85,6 +83,25 @@ jobs:
           --manifest-digest "$EXPECTED_MANIFEST_DIGEST"
           --source-revision "$EXPECTED_SOURCE_REVISION"
           --protected-tag v0.1.0
+      - name: Bind native disposition to exact candidate and fresh packed CLI
+        id: disposition
+        env:
+          CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}
+          CANDIDATE_TARBALL: ${{ inputs.candidate-tarball-path }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: >-
+          node scripts/native-ci-disposition.mjs
+          --profile scripts/native-candidate-release-profile.json
+          --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz
+          --source-revision "$SOURCE_REVISION"
+          --artifact-root artifacts/release-candidate
+          --candidate-manifest-relative "$CANDIDATE_MANIFEST"
+          --candidate-tarball-relative "$CANDIDATE_TARBALL"
+          --output "$GITHUB_OUTPUT"
+          --summary "$GITHUB_STEP_SUMMARY"
+      - name: Run fresh non-admitting native candidate verification
+        if: steps.disposition.outputs.required == 'true'
+        run: pnpm verify:native-candidate
       - name: Validate synthetic records against executing bytes
         env:
           CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}

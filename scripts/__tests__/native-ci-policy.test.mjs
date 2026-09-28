@@ -263,8 +263,23 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     "${{ github.event.pull_request.head.sha || github.sha }}",
   );
   assert.match(
-    workflow.jobs.native.steps.find((step) => step.id === "selection").run,
+    workflow.jobs.native.steps.find(
+      (step) => step.name === "Authenticate exact native candidate checkout",
+    ).run,
     /git rev-parse HEAD.+NATIVE_HEAD_SHA/su,
+  );
+  const disposition = workflow.jobs.native.steps.find(
+    (step) => step.id === "disposition",
+  );
+  assert.match(disposition.run, /native-ci-disposition\.mjs/u);
+  assert.match(disposition.run, /native-candidate-release-profile\.json/u);
+  assert.match(disposition.run, /artifacts\/npm\/agentscope-cli-0\.1\.0\.tgz/u);
+  assert.equal(
+    workflow.jobs.native.steps.find(
+      (step) =>
+        step.name === "Run fresh non-admitting native candidate verification",
+    ).if,
+    "steps.disposition.outputs.required == 'true' && steps.selection.outputs.required == 'true'",
   );
   const workflowActionReferences = Object.values(workflow.jobs).flatMap((job) =>
     job.steps
@@ -315,7 +330,7 @@ test("workflow preserves parallel fresh native candidate authority and only cach
   );
   assert.match(
     releaseSource,
-    /--prune-irrelevant[\s\S]+pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+Run fresh non-admitting native candidate verification[\s\S]+pnpm verify:native-candidate/u,
+    /--prune-irrelevant[\s\S]+pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+Validate exact candidate without rebuilding[\s\S]+native-ci-disposition\.mjs[\s\S]+Run fresh non-admitting native candidate verification[\s\S]+pnpm verify:native-candidate/u,
   );
   assert.match(source, /--prune-irrelevant/u);
 });

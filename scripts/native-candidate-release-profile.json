@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "package": "agentscope-cli",
+  "version": "0.1.0",
+  "localSqliteExecutableTuple": "proposed-unpublished"
+}

@@ -34,6 +34,8 @@ const workflowContextCommand =
   'node scripts/verify-release-workflow-context.mjs --repository "$GITHUB_REPOSITORY" --source-revision "$SOURCE_REVISION" --observed-head "$(git rev-parse HEAD)" --caller-workflow-ref "$CALLER_WORKFLOW_REF" --job-workflow-ref "$JOB_WORKFLOW_REF" --job-workflow-sha "$JOB_WORKFLOW_SHA" --candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --protected-tag v0.1.0';
 const candidateCommand =
   'node scripts/verify-release-candidate.mjs --artifact-root artifacts/release-candidate --manifest-relative "$CANDIDATE_MANIFEST" --certification-relative "$CANDIDATE_CERTIFICATION" --tarball-relative "$CANDIDATE_TARBALL" --manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0';
+const dispositionCommand =
+  'node scripts/native-ci-disposition.mjs --profile scripts/native-candidate-release-profile.json --packed-tarball artifacts/npm/agentscope-cli-0.1.0.tgz --source-revision "$SOURCE_REVISION" --artifact-root artifacts/release-candidate --candidate-manifest-relative "$CANDIDATE_MANIFEST" --candidate-tarball-relative "$CANDIDATE_TARBALL" --output "$GITHUB_OUTPUT" --summary "$GITHUB_STEP_SUMMARY"';
 const recordsCommand =
   'node scripts/verify-release-records.mjs --artifact-root artifacts/release-candidate --record-set-relative "$REHEARSAL_RECORDS" --candidate-manifest-relative "$CANDIDATE_MANIFEST" --trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0 --workspace-root . --workflow-relative .github/workflows/release.yml';
 const allowedRunCommands = new Set([
@@ -45,6 +47,7 @@ const allowedRunCommands = new Set([
   substrateCommand,
   workflowContextCommand,
   candidateCommand,
+  dispositionCommand,
   recordsCommand,
 ]);
 const allowedRunEnvironment = new Set([
@@ -119,6 +122,14 @@ const expectedRunEnvironments = new Map([
     },
   ],
   [
+    dispositionCommand,
+    {
+      CANDIDATE_MANIFEST: "${{ inputs.candidate-manifest-path }}",
+      CANDIDATE_TARBALL: "${{ inputs.candidate-tarball-path }}",
+      SOURCE_REVISION: "${{ github.sha }}",
+    },
+  ],
+  [
     recordsCommand,
     {
       CANDIDATE_MANIFEST: "${{ inputs.candidate-manifest-path }}",
@@ -141,12 +152,14 @@ const expectedStepTopology = Object.freeze([
   { run: workflowContextCommand },
   { run: buildCommand },
   { run: cliArtifactCommand },
-  { run: nativeCandidateCommand },
   { run: candidateCommand },
+  { run: dispositionCommand },
+  { run: nativeCandidateCommand },
   { run: recordsCommand },
   { run: substrateCommand },
 ]);
 export const releaseEntryPoints = Object.freeze([
+  "scripts/native-ci-disposition.mjs",
   "scripts/verify-release-candidate.mjs",
   "scripts/verify-release-lane-policy.mjs",
   "scripts/verify-release-records.mjs",
@@ -154,6 +167,7 @@ export const releaseEntryPoints = Object.freeze([
 ]);
 export const releaseAuthorityFiles = Object.freeze([
   ".github/workflows/release-candidate-rehearsal.yml",
+  "scripts/native-candidate-release-profile.json",
   "package.json",
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
@@ -232,11 +246,26 @@ function validateActionStep(step) {
 }
 
 function validateRunStep(step) {
-  assertAllowedKeys(step, ["env", "name", "run"], "release run step");
+  assertAllowedKeys(
+    step,
+    ["env", "if", "id", "name", "run"],
+    "release run step",
+  );
   const command = typeof step.run === "string" ? normalizeRun(step.run) : "";
   assert(
     allowedRunCommands.has(command),
     "Release workflow run command is not exact allowlisted",
+  );
+  assert(
+    step.if ===
+      (command === nativeCandidateCommand
+        ? "steps.disposition.outputs.required == 'true'"
+        : undefined),
+    "Release workflow conditional authority drifted",
+  );
+  assert(
+    step.id === (command === dispositionCommand ? "disposition" : undefined),
+    "Release workflow disposition output authority drifted",
   );
   const expectedEnvironment = expectedRunEnvironments.get(command);
   if (expectedEnvironment === null) {
