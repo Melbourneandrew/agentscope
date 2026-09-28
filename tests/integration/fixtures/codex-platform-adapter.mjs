@@ -47,7 +47,7 @@ const translateModelRequest = (request) => {
 
 // The adapter translates bounded native shapes only. Expected outcomes belong
 // exclusively to the independently checksum-bound oracle.
-// eslint-disable-next-line complexity -- one closed all-record native-shape translation grammar
+// eslint-disable-next-line complexity, max-lines-per-function -- one closed all-record native-shape translation grammar
 export const translateCodexPlatformObservations = (input) => {
   if (
     !exactKeys(input, [
@@ -71,10 +71,18 @@ export const translateCodexPlatformObservations = (input) => {
   const modelRequests = input.modelRequests.map(translateModelRequest);
   const { mediation, search, retrieval, doctor, uninstall } = input;
   if (
-    !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
+    !exactKeys(mediation, [
+      "sessionStartCommandDurationMilliseconds",
+      "sessionStartDispatchEnvelopeUpperBoundMilliseconds",
+    ]) ||
     !Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
     mediation.sessionStartCommandDurationMilliseconds < 0 ||
     mediation.sessionStartCommandDurationMilliseconds > 1_000 ||
+    !Number.isFinite(
+      mediation.sessionStartDispatchEnvelopeUpperBoundMilliseconds,
+    ) ||
+    mediation.sessionStartDispatchEnvelopeUpperBoundMilliseconds < 0 ||
+    mediation.sessionStartDispatchEnvelopeUpperBoundMilliseconds > 1_000 ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
     !boundedString(search.completion, 32) ||
     !boundedString(search.harness, 64) ||

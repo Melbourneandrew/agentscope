@@ -74,6 +74,10 @@ export function codexSessionStartMediationUpperBoundMilliseconds(input: {
   directoryPath: string;
 }): number | undefined;
 
+export function codexSessionStartDispatchEnvelopeFromLog(
+  source: string,
+): Readonly<{ durationMilliseconds: number; spanSha256: string }> | undefined;
+
 export function classifyCodexShutdownAtJoinDeadline(input: {
   afterRead?: () => void;
   directoryDescriptor: number;
@@ -114,6 +118,8 @@ export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: 
   | Readonly<{
       durationMilliseconds: number;
       spanSha256: string;
+      dispatchEnvelopeDurationMilliseconds: number;
+      dispatchEnvelopeSpanSha256: string;
     }>
   | undefined;
 
@@ -135,6 +141,8 @@ export function inspectCodexRootHookLifecycle(input: {
   | Readonly<{
       sessionStartDurationMilliseconds: number;
       sessionStartSpanSha256: string;
+      sessionStartDispatchEnvelopeDurationMilliseconds: number;
+      sessionStartDispatchEnvelopeSpanSha256: string;
       stopDurationMilliseconds: number;
       sessionEndDurationMilliseconds: number;
     }>
@@ -142,11 +150,19 @@ export function inspectCodexRootHookLifecycle(input: {
 
 export function codexSessionStartCheckpointMatchesLifecycle(
   checkpoint:
-    Readonly<{ durationMilliseconds: number; spanSha256: string }> | undefined,
+    | Readonly<{
+        durationMilliseconds: number;
+        spanSha256: string;
+        dispatchEnvelopeDurationMilliseconds: number;
+        dispatchEnvelopeSpanSha256: string;
+      }>
+    | undefined,
   lifecycle:
     | Readonly<{
         sessionStartDurationMilliseconds: number;
         sessionStartSpanSha256: string;
+        sessionStartDispatchEnvelopeDurationMilliseconds: number;
+        sessionStartDispatchEnvelopeSpanSha256: string;
       }>
     | undefined,
 ): boolean;

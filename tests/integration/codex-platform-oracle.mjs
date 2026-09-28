@@ -2,6 +2,7 @@ const assert = (condition, code) => {
   if (!condition) throw new Error(`integration.codex.oracle-${code}`);
 };
 
+/* eslint-disable max-lines-per-function -- full closed Codex admission oracle remains one decision boundary */
 export const correlateCodexPlatformObservations = (
   observation,
   { artifactFileName, expectedPromptSha256, scenarioId },
@@ -10,6 +11,11 @@ export const correlateCodexPlatformObservations = (
   assert(
     observation.mediation.sessionStartCommandDurationMilliseconds <= 1_000,
     "hook-mediation",
+  );
+  assert(
+    observation.mediation.sessionStartDispatchEnvelopeUpperBoundMilliseconds <=
+      1_000,
+    "hook-dispatch-envelope",
   );
   assert(
     expectedPromptSha256 ===
@@ -85,6 +91,9 @@ export const correlateCodexPlatformObservations = (
       uninstallDisposition: observation.uninstall.uninstall.disposition,
       sessionStartCommandDurationMilliseconds:
         observation.mediation.sessionStartCommandDurationMilliseconds,
+      sessionStartDispatchEnvelopeUpperBoundMilliseconds:
+        observation.mediation
+          .sessionStartDispatchEnvelopeUpperBoundMilliseconds,
     },
     modelLedger: {
       ledgerVersion: 1,
@@ -122,3 +131,4 @@ export const correlateCodexPlatformObservations = (
     },
   });
 };
+/* eslint-enable max-lines-per-function */

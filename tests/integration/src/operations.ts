@@ -70,6 +70,11 @@ const harnessObservation = z.strictObject({
     .finite()
     .min(0)
     .max(1_000),
+  sessionStartDispatchEnvelopeUpperBoundMilliseconds: z
+    .number()
+    .finite()
+    .min(0)
+    .max(1_000),
 });
 const fixtureResult = z
   .strictObject({

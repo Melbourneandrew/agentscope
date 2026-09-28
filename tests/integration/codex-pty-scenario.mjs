@@ -1637,7 +1637,8 @@ try {
         // exact module target. Select it directly: accepting a broader crate
         // prefix made the evidence depend on EnvFilter prefix behaviour rather
         // than the authenticated producer identity.
-        RUST_LOG: "codex_hooks::engine::command_runner=trace",
+        RUST_LOG:
+          "codex_core::hook_runtime=trace,codex_hooks::engine::command_runner=trace",
         AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,
       },
       inherit: true,
@@ -1763,6 +1764,8 @@ try {
   });
   const sessionStartCommandDurationMilliseconds =
     rootHookLifecycle.sessionStartDurationMilliseconds;
+  const sessionStartDispatchEnvelopeUpperBoundMilliseconds =
+    rootHookLifecycle.sessionStartDispatchEnvelopeDurationMilliseconds;
   const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
@@ -1827,7 +1830,10 @@ try {
     scenarioId,
     prompt,
     promptSha256,
-    mediation: { sessionStartCommandDurationMilliseconds },
+    mediation: {
+      sessionStartCommandDurationMilliseconds,
+      sessionStartDispatchEnvelopeUpperBoundMilliseconds,
+    },
     modelRequests,
     search: {
       completion: "complete",

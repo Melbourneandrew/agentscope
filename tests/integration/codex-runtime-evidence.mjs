@@ -353,12 +353,16 @@ export const inspectCodexSessionStartBeforeFirstModelRequestAdmission = (
     throw new Error("integration.codex.hook-lifecycle");
   if (spans.length !== 1 || spans[0]?.eventName !== "SessionStart")
     throw new Error("integration.codex.hook-lifecycle");
+  const dispatchEnvelope = codexSessionStartDispatchEnvelopeFromLog(source);
+  if (dispatchEnvelope === undefined) return undefined;
   const durationMilliseconds = completedHookDurationMilliseconds(spans[0]);
   if (durationMilliseconds > 1_000)
     throw new Error("integration.codex.hook-mediation");
   return Object.freeze({
     durationMilliseconds,
     spanSha256: hookSpanIdentity(spans[0]),
+    dispatchEnvelopeDurationMilliseconds: dispatchEnvelope.durationMilliseconds,
+    dispatchEnvelopeSpanSha256: dispatchEnvelope.spanSha256,
   });
 };
 
@@ -405,9 +409,15 @@ export const inspectCodexRootHookLifecycle = (input) => {
   )
     throw new Error("integration.codex.hook-log");
   if (durations[0] > 1_000) throw new Error("integration.codex.hook-mediation");
+  const dispatchEnvelope = codexSessionStartDispatchEnvelopeFromLog(source);
+  if (dispatchEnvelope === undefined)
+    throw new Error("integration.codex.hook-mediation");
   return Object.freeze({
     sessionStartDurationMilliseconds: durations[0],
     sessionStartSpanSha256: hookSpanIdentity(spans[0]),
+    sessionStartDispatchEnvelopeDurationMilliseconds:
+      dispatchEnvelope.durationMilliseconds,
+    sessionStartDispatchEnvelopeSpanSha256: dispatchEnvelope.spanSha256,
     stopDurationMilliseconds: durations[1],
     sessionEndDurationMilliseconds: durations[2],
   });
@@ -472,7 +482,11 @@ export const codexSessionStartCheckpointMatchesLifecycle = (
   lifecycle !== undefined &&
   checkpoint.durationMilliseconds ===
     lifecycle.sessionStartDurationMilliseconds &&
-  checkpoint.spanSha256 === lifecycle.sessionStartSpanSha256;
+  checkpoint.spanSha256 === lifecycle.sessionStartSpanSha256 &&
+  checkpoint.dispatchEnvelopeDurationMilliseconds ===
+    lifecycle.sessionStartDispatchEnvelopeDurationMilliseconds &&
+  checkpoint.dispatchEnvelopeSpanSha256 ===
+    lifecycle.sessionStartDispatchEnvelopeSpanSha256;
 
 /**
  * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
@@ -510,6 +524,87 @@ const tracingDurationMilliseconds = (line, field) => {
   if (!Number.isFinite(milliseconds) || milliseconds < 0)
     throw new Error("integration.codex.hook-log");
   return milliseconds;
+};
+
+const tracingDurationUpperBoundMilliseconds = (line, field) => {
+  const matches = [
+    ...line.matchAll(
+      new RegExp(
+        `${field}=([0-9]+(?:\\.[0-9]+)?)(ns|us|µs|μs|ms|s)(?:\\s|$)`,
+        "gu",
+      ),
+    ),
+  ];
+  if (matches.length !== 1) throw new Error("integration.codex.hook-log");
+  const printed = matches[0]?.[1];
+  const unit = durationUnitMilliseconds[matches[0]?.[2]];
+  const precision = printed.split(".")[1]?.length ?? 0;
+  const upperBound = (Number(printed) + 10 ** -precision) * unit;
+  if (!Number.isFinite(upperBound) || upperBound <= 0)
+    throw new Error("integration.codex.hook-log");
+  return upperBound;
+};
+
+/**
+ * The pinned Codex source instruments run_pending_session_start_hooks at entry,
+ * before handler selection, payload serialization, and command dispatch. Its
+ * close follows the completed command. The whole span therefore bounds the
+ * dispatch-to-launcher-entry interval conservatively; printed duration
+ * quantization is rounded upward rather than accepted as exact time.
+ *
+ * This is a source/log verifier, not independent proof that the vendor log is
+ * authentic. The actual-binary scenario must bind it to the exact installed
+ * command, launcher, hook lifecycle, and independent capture evidence.
+ */
+export const codexSessionStartDispatchEnvelopeFromLog = (source) => {
+  if (typeof source !== "string") throw new Error("integration.codex.hook-log");
+  const lines = source.split("\n");
+  const sessionStart = codexRootHookSpans(source).spans.filter(
+    (span) => span.eventName === "SessionStart",
+  );
+  if (sessionStart.length === 0) return undefined;
+  if (sessionStart.length !== 1) throw new Error("integration.codex.hook-log");
+  const commandOpen = lines.indexOf(sessionStart[0].open);
+  const commandClose = lines.indexOf(sessionStart[0].close);
+  if (
+    commandOpen < 0 ||
+    commandClose <= commandOpen ||
+    lines.lastIndexOf(sessionStart[0].open) !== commandOpen ||
+    lines.lastIndexOf(sessionStart[0].close) !== commandClose ||
+    commandOutcome(sessionStart[0].close) !== "completed"
+  )
+    throw new Error("integration.codex.hook-log");
+  const outerOpen = lines.findIndex((line) =>
+    /run_pending_session_start_hooks: new(?:\s|$)/u.test(line),
+  );
+  const outerClose = lines.findIndex((line) =>
+    /run_pending_session_start_hooks: close(?:\s|$)/u.test(line),
+  );
+  if (outerOpen < 0) throw new Error("integration.codex.hook-mediation");
+  if (
+    lines.filter((line) =>
+      /run_pending_session_start_hooks: new(?:\s|$)/u.test(line),
+    ).length !== 1 ||
+    lines.filter((line) =>
+      /run_pending_session_start_hooks: close(?:\s|$)/u.test(line),
+    ).length > 1 ||
+    outerOpen >= commandOpen
+  )
+    throw new Error("integration.codex.hook-mediation");
+  if (outerClose < 0) return undefined;
+  if (commandClose >= outerClose)
+    throw new Error("integration.codex.hook-mediation");
+  const durationMilliseconds =
+    tracingDurationUpperBoundMilliseconds(lines[outerClose], "time\\.busy") +
+    tracingDurationUpperBoundMilliseconds(lines[outerClose], "time\\.idle");
+  if (durationMilliseconds > 1_000)
+    throw new Error("integration.codex.hook-mediation");
+  return Object.freeze({
+    durationMilliseconds,
+    spanSha256: createHash("sha256")
+      .update(`${lines[outerOpen]}\n${lines[outerClose]}\n`)
+      .digest("hex"),
+  });
 };
 
 /**
