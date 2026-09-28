@@ -423,7 +423,27 @@ describe("integration cleanup authority", () => {
     expect(runner).toContain(
       '"integration.fixture.codex-model-gate-arm-health-pending"',
     );
-    expect(runner).toContain("marker === undefined &&");
+    expect(runner).toContain("failedCodexSessionStartHint(home)");
+    expect(runner).toContain("integration.runner.untrusted-pty-hint:");
+    const selectedPtyBoundary = runner.slice(
+      runner.indexOf("let receipt;"),
+      runner.indexOf("const returnedAtMs = performance.now();"),
+    );
+    expect(selectedPtyBoundary).toContain(
+      "receipt = await executeSelectedPtyProcess(headlessCapability, {",
+    );
+    expect(selectedPtyBoundary).toContain(
+      "codexPtyFailureHint = codexArmPtyResearchHint(error);",
+    );
+    expect(selectedPtyBoundary).toContain("throw error;");
+    expect(runner.split("codexArmPtyResearchHint(error)")).toHaveLength(2);
+    const otherInteractiveFailures = runner.slice(
+      runner.indexOf("const returnedAtMs = performance.now();"),
+      runner.indexOf(
+        'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+      ),
+    );
+    expect(otherInteractiveFailures).not.toContain("codexArmPtyResearchHint");
     expect(runner).toContain(
       'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
     );
@@ -442,6 +462,9 @@ describe("integration cleanup authority", () => {
     expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
     expect(source).toContain(
       "untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null",
+    );
+    expect(source).toContain(
+      "untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null",
     );
     expect(source).toContain(
       "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",

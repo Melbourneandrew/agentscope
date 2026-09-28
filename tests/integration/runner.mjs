@@ -22,6 +22,7 @@ import {
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
+  codexArmPtyResearchHint,
   codexGateResearchHints,
   compileCandidateInventory,
   decodeInteractiveFailureExitCode,
@@ -529,6 +530,7 @@ if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
 let interactiveFailureDiagnostic;
+let codexPtyFailureHint;
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
@@ -674,15 +676,26 @@ try {
           ? "immediate"
           : "semantic-ready",
     };
-    const receipt = await executeSelectedPtyProcess(headlessCapability, {
-      completion,
-      readiness,
-      initialGeometry,
-      interaction,
-      interpreter,
-      process: request,
-      scriptSha256,
-    });
+    let receipt;
+    try {
+      receipt = await executeSelectedPtyProcess(headlessCapability, {
+        completion,
+        readiness,
+        initialGeometry,
+        interaction,
+        interpreter,
+        process: request,
+        scriptSha256,
+      });
+    } catch (error) {
+      if (
+        scenarioId === "codex-tui-trace-smoke" &&
+        retainedInteractivePhase(ledger) ===
+          "integration.fixture.codex-model-gate-arm-health-pending"
+      )
+        codexPtyFailureHint = codexArmPtyResearchHint(error);
+      throw error;
+    }
     const returnedAtMs = performance.now();
     const processAuthority = {
       runId: serializedProcessRequest.runId,
@@ -889,14 +902,17 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)
-      : marker === undefined &&
-          retainedInteractivePhase(ledger) ===
-            "integration.fixture.codex-model-gate-arm-health-pending"
+      : retainedInteractivePhase(ledger) ===
+          "integration.fixture.codex-model-gate-arm-health-pending"
         ? await failedCodexSessionStartHint(home)
         : undefined;
     if (codexGateResearchHints.includes(gateHint))
       process.stdout.write(
         `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+      );
+    if (codexPtyFailureHint !== undefined)
+      process.stdout.write(
+        `integration.runner.untrusted-pty-hint:${codexPtyFailureHint}\n`,
       );
     const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)
