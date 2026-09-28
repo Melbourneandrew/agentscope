@@ -428,7 +428,8 @@ describe("integration cleanup authority", () => {
     expect(runner).toContain(
       '"integration.fixture.codex-model-gate-arm-health-pending"',
     );
-    expect(runner).toContain("codexPtyFailureHint ??");
+    expect(runner).toContain("failedCodexSessionStartHint(home)");
+    expect(runner).toContain("integration.runner.untrusted-pty-hint:");
     expect(runner).toContain(
       'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
     );
@@ -447,6 +448,9 @@ describe("integration cleanup authority", () => {
     expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
     expect(source).toContain(
       "untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null",
+    );
+    expect(source).toContain(
+      "untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null",
     );
     expect(source).toContain(
       "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",
