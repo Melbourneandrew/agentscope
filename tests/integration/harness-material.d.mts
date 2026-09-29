@@ -31,6 +31,10 @@ export declare const downloadAttestationWithRetry: (
 export declare const classifyMaterialDownloadFailureForTesting: (
   error: unknown,
 ) => string;
+export declare const classifyAttestationFailurePhaseForTesting: (
+  descriptor: Readonly<{ installName: string; packageName: string }>,
+  error: unknown,
+) => string;
 
 export declare const prepareNpmHarnessMaterial: (
   input: Readonly<{
