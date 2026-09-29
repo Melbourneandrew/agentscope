@@ -17,16 +17,17 @@ export declare const classifyMaterialResponseForTesting: (
     statusCode?: number;
     headers: Readonly<Record<string, string | string[] | undefined>>;
   }>,
-) => string | undefined;
-export declare const acceptsPinnedBodyLengthForTesting: (
-  observedBytes: number,
   expectedBytes: number,
-  complete: boolean,
-) => boolean;
-export declare const matchesPinnedAttestationDigestForTesting: (
-  bytes: Uint8Array,
-  sha256: string,
-) => boolean;
+) => string | undefined;
+export declare const downloadAttestationWithRetry: (
+  descriptor: Readonly<{ url: string; bytes: number }>,
+  signal: AbortSignal,
+  deadline: number,
+  transport?: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
 export declare const classifyMaterialDownloadFailureForTesting: (
   error: unknown,
 ) => string;

@@ -133,23 +133,19 @@ const writeExclusive = (path, bytes) => {
     fail();
 };
 
-export const classifyMaterialResponseForTesting = (response) => {
+export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
   if (response.statusCode === 429) return "rate-limit";
   if (response.statusCode >= 500 && response.statusCode <= 599)
     return "upstream";
   if (response.statusCode !== 200) return "status";
   if (response.headers.location !== undefined) return "redirect";
   if (response.headers["content-encoding"] !== undefined) return "encoding";
+  if (
+    response.headers["content-length"] !== undefined &&
+    response.headers["content-length"] !== String(expectedBytes)
+  )
+    return "length-header";
 };
-
-export const acceptsPinnedBodyLengthForTesting = (
-  observedBytes,
-  expectedBytes,
-  complete,
-) =>
-  complete ? observedBytes === expectedBytes : observedBytes <= expectedBytes;
-export const matchesPinnedAttestationDigestForTesting = (bytes, sha256) =>
-  createHash("sha256").update(bytes).digest("hex") === sha256;
 
 const downloadFailureReasons = new Map([
   ["registry identity", "identity"],
@@ -160,6 +156,7 @@ const downloadFailureReasons = new Map([
     "status",
     "redirect",
     "encoding",
+    "length-header",
     "size",
     "incomplete",
     "interrupted",
@@ -170,7 +167,7 @@ export const classifyMaterialDownloadFailureForTesting = (error) =>
   downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
   "transport";
 
-const download = (descriptor, signal, deadline) =>
+const download = (descriptor, signal, deadline, transport = request) =>
   new Promise((resolveDownload, rejectDownload) => {
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
     if (
@@ -210,7 +207,7 @@ const download = (descriptor, signal, deadline) =>
       remaining(deadline),
     );
     signal.addEventListener("abort", onAbort, { once: true });
-    requestHandle = request(
+    requestHandle = transport(
       {
         agent: false,
         ca: rootCertificates,
@@ -224,7 +221,10 @@ const download = (descriptor, signal, deadline) =>
       },
       (response) => {
         responseHandle = response;
-        const rejection = classifyMaterialResponseForTesting(response);
+        const rejection = classifyMaterialResponseForTesting(
+          response,
+          descriptor.bytes,
+        );
         if (rejection !== undefined) {
           response.destroy();
           stop(new Error(rejection));
@@ -232,16 +232,12 @@ const download = (descriptor, signal, deadline) =>
         }
         response.on("data", (chunk) => {
           bytes += chunk.byteLength;
-          if (
-            !acceptsPinnedBodyLengthForTesting(bytes, descriptor.bytes, false)
-          )
-            stop(new Error("size"));
+          if (bytes > descriptor.bytes) stop(new Error("size"));
           else chunks.push(chunk);
         });
         response.once("error", stop);
         response.once("end", () => {
-          if (!acceptsPinnedBodyLengthForTesting(bytes, descriptor.bytes, true))
-            stop(new Error("size"));
+          if (bytes !== descriptor.bytes) stop(new Error("size"));
           else terminalValue = Buffer.concat(chunks);
         });
       },
@@ -250,6 +246,21 @@ const download = (descriptor, signal, deadline) =>
     requestHandle.once("close", settle);
     requestHandle.end();
   });
+
+export const downloadAttestationWithRetry = async (
+  descriptor,
+  signal,
+  deadline,
+  transport = request,
+) => {
+  try {
+    return await download(descriptor, signal, deadline, transport);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "length-header")
+      throw error;
+    return download(descriptor, signal, deadline, transport);
+  }
+};
 
 const assertNpmPackageDescriptors = (material) => {
   for (const descriptor of material.packages)
@@ -266,7 +277,11 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
   onPhase("download-attestation");
   let bytes;
   try {
-    bytes = await download(descriptor.attestations, signal, deadline);
+    bytes = await downloadAttestationWithRetry(
+      descriptor.attestations,
+      signal,
+      deadline,
+    );
   } catch (error) {
     onPhase(
       `download-attestation-${classifyMaterialDownloadFailureForTesting(error)}`,
@@ -275,10 +290,8 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
   }
   onPhase("attestation-digest");
   if (
-    !matchesPinnedAttestationDigestForTesting(
-      bytes,
-      descriptor.attestations.sha256,
-    )
+    createHash("sha256").update(bytes).digest("hex") !==
+    descriptor.attestations.sha256
   )
     fail();
   return bytes;
