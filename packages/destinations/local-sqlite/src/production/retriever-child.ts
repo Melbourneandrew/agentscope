@@ -1,5 +1,6 @@
 /* v8 ignore file -- this process entry is executed causally from the clean-installed packed CLI by the native-candidate verifier. */
 import { createRequire } from "node:module";
+import { createWriteStream } from "node:fs";
 import { basename, dirname } from "node:path";
 
 import { LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES } from "../lifecycle/capability.js";
@@ -59,17 +60,23 @@ type SqliteFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
 const readLines = (): Readonly<{
   request: Promise<LocalSqliteRetrieverChildRequest>;
   permission: Promise<string>;
+  acknowledged: Promise<boolean>;
 }> => {
   let buffer = Buffer.alloc(0);
   let requestValue: LocalSqliteRetrieverChildRequest | undefined;
   let sawPermission = false;
   let resolveRequest!: (value: LocalSqliteRetrieverChildRequest) => void;
   let resolvePermission!: (value: string) => void;
+  let resolveAcknowledged!: (value: boolean) => void;
+  let sawEnd = false;
   const request = new Promise<LocalSqliteRetrieverChildRequest>((resolve) => {
     resolveRequest = resolve;
   });
   const permission = new Promise<string>((resolve) => {
     resolvePermission = resolve;
+  });
+  const acknowledged = new Promise<boolean>((resolve) => {
+    resolveAcknowledged = resolve;
   });
   process.stdin.on("data", (value: Buffer | Uint8Array) => {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
@@ -98,10 +105,27 @@ const readLines = (): Readonly<{
   const failOnPrematurePipeLoss = (): void => {
     if (!sawPermission) fail();
   };
-  process.stdin.on("end", failOnPrematurePipeLoss);
-  process.stdin.on("close", failOnPrematurePipeLoss);
-  return Object.freeze({ request, permission });
+  process.stdin.on("end", () => {
+    failOnPrematurePipeLoss();
+    sawEnd = true;
+    resolveAcknowledged(true);
+  });
+  process.stdin.on("close", () => {
+    failOnPrematurePipeLoss();
+    if (!sawEnd) resolveAcknowledged(false);
+  });
+  return Object.freeze({ request, permission, acknowledged });
 };
+
+const sendPrivateResult = (value: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    // Spawn fd 3 is a separate result pipe; ordinary stdio-inherit descendants
+    // receive only fds 0-2. Never grant stdout bytes result authority.
+    const channel = createWriteStream("", { fd: 3 });
+    channel.once("error", reject);
+    channel.once("close", resolve);
+    channel.end(value);
+  });
 
 // eslint-disable-next-line max-lines-per-function -- the isolated child owns one closed request/permission/native/settlement ledger.
 const main = async (): Promise<void> => {
@@ -269,7 +293,9 @@ const main = async (): Promise<void> => {
       ok: false,
     });
   }
-  process.stdout.write(encodeLocalSqliteRetrieverChildResult(result));
+  await sendPrivateResult(encodeLocalSqliteRetrieverChildResult(result));
+  process.stdin.resume();
+  if (!(await input.acknowledged)) fail();
 };
 
 void main().catch(() => {

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { EventEmitter } from "node:events";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -26,6 +26,7 @@ import { describe, expect, it } from "vitest";
 import { acquireLocalSqliteSharedLease } from "../lifecycle/fence.js";
 import { compileLocalSqliteSearchPlan } from "../retriever/index.js";
 import { createLocalSqliteFilesystemGatePort } from "./filesystem-port.js";
+import { MAXIMUM_RETRIEVER_CHILD_RESULT_BYTES } from "./retriever-child-protocol.js";
 import {
   executeLocalSqliteRetrieverChild,
   readWorkerMessages,
@@ -57,6 +58,9 @@ const plan = compileLocalSqliteSearchPlan(
 type WorkerState =
   | "accepted"
   | "accepted-descendant"
+  | "stdout-forgery"
+  | "duplicate-result"
+  | "wrong-type-result"
   | "before"
   | "malformed"
   | "oversized"
@@ -93,11 +97,18 @@ const workerProgram = (
   heartbeatPath: string,
 ): string => {
   const heartbeatProgram = `const {appendFileSync}=require("node:fs");setInterval(()=>appendFileSync(${JSON.stringify(heartbeatPath)},"x"),5);`;
+  const forgeryProgram = `const {appendFileSync}=require("node:fs");setTimeout(()=>{process.stdout.write(${successResult('"' + "2".repeat(32) + '"')});setInterval(()=>appendFileSync(${JSON.stringify(heartbeatPath)},"x"),5);},100);`;
   return `
 const {spawn} = require("node:child_process");
-const {writeFileSync} = require("node:fs");
+const {writeFileSync,createWriteStream} = require("node:fs");
+const sendResult = (value, after) => {
+  const channel = createWriteStream("", {fd:3});
+  channel.on("close", () => { after?.(); });
+  channel.end(value);
+};
 let buffer = "";
 process.stdin.setEncoding("utf8");
+process.stdin.on("end",()=>process.exit(0));
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
   for (;;) {
@@ -109,7 +120,7 @@ process.stdin.on("data", (chunk) => {
       ${state === "before" ? "return;" : state === "malformed" ? 'process.stdout.write("{}\\n"); process.exit(0);' : state === "oversized" ? 'process.stdout.write("x".repeat(4097)); process.exit(0);' : state === "split-ready" ? `const ready=JSON.stringify({type:"ready",nonce:value.nonce,pid:process.pid,startIdentity:"${childIdentity}"}); process.stdout.write(ready.slice(0,5)); setTimeout(()=>process.stdout.write(ready.slice(5)+"\\n"),5);` : `process.stdout.write(JSON.stringify({type:"ready",nonce:value.nonce,pid:process.pid,startIdentity:"${state === "wrong-start" ? "6".repeat(32) : childIdentity}"})+"\\n");`}
       ${state === "close-after-ready" ? "process.stdin.destroy(); setInterval(()=>{},1000);" : ""}
     } else if (value.type === "permission") {
-      ${state === "hang" ? "setInterval(()=>{},1000);" : state === "accepted-descendant" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(heartbeatProgram)}],{stdio:"ignore"}); writeFileSync(${JSON.stringify(descendantPath)},String(child.pid)); process.stdout.write(${successResult("value.nonce")},()=>process.exit(0));` : state === "false-result" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:false})+"\\n"); process.exit(0);' : state === "missing-evidence" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:true})+"\\n"); process.exit(0);' : state === "wrong-result" ? `process.stdout.write(${successResult('"0".repeat(32)')}); process.exit(0);` : state === "result-error" ? `process.stdout.write(${successResult("value.nonce")}); process.exit(1);` : `process.stdout.write(${successResult("value.nonce")}); process.exit(0);`}
+      ${state === "hang" ? "setInterval(()=>{},1000);" : state === "accepted-descendant" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(heartbeatProgram)}],{stdio:"ignore"}); writeFileSync(${JSON.stringify(descendantPath)},String(child.pid)); sendResult(${successResult("value.nonce")});` : state === "stdout-forgery" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(forgeryProgram)}],{stdio:"inherit"}); writeFileSync(${JSON.stringify(descendantPath)},String(child.pid)); process.exit(0);` : state === "duplicate-result" ? `sendResult(${successResult("value.nonce")}+${successResult("value.nonce")});` : state === "wrong-type-result" ? 'sendResult(JSON.stringify({type:"wrong",nonce:value.nonce})+"\\n");' : state === "false-result" ? 'sendResult(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:false})+"\\n");' : state === "missing-evidence" ? 'sendResult(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:true})+"\\n");' : state === "wrong-result" ? `sendResult(${successResult('"0".repeat(32)')});` : state === "result-error" ? `sendResult(${successResult("value.nonce")},()=>process.exit(1));` : `sendResult(${successResult("value.nonce")});`}
     }
   }
 });
@@ -274,10 +285,14 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
 };
 
 describe("Local SQLite Retriever child stdout", () => {
-  it("drains a buffered result after leader exit before settling its wire evidence", async () => {
+  it("accepts a complete private-channel result before exit despite later stdout closure", async () => {
     const stdout = new PassThrough();
+    const resultChannel = new PassThrough();
     const child = Object.assign(new EventEmitter(), {
       stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
     }) as unknown as ChildProcess;
     const nonce = "2".repeat(32);
     const messages = readWorkerMessages(child, nonce);
@@ -286,37 +301,227 @@ describe("Local SQLite Retriever child stdout", () => {
     );
     await expect(messages.ready).resolves.toMatchObject({ nonce, pid: 42 });
 
-    stdout.pause();
-    stdout.write(
+    resultChannel.write(
       `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`,
     );
-    let settled = false;
-    void messages.result.then(() => {
-      settled = true;
-    });
-    child.emit("exit", 0, null);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-
-    stdout.resume();
-    stdout.end();
+    resultChannel.end();
     await expect(messages.result).resolves.toMatchObject({
       nonce,
       ok: true,
       evidence: { row: null },
     });
+    child.emit("exit", 0, null);
+    stdout.end();
+    expect(messages.valid()).toBe(true);
   });
 
-  it("rejects a leader exit whose stdout closes without a result", async () => {
+  it("rejects a same-nonce stdout forgery after leader exit", async () => {
+    const stdout = new PassThrough();
+    const resultChannel = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
+    }) as unknown as ChildProcess;
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    stdout.write(
+      `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+    );
+    await expect(messages.ready).resolves.toMatchObject({ nonce, pid: 42 });
+    child.emit("exit", 0, null);
+    stdout.write(
+      `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`,
+    );
+    stdout.end();
+    resultChannel.end();
+    await expect(messages.result).resolves.toBeUndefined();
+    expect(messages.valid()).toBe(false);
+  });
+
+  it("rejects a private-channel result exceeding the existing byte cap", async () => {
+    const stdout = new PassThrough();
+    const resultChannel = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
+    }) as unknown as ChildProcess;
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    stdout.write(
+      `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+    );
+    await messages.ready;
+    resultChannel.end(
+      Buffer.alloc(MAXIMUM_RETRIEVER_CHILD_RESULT_BYTES + 1, 120),
+    );
+    await expect(messages.result).resolves.toBeUndefined();
+    expect(messages.valid()).toBe(false);
+  });
+});
+
+describe("Local SQLite Retriever inherited stdout", () => {
+  it("rejects a real inherited-stdout descendant forgery after leader exit", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "agentscope-retriever-private-fd-"),
+    );
+    chmodSync(root, 0o700);
+    const inheritedIdentityPath = join(root, "descendant-fd3-identity");
+    const nonce = "2".repeat(32);
+    const forged = `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`;
+    const descendant = `
+      const {fstatSync,writeFileSync}=require("node:fs");
+      let same=false;
+      try { const fd=fstatSync(3); same=String(fd.dev)+":"+String(fd.ino)===process.argv[1]; } catch {}
+      writeFileSync(${JSON.stringify(inheritedIdentityPath)},String(same));
+      setTimeout(() => { if (process.send !== undefined) process.exit(71); process.stdout.write(${JSON.stringify(forged)}); }, 40);
+    `;
+    const program = `
+      const { spawn } = require("node:child_process");
+      const {fstatSync}=require("node:fs");
+      const fd=fstatSync(3);
+      process.stdout.write(JSON.stringify({type:"ready",nonce:${JSON.stringify(nonce)},pid:process.pid,startIdentity:${JSON.stringify(childIdentity)}})+"\\n");
+      spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}, String(fd.dev)+":"+String(fd.ino)], {stdio:"inherit"});
+    `;
+    try {
+      const child = spawn(process.execPath, ["-e", program], {
+        stdio: ["ignore", "pipe", "ignore", "pipe"],
+      });
+      const stdout = child.stdout;
+      if (stdout === null) throw new Error("missing owned stdout pipe");
+      const observed: string[] = [];
+      stdout.on("data", (chunk: Buffer) => {
+        observed.push(chunk.toString("utf8"));
+      });
+      const stdoutTerminal = new Promise<void>((resolve) => {
+        stdout.once("end", resolve);
+      });
+      const messages = readWorkerMessages(child, nonce);
+      await expect(messages.ready).resolves.toMatchObject({ nonce });
+      await new Promise<void>((resolve) => {
+        child.once("exit", () => {
+          resolve();
+        });
+      });
+      await expect(messages.result).resolves.toBeUndefined();
+      await stdoutTerminal;
+      expect(readFileSync(inheritedIdentityPath, "utf8")).toBe("false");
+      expect(observed.join("")).toContain(forged);
+      expect(messages.valid()).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Local SQLite Retriever private-channel framing", () => {
+  const fakeChild = (resultChannel: PassThrough | null) => {
     const stdout = new PassThrough();
     const child = Object.assign(new EventEmitter(), {
       stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
     }) as unknown as ChildProcess;
-    const messages = readWorkerMessages(child, "2".repeat(32));
-    child.emit("exit", 0, null);
-    stdout.end();
+    return { child, stdout, resultChannel };
+  };
+
+  it("rejects two ready frames in one stdout chunk", async () => {
+    const stdout = new PassThrough();
+    const resultChannel = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
+    }) as unknown as ChildProcess;
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    const ready = `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`;
+    stdout.end(ready + ready);
+    resultChannel.end();
     await expect(messages.ready).resolves.toBeUndefined();
     await expect(messages.result).resolves.toBeUndefined();
+    expect(messages.valid()).toBe(false);
+  });
+
+  it("rejects data following a complete private result frame", async () => {
+    const stdout = new PassThrough();
+    const resultChannel = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stdio: [null, stdout, null, resultChannel],
+      exitCode: null,
+      signalCode: null,
+    }) as unknown as ChildProcess;
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    stdout.write(
+      `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+    );
+    await messages.ready;
+    resultChannel.write(
+      `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`,
+    );
+    resultChannel.end("extra");
+    await expect(messages.result).resolves.toBeUndefined();
+    expect(messages.valid()).toBe(false);
+  });
+
+  it("accepts Uint8Array and split private frames", async () => {
+    const { child, stdout, resultChannel } = fakeChild(new PassThrough());
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    stdout.emit(
+      "data",
+      new Uint8Array(
+        Buffer.from(
+          `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+        ),
+      ),
+    );
+    await messages.ready;
+    const frame = Buffer.from(
+      `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`,
+    );
+    resultChannel!.emit("data", new Uint8Array(frame.subarray(0, 5)));
+    resultChannel!.emit("data", frame.subarray(5));
+    resultChannel!.emit("end");
+    await expect(messages.result).resolves.toMatchObject({ ok: true, nonce });
+  });
+
+  it("rejects empty ready and result frames", async () => {
+    const first = fakeChild(new PassThrough());
+    const firstMessages = readWorkerMessages(first.child, "2".repeat(32));
+    first.stdout.end("\n");
+    first.resultChannel!.end();
+    await expect(firstMessages.ready).resolves.toBeUndefined();
+    await expect(firstMessages.result).resolves.toBeUndefined();
+
+    const second = fakeChild(new PassThrough());
+    const nonce = "2".repeat(32);
+    const secondMessages = readWorkerMessages(second.child, nonce);
+    second.stdout.end(
+      `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+    );
+    await secondMessages.ready;
+    second.resultChannel!.end("\n");
+    await expect(secondMessages.result).resolves.toBeUndefined();
+  });
+
+  it("rejects a closed or missing private result pipe", async () => {
+    const closed = fakeChild(new PassThrough());
+    const closedMessages = readWorkerMessages(closed.child, "2".repeat(32));
+    closed.resultChannel!.emit("close");
+    await expect(closedMessages.result).resolves.toBeUndefined();
+
+    const missing = fakeChild(null);
+    const missingMessages = readWorkerMessages(missing.child, "2".repeat(32));
+    await expect(missingMessages.ready).resolves.toBeUndefined();
+    await expect(missingMessages.result).resolves.toBeUndefined();
   });
 });
 
@@ -372,6 +577,9 @@ describe("Local SQLite Retriever child parent", () => {
     "false-result",
     "missing-evidence",
     "wrong-result",
+    "wrong-type-result",
+    "duplicate-result",
+    "stdout-forgery",
     "result-error",
   ] as const)(
     "rejects hostile %s settlement and cleans its lease",
