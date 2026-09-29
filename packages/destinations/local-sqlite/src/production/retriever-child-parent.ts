@@ -1,5 +1,6 @@
 /* eslint-disable max-lines-per-function -- the parent owns one indivisible spawn/permission/cutoff/join/lease settlement ledger. */
 import { spawn, type ChildProcess } from "node:child_process";
+import type { Readable } from "node:stream";
 
 import {
   amendLocalSqliteLeaseWithChild,
@@ -198,17 +199,23 @@ const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
     }
   });
 
-const readWorkerMessages = (
+export const readWorkerMessages = (
   child: ChildProcess,
   nonce: string,
 ): Readonly<{
   ready: Promise<ReturnType<typeof decodeLocalSqliteReporterChildReady>>;
   result: Promise<ReturnType<typeof decodeLocalSqliteRetrieverChildResult>>;
+  valid: () => boolean;
 }> => {
-  let chunks: Buffer[] = [];
-  let bytes = 0;
+  const readyChunks: Buffer[] = [];
+  let readyBytes = 0;
+  const resultChunks: Buffer[] = [];
+  let resultBytes = 0;
   let sawReady = false;
   let sawResult = false;
+  let sawResultFrame = false;
+  let invalidWire = false;
+  let parsedResult: ReturnType<typeof decodeLocalSqliteRetrieverChildResult>;
   let resolveReady!: (
     value: ReturnType<typeof decodeLocalSqliteReporterChildReady>,
   ) => void;
@@ -226,57 +233,95 @@ const readWorkerMessages = (
     resolveResult = resolve;
   });
   const invalid = (): void => {
+    invalidWire = true;
     if (!sawReady) resolveReady(undefined);
     if (!sawResult) resolveResult(undefined);
     sawResult = true;
   };
   child.stdout?.on("data", (value: Buffer | Uint8Array) => {
-    /* v8 ignore next -- Node child stdout emits Buffer values; this also
-       discards any post-result OS delivery defensively. */
-    if (sawResult) return;
-    /* v8 ignore next -- Uint8Array is retained for the declared stream type. */
-    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-    let offset = 0;
-    while (offset < chunk.byteLength) {
-      const newline = chunk.indexOf(10, offset);
-      const end = newline < 0 ? chunk.byteLength : newline;
-      const piece = chunk.subarray(offset, end);
-      bytes += piece.byteLength;
-      const maximum = sawReady ? MAXIMUM_RETRIEVER_CHILD_RESULT_BYTES : 4_096;
-      if (bytes > maximum || chunks.length >= 4_096) {
-        invalid();
-        return;
-      }
-      /* v8 ignore next -- canonical JSON frames are nonempty; empty frames are
-         rejected by the decoder without adding bytes. */
-      if (piece.byteLength > 0) chunks.push(piece);
-      if (newline < 0) return;
-      const line = Buffer.concat(chunks, bytes).toString("utf8");
-      chunks = [];
-      bytes = 0;
-      if (!sawReady) {
-        sawReady = true;
-        const parsed = decodeLocalSqliteReporterChildReady(line);
-        resolveReady(parsed?.nonce === nonce ? parsed : undefined);
-        if (parsed?.nonce !== nonce) invalid();
-      } else {
-        sawResult = true;
-        const parsed = decodeLocalSqliteRetrieverChildResult(line);
-        resolveResult(parsed?.nonce === nonce ? parsed : undefined);
-      }
-      offset = newline + 1;
+    if (sawReady || invalidWire) {
+      invalid();
+      return;
     }
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const newline = chunk.indexOf(10);
+    const piece = newline < 0 ? chunk : chunk.subarray(0, newline);
+    readyBytes += piece.byteLength;
+    if (readyBytes > 4_096 || readyChunks.length >= 4_096) {
+      invalid();
+      return;
+    }
+    if (piece.byteLength > 0) readyChunks.push(piece);
+    if (newline < 0) return;
+    if (newline !== chunk.byteLength - 1) {
+      invalid();
+      return;
+    }
+    const parsed = decodeLocalSqliteReporterChildReady(
+      Buffer.concat(readyChunks, readyBytes).toString("utf8"),
+    );
+    sawReady = true;
+    resolveReady(parsed?.nonce === nonce ? parsed : undefined);
+    if (parsed?.nonce !== nonce) invalid();
+  });
+  // Stdout carries only the diagnostic ready frame. A descendant inheriting
+  // fds 0-2 must never be able to supply the result authority on private fd 3.
+  child.stdout?.once("end", () => {
+    if (!sawReady) invalid();
+  });
+  const resultChannel = child.stdio[3] as Readable | null;
+  resultChannel?.on("data", (value: Buffer | Uint8Array) => {
+    if (sawResultFrame || invalidWire) {
+      invalid();
+      return;
+    }
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const newline = chunk.indexOf(10);
+    const piece = newline < 0 ? chunk : chunk.subarray(0, newline);
+    resultBytes += piece.byteLength;
+    if (
+      resultBytes > MAXIMUM_RETRIEVER_CHILD_RESULT_BYTES ||
+      resultChunks.length >= 4_096
+    ) {
+      invalid();
+      return;
+    }
+    if (piece.byteLength > 0) resultChunks.push(piece);
+    if (newline < 0) return;
+    if (newline !== chunk.byteLength - 1) {
+      invalid();
+      return;
+    }
+    sawResultFrame = true;
+    parsedResult = decodeLocalSqliteRetrieverChildResult(
+      Buffer.concat(resultChunks, resultBytes).toString("utf8"),
+    );
+    if (parsedResult?.nonce !== nonce) invalid();
+  });
+  resultChannel?.once("end", () => {
+    if (
+      invalidWire ||
+      !sawReady ||
+      !sawResultFrame ||
+      parsedResult?.nonce !== nonce ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      invalid();
+      return;
+    }
+    sawResult = true;
+    resolveResult(parsedResult);
+  });
+  resultChannel?.once("close", () => {
+    if (!sawResult) invalid();
   });
   child.once("exit", () => {
-    invalid();
+    if (!sawResult) invalid();
   });
-  /* v8 ignore start -- post-spawn stdout/process errors are an OS race; exit
-     and hostile framing tests exercise the same invalid settlement. */
-  child.once("error", () => {
-    invalid();
-  });
-  /* v8 ignore stop */
-  return Object.freeze({ ready, result });
+  child.once("error", invalid);
+  if (resultChannel === null) invalid();
+  return Object.freeze({ ready, result, valid: () => !invalidWire });
 };
 
 const watch = (
@@ -344,7 +389,7 @@ export const executeLocalSqliteRetrieverChild = async (
   const remaining = (): number => Math.max(0, cutoffAt - performance.now());
   const worker = spawn(process.execPath, [input.programs.workerPath], {
     detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "ignore"],
+    stdio: ["pipe", "pipe", "ignore", "pipe"],
     windowsHide: true,
   });
   const workerPid = worker.pid;
@@ -452,14 +497,17 @@ export const executeLocalSqliteRetrieverChild = async (
     )
       throw new Error("destination.local-sqlite.outcome-unknown");
     /* v8 ignore stop */
-    worker.stdin?.end();
     const result = await bounded(messages.result, remaining());
+    if (result === undefined || result === null || !messages.valid())
+      throw new Error("destination.local-sqlite.unavailable");
+    // Closing the existing request pipe acknowledges a complete private-fd
+    // result. The authenticated worker remains alive until this close.
+    worker.stdin?.end();
     const exit = await bounded(waitForExit(worker), remaining());
     if (
-      result === undefined ||
-      result === null ||
       !result.ok ||
       result.evidence === undefined ||
+      !messages.valid() ||
       exit?.code !== 0 ||
       exit.signal !== null
     )
