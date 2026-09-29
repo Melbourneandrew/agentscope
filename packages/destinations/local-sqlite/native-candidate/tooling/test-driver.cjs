@@ -72,6 +72,31 @@ const readExactPrivateResult = (channel) =>
     });
   });
 
+const collectBoundedStdout = (worker) => {
+  const chunks = [];
+  let bytes = 0;
+  let invalid = false;
+  const terminal = new Promise((resolve) => {
+    worker.stdout.on("data", (value) => {
+      bytes += value.byteLength;
+      if (bytes > 4_096 || chunks.length >= 4_096) {
+        invalid = true;
+        worker.kill("SIGKILL");
+        return;
+      }
+      chunks.push(Buffer.from(value));
+    });
+    worker.stdout.once("end", () => resolve(true));
+    worker.stdout.once("error", () => resolve(false));
+    worker.stdout.once("close", () => resolve(false));
+  });
+  return Object.freeze({
+    terminal,
+    matches: (expected) =>
+      !invalid && Buffer.concat(chunks, bytes).equals(expected),
+  });
+};
+
 const databaseFamily = () =>
   Object.freeze(
     readdirSync("/evidence")
@@ -299,6 +324,7 @@ LIMIT :maximumRows`;
     stderr = Buffer.concat([stderr, Buffer.from(value)]);
     if (stderr.byteLength > 4_096) worker.kill("SIGKILL");
   });
+  const stdout = collectBoundedStdout(worker);
   const lines = createInterface({ input: worker.stdout, crlfDelay: Infinity })[
     Symbol.asyncIterator
   ]();
@@ -326,6 +352,12 @@ LIMIT :maximumRows`;
   assert.equal(result.evidence.rows[0].deliveryIdentity, "2".repeat(64));
   worker.stdin.end();
   assert.deepEqual(await within(exit, 5_000), { code: 0, signal: null });
+  assert.equal(await within(stdout.terminal, 5_000), true);
+  assert.equal(
+    stdout.matches(Buffer.from(`${readyLine.value}\n`, "utf8")),
+    true,
+    "retriever-child-extra-stdout",
+  );
   assert.equal(stderr.byteLength, 0);
 };
 
