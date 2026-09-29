@@ -198,7 +198,7 @@ const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
     }
   });
 
-const readWorkerMessages = (
+export const readWorkerMessages = (
   child: ChildProcess,
   nonce: string,
 ): Readonly<{
@@ -267,11 +267,13 @@ const readWorkerMessages = (
       offset = newline + 1;
     }
   });
-  child.once("exit", () => {
-    invalid();
-  });
-  /* v8 ignore start -- post-spawn stdout/process errors are an OS race; exit
-     and hostile framing tests exercise the same invalid settlement. */
+  // Node can report process exit before its stdout pipe has delivered the last
+  // buffered frame. Only the pipe's terminal event proves that no more bytes
+  // can complete a pending result.
+  child.stdout?.once("end", invalid);
+  child.stdout?.once("close", invalid);
+  /* v8 ignore start -- post-spawn process errors are an OS race; terminal
+     stdout and hostile framing tests exercise the same invalid settlement. */
   child.once("error", () => {
     invalid();
   });

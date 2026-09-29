@@ -7,8 +7,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 
 import {
   createDestinationConnectionId,
@@ -23,7 +26,10 @@ import { describe, expect, it } from "vitest";
 import { acquireLocalSqliteSharedLease } from "../lifecycle/fence.js";
 import { compileLocalSqliteSearchPlan } from "../retriever/index.js";
 import { createLocalSqliteFilesystemGatePort } from "./filesystem-port.js";
-import { executeLocalSqliteRetrieverChild } from "./retriever-child-parent.js";
+import {
+  executeLocalSqliteRetrieverChild,
+  readWorkerMessages,
+} from "./retriever-child-parent.js";
 
 const fingerprint = `sha256-${"a".repeat(64)}`;
 const childIdentity = "5".repeat(32);
@@ -266,6 +272,53 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
     rmSync(root, { recursive: true, force: true });
   }
 };
+
+describe("Local SQLite Retriever child stdout", () => {
+  it("drains a buffered result after leader exit before settling its wire evidence", async () => {
+    const stdout = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+    }) as unknown as ChildProcess;
+    const nonce = "2".repeat(32);
+    const messages = readWorkerMessages(child, nonce);
+    stdout.write(
+      `${JSON.stringify({ type: "ready", nonce, pid: 42, startIdentity: childIdentity })}\n`,
+    );
+    await expect(messages.ready).resolves.toMatchObject({ nonce, pid: 42 });
+
+    stdout.pause();
+    stdout.write(
+      `${JSON.stringify({ type: "retrieval-result", nonce, ok: true, evidence: { row: null } })}\n`,
+    );
+    let settled = false;
+    void messages.result.then(() => {
+      settled = true;
+    });
+    child.emit("exit", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    stdout.resume();
+    stdout.end();
+    await expect(messages.result).resolves.toMatchObject({
+      nonce,
+      ok: true,
+      evidence: { row: null },
+    });
+  });
+
+  it("rejects a leader exit whose stdout closes without a result", async () => {
+    const stdout = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+    }) as unknown as ChildProcess;
+    const messages = readWorkerMessages(child, "2".repeat(32));
+    child.emit("exit", 0, null);
+    stdout.end();
+    await expect(messages.ready).resolves.toBeUndefined();
+    await expect(messages.result).resolves.toBeUndefined();
+  });
+});
 
 describe("Local SQLite Retriever child parent", () => {
   it("returns exact bounded evidence only after child exit and lease cleanup", async () => {
