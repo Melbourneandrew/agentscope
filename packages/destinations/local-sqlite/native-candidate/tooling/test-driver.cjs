@@ -36,6 +36,42 @@ const within = (promise, milliseconds) =>
     );
   });
 
+const readExactPrivateResult = (channel) =>
+  new Promise((resolve, reject) => {
+    const maximumBytes = 6 * 8 * 1024 * 1024 + 1024 * 1024 + 1;
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("destination.local-sqlite.native-execution.invalid"));
+    };
+    if (channel === null) return fail();
+    channel.on("data", (value) => {
+      if (settled) return;
+      bytes += value.byteLength;
+      if (bytes > maximumBytes) return fail();
+      chunks.push(Buffer.from(value));
+    });
+    channel.once("end", () => {
+      if (settled) return;
+      const frame = Buffer.concat(chunks, bytes);
+      if (
+        bytes < 2 ||
+        frame[bytes - 1] !== 10 ||
+        frame.indexOf(10) !== bytes - 1
+      )
+        return fail();
+      settled = true;
+      resolve(frame.subarray(0, -1).toString("utf8"));
+    });
+    channel.once("error", fail);
+    channel.once("close", () => {
+      if (!settled) fail();
+    });
+  });
+
 const databaseFamily = () =>
   Object.freeze(
     readdirSync("/evidence")
@@ -118,7 +154,7 @@ const executePackedReporterChild = async (loader) => {
     [
       "/work/node_modules/agentscope-cli/dist/internal/local-sqlite-runtime/reporter-child.js",
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe", "pipe"] },
   );
   const exit = new Promise((resolve) =>
     worker.once("exit", (code, signal) => resolve({ code, signal })),
@@ -279,15 +315,16 @@ LIMIT :maximumRows`;
   assert.equal(ready.type, "ready");
   assert.equal(ready.nonce, nonce);
   assert.equal(ready.pid, worker.pid);
-  worker.stdin.end(`${JSON.stringify({ type: "permission", nonce })}\n`);
-  const resultLine = await within(lines.next(), 10_000);
-  assert.equal(resultLine.done, false, "retriever-child-result-line");
-  const result = JSON.parse(resultLine.value);
+  worker.stdin.write(`${JSON.stringify({ type: "permission", nonce })}\n`);
+  const result = JSON.parse(
+    await within(readExactPrivateResult(worker.stdio[3]), 10_000),
+  );
   assert.equal(result.type, "retrieval-result");
   assert.equal(result.nonce, nonce);
   assert.equal(result.ok, true);
   assert.equal(result.evidence.rows.length, 1);
   assert.equal(result.evidence.rows[0].deliveryIdentity, "2".repeat(64));
+  worker.stdin.end();
   assert.deepEqual(await within(exit, 5_000), { code: 0, signal: null });
   assert.equal(stderr.byteLength, 0);
 };
