@@ -47,11 +47,11 @@ const readExactPrivateResult = (channel) =>
       settled = true;
       reject(new Error("destination.local-sqlite.native-execution.invalid"));
     };
-    if (channel === null) return fail();
+    if (channel === null || channel === undefined) return fail();
     channel.on("data", (value) => {
       if (settled) return;
       bytes += value.byteLength;
-      if (bytes > maximumBytes) return fail();
+      if (bytes > maximumBytes || chunks.length >= 4_096) return fail();
       chunks.push(Buffer.from(value));
     });
     channel.once("end", () => {
@@ -154,7 +154,7 @@ const executePackedReporterChild = async (loader) => {
     [
       "/work/node_modules/agentscope-cli/dist/internal/local-sqlite-runtime/reporter-child.js",
     ],
-    { stdio: ["pipe", "pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe"] },
   );
   const exit = new Promise((resolve) =>
     worker.once("exit", (code, signal) => resolve({ code, signal })),
@@ -289,7 +289,7 @@ LIMIT :maximumRows`;
     [
       "/work/node_modules/agentscope-cli/dist/internal/local-sqlite-runtime/retriever-child.js",
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    { stdio: ["pipe", "pipe", "pipe", "pipe"] },
   );
   const exit = new Promise((resolve) =>
     worker.once("exit", (code, signal) => resolve({ code, signal })),
