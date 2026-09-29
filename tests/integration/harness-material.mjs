@@ -187,20 +187,64 @@ export const classifyMaterialDownloadFailureForTesting = (error) => {
 export const classifyAttestationFailurePhaseForTesting = (descriptor, error) =>
   `download-attestation-${descriptor.installName === descriptor.packageName ? "root" : "variant"}-${classifyMaterialDownloadFailureForTesting(error)}`;
 
-const download = (descriptor, signal, deadline, transport = request) =>
+const authenticatedOverlongBody = ({
+  bytes,
+  chunks,
+  deadline,
+  descriptor,
+  framingError,
+  response,
+  responseAborted,
+  signal,
+}) => {
+  // Node aborts an overlong HTTP message after the peer closes. Only the
+  // attestation caller may recover the already-received immutable pinned body.
+  if (
+    !responseAborted ||
+    !framingError ||
+    response.complete ||
+    bytes !== descriptor.bytes ||
+    signal.aborted ||
+    performance.now() >= deadline
+  )
+    return;
+  const body = Buffer.concat(chunks, bytes);
+  if (createHash("sha256").update(body).digest("hex") === descriptor.sha256)
+    return body;
+};
+
+const materialRequestOptions = (url) => ({
+  agent: false,
+  ca: rootCertificates,
+  hostname: url.hostname,
+  maxHeaderSize: maximumHeaderBytes,
+  method: "GET",
+  path: `${url.pathname}${url.search}`,
+  protocol: "https:",
+  rejectUnauthorized: true,
+  servername: url.hostname,
+});
+const authorizedMaterialUrl = (url) =>
+  url.protocol === "https:" &&
+  url.username === "" &&
+  url.password === "" &&
+  url.hash === "" &&
+  url.port === "";
+
+const download = (
+  descriptor,
+  signal,
+  deadline,
+  transport = request,
+  allowPinnedOverlong = false,
+) =>
   new Promise((resolveDownload, rejectDownload) => {
     if (signal.aborted) {
       rejectDownload(new Error("interrupted"));
       return;
     }
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
-    if (
-      url.protocol !== "https:" ||
-      url.username !== "" ||
-      url.password !== "" ||
-      url.hash !== "" ||
-      url.port !== ""
-    ) {
+    if (!authorizedMaterialUrl(url)) {
       rejectDownload(new Error("registry identity"));
       return;
     }
@@ -209,6 +253,11 @@ const download = (descriptor, signal, deadline, transport = request) =>
     let responseHandle;
     let terminalError;
     let terminalValue;
+    let requestClosed = false;
+    let responseClosed = false;
+    let pinnedOverlong = false;
+    let responseAborted = false;
+    let framingError = false;
     const chunks = [];
     let bytes = 0;
     const settle = () => {
@@ -219,6 +268,9 @@ const download = (descriptor, signal, deadline, transport = request) =>
       if (terminalError === undefined && terminalValue !== undefined)
         resolveDownload(terminalValue);
       else rejectDownload(terminalError ?? new Error("incomplete"));
+    };
+    const maybeSettle = () => {
+      if (requestClosed && (!pinnedOverlong || responseClosed)) settle();
     };
     const stop = (error) => {
       terminalError ??= error;
@@ -231,45 +283,75 @@ const download = (descriptor, signal, deadline, transport = request) =>
       remaining(deadline),
     );
     signal.addEventListener("abort", onAbort, { once: true });
-    requestHandle = transport(
-      {
-        agent: false,
-        ca: rootCertificates,
-        hostname: url.hostname,
-        maxHeaderSize: maximumHeaderBytes,
-        method: "GET",
-        path: `${url.pathname}${url.search}`,
-        protocol: "https:",
-        rejectUnauthorized: true,
-        servername: url.hostname,
-      },
-      (response) => {
-        responseHandle = response;
-        const rejection = classifyMaterialResponseForTesting(
-          response,
-          descriptor.bytes,
-        );
-        if (rejection !== undefined) {
-          response.destroy();
-          stop(new Error(rejection));
+    requestHandle = transport(materialRequestOptions(url), (response) => {
+      responseHandle = response;
+      const rejection = classifyMaterialResponseForTesting(
+        response,
+        descriptor.bytes,
+      );
+      pinnedOverlong =
+        // Signed-manifest material and tarballs retain the strict header veto.
+        allowPinnedOverlong &&
+        rejection === "hdr-long" &&
+        typeof descriptor.sha256 === "string" &&
+        /^[a-f0-9]{64}$/u.test(descriptor.sha256);
+      if (rejection !== undefined && !pinnedOverlong) {
+        response.destroy();
+        stop(new Error(rejection));
+        return;
+      }
+      response.once("aborted", () => {
+        responseAborted = true;
+      });
+      response.on("data", (chunk) => {
+        bytes += chunk.byteLength;
+        if (bytes > descriptor.bytes) stop(new Error("size"));
+        else chunks.push(chunk);
+      });
+      response.once("error", (error) => {
+        if (pinnedOverlong && error?.code === "ECONNRESET") {
+          framingError = true;
           return;
         }
-        response.on("data", (chunk) => {
-          bytes += chunk.byteLength;
-          if (bytes > descriptor.bytes) stop(new Error("size"));
-          else chunks.push(chunk);
-        });
-        response.once("error", stop);
-        response.once("end", () => {
-          if (bytes !== descriptor.bytes) stop(new Error("size"));
-          else terminalValue = Buffer.concat(chunks);
-        });
-      },
-    );
+        stop(error);
+      });
+      response.once("end", () => {
+        if (bytes !== descriptor.bytes) stop(new Error("size"));
+        else terminalValue = Buffer.concat(chunks);
+      });
+      response.once("close", () => {
+        responseClosed = true;
+        if (pinnedOverlong && terminalError === undefined) {
+          const body = authenticatedOverlongBody({
+            bytes,
+            chunks,
+            deadline,
+            descriptor,
+            framingError,
+            response,
+            responseAborted,
+            signal,
+          });
+          if (body !== undefined) terminalValue = body;
+          else terminalError = new Error("hdr-long");
+        }
+        maybeSettle();
+      });
+    });
     requestHandle.once("error", stop);
-    requestHandle.once("close", settle);
+    requestHandle.once("close", () => {
+      requestClosed = true;
+      maybeSettle();
+    });
     requestHandle.end();
   });
+
+export const downloadRegularHarnessMaterialForTesting = (
+  descriptor,
+  signal,
+  deadline,
+  transport,
+) => download(descriptor, signal, deadline, transport);
 
 export const downloadAttestationWithRetry = async (
   descriptor,
@@ -278,12 +360,12 @@ export const downloadAttestationWithRetry = async (
   transport = request,
 ) => {
   try {
-    return await download(descriptor, signal, deadline, transport);
+    return await download(descriptor, signal, deadline, transport, true);
   } catch (error) {
     if (!(error instanceof Error) || !headerReasons.includes(error.message))
       throw error;
     try {
-      return await download(descriptor, signal, deadline, transport);
+      return await download(descriptor, signal, deadline, transport, true);
     } catch (retryError) {
       if (retryError instanceof Error)
         retryFirstReasons.set(retryError, error.message);
