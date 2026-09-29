@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  classifyAttestationFailurePhaseForTesting,
   classifyMaterialDownloadFailureForTesting,
   classifyMaterialResponseForTesting,
   inspectPreparedHarnessMaterial,
@@ -202,7 +203,7 @@ describe("harness material failure-phase evidence", () => {
         response(200, { "content-length": "2" }),
         1,
       ),
-    ).toBe("length-header");
+    ).toBe("hdr-long");
     expect(
       classifyMaterialResponseForTesting(response(200), 1),
     ).toBeUndefined();
@@ -291,5 +292,35 @@ describe("harness material failure-phase evidence", () => {
       cause: { message: "integration.harness-material.download-tarball" },
     });
     expect(existsSync(resolve(privateRoot, "harness-fixture"))).toBe(false);
+  });
+});
+
+describe("closed attestation response diagnostics", () => {
+  it.each([
+    ["0", "hdr-short"],
+    ["01", "hdr-noncanon"],
+    ["invalid", "hdr-invalid"],
+  ])("classifies only the relation of header %s", (header, reason) => {
+    expect(
+      classifyMaterialResponseForTesting(
+        { statusCode: 200, headers: { "content-length": header } },
+        1,
+      ),
+    ).toBe(reason);
+  });
+
+  it("identifies a finite endpoint class without exposing package identity", () => {
+    expect(
+      classifyAttestationFailurePhaseForTesting(
+        { installName: "@vendor/tool", packageName: "@vendor/tool" },
+        new Error("secret"),
+      ),
+    ).toBe("download-attestation-root-transport");
+    expect(
+      classifyAttestationFailurePhaseForTesting(
+        { installName: "@vendor/tool-linux", packageName: "@vendor/tool" },
+        new Error("secret"),
+      ),
+    ).toBe("download-attestation-variant-transport");
   });
 });

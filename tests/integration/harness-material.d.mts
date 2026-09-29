@@ -19,7 +19,20 @@ export declare const classifyMaterialResponseForTesting: (
   }>,
   expectedBytes: number,
 ) => string | undefined;
+export declare const downloadAttestationWithRetry: (
+  descriptor: Readonly<{ url: string; bytes: number }>,
+  signal: AbortSignal,
+  deadline: number,
+  transport?: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
 export declare const classifyMaterialDownloadFailureForTesting: (
+  error: unknown,
+) => string;
+export declare const classifyAttestationFailurePhaseForTesting: (
+  descriptor: Readonly<{ installName: string; packageName: string }>,
   error: unknown,
 ) => string;
 

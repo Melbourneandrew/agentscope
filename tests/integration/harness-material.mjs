@@ -143,10 +143,18 @@ export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
   if (
     response.headers["content-length"] !== undefined &&
     response.headers["content-length"] !== String(expectedBytes)
-  )
-    return "length-header";
+  ) {
+    const observed = response.headers["content-length"];
+    if (typeof observed !== "string" || !/^[0-9]+$/u.test(observed))
+      return "hdr-invalid";
+    const length = BigInt(observed);
+    if (length === BigInt(expectedBytes)) return "hdr-noncanon";
+    return length < BigInt(expectedBytes) ? "hdr-short" : "hdr-long";
+  }
 };
 
+const headerReasons = ["hdr-short", "hdr-long", "hdr-noncanon", "hdr-invalid"];
+const retryFirstReasons = new WeakMap();
 const downloadFailureReasons = new Map([
   ["registry identity", "identity"],
   ["integration.harness-material.failed", "deadline"],
@@ -156,19 +164,35 @@ const downloadFailureReasons = new Map([
     "status",
     "redirect",
     "encoding",
-    "length-header",
+    ...headerReasons,
     "size",
     "incomplete",
     "interrupted",
     "deadline",
   ].map((reason) => [reason, reason]),
 ]);
-export const classifyMaterialDownloadFailureForTesting = (error) =>
-  downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
-  "transport";
+export const classifyMaterialDownloadFailureForTesting = (error) => {
+  const first =
+    error instanceof Error ? retryFirstReasons.get(error) : undefined;
+  if (headerReasons.includes(first)) {
+    const second = downloadFailureReasons.get(error.message) ?? "transport";
+    return `${first}-then-${second}`;
+  }
+  return (
+    downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
+    "transport"
+  );
+};
 
-const download = (descriptor, signal, deadline) =>
+export const classifyAttestationFailurePhaseForTesting = (descriptor, error) =>
+  `download-attestation-${descriptor.installName === descriptor.packageName ? "root" : "variant"}-${classifyMaterialDownloadFailureForTesting(error)}`;
+
+const download = (descriptor, signal, deadline, transport = request) =>
   new Promise((resolveDownload, rejectDownload) => {
+    if (signal.aborted) {
+      rejectDownload(new Error("interrupted"));
+      return;
+    }
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
     if (
       url.protocol !== "https:" ||
@@ -207,7 +231,7 @@ const download = (descriptor, signal, deadline) =>
       remaining(deadline),
     );
     signal.addEventListener("abort", onAbort, { once: true });
-    requestHandle = request(
+    requestHandle = transport(
       {
         agent: false,
         ca: rootCertificates,
@@ -247,6 +271,27 @@ const download = (descriptor, signal, deadline) =>
     requestHandle.end();
   });
 
+export const downloadAttestationWithRetry = async (
+  descriptor,
+  signal,
+  deadline,
+  transport = request,
+) => {
+  try {
+    return await download(descriptor, signal, deadline, transport);
+  } catch (error) {
+    if (!(error instanceof Error) || !headerReasons.includes(error.message))
+      throw error;
+    try {
+      return await download(descriptor, signal, deadline, transport);
+    } catch (retryError) {
+      if (retryError instanceof Error)
+        retryFirstReasons.set(retryError, error.message);
+      throw retryError;
+    }
+  }
+};
+
 const assertNpmPackageDescriptors = (material) => {
   for (const descriptor of material.packages)
     if (
@@ -262,11 +307,13 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
   onPhase("download-attestation");
   let bytes;
   try {
-    bytes = await download(descriptor.attestations, signal, deadline);
-  } catch (error) {
-    onPhase(
-      `download-attestation-${classifyMaterialDownloadFailureForTesting(error)}`,
+    bytes = await downloadAttestationWithRetry(
+      descriptor.attestations,
+      signal,
+      deadline,
     );
+  } catch (error) {
+    onPhase(classifyAttestationFailurePhaseForTesting(descriptor, error));
     throw error;
   }
   onPhase("attestation-digest");
