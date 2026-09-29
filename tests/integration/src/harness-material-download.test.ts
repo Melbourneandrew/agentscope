@@ -97,3 +97,63 @@ describe("attestation response framing", () => {
     }
   });
 });
+
+describe("attestation cancellation", () => {
+  it("never starts a retry after cancellation during first close", async () => {
+    let attempts = 0;
+    let transportCalls = 0;
+    let sawBadHeader = false;
+    const controller = new AbortController();
+    const server = createServer((_request, response) => {
+      attempts += 1;
+      response.writeHead(200, { "content-length": "2", connection: "close" });
+      response.end("x");
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    try {
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        throw new Error("missing test server address");
+      await expect(
+        downloadAttestationWithRetry(
+          { url: "https://registry.npmjs.org/test-attestation", bytes: 1 },
+          controller.signal,
+          performance.now() + 3_000,
+          (options, callback) => {
+            transportCalls += 1;
+            const client = httpRequest(
+              {
+                ...options,
+                hostname: "127.0.0.1",
+                port: address.port,
+                protocol: "http:",
+              },
+              (response) => {
+                sawBadHeader = response.headers["content-length"] === "2";
+                callback(response);
+              },
+            );
+            client.once("close", () => {
+              controller.abort();
+            });
+            return client;
+          },
+        ),
+      ).rejects.toThrow("interrupted");
+      expect(sawBadHeader).toBe(true);
+      expect(controller.signal.aborted).toBe(true);
+      expect(transportCalls).toBe(1);
+      expect(attempts).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        }),
+      );
+    }
+  });
+});

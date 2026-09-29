@@ -169,6 +169,10 @@ export const classifyMaterialDownloadFailureForTesting = (error) =>
 
 const download = (descriptor, signal, deadline, transport = request) =>
   new Promise((resolveDownload, rejectDownload) => {
+    if (signal.aborted) {
+      rejectDownload(new Error("interrupted"));
+      return;
+    }
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
     if (
       url.protocol !== "https:" ||
