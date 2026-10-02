@@ -158,6 +158,7 @@ describe("integration Codex retained evidence", () => {
         doctorErrors: 0,
         uninstallDisposition: "committed",
         sessionStartCommandDurationMilliseconds: 125,
+        sessionStartDispatchEnvelopeUpperBoundMilliseconds: 202,
       },
     };
     expect(sanitizeFixtureResult(codex, "fixture-process-smoke")).toEqual(

@@ -17,7 +17,10 @@ const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   prompt,
   promptSha256,
-  mediation: { sessionStartCommandDurationMilliseconds: 125 },
+  mediation: {
+    sessionStartCommandDurationMilliseconds: 125,
+    sessionStartDispatchEnvelopeUpperBoundMilliseconds: 202,
+  },
   modelRequests: [
     {
       method: "POST",
@@ -90,6 +93,7 @@ describe("Codex PTY scenario observation boundary", () => {
         doctorErrors: 0,
         uninstallDisposition: "committed",
         sessionStartCommandDurationMilliseconds: 125,
+        sessionStartDispatchEnvelopeUpperBoundMilliseconds: 202,
       },
       destinationLedger: {
         retrieval: [{ operation: "search" }, { operation: "get" }],
@@ -105,6 +109,23 @@ describe("Codex PTY scenario observation boundary", () => {
     ).toBe("/unexpected");
     expect(() => correlate(value)).toThrow(
       "integration.codex.oracle-model-request",
+    );
+  });
+
+  it("rejects missing, negative, and over-budget vendor dispatch envelopes", () => {
+    for (const duration of [-1, 1_001, Number.NaN]) {
+      const value = raw();
+      value.mediation.sessionStartDispatchEnvelopeUpperBoundMilliseconds =
+        duration;
+      expect(() => translateCodexPlatformObservations(value)).toThrow(
+        "integration.codex.adapter-observation",
+      );
+    }
+    const missing = raw();
+    delete (missing.mediation as Partial<typeof missing.mediation>)
+      .sessionStartDispatchEnvelopeUpperBoundMilliseconds;
+    expect(() => translateCodexPlatformObservations(missing)).toThrow(
+      "integration.codex.adapter-observation",
     );
   });
 

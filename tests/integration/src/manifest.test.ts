@@ -523,7 +523,7 @@ describe("integration capability manifest", () => {
       "})}\\nlog_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}",
     );
     expect(source).toContain(
-      'RUST_LOG: "codex_hooks::engine::command_runner=trace"',
+      '"codex_core::hook_runtime=trace,codex_hooks::engine::command_runner=trace"',
     );
     expect(source).not.toContain('RUST_LOG: "codex_hooks=trace"');
     const traceTerminalPhase = source.indexOf(

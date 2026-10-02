@@ -36,6 +36,7 @@ import {
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexSessionStartMediationUpperBoundMilliseconds,
+  codexSessionStartDispatchEnvelopeFromLog,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
   localSqliteAcceptanceBaseline,
@@ -59,6 +60,38 @@ import {
 
 // eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
+  it("bounds the whole pinned vendor SessionStart dispatch envelope", () => {
+    const outerOpen = "TRACE run_pending_session_start_hooks: new\n";
+    const commandOpen =
+      'TRACE run_pending_session_start_hooks:codex.hooks.command{hook.event_name="SessionStart"}: new\n';
+    const commandClose =
+      'TRACE run_pending_session_start_hooks:codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed"}: close time.busy=50ms time.idle=25ms\n';
+    const outerClose = (durations = "time.busy=100ms time.idle=25ms") =>
+      `TRACE run_pending_session_start_hooks: close ${durations}\n`;
+    const complete = `${outerOpen}${commandOpen}${commandClose}${outerClose()}`;
+    const observed = codexSessionStartDispatchEnvelopeFromLog(complete);
+    expect(observed?.durationMilliseconds).toBe(127);
+    expect(observed?.spanSha256).toMatch(/^[a-f\d]{64}$/u);
+    expect(
+      codexSessionStartDispatchEnvelopeFromLog(
+        `${outerOpen}${commandOpen}${commandClose}`,
+      ),
+    ).toBeUndefined();
+    for (const hostile of [
+      `${commandOpen}${commandClose}${outerClose()}`,
+      `${outerOpen}${commandClose}${commandOpen}${outerClose()}`,
+      `${outerOpen}${commandOpen}${outerClose()}${commandClose}`,
+      `${outerOpen}${outerOpen}${commandOpen}${commandClose}${outerClose()}`,
+      `${outerOpen}${commandOpen}${commandClose}${outerClose()}${outerClose()}`,
+      `${outerOpen}${commandOpen}${commandClose}${outerClose("time.busy=999ms time.idle=0ms")}`,
+      `${outerOpen}${commandOpen}${commandClose}${outerClose("time.busy=1ms time.idle=1ms time.idle=2ms")}`,
+      `${outerOpen}${commandOpen}${commandClose.replace('"completed"', '"timeout"')}${outerClose()}`,
+    ])
+      expect(() => codexSessionStartDispatchEnvelopeFromLog(hostile)).toThrow(
+        /integration\.codex\.hook-(?:log|mediation)/u,
+      );
+  });
+
   it("classifies shutdown progress without using terminal contents", () => {
     const start = (event: string) =>
       `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n`;
@@ -725,10 +758,13 @@ describe("Codex bounded native ledgers", () => {
       const span = (event: string, duration: string) =>
         `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n` +
         `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${duration}\n`;
-      const sessionStart = span(
+      const outerOpen = "TRACE run_pending_session_start_hooks: new\n";
+      const outerClose =
+        "TRACE run_pending_session_start_hooks: close time.busy=180ms time.idle=20ms\n";
+      const sessionStart = `${outerOpen}${span(
         "SessionStart",
         "time.busy=125ms time.idle=25ms",
-      );
+      )}${outerClose}`;
       const stop = span("Stop", "time.busy=4.75s time.idle=125ms");
       const sessionEnd = span("SessionEnd", "time.busy=100ms time.idle=50ms");
       const path = join(directory, "codex-tui.log");
@@ -763,7 +799,10 @@ describe("Codex bounded native ledgers", () => {
         );
         writeFileSync(
           path,
-          sessionStart.slice(0, sessionStart.indexOf("\n") + 1),
+          sessionStart.slice(
+            0,
+            sessionStart.indexOf("\n", outerOpen.length) + 1,
+          ),
         );
         expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
           "arm-hook-open",
@@ -781,11 +820,17 @@ describe("Codex bounded native ledgers", () => {
         expect(firstModelRequestCheckpoint?.spanSha256).toMatch(
           /^[a-f\d]{64}$/u,
         );
+        expect(
+          firstModelRequestCheckpoint?.dispatchEnvelopeDurationMilliseconds,
+        ).toBe(202);
         writeFileSync(path, `${sessionStart}${stop}${sessionEnd}`);
         const lifecycle = inspectCodexRootHookLifecycle(input);
         expect(lifecycle).toEqual({
           sessionStartDurationMilliseconds: 150,
           sessionStartSpanSha256: firstModelRequestCheckpoint?.spanSha256,
+          sessionStartDispatchEnvelopeDurationMilliseconds: 202,
+          sessionStartDispatchEnvelopeSpanSha256:
+            firstModelRequestCheckpoint?.dispatchEnvelopeSpanSha256,
           stopDurationMilliseconds: 4_875,
           sessionEndDurationMilliseconds: 150,
         });
@@ -795,10 +840,10 @@ describe("Codex bounded native ledgers", () => {
             lifecycle,
           ),
         ).toBe(true);
-        const substitutedSessionStart = span(
+        const substitutedSessionStart = `${outerOpen}${span(
           "SessionStart",
           "time.busy=100ms time.idle=50ms",
-        );
+        )}${outerClose}`;
         writeFileSync(path, `${substitutedSessionStart}${stop}${sessionEnd}`);
         const substitutedLifecycle = inspectCodexRootHookLifecycle(input);
         expect(substitutedLifecycle?.sessionStartDurationMilliseconds).toBe(
