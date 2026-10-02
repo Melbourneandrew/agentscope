@@ -1,0 +1,48 @@
+---
+title: Gemini CLI Harness Integration
+description: ADRs for authenticating, driving, and observing Gemini CLI without provider authority.
+---
+
+## Capability Summary
+
+The Gemini CLI integration must install an authenticated exact CLI, own a reversible root hook, and correlate its native behavior with Agentscope traces against one internal Gemini protocol service. A documented interface is not release-supported until its exact binary passes an isolated, credential-free product scenario.
+
+## Architecture Decision Records
+
+### ADR-001: Authenticate an exact public CLI input
+
+**Decision:** Trusted preparation obtains the catalog-selected exact `@google/gemini-cli` release from the public npm registry and authenticates its package integrity, registry signature and available publication provenance before executing it. It authenticates the installed executable and its production dependency closure inside the disposable scenario; a moving tag, global installation, or host npm lifecycle is not a test input. The public Apache-2.0 source license permits source review but does not by itself approve mirroring every package or bundled dependency. A persistent redistribution path needs its own artifact and license review.
+
+**Context:** Gemini CLI documents npm installation and publishes [Apache-2.0 source](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/LICENSE). Version `v0.61.0` is a research exemplar, not a support pin; the compatibility catalog selects each admitted version.
+
+### ADR-002: Keep TUI and headless claims separate
+
+**Decision:** Interactive Gemini CLI runs through the shared semantic PTY transport. Headless Gemini CLI runs with a prompt and `--output-format stream-json` through the shared pipe transport. The closed canonical execution-mode/output-contract pairs are `interactive` with `semantic-pty` and `headless` with `stream-json`. Each pair has its own version-bound claim and actual-binary oracle; JSONL evidence cannot establish TUI behavior, and a TUI transcript cannot establish the headless event schema. A claimed pair must prove its exact startup, prompt, tool, error, and terminal behavior rather than inheriting another pair's result.
+
+**Context:** Gemini CLI documents a [headless JSONL interface](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/cli/headless.md) distinct from its interactive CLI. The PTY is for driving the coding agent and observing its native terminal behavior; it is not a second Agentscope CLI implementation.
+
+### ADR-003: Route one Gemini API mode to one protected internal service
+
+**Decision:** The scenario uses a fresh private home, Gemini configuration root and worktree, selects only Gemini API-key mode, and points `GOOGLE_GEMINI_BASE_URL` at the one controller-owned Gemini protocol MockServer selected by [Mock Services ADR-001](/docs/blueprints/testing/integration/mock-services). The endpoint must satisfy the exact CLI's URL and TLS validation without disabling certificate verification or adding a candidate-co-resident gateway. If that cannot be proved for the selected version and backend, the claim remains unverified. A fixed, nonsecret, provider-invalid test marker may satisfy the CLI's required API-key presence check only inside the isolated scenario; it is neither a real model-provider credential nor an authorization secret. The protected service rejects any other marker. No OAuth login, ADC, Vertex AI path, stored account, real API key, public model request, or alternate provider route is admitted. The controller proves denied public egress and settles the service's terminal connection/parser receipt and sole request ledger before treating any native output as evidence.
+
+**Context:** Version-bound [configuration](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/reference/configuration.md) documents `GOOGLE_GEMINI_BASE_URL` for Gemini API-key authentication and requires HTTPS except for loopback; [authentication](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/get-started/authentication.mdx) requires `GEMINI_API_KEY` for that mode. A URL override is not by itself proof that all traffic uses the mock.
+
+**Consequences:** Authentication prompts, unexpected account discovery, a second model socket, a substituted service, missing terminal settlement, or any provider-reachable request fail the scenario. No synthetic marker is carried into production installation or support evidence as a user credential.
+
+### ADR-004: Own the root hook without promising best-effort events
+
+**Decision:** Agentscope transactionally installs only its identifiable root `AfterAgent` command-hook block in the selected Gemini settings, preserving foreign entries and requiring explicit migration for an overlapping capture hook. The installed command is a constant, exact-platform-encoded invocation of the Agentscope-owned launcher with bounded stdin, deadline, zero-output fail-open behavior, and no interpolated prompt or per-turn argument. For Gemini CLI v0.61.0 on each admitted platform, every validated integer Agentscope hook duration `d` from 50 through 60,000 milliseconds maps to the installed integer vendor `timeout` of `d + 3,000` milliseconds, with a fixed 63,000-millisecond maximum. This reserves at most 2,000 milliseconds for vendor command mediation before launcher entry and at least 1,000 milliseconds after the complete Agentscope deadline for vendor settlement. The timeout and duration are bound and verified in the same owned installation transaction. Actual-binary evidence must prove the mediation bound and terminal post-deadline behavior on each admitted platform, including the 50- and 60,000-millisecond boundaries; if the selected binary cannot represent or honor the entire envelope, that version/platform is ineligible rather than clamped. A later version requires its own reviewed, exact-version timeout decision before installation.
+
+Version-bound actual-binary evidence must also prove that `AfterAgent` fires for each claimed completed root turn in each claimed mode, that the launcher durably accepts the corresponding capture, and that timeout or malformed input cannot block Gemini CLI or leave detached work. `SessionStart` may aid correlation, but `SessionEnd` is best-effort and cannot be the sole completion, flush, or cleanup oracle. A crash or forced termination is classified independently and never fabricated as a graceful hook event. Upgrade and uninstall compare exact owned state and remove only that state.
+
+**Context:** The [hook reference](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/hooks/reference.md) defines command hooks in `settings.json`, `AfterAgent` after a completed agent turn, and a non-waited `SessionEnd`. Documentation does not prove that every selected binary and interface fires a hook with the required timing.
+
+**Consequences:** A missing or late root hook, conflicting foreign hook, unproved mediation interval, or absent durable acceptance blocks admission for that version and mode. Transcript polling cannot substitute for the owned hook.
+
+### ADR-005: Correlate independent native, hook, and product evidence
+
+**Decision:** The Gemini oracle correlates the exact process or PTY terminal, headless JSONL or bounded semantic terminal observations as applicable, the protected Gemini request ledger, hook invocations and durable Agentscope acceptance, installed configuration ownership, loopback OTLP receipt, trace/destination joins, worktree mutations, and complete resource cleanup under one run identity. Native session files are version-bound corroboration, never the sole oracle or a cross-version schema. The isolated settings disable auto-update and update notices, Gemini telemetry and usage statistics, extension/MCP/skill discovery, and unused auth/provider routes wherever the selected version exposes controls; the network boundary still denies and probes every public route. Unknown native records, mismatched model/tool/branch/error/redaction observations, or any unjoined child or service fail admission.
+
+**Context:** Gemini CLI's [configuration reference](https://github.com/google-gemini/gemini-cli/blob/v0.61.0/docs/reference/configuration.md) documents settings and environment controls but does not make a CLI-reported cost field, disabled setting, or absent log a network or spend proof.
+
+**Consequences:** The exact packed Agentscope CLI and actual Gemini binary must pass the same disposable product scenario before a support-manifest row can claim a version and mode. Component tests alone keep support unverified.
