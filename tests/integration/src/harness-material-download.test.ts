@@ -242,6 +242,61 @@ const withPinnedLoopback = async (
 };
 
 describe("pinned overlong attestation framing", () => {
+  it("rejects when the second close crosses the deadline before the timer runs", async () => {
+    const deadline = performance.now() + 100;
+    let attempts = 0;
+    let responseClosedBeforeDeadline = false;
+    let requestClosedAfterDeadline = false;
+    const transport = (
+      _options: RequestOptions,
+      callback: (response: IncomingMessage) => void,
+    ): ClientRequest => {
+      attempts += 1;
+      const response = Object.assign(new PassThrough(), {
+        statusCode: 200,
+        headers: { "content-length": "2" },
+        complete: false,
+      }) as unknown as IncomingMessage;
+      const client = Object.assign(new EventEmitter(), {
+        destroy: () => {},
+        end: () => {
+          queueMicrotask(() => {
+            callback(response);
+            response.emit("data", Buffer.from("x"));
+            response.emit("aborted");
+            response.emit(
+              "error",
+              Object.assign(new Error("framing aborted"), {
+                code: "ECONNRESET",
+              }),
+            );
+            responseClosedBeforeDeadline = performance.now() < deadline;
+            response.emit("close");
+            // Hold this microtask across the cutoff so the timer cannot supply
+            // the deadline error before the final transport-close event.
+            while (performance.now() < deadline + 1) {
+              // Deliberately bounded synchronous event-loop occupation.
+            }
+            requestClosedAfterDeadline = performance.now() >= deadline;
+            client.emit("close");
+          });
+        },
+      }) as unknown as ClientRequest;
+      return client;
+    };
+    await expect(
+      downloadAttestationWithRetry(
+        pinnedAttestation,
+        new AbortController().signal,
+        deadline,
+        transport,
+      ),
+    ).rejects.toThrow("deadline");
+    expect(responseClosedBeforeDeadline).toBe(true);
+    expect(requestClosedAfterDeadline).toBe(true);
+    expect(attempts).toBe(1);
+  });
+
   it.each(["request", "response"])(
     "waits for both terminal closes when %s closes first",
     async (firstToClose) => {

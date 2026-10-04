@@ -262,6 +262,11 @@ const download = (
     let bytes = 0;
     const settle = () => {
       if (settled) return;
+      if (pinnedOverlong && terminalError === undefined) {
+        if (signal.aborted) terminalError = new Error("interrupted");
+        else if (performance.now() >= deadline)
+          terminalError = new Error("deadline");
+      }
       settled = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
