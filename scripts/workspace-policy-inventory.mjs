@@ -1,5 +1,6 @@
 export const processAuthorityFiles = Object.freeze([
   "code-quality-policy.test.mjs",
+  "native-ci-closure.test.mjs",
   "nx-cache-policy.test.mjs",
   "prepush.test.mjs",
   "pty-runtime-proof-controller.test.mjs",
@@ -20,5 +21,6 @@ export const purePolicyFiles = Object.freeze([
 export const requiredPolicyFiles = Object.freeze([
   ...purePolicyFiles,
   "code-quality-policy.test.mjs",
+  "native-ci-closure.test.mjs",
   "nx-cache-policy.test.mjs",
 ]);

@@ -14,8 +14,30 @@ const entrypoint = fileURLToPath(import.meta.url);
 const nx = realpathSync(
   join(dirname(entrypoint), "../../node_modules/.bin/nx"),
 );
+const nativeNx = realpathSync(
+  new URL("../../node_modules/nx/dist/bin/nx.js", import.meta.url),
+);
 const teardownReserve = 3_000;
 const outputLimit = 64 * 1024;
+const nativeOutputLimit = 1024 * 1024;
+const repository = resolve(dirname(entrypoint), "../..");
+const nativeSeeds = ["real", "hang", "overflow", "descendant", "malformed"];
+
+export function assertNativeCiSeed(seed) {
+  if (!nativeSeeds.includes(seed)) throw failure("seed");
+}
+
+export function decodeNativeCapturedOutput(output) {
+  if (
+    typeof output !== "string" ||
+    output.length > Math.ceil(nativeOutputLimit / 3) * 4
+  )
+    throw failure("output");
+  const bytes = Buffer.from(output, "base64");
+  if (bytes.length > nativeOutputLimit || bytes.toString("base64") !== output)
+    throw failure("output");
+  return bytes;
+}
 
 function failure(category, phase) {
   return new Error(`nx-cache.fixture.${category}`, {
@@ -99,6 +121,11 @@ function wrapperIsAlone(pid, deadline) {
 
 function closedCommand(arguments_, runtime) {
   const encoded = JSON.stringify(arguments_);
+  if (runtime === "native-closure") {
+    if (!['["tracked"]', '["graph","--file=stdout"]'].includes(encoded))
+      throw failure("command");
+    return;
+  }
   if (
     !["runtime-one", "runtime-two"].includes(runtime) ||
     ![
@@ -141,6 +168,9 @@ export function bindNxCacheMessagesForTesting(
           !wrapperIsAlone(command.leader.pid, command.deadline)
         )
           recordProblem(failure("command-terminal"));
+        else if (command.runtime === "native-closure") {
+          command.result.output = decodeNativeCapturedOutput(message.output);
+        }
       } catch {
         recordProblem(failure("group-inventory"));
       }
@@ -186,9 +216,28 @@ function settleUncertain(child, authority, problem, finish) {
 
 function admitCommand(authority, arguments_, environment) {
   closedCommand(arguments_, environment.CACHE_RUNTIME);
+  if (environment.CACHE_RUNTIME === "native-closure") {
+    assertNativeCiSeed(environment.NATIVE_CI_GRAPH_SEED);
+    if (
+      environment.NX_DAEMON !== "false" ||
+      environment.NX_ISOLATE_PLUGINS !== "false" ||
+      environment.NX_NO_CLOUD !== "true" ||
+      "NODE_OPTIONS" in environment ||
+      environment.NX_WORKSPACE_DATA_DIRECTORY !==
+        join(authority.path, "workspace-data") ||
+      environment.NX_CACHE_DIRECTORY !== join(authority.path, "cache") ||
+      environment.NX_NATIVE_FILE_CACHE_DIRECTORY !==
+        join(authority.path, "native-cache")
+    )
+      throw failure("environment");
+  }
   verifyRoot(authority);
   if (authority.active || authority.quarantined) throw failure("active");
-  const cutoff = assertNxCacheWorkBudget(authority.deadline);
+  const cutoff =
+    environment.CACHE_RUNTIME === "native-closure"
+      ? authority.deadline - 1_500
+      : assertNxCacheWorkBudget(authority.deadline);
+  if (performance.now() >= cutoff) throw failure("deadline");
   authority.active = true;
   return cutoff;
 }
@@ -208,14 +257,14 @@ export function runNxCacheCommand(authority, arguments_, environment) {
     let graceTimer;
     let pollTimer;
     const progress = { phase: "wrapper-startup" };
+    const result = {};
     const child = spawnWrapper(authority, nonce, environment);
     const finish = (error) => {
       if (settled) return;
       settled = true;
-      for (const timer of [executionTimer, hardTimer, graceTimer, pollTimer])
-        clearTimeout(timer);
+      [executionTimer, hardTimer, graceTimer, pollTimer].forEach(clearTimeout);
       authority.active = false;
-      if (error === undefined) resolveCommand();
+      if (error === undefined) resolveCommand(result.output);
       else rejectCommand(error);
     };
     const inspect = () =>
@@ -304,6 +353,8 @@ export function runNxCacheCommand(authority, arguments_, environment) {
         deadline: authority.deadline,
         cutoff,
         progress,
+        runtime: environment.CACHE_RUNTIME,
+        result,
       },
       () => settled || stopping,
       (error) => {
@@ -312,6 +363,61 @@ export function runNxCacheCommand(authority, arguments_, environment) {
       stop,
     );
   });
+}
+
+function spawnFixtureCommand(arguments_) {
+  const native = process.env.CACHE_RUNTIME === "native-closure";
+  const tracked = native && arguments_[0] === "tracked";
+  const seed = process.env.NATIVE_CI_GRAPH_SEED;
+  if (native) assertNativeCiSeed(seed);
+  const synthetic = native && !tracked && seed !== "real";
+  return spawn(
+    synthetic || (native && !tracked)
+      ? process.execPath
+      : tracked
+        ? "/usr/bin/git"
+        : nx,
+    synthetic
+      ? [entrypoint, "--native-seed", seed]
+      : tracked
+        ? ["-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"]
+        : [
+            ...(native ? [nativeNx] : []),
+            ...arguments_,
+            ...(native || arguments_[0] === "reset"
+              ? []
+              : ["--outputStyle=static"]),
+          ],
+    {
+      cwd: native ? repository : undefined,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+}
+
+function nativeSeed(seed) {
+  assertNativeCiSeed(seed);
+  if (seed === "hang") {
+    process.on("SIGTERM", () => {});
+    setInterval(() => {}, 1_000);
+    if (process.connected) process.send({ ready: true });
+  } else if (seed === "overflow") {
+    process.stdout.write(Buffer.alloc(nativeOutputLimit + 1));
+  } else if (seed === "descendant") {
+    const child = spawn(
+      process.execPath,
+      [entrypoint, "--native-seed", "hang"],
+      {
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      },
+    );
+    child.once("message", (message) =>
+      process.exit(message?.ready === true ? 0 : 1),
+    );
+  } else if (seed === "malformed")
+    process.stdout.write('{"graph":{"nodes":null}}');
+  else process.exit(1);
 }
 
 function wrapper(nonce) {
@@ -328,25 +434,23 @@ function wrapper(nonce) {
     started = true;
     closedCommand(message.arguments, process.env.CACHE_RUNTIME);
     const arguments_ = message.arguments;
-    const child = spawn(
-      nx,
-      [
-        ...arguments_,
-        ...(arguments_[0] === "reset" ? [] : ["--outputStyle=static"]),
-      ],
-      { shell: false, stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const native = process.env.CACHE_RUNTIME === "native-closure";
+    const child = spawnFixtureCommand(arguments_);
     let bytes = 0;
     let overflow = false;
     let error = false;
+    const chunks = [];
     const observe = (chunk) => {
       bytes += chunk.length;
-      if (bytes > outputLimit && !overflow) {
+      if (bytes > (native ? nativeOutputLimit : outputLimit) && !overflow) {
         overflow = true;
         process.send({ nonce, kind: "terminal", error: true, overflow: true });
       }
     };
-    child.stdout.on("data", observe);
+    child.stdout.on("data", (chunk) => {
+      observe(chunk);
+      if (native && !overflow) chunks.push(chunk);
+    });
     child.stderr.on("data", observe);
     child.once("error", () => {
       error = true;
@@ -360,6 +464,9 @@ function wrapper(nonce) {
           signal,
           error,
           overflow,
+          ...(native
+            ? { output: Buffer.concat(chunks).toString("base64") }
+            : {}),
         });
     });
   });
@@ -367,5 +474,7 @@ function wrapper(nonce) {
   return keepAlive;
 }
 
-if (resolve(process.argv[1] ?? "") === entrypoint)
-  wrapper(process.argv[2] === "--wrapper" ? process.argv[3] : "");
+if (resolve(process.argv[1] ?? "") === entrypoint) {
+  if (process.argv[2] === "--native-seed") nativeSeed(process.argv[3]);
+  else wrapper(process.argv[2] === "--wrapper" ? process.argv[3] : "");
+}
