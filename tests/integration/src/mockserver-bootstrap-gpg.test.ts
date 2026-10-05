@@ -1,3 +1,7 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -16,6 +20,41 @@ const status = (fingerprint: string, hash: string, signatureClass: string) =>
   `[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG ${fingerprint.slice(-16)} Synthetic Release\n[GNUPG:] VALIDSIG ${fingerprint} 2023-11-14 ${created} 0 4 0 1 ${hash} ${signatureClass} ${fingerprint}\n`;
 const listing = (fingerprint: string) =>
   `pub:-:4096:1:${fingerprint.slice(-16)}:${created - 1}:0:::::scSC:\nfpr:::::::::${fingerprint}:\nuid:-::::${created - 1}::canary::Synthetic Release:\n`;
+
+describe("bootstrap input type rejection before blocking I/O", () => {
+  it("rejects an unwritten FIFO through the actual file authenticator", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-bootstrap-fifo-"));
+    const fifo = resolve(root, "key");
+    try {
+      execFileSync("/usr/bin/mkfifo", [fifo], { env: {}, timeout: 1_000 });
+      const module = new URL(
+        "../mockserver-material/bootstrap-gpg.mjs",
+        import.meta.url,
+      ).href;
+      const script = `import { authenticateBootstrapGpgInputForTesting } from ${JSON.stringify(module)};
+        try { authenticateBootstrapGpgInputForTesting("node", "key", ${JSON.stringify(fifo)}); process.exitCode = 2; }
+        catch (error) { if (error.message !== "integration.mockserver-material.bootstrap-gpg") process.exitCode = 3; }`;
+      const child = spawnSync(
+        process.execPath,
+        ["--input-type=module", "--eval", script],
+        {
+          env: {},
+          timeout: 1_000,
+          killSignal: "SIGKILL",
+          maxBuffer: 4_096,
+          encoding: "utf8",
+        },
+      );
+      expect(child.error).toBeUndefined();
+      expect(child.signal).toBeNull();
+      expect(child.status).toBe(0);
+      expect(child.stdout).toBe("");
+      expect(child.stderr).toBe("");
+    } finally {
+      rmSync(root, { recursive: true });
+    }
+  });
+});
 
 describe("closed stock-GPG bootstrap records (synthetic, not cryptographic proof)", () => {
   it.each(policies)(

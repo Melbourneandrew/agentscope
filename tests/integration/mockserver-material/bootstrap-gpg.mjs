@@ -89,10 +89,13 @@ const objects = Object.freeze({
     ],
   ]),
 });
-const authenticateObject = ([name, size, sha256]) => {
+const authenticateObject = (
+  [name, size, sha256],
+  path = resolve("/verify", name),
+) => {
   const fd = openSync(
-    resolve("/verify", name),
-    constants.O_RDONLY | constants.O_NOFOLLOW,
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   try {
     const before = fstatSync(fd);
@@ -139,6 +142,14 @@ const authenticateObject = ([name, size, sha256]) => {
   } finally {
     closeSync(fd);
   }
+};
+// A bounded read-only testing seam; never a signer or execution capability.
+export const authenticateBootstrapGpgInputForTesting = (kind, name, path) => {
+  policyFor(kind);
+  if (typeof name !== "string" || typeof path !== "string") fail();
+  const object = objects[kind].find((candidate) => candidate[0] === name);
+  if (object === undefined) fail();
+  authenticateObject(object, path);
 };
 const seconds = (value) => {
   if (!/^(?:0|[1-9]\d{0,10})$/u.test(value ?? "")) fail();
