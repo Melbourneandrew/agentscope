@@ -16,7 +16,7 @@ const text = (bytes) => {
   return bytes.subarray(0, length).toString("ascii");
 };
 const octal = (bytes) => {
-  const value = bytes.toString("ascii");
+  const value = bytes.toString("latin1");
   if (!/^[0-7]+[\0 ]*$/u.test(value)) fail();
   const number = Number.parseInt(value, 8);
   if (!Number.isSafeInteger(number)) fail();
@@ -50,7 +50,8 @@ export const readBuildArtifactTar = (input) => {
     (header[156] !== 0 && header[156] !== 48) ||
     !zero(header.subarray(157, 257)) ||
     text(header.subarray(257, 263)) !== "ustar" ||
-    header.subarray(263, 265).toString("ascii") !== "00" ||
+    header[263] !== 48 ||
+    header[264] !== 48 ||
     !zero(header.subarray(345, blockBytes))
   )
     fail();

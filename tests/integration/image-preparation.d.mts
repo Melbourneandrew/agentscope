@@ -41,10 +41,11 @@ export interface PreparePinnedDockerImagesOptions {
       environment: Readonly<Record<string, string>>;
       input?: Buffer;
       observeProcess?: (diagnostic: Readonly<Record<string, unknown>>) => void;
+      output?: "text" | "binary";
       signal?: AbortSignal;
       teardownMilliseconds: number;
     }>,
-  ) => Promise<string>;
+  ) => Promise<string | Buffer>;
   socketIdentityForTesting?: Readonly<DockerSocketIdentity>;
   engineRequestForTesting?: (
     request: ImagePreparationRequest,
@@ -210,7 +211,9 @@ export declare const createBoundedBuildContext: (
   }>,
 ) => Buffer;
 
-export declare const runOwnedImageCommandForTesting: (
+export declare const runOwnedImageCommandForTesting: <
+  Output extends "text" | "binary" = "text",
+>(
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{
@@ -218,21 +221,25 @@ export declare const runOwnedImageCommandForTesting: (
     deadline: number;
     environment?: Readonly<Record<string, string>>;
     input?: Buffer;
+    output?: Output;
     signal?: AbortSignal;
     teardownMilliseconds?: number;
     timeoutAfterOutputForTesting?: Buffer;
   }>,
-) => Promise<string>;
+) => Promise<Output extends "binary" ? Buffer : string>;
 
 export declare const readImageTimeoutSourceForTesting: (
   error: unknown,
 ) => "deadline" | "output" | undefined;
 
-export declare const buildPreparedDockerImage: (
+export declare const buildPreparedDockerImage: <
+  Output extends "image" | "evidence-tar" = "image",
+>(
   client: PreparedDockerClient,
   options: Readonly<{
     buildArguments: Readonly<Record<string, string>>;
     buildNetwork?: "default" | "none";
+    buildOutput?: Output;
     afterBuildContextEntryForTesting?: (entryCount: number) => void;
     context: string;
     dockerfile: string;
@@ -241,9 +248,9 @@ export declare const buildPreparedDockerImage: (
     maximumMilliseconds: number;
     retirementRequired?: boolean;
     signal?: AbortSignal;
-    tag: string;
+    tag?: string;
   }>,
-) => Promise<string>;
+) => Promise<Output extends "evidence-tar" ? Buffer : string>;
 
 export declare const retirePreparedDockerImage: (
   client: PreparedDockerClient,

@@ -14,6 +14,12 @@ import { isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 import { rootCertificates } from "node:tls";
 
+import {
+  classifyBuildxStderr,
+  selectCommandOutput,
+  serializeCommandOutput,
+} from "./process-output.mjs";
+
 const maximumPreparationMilliseconds = 300_000;
 export const preparationTeardownMilliseconds = 5_000;
 export const maximumResponseBytes = 1_048_576;
@@ -60,23 +66,6 @@ export const fixedError = (code, timedOut = false) => {
 };
 export const diagnosticDigest = (value) =>
   digestBytes(Buffer.from(JSON.stringify(value), "utf8"));
-const buildxStderrClassifiers = Object.freeze([
-  ["resource-conflict", /(?:already exists|existing instance)/iu],
-  ["build-failed", /(?:failed to solve|failed to build)/iu],
-  [
-    "bootstrap-failed",
-    /(?:failed to boot|bootstrap|connection refused|unavailable)/iu,
-  ],
-  ["permission-denied", /(?:permission denied|operation not permitted)/iu],
-]);
-const classifyBuildxStderr = (value) => {
-  if (typeof value !== "string" || value.length > maximumHeaderBytes)
-    return "unknown";
-  return (
-    buildxStderrClassifiers.find(([, pattern]) => pattern.test(value))?.[0] ??
-    "unknown"
-  );
-};
 export const classifyBuildxStderrForTesting = classifyBuildxStderr;
 export const boundedText = (value, maximum = 256) =>
   typeof value === "string" &&
@@ -386,11 +375,13 @@ const runOwnedCommand = async (
     environment,
     input,
     observeProcess,
+    output,
     signal,
     teardownMilliseconds,
     timeoutAfterOutputForTesting,
   },
 ) => {
+  const outputSelection = selectCommandOutput(output);
   if (process.platform === "win32" || processInspectionExecutable === undefined)
     throw fixedError("integration.images.platform");
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
@@ -413,7 +404,7 @@ const runOwnedCommand = async (
     throw fixedError("integration.images.command");
   }
   let bytes = 0;
-  const output = [];
+  const outputChunks = [];
   const diagnosticStderr = [];
   let diagnosticStderrBytes = 0;
   let outputTruncated = false;
@@ -435,8 +426,12 @@ const runOwnedCommand = async (
       outputTruncated = true;
       fail("integration.images.output");
     } else if (retain) {
-      output.push(chunk);
-      applyOutputTimeoutForTesting(output, timeoutAfterOutputForTesting, fail);
+      outputChunks.push(chunk);
+      applyOutputTimeoutForTesting(
+        outputChunks,
+        timeoutAfterOutputForTesting,
+        fail,
+      );
     } else if (diagnosticStderrBytes < maximumHeaderBytes) {
       const retained = chunk.subarray(
         0,
@@ -531,7 +526,7 @@ const runOwnedCommand = async (
       throw error;
     }
     if (failure !== undefined) throw failure;
-    return Buffer.concat(output).toString("utf8");
+    return serializeCommandOutput(outputChunks, outputSelection);
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
@@ -539,13 +534,16 @@ const runOwnedCommand = async (
   }
 };
 /* eslint-enable max-lines-per-function */
-const runOwnedImageCommand = (executable, arguments_, options) =>
-  runOwnedCommand(executableRecord(executable), arguments_, {
+const runOwnedImageCommand = async (executable, arguments_, options) => {
+  const output = selectCommandOutput(options.output);
+  return await runOwnedCommand(executableRecord(executable), arguments_, {
     ...options,
+    output,
     environment: options.environment ?? {},
     teardownMilliseconds:
       options.teardownMilliseconds ?? preparationTeardownMilliseconds,
   });
+};
 export const readImageProcessDiagnostic = (error) =>
   processDiagnostics.get(error);
 export const readImageTimeoutSourceForTesting = (error) =>
