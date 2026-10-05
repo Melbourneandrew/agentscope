@@ -8,8 +8,8 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  opendirSync,
   readSync,
-  readdirSync,
   realpathSync,
   writeSync,
 } from "node:fs";
@@ -98,6 +98,10 @@ const provenance = (input) => {
       "workflowRef",
       "workflowRevision",
     ]) ||
+    !Object.values(request).every((part) => typeof part === "string") ||
+    !Object.entries(value)
+      .filter(([key]) => key !== "request")
+      .every(([, part]) => typeof part === "string") ||
     request.kind !== "supplier" ||
     !/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u.test(
       request.repository,
@@ -347,6 +351,24 @@ const receipt = (input) => {
   return value;
 };
 
+const packetEntries = (path, deadline, signal) => {
+  const names = [];
+  guard(deadline, signal);
+  const handle = opendirSync(path, { bufferSize: 3 });
+  try {
+    while (names.length < 3) {
+      guard(deadline, signal);
+      const entry = handle.readSync();
+      if (entry === null) break;
+      names.push(entry.name);
+    }
+  } finally {
+    handle.closeSync();
+  }
+  guard(deadline, signal);
+  return names.sort();
+};
+
 /** Called only by the existing controller after canonical clean; failure leaves evidence quarantined. */
 export const retainMockServerResearch = ({
   parent,
@@ -364,6 +386,8 @@ export const retainMockServerResearch = ({
   const parentIdentity = directory(parent, false);
   const path = resolve(parent, "mockserver-research");
   // No adoption, replacement or deletion of a partial/stale/unknown directory.
+  guard(deadline, signal);
+  if (stageRecord.deadline > deadline) fail();
   mkdirSync(path, { mode: 0o700 });
   const rootIdentity = directory(path);
   const check = () => {
@@ -432,7 +456,7 @@ export const verifyMockServerResearch = ({
     if (
       !same(parentIdentity, directory(parent, false)) ||
       !same(rootIdentity, directory(path)) ||
-      !same(readdirSync(path).sort(), files)
+      !same(packetEntries(path, deadline, signal), files)
     )
       fail();
   };

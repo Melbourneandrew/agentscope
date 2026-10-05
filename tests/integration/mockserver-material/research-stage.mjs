@@ -22,6 +22,7 @@ import {
 } from "../image-preparation.mjs";
 import { researchMockServerSupplier } from "./prepare-supplier.mjs";
 import { parseMockServerResearchInventory } from "./research-inventory.mjs";
+import { markUnsettledOperation } from "../dist/controller-failure-diagnostic.js";
 
 const recipeSources = Object.freeze([
   "bootstrap-archive.mjs",
@@ -132,12 +133,19 @@ export const runMockServerResearchStage = async (input) => {
       preparedDockerClientRequiresOuterHostRetirement(client)) ||
     (failed && imagePreparationFailureRequiresOuterHostRetirement(cause))
   )
-    throw new Error("integration.controller.unsettled-operation");
+    throw markUnsettledOperation(
+      new Error("integration.controller.unsettled-operation", { cause }),
+    );
   if (client !== undefined) {
     try {
       closePreparedDockerClient(client);
-    } catch {
-      throw new Error("integration.controller.unsettled-operation");
+    } catch (cleanupCause) {
+      const error = new Error("integration.controller.unsettled-operation", {
+        cause: failed ? cause : cleanupCause,
+      });
+      if (failed)
+        Object.defineProperty(error, "cleanupCause", { value: cleanupCause });
+      throw markUnsettledOperation(error);
     }
   }
   if (failed) throw cause;

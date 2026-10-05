@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
-import { execFileSync, spawnSync } from "node:child_process";
-import {
+import { syncBuiltinESMExports } from "node:module";
+import { execFileSync } from "node:child_process";
+import fs, {
   chmodSync,
   existsSync,
   linkSync,
@@ -16,7 +17,6 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parse as parseYaml } from "yaml";
 import { runSupervisedProcess } from "../supervisor.mjs";
 import {
   retainMockServerResearch,
@@ -24,10 +24,74 @@ import {
   type MockServerResearchProvenance,
 } from "../mockserver-material/research-retention.mjs";
 import { mockServerResearchStopFitsTerminalObservation } from "./mockserver-research-request.js";
+import {
+  recordControllerFailureDiagnostic,
+  readControllerFailureDiagnostic,
+} from "./controller-failure-diagnostic.js";
 
 const roots: string[] = [];
+const stageProbe = vi.hoisted(() => ({
+  primary: new Error("integration.images.cleanup"),
+  cleanup: new Error("integration.images.close"),
+  uncertain: false,
+  closeFails: false,
+  primaryFails: true,
+}));
+vi.mock("../dist/controller.js", () => ({
+  requireDisposableOuterHostCapability: () => ({
+    binding: {
+      workspaceRoot: "/synthetic",
+      privateStorage: {
+        root: "/synthetic/private",
+        authorityDigest: "sha256:" + "a".repeat(64),
+      },
+      dockerExecutable: "/usr/bin/docker",
+      dockerEnvironment: {},
+    },
+  }),
+  integrationStageSignal: () => new AbortController().signal,
+  remainingIntegrationOperationMilliseconds: () => 300_000,
+  registerIntegrationRunIds: vi.fn(),
+}));
+vi.mock("../dist/index.js", () => ({
+  compileCapabilityManifest: () => ({
+    manifestIdentity: "sha256-" + "a".repeat(64),
+  }),
+  verifyManifestEvidence: vi.fn(),
+}));
+vi.mock(
+  "../dist/controller-failure-diagnostic.js",
+  async () => import("./controller-failure-diagnostic.js"),
+);
+vi.mock("../harness-material-io.mjs", () => ({
+  readMaterialSource: () => ({
+    bytes: Buffer.from("{}"),
+    sha256: "a".repeat(64),
+  }),
+}));
+vi.mock("../image-preparation.mjs", () => ({
+  readPreparedImageEvidence: () => ({
+    dockerSocket: { path: "/synthetic/socket" },
+  }),
+  createPreparedDockerClient: () => ({}),
+  preparedDockerClientRequiresOuterHostRetirement: () => stageProbe.uncertain,
+  imagePreparationFailureRequiresOuterHostRetirement: () => false,
+  closePreparedDockerClient: () => {
+    if (stageProbe.closeFails) throw stageProbe.cleanup;
+  },
+}));
+vi.mock("../mockserver-material/prepare-supplier.mjs", () => ({
+  researchMockServerSupplier: () => {
+    if (stageProbe.primaryFails) return Promise.reject(stageProbe.primary);
+    return Promise.resolve({
+      inventory: inventory(),
+      bootstrapVerification: {},
+    });
+  },
+}));
 afterEach(() => {
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -175,6 +239,21 @@ const fixture = () => {
 };
 
 describe("dedicated noncertifying research packet", () => {
+  it("rechecks the original cutoff after parsing and before creating a prefix", () => {
+    const input = fixture();
+    let calls = 0;
+    vi.spyOn(performance, "now").mockImplementation(() =>
+      ++calls === 1 ? 10 : 20,
+    );
+    expect(() =>
+      retainMockServerResearch({
+        ...input,
+        deadline: 20,
+        stage: { ...input.stage, started: 0, finished: 1, deadline: 15 },
+      }),
+    ).toThrow("research-retention");
+    expect(existsSync(input.path)).toBe(false);
+  });
   it("retains inventory first and a separately verified receipt last", () => {
     const input = fixture();
     const retained = retainMockServerResearch(input);
@@ -345,6 +424,27 @@ describe("research packet substitution boundary", () => {
 });
 
 describe("hostile research provenance", () => {
+  it.each([
+    "runId",
+    "attempt",
+    "revision",
+    "repository",
+    "sourceTree",
+    "runToken",
+    "controllerAuthority",
+  ])("rejects coercible %s values", (field) => {
+    for (const value of [1234, ["1234"]]) {
+      const input = fixture();
+      const target = Object.hasOwn(input.provenance.request, field)
+        ? input.provenance.request
+        : input.provenance;
+      Reflect.set(target, field, value);
+      expect(() => retainMockServerResearch(input)).toThrow(
+        "research-retention",
+      );
+      expect(existsSync(input.path)).toBe(false);
+    }
+  });
   it("rejects hostile provenance accessors and proxies without invoking hooks", () => {
     const input = fixture();
     const trap = vi.fn(() => {
@@ -365,97 +465,75 @@ describe("hostile research provenance", () => {
   });
 });
 
-type WorkflowStep = {
-  name?: string;
-  run?: string;
-  if?: string;
-  with?: Record<string, unknown>;
-};
-type WorkflowJob = { if?: string; steps: WorkflowStep[]; needs?: string };
-describe("connected hosted supplier research boundary", () => {
-  it("uses the real source stage but rejects a forged caller before reading its fields", () => {
-    const modulePath = resolve(
-      import.meta.dirname,
-      "../mockserver-material/research-stage.mjs",
-    );
-    const result = spawnSync(
-      process.execPath,
-      [
-        "--input-type=module",
-        "-e",
-        `
-      const {runMockServerResearchStage} = await import(${JSON.stringify(modulePath)});
-      let read = false;
-      const input = {get request(){read = true; throw new Error('hostile');}};
-      try { await runMockServerResearchStage(input); process.exit(2); }
-      catch (error) { console.log(JSON.stringify({code:error.message,read})); }
-    `,
-      ],
-      { env: {}, encoding: "utf8", timeout: 5_000 },
-    );
-    expect(result.status).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({
-      code: "integration.outer-host.capability-required",
-      read: false,
-    });
-  });
-  it("keeps research manual-only and outside all ordinary certification jobs", () => {
-    const value = parseYaml(
-      readFileSync(
-        resolve(
-          import.meta.dirname,
-          "../../../.github/workflows/integration.yml",
-        ),
-        "utf8",
-      ),
-    ) as {
-      on: {
-        workflow_dispatch: { inputs: Record<string, Record<string, unknown>> };
+describe("research stage unsettled diagnostic identity", () => {
+  it.each(["uncertain", "both-fail", "close-only"])(
+    "preserves %s primary/cleanup identity using the existing brand",
+    async (mode) => {
+      stageProbe.uncertain = mode === "uncertain";
+      stageProbe.closeFails = mode !== "uncertain";
+      stageProbe.primaryFails = mode !== "close-only";
+      const { runMockServerResearchStage } =
+        await import("../mockserver-material/research-stage.mjs");
+      let observed: Error | undefined;
+      try {
+        await runMockServerResearchStage({
+          request: binding().request,
+          sourceTree: "a".repeat(40),
+        });
+      } catch (error) {
+        observed = error as Error;
+      }
+      expect(observed?.message).toBe(
+        "integration.controller.unsettled-operation",
+      );
+      expect(observed?.cause).toBe(
+        mode === "close-only" ? stageProbe.cleanup : stageProbe.primary,
+      );
+      if (mode === "both-fail")
+        expect(
+          Object.getOwnPropertyDescriptor(observed!, "cleanupCause")?.value,
+        ).toBe(stageProbe.cleanup);
+      const wrapper = new Error("wrapper");
+      recordControllerFailureDiagnostic(wrapper, {
+        primaryCause: observed,
+        retirementRequired: true,
+        cleanupAttempted: false,
+        stage: "prepareModelRoutes",
+      });
+      expect(readControllerFailureDiagnostic(wrapper)).toMatchObject({
+        kind: "operation-grace-unsettled",
+        cleanup: "not-attempted",
+        stage: "prepareModelRoutes",
+      });
+    },
+  );
+  it("enumerates no more than the first excess entry and closes the actual directory handle", () => {
+    const input = fixture();
+    retainMockServerResearch(input);
+    for (let index = 0; index < 20; index++)
+      writeFileSync(resolve(input.path, "extra-" + index), "x");
+    const real = fs.opendirSync;
+    let reads = 0;
+    let closes = 0;
+    vi.spyOn(fs, "opendirSync").mockImplementation((path, options) => {
+      const handle = real(path, options);
+      const read = handle.readSync.bind(handle);
+      const close = handle.closeSync.bind(handle);
+      handle.readSync = () => {
+        reads++;
+        return read();
       };
-      jobs: Record<string, WorkflowJob>;
-    };
-    expect(value.on.workflow_dispatch.inputs.shard).not.toHaveProperty(
-      "default",
-    );
-    expect(value.on.workflow_dispatch.inputs.mockserver_research).toMatchObject(
-      { type: "boolean", default: false },
-    );
-    const job = value.jobs["mockserver-supplier-research"]!;
-    expect(job.if).toBe(
-      "github.event_name == 'workflow_dispatch' && inputs.mockserver_research",
-    );
-    expect(job.needs).toBe("prepare-candidate");
-    for (const name of [
-      "hermetic-platform",
-      "controlled-negative",
-      "substrate-certification-fan-in",
-    ])
-      expect(value.jobs[name]!.if).toBe("${{ !inputs.mockserver_research }}");
-    expect(value.jobs["hermetic-integration"]!.if).toBe(
-      "always() && !inputs.mockserver_research",
-    );
-    expect(job.steps[0]!.run).toBe(
-      'test -z "$REQUEST_SCENARIO"\ntest -z "$REQUEST_SHARD"\n',
-    );
-    const execution = job.steps.find(
-      ({ name }) =>
-        name ===
-        "Require settled research stop and independently verified packet",
-    )!;
-    expect(execution.run).toBe(
-      'set +e\npnpm test:integration\nstatus=$?\nset -e\ntest "$status" -eq 3\nnode tests/integration/verify-mockserver-research.mjs\n',
-    );
-    const upload = job.steps.at(-1)!;
-    expect(upload.if).toBe(
-      "success() && steps.research_packet.outcome == 'success'",
-    );
-    expect(upload.with).toMatchObject({
-      "retention-days": 7,
-      "if-no-files-found": "error",
-      path: "artifacts/integration/mockserver-research/inventory.json\nartifacts/integration/mockserver-research/receipt.json\n",
+      handle.closeSync = () => {
+        closes++;
+        close();
+      };
+      return handle;
     });
-    expect(job.steps.map(({ run }) => run ?? "").join("\n")).not.toMatch(
-      /verify-substrate-certification|run-scenarios|maintain-artifacts/u,
+    syncBuiltinESMExports();
+    expect(() => verifyMockServerResearch(input.verification)).toThrow(
+      "research-retention",
     );
+    expect(reads).toBe(3);
+    expect(closes).toBe(1);
   });
 });

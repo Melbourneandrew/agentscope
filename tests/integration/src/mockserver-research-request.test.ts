@@ -1,9 +1,120 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 import { inferModeAndIdentity } from "./controller-host-identity.js";
 import {
   parseMockServerResearchRequest,
   mockServerResearchStopFitsTerminalObservation,
 } from "./mockserver-research-request.js";
+
+type WorkflowStep = {
+  uses?: string;
+  name?: string;
+  run?: string;
+  if?: string;
+  with?: Record<string, unknown>;
+};
+type WorkflowJob = { if?: string; steps: WorkflowStep[]; needs?: string };
+describe("connected hosted supplier research boundary", () => {
+  it("uses the real source stage but rejects a forged caller before reading its fields", () => {
+    const modulePath = resolve(
+      import.meta.dirname,
+      "../mockserver-material/research-stage.mjs",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `
+      const {runMockServerResearchStage} = await import(${JSON.stringify(modulePath)});
+      let read = false;
+      const input = {get request(){read = true; throw new Error('hostile');}};
+      try { await runMockServerResearchStage(input); process.exit(2); }
+      catch (error) { console.log(JSON.stringify({code:error.message,read})); }
+    `,
+      ],
+      { env: {}, encoding: "utf8", timeout: 5_000 },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      code: "integration.outer-host.capability-required",
+      read: false,
+    });
+  });
+  it("keeps research manual-only and outside all ordinary certification jobs", () => {
+    const value = parseYaml(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../.github/workflows/integration.yml",
+        ),
+        "utf8",
+      ),
+    ) as {
+      on: {
+        workflow_dispatch: { inputs: Record<string, Record<string, unknown>> };
+      };
+      jobs: Record<string, WorkflowJob>;
+    };
+    expect(value.on.workflow_dispatch.inputs.shard).not.toHaveProperty(
+      "default",
+    );
+    expect(value.on.workflow_dispatch.inputs.mockserver_research).toMatchObject(
+      { type: "boolean", default: false },
+    );
+    const job = value.jobs["mockserver-supplier-research"]!;
+    expect(
+      job.steps
+        .filter(({ uses }) => uses !== undefined)
+        .map(({ uses }) => uses),
+    ).toEqual([
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+      "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]);
+    expect(job.if).toBe(
+      "github.event_name == 'workflow_dispatch' && inputs.mockserver_research",
+    );
+    expect(job.needs).toBe("prepare-candidate");
+    for (const name of [
+      "hermetic-platform",
+      "controlled-negative",
+      "substrate-certification-fan-in",
+    ])
+      expect(value.jobs[name]!.if).toBe("${{ !inputs.mockserver_research }}");
+    expect(value.jobs["hermetic-integration"]!.if).toBe(
+      "always() && !inputs.mockserver_research",
+    );
+    expect(job.steps[0]!.run).toBe(
+      'test -z "$REQUEST_SCENARIO"\ntest -z "$REQUEST_SHARD"\n',
+    );
+    const execution = job.steps.find(
+      ({ name }) =>
+        name ===
+        "Require settled research stop and independently verified packet",
+    )!;
+    expect(execution.run).toBe(
+      'set +e\npnpm test:integration\nstatus=$?\nset -e\ntest "$status" -eq 3\nnode tests/integration/verify-mockserver-research.mjs\n',
+    );
+    const upload = job.steps.at(-1)!;
+    expect(upload.if).toBe(
+      "success() && steps.research_packet.outcome == 'success'",
+    );
+    expect(upload.with).toMatchObject({
+      "retention-days": 7,
+      "if-no-files-found": "error",
+      path: "artifacts/integration/mockserver-research/inventory.json\nartifacts/integration/mockserver-research/receipt.json\n",
+    });
+    expect(job.steps.map(({ run }) => run ?? "").join("\n")).not.toMatch(
+      /verify-substrate-certification|run-scenarios|maintain-artifacts/u,
+    );
+  });
+});
 
 const revision = "a".repeat(40);
 const environment = (): NodeJS.ProcessEnv => ({
