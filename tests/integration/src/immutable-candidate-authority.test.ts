@@ -7,8 +7,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { EventEmitter } from "node:events";
 import { join, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import {
+  classifyCodexTraceGetFailure,
+  codexTraceGetChildFailureCategory,
+} from "../codex-runtime-evidence.mjs";
 
 // The authority is deliberately private integration JavaScript, not a package API.
 // @ts-expect-error no declaration file is published for this private module
@@ -1834,6 +1840,244 @@ it("reserves specialist codes beyond every scenario phase exit", () => {
       "codex-tui-trace-smoke",
     ),
   ).toBe(176);
+});
+
+// eslint-disable-next-line max-lines-per-function -- closed transport and source-level causal matrix
+describe("Codex trace-get failure-only diagnostic transport", () => {
+  const categories = [
+    "locator-input",
+    "child-spawn",
+    "child-deadline",
+    "child-signal",
+    "child-exit",
+    "child-output-limit",
+    "terminal-deadline",
+    "machine-output",
+    "record-count",
+    "locator-result",
+    "unclassified",
+  ];
+  it.each(categories.map((category, index) => [category, 177 + index]))(
+    "transports %s only for the exact scenario and retained failure marker",
+    (category, code) => {
+      const diagnostic = `integration.fixture.codex-verify-trace-get-${category}`;
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBe(code);
+      expect(
+        decodeInteractiveFailureExitCode(code, "codex-tui-trace-smoke"),
+      ).toBe(diagnostic);
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "fixture"),
+      ).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          diagnostic,
+          undefined,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe("child-failure");
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          diagnostic,
+          diagnostic,
+          "fixture",
+        ),
+      ).toBe("child-failure");
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          diagnostic,
+          diagnostic,
+          "codex-tui-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+    },
+  );
+
+  it("preserves the historical trace-get transport and fixture phase numbering", () => {
+    expect(
+      encodeInteractiveFailureExitCode(
+        "integration.fixture.codex-verify-trace-get",
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe(128);
+    const source = readFileSync(
+      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const phases =
+      source
+        .split("const interactivePhases = Object.freeze([", 2)[1]
+        ?.split("]);", 1)[0] ?? "";
+    const names = [...phases.matchAll(/"([a-z-]+)"/gu)].map(
+      (match) => match[1],
+    );
+    expect(names.indexOf("verify-trace-get")).toBe(68);
+    expect(source).toContain("64 + interactiveFailurePhaseIndex");
+    expect(source).toContain('interactiveFailurePhase === "verify-trace-get"');
+    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
+  });
+
+  it("executes the production get predicate unchanged for positive, count and locator cases", async () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const start = source.indexOf('recordInteractivePhase("verify-trace-get");');
+    const end = source.indexOf(
+      'recordInteractivePhase("verify-correlation");',
+      start,
+    );
+    const block = source.slice(start, end);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const invoke = (summary: unknown, records: unknown[]) => {
+      const calls: unknown[][] = [];
+      const result: Promise<unknown> = runInNewContext(
+        `(async () => { ${block} return getRecords; })()`,
+        {
+          summary,
+          traceDeadline: 12345,
+          recordInteractivePhase: () => undefined,
+          cli: (...args: unknown[]) => {
+            calls.push(args);
+            return Promise.resolve(records);
+          },
+        },
+      );
+      return { calls, result };
+    };
+    const summary = { harness: "codex", locator: { traceId: "synthetic" } };
+    const valid = [{ locator: { traceId: "synthetic" } }];
+    const positive = invoke(summary, valid);
+    await expect(positive.result).resolves.toEqual(valid);
+    expect(positive.calls).toHaveLength(1);
+    expect(positive.calls[0]?.[2]).toEqual({
+      monotonicDeadline: 12345,
+      traceGetDiagnostic: true,
+    });
+    for (const [input, records, category] of [
+      [{ harness: "other" }, valid, "locator-input"],
+      [summary, [], "record-count"],
+      [summary, [...valid, ...valid], "record-count"],
+      [summary, [{ locator: { traceId: "other" } }], "locator-result"],
+    ] as const) {
+      try {
+        await invoke(input, [...records]).result;
+        expect.fail("expected a trace-get rejection");
+      } catch (error) {
+        const message = (error as Error).message;
+        expect(classifyCodexTraceGetFailure(message)).toBe(category);
+      }
+    }
+  });
+
+  it("executes the production CLI parser and both original deadline checks", async () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
+      "utf8",
+    );
+    const start = source.indexOf("const cli = async (");
+    const end = source.indexOf("\nconst prompt =", start);
+    const declaration = source.slice(start, end);
+    const invoke = (stdout: Buffer, terminalChecks: boolean[]) => {
+      const cli = runInNewContext(`${declaration}; cli`, {
+        run: () => Promise.resolve({ stdout }),
+        agentscope: "synthetic-cli",
+        terminalObservationBeforeDeadline: () => terminalChecks.shift(),
+        bootNow: () => 123,
+        parseMachine: parseCodexMachineOutput,
+      });
+      return cli([], "agentscope traces get", { monotonicDeadline: 456 });
+    };
+    const bytes = Buffer.from(
+      JSON.stringify({
+        command: "agentscope traces get",
+        completion: "complete",
+        records: [],
+      }),
+    );
+    await expect(invoke(bytes, [true, true])).resolves.toEqual([]);
+    await expect(invoke(Buffer.from("canary"), [true, true])).rejects.toThrow(
+      "integration.codex.cli-output",
+    );
+    await expect(invoke(bytes, [false, true])).rejects.toThrow(
+      "integration.codex.trace-deadline",
+    );
+    await expect(invoke(bytes, [true, false])).rejects.toThrow(
+      "integration.codex.trace-deadline",
+    );
+  });
+});
+
+describe("Codex production get-child diagnostic wiring", () => {
+  it.each(["success", "spawn", "deadline", "signal", "exit", "output-limit"])(
+    "classifies %s using the production run body without granting a retry",
+    async (kind) => {
+      const source = readFileSync(
+        resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
+        "utf8",
+      );
+      const start = source.indexOf("const maximumOutput =");
+      const end = source.indexOf("\nconst agentscope =", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const child = Object.assign(new EventEmitter(), {
+        pid: 123,
+        stdout: Object.assign(new EventEmitter(), { destroy: () => undefined }),
+        stderr: Object.assign(new EventEmitter(), { destroy: () => undefined }),
+        kill: () => true,
+      });
+      let spawned = 0;
+      let deadlineCallback: (() => void) | undefined;
+      let cleared = false;
+      const run = runInNewContext(`${source.slice(start, end)}; run`, {
+        Buffer,
+        process: { env: {} },
+        remaining: () => undefined,
+        bootNow: () => 100,
+        spawn: () => {
+          spawned++;
+          return child;
+        },
+        setTimeout: (callback: () => void, milliseconds: number) => {
+          expect(milliseconds).toBe(200);
+          deadlineCallback = callback;
+          return 1;
+        },
+        clearTimeout: () => {
+          cleared = true;
+        },
+        codexTraceGetChildFailureCategory,
+      });
+      const completion = run("synthetic", [], {
+        monotonicDeadline: 300,
+        traceGetDiagnostic: true,
+      });
+      if (kind === "spawn") child.emit("error", new Error("private-canary"));
+      if (kind === "deadline") deadlineCallback?.();
+      if (kind === "output-limit")
+        child.stderr.emit("data", Buffer.alloc(1024 * 1024 + 1));
+      child.emit(
+        "close",
+        kind === "exit" ? 5 : 0,
+        kind === "signal" ? "SIGTERM" : null,
+      );
+      if (kind === "success")
+        await expect(completion).resolves.toMatchObject({
+          stdout: Buffer.alloc(0),
+        });
+      else {
+        const expected =
+          kind === "spawn"
+            ? "integration.codex.child-spawn"
+            : `integration.codex.trace-get-child-${kind}`;
+        await expect(completion).rejects.toThrow(expected);
+      }
+      expect(spawned).toBe(1);
+      expect(cleared).toBe(true);
+    },
+  );
 });
 
 describe("interactive PTY failure exit-code transport", () => {

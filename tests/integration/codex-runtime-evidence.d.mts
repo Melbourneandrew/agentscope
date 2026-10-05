@@ -34,6 +34,30 @@ export function codexTraceSearchChildFailureCategory(input: {
   maximumBytes: number;
 }): "output-limit" | "deadline" | "signal" | "exit-5" | "exit-other";
 
+export function classifyCodexTraceGetFailure(
+  message: unknown,
+):
+  | "locator-input"
+  | "child-spawn"
+  | "child-deadline"
+  | "child-signal"
+  | "child-exit"
+  | "child-output-limit"
+  | "terminal-deadline"
+  | "machine-output"
+  | "record-count"
+  | "locator-result"
+  | "unclassified";
+
+export function codexTraceGetChildFailureCategory(input: {
+  code: number | null;
+  deadlineExpired: boolean;
+  signal: NodeJS.Signals | null;
+  stderrBytes: number;
+  stdoutBytes: number;
+  maximumBytes: number;
+}): "output-limit" | "deadline" | "signal" | "exit";
+
 export function codexTraceSearchUnavailable(input: {
   code: number | null;
   signal: NodeJS.Signals | null;

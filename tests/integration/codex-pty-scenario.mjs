@@ -133,17 +133,20 @@ const advanceInteractivePhase = (phase) => {
 };
 if (process.hasUncaughtExceptionCaptureCallback())
   throw new Error("integration.codex.failure-capture");
+const postTraceFailureDiagnostic = (error) => {
+  if (interactiveFailurePhase === "verify-projection")
+    return codexProjectionFailureDiagnostic(error?.message);
+  if (interactiveFailurePhase === "verify-uninstall")
+    return (
+      codexUninstallFailureDiagnostic(error?.message) ??
+      codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep)
+    );
+  if (interactiveFailurePhase === "verify-trace-get")
+    return `integration.fixture.codex-verify-trace-get-${classifyCodexTraceGetFailure(error?.message)}`;
+  return undefined;
+};
 process.setUncaughtExceptionCaptureCallback((error) => {
   let exitCode = 64 + interactiveFailurePhaseIndex;
-  const projectionDiagnostic =
-    interactiveFailurePhase === "verify-projection"
-      ? codexProjectionFailureDiagnostic(error?.message)
-      : undefined;
-  const uninstallDiagnostic =
-    interactiveFailurePhase === "verify-uninstall"
-      ? (codexUninstallFailureDiagnostic(error?.message) ??
-        codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep))
-      : undefined;
   const candidateConfigDiagnostic =
     interactiveFailurePhase === "control-plane-closed" &&
     candidateConfigStage !== undefined
@@ -158,8 +161,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
     candidateConfigDiagnostic ??
-    projectionDiagnostic ??
-    uninstallDiagnostic;
+    postTraceFailureDiagnostic(error);
   if (ownedDiagnostic !== undefined) {
     const diagnosticCode = encodeInteractiveFailureExitCode(
       ownedDiagnostic,
@@ -454,11 +456,24 @@ const run = (executable, arguments_, options = {}) => {
                   maximumBytes: maximumOutput,
                 })
               : undefined;
+          const traceGetFailureKind =
+            options.traceGetDiagnostic === true
+              ? codexTraceGetChildFailureCategory({
+                  code,
+                  deadlineExpired,
+                  signal,
+                  stderrBytes: stderr.length,
+                  stdoutBytes: stdout.length,
+                  maximumBytes: maximumOutput,
+                })
+              : undefined;
           return reject(
             new Error(
-              traceFailureKind === undefined
-                ? "integration.codex.child"
-                : `integration.codex.trace-search-child-${traceFailureKind}`,
+              traceGetFailureKind !== undefined
+                ? `integration.codex.trace-get-child-${traceGetFailureKind}`
+                : traceFailureKind === undefined
+                  ? "integration.codex.child"
+                  : `integration.codex.trace-search-child-${traceFailureKind}`,
             ),
           );
         }
@@ -621,6 +636,8 @@ const {
   classifyMissingOperationalStateByHookDuration,
   classifyCodexSettledTraceObservation,
   classifyCodexTraceFailureHint,
+  classifyCodexTraceGetFailure,
+  codexTraceGetChildFailureCategory,
   codexTraceSearchChildFailureCategory,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
@@ -1779,7 +1796,7 @@ try {
   recordInteractivePhase("verify-trace-get");
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
-    throw new Error("integration.codex.trace-search");
+    throw new Error("integration.codex.trace-get-locator-input");
   const getRecords = await cli(
     [
       "traces",
@@ -1790,10 +1807,12 @@ try {
       JSON.stringify(summary.locator),
     ],
     "agentscope traces get",
-    { monotonicDeadline: traceDeadline },
+    { monotonicDeadline: traceDeadline, traceGetDiagnostic: true },
   );
-  if (getRecords.length !== 1 || getRecords[0]?.locator?.traceId !== traceId)
-    throw new Error("integration.codex.trace-get");
+  if (getRecords.length !== 1)
+    throw new Error("integration.codex.trace-get-record-count");
+  if (getRecords[0]?.locator?.traceId !== traceId)
+    throw new Error("integration.codex.trace-get-locator-result");
   recordInteractivePhase("verify-correlation");
   const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
   if (codexSessionId === undefined || traceGraph.sessionId !== codexSessionId)

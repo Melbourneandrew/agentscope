@@ -210,6 +210,17 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-unsupported-unknown",
   "integration.fixture.codex-tui-exit-before-checkpoint",
   "integration.fixture.codex-tui-checkpoint-not-witnessed",
+  "integration.fixture.codex-verify-trace-get-locator-input",
+  "integration.fixture.codex-verify-trace-get-child-spawn",
+  "integration.fixture.codex-verify-trace-get-child-deadline",
+  "integration.fixture.codex-verify-trace-get-child-signal",
+  "integration.fixture.codex-verify-trace-get-child-exit",
+  "integration.fixture.codex-verify-trace-get-child-output-limit",
+  "integration.fixture.codex-verify-trace-get-terminal-deadline",
+  "integration.fixture.codex-verify-trace-get-machine-output",
+  "integration.fixture.codex-verify-trace-get-record-count",
+  "integration.fixture.codex-verify-trace-get-locator-result",
+  "integration.fixture.codex-verify-trace-get-unclassified",
 ]);
 
 export const selectInteractiveFailureDiagnostic = (
@@ -742,7 +753,8 @@ const interactivePostTraceFailurePredicates = Object.freeze(
     (value) =>
       value === "integration.fixture.codex-verify-adapter-observation" ||
       value.startsWith("integration.fixture.codex-verify-oracle-") ||
-      value.startsWith("integration.fixture.codex-verify-uninstall-"),
+      value.startsWith("integration.fixture.codex-verify-uninstall-") ||
+      value.startsWith("integration.fixture.codex-verify-trace-get-"),
   ),
 );
 const interactiveFixtureFailurePredicates = Object.freeze(
