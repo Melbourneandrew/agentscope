@@ -15,6 +15,18 @@ const integrationRoot = resolve(import.meta.dirname, "..");
 const stages = [
   "authority",
   "observer",
+  "observer-read",
+  "observer-stat",
+  "observer-esrch",
+  "observer-permission",
+  "observer-io",
+  "observer-namespace",
+  "observer-identity",
+  "observer-graph",
+  "observer-root-reuse",
+  "observer-target-reuse",
+  "observer-zombie-before",
+  "observer-zombie-after",
   "signal",
   "reap",
   "residual",
@@ -144,6 +156,33 @@ describe("runner failure boundary research", () => {
           : [`integration.runner.untrusted-pty-hint:${hint}\n`],
       );
     }
+  });
+});
+
+describe("best-effort runner diagnostic output", () => {
+  it("preserves primary failure and never repeats a failed write", () => {
+    const source = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const start = source.indexOf("const emitCodexPtyFailureHint =");
+    const end = source.indexOf("const recoverRetainedFixtureOutput =", start);
+    let attempts = 0;
+    const primary = new Error("original primary failure");
+    const result = runInNewContext(
+      `let codexPtyFailureHint = 'arm-pty-observer'; ${source.slice(start, end)} try { throw primary; } catch (error) { emitCodexPtyFailureHint(); emitCodexPtyFailureHint(); caught = error; }`,
+      {
+        primary,
+        process: {
+          stdout: {
+            write: () => {
+              attempts += 1;
+              throw new Error("diagnostic write failed");
+            },
+          },
+        },
+      },
+      { timeout: 1000 },
+    ) as unknown;
+    expect(result).toBe(primary);
+    expect(attempts).toBe(1);
   });
 });
 

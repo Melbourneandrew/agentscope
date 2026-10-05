@@ -36,8 +36,11 @@ import type {
 } from "../headless-supervisor.js";
 import {
   fail,
+  failObserverIdentity,
+  failObserverRead,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
+  observerReadFailureStage,
   trustedErrorCode,
 } from "./kernel-errors.js";
 import {
@@ -793,7 +796,7 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
   try {
     const value = readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = value.lastIndexOf(")");
-    if (close < 1) return fail("testkit.headless.observer.read");
+    if (close < 1) return failObserverRead("observer-stat");
     const fields = value
       .slice(close + 2)
       .trim()
@@ -809,12 +812,14 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
       start === undefined ||
       !/^\d+$/u.test(start)
     )
-      return fail("testkit.headless.observer.read");
+      return failObserverRead("observer-stat");
     const parentPid = Number(encodedParent);
     if (!numberIsSafeInteger(parentPid) || parentPid < 0)
-      return fail("testkit.headless.observer.read");
+      return failObserverRead("observer-stat");
     return { parentPid, pid, startIdentity: `${pid}:${start}`, state };
   } catch (error: unknown) {
+    if (trustedErrorCode(error) === "testkit.headless.observer.read")
+      return failObserverRead(readPtyReconciliationStage(error));
     if (
       typeof error === "object" &&
       error !== null &&
@@ -822,7 +827,13 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
       (error as { code?: unknown }).code === "ENOENT"
     )
       return undefined;
-    return fail("testkit.headless.observer.read");
+    return failObserverRead(
+      observerReadFailureStage(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: unknown }).code
+          : undefined,
+      ),
+    );
   }
 };
 
@@ -832,7 +843,7 @@ const assertNamespaceIdentity = (expected: string): void => {
       readlinkSync("/proc/self/ns/pid") !== expected ||
       readlinkSync("/proc/1/ns/pid") !== expected
     )
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-namespace");
   } catch (error: unknown) {
     if (trustedErrorCode(error) !== undefined) throw error;
     return fail("testkit.headless.observer.read");
@@ -1417,7 +1428,7 @@ const signalExactProcess = (
   const current = runtime.readProcess(identity.pid);
   if (current === undefined) return false;
   if (current.startIdentity !== identity.startIdentity)
-    return fail("testkit.headless.observer.identity");
+    return failObserverIdentity("observer-target-reuse");
   try {
     runtime.sendSignal(identity.pid, signal);
   } catch (error: unknown) {
@@ -1766,7 +1777,7 @@ const processesDescendantsFirst = (
   const identities = new Set<string>();
   for (const identity of processes) {
     if (byPid.has(identity.pid) || identities.has(identity.startIdentity))
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     byPid.set(identity.pid, identity);
     identities.add(identity.startIdentity);
   }
@@ -1775,11 +1786,11 @@ const processesDescendantsFirst = (
     const cached = depths.get(identity.pid);
     if (cached !== undefined) return cached;
     if (visiting.has(identity.pid))
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     visiting.add(identity.pid);
     const parent = byPid.get(identity.parentPid);
     if (parent === undefined && identity.parentPid !== 1)
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     const value = parent === undefined ? 0 : depth(parent, visiting) + 1;
     visiting.delete(identity.pid);
     depths.set(identity.pid, value);
@@ -1815,7 +1826,7 @@ const reapAdoptedZombies = (
       current.parentPid !== 1 ||
       current.state !== "Z"
     )
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-zombie-before");
     const receipt = exactAdoptedZombieReapReceipt(
       runtime.reapAdoptedZombie(
         identity.pid,
@@ -1827,7 +1838,7 @@ const reapAdoptedZombies = (
     );
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-zombie-after");
     if (
       (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
       after !== undefined
@@ -2737,6 +2748,11 @@ const armSelectedPty = (
     const observed = new Map<string, ProcessSnapshot>();
     if (root !== undefined) observed.set(root.startIdentity, root);
     let authorityFailure: string | undefined;
+    let authorityFailureStage: ReturnType<typeof readPtyReconciliationStage>;
+    const retainAuthorityFailure = (error: unknown, fallback: string): void => {
+      authorityFailure = trustedErrorCode(error) ?? fallback;
+      authorityFailureStage = readPtyReconciliationStage(error);
+    };
     const currentProcessSet = (): readonly ProcessSnapshot[] => {
       if (authorityFailure !== undefined) return [];
       try {
@@ -2747,16 +2763,16 @@ const armSelectedPty = (
             identity.pid === root.pid &&
             identity.startIdentity !== root.startIdentity
           )
-            return fail("testkit.headless.observer.identity");
+            return failObserverIdentity("observer-root-reuse");
         return current;
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.read";
+        retainAuthorityFailure(error, "testkit.headless.observer.read");
         return [];
       }
     };
     const failAfterHandleSettlement = async (): Promise<never> => {
-      const stage = ptyAuthorityFailureStage(authorityFailure);
+      const stage =
+        authorityFailureStage ?? ptyAuthorityFailureStage(authorityFailure);
       try {
         child.close();
       } catch {
@@ -3419,8 +3435,7 @@ const armSelectedPty = (
         try {
           return runtime.readProcess(identity.pid) !== undefined;
         } catch (error) {
-          authorityFailure =
-            trustedErrorCode(error) ?? "testkit.headless.observer.read";
+          retainAuthorityFailure(error, "testkit.headless.observer.read");
           return false;
         }
       }),
@@ -3441,8 +3456,7 @@ const armSelectedPty = (
             runtime,
           );
         } catch (error) {
-          authorityFailure =
-            trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+          retainAuthorityFailure(error, "testkit.headless.observer.signal");
           break;
         }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
@@ -3465,8 +3479,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        retainAuthorityFailure(error, "testkit.headless.observer.reap");
         break;
       }
       pumpTransport(false);
@@ -3487,8 +3500,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+        retainAuthorityFailure(error, "testkit.headless.observer.signal");
         break;
       }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
@@ -3507,8 +3519,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        retainAuthorityFailure(error, "testkit.headless.observer.reap");
         break;
       }
       pumpTransport(false);
@@ -3524,8 +3535,7 @@ const armSelectedPty = (
         runtime,
       );
     } catch (error) {
-      authorityFailure =
-        trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+      retainAuthorityFailure(error, "testkit.headless.observer.reap");
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     const residual = currentProcessSet();
@@ -5099,6 +5109,7 @@ type SelectedPtyTestSeed =
   | "mode-substitution"
   | "nonzero-exit"
   | "observer-failure"
+  | "observer-esrch-failure"
   | "output-limit"
   | "output-join-failure"
   | "partial-input"
@@ -5251,6 +5262,8 @@ const selectedPtyRuntimeForTest = (
     listProcesses: () => {
       if (seed === "observer-failure")
         return fail("testkit.headless.observer.read");
+      if (seed === "observer-esrch-failure")
+        return failObserverRead("observer-esrch");
       return [...processes.values()];
     },
     readProcess: (pid) => {

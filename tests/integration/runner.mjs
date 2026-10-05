@@ -503,10 +503,13 @@ let codexPtyFailureHint =
   scenarioId === "codex-tui-trace-smoke" ? "arm-pty-before-call" : undefined;
 const emitCodexPtyFailureHint = () => {
   if (codexPtyFailureHint === undefined) return;
-  process.stdout.write(
-    `integration.runner.untrusted-pty-hint:${codexPtyFailureHint}\n`,
-  );
+  const hint = codexPtyFailureHint;
   codexPtyFailureHint = undefined;
+  try {
+    process.stdout.write(`integration.runner.untrusted-pty-hint:${hint}\n`);
+  } catch {
+    // Best-effort research must never replace the existing primary failure.
+  }
 };
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
