@@ -499,7 +499,15 @@ if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
 let interactiveFailureDiagnostic;
-let codexPtyFailureHint;
+let codexPtyFailureHint =
+  scenarioId === "codex-tui-trace-smoke" ? "arm-pty-before-call" : undefined;
+const emitCodexPtyFailureHint = () => {
+  if (codexPtyFailureHint === undefined) return;
+  process.stdout.write(
+    `integration.runner.untrusted-pty-hint:${codexPtyFailureHint}\n`,
+  );
+  codexPtyFailureHint = undefined;
+};
 const recoverRetainedFixtureOutput = () =>
   readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
@@ -657,17 +665,15 @@ try {
         scriptSha256,
       });
     } catch (error) {
-      if (
-        scenarioId === "codex-tui-trace-smoke" &&
-        retainedInteractivePhase(ledger) ===
-          "integration.fixture.codex-model-gate-arm-health-pending"
-      )
+      if (scenarioId === "codex-tui-trace-smoke")
         codexPtyFailureHint = codexArmPtyResearchHint(
           error,
           readPtyReconciliationStage(error),
         );
       throw error;
     }
+    if (scenarioId === "codex-tui-trace-smoke")
+      codexPtyFailureHint = "arm-pty-receipt-processing";
     const returnedAtMs = performance.now();
     const processAuthority = {
       runId: serializedProcessRequest.runId,
@@ -774,6 +780,8 @@ try {
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
     if (interactivePtyReceiptFailed(receipt)) {
+      if (scenarioId === "codex-tui-trace-smoke")
+        codexPtyFailureHint = "arm-pty-returned-failed";
       const diagnostic =
         decodeScenarioFailureExitCode(receipt.exitCode) ??
         retainedInteractivePhase(ledger);
@@ -833,6 +841,7 @@ try {
       fixtureFailure = new Error("integration.runner.fixture-failed");
   }
 } catch (error) {
+  emitCodexPtyFailureHint();
   if (scenario.executionMode === "interactive") {
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
@@ -861,6 +870,7 @@ try {
   fixtureFailure = error;
 }
 if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
+  emitCodexPtyFailureHint();
   const configHint = retainedCandidateConfigStage(ledger);
   if (configHint !== undefined)
     process.stdout.write(
@@ -881,10 +891,6 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
     if (codexGateResearchHints.includes(gateHint))
       process.stdout.write(
         `integration.runner.untrusted-gate-hint:${gateHint}\n`,
-      );
-    if (codexPtyFailureHint !== undefined)
-      process.stdout.write(
-        `integration.runner.untrusted-pty-hint:${codexPtyFailureHint}\n`,
       );
     const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)

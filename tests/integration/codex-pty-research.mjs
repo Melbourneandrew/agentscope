@@ -16,6 +16,9 @@ export const codexPtyResearchHints = Object.freeze([
   "arm-pty-transport",
   "arm-pty-kernel",
   "arm-pty-other",
+  "arm-pty-before-call",
+  "arm-pty-receipt-processing",
+  "arm-pty-returned-failed",
   ...Object.values(reconciliationHints),
 ]);
 
