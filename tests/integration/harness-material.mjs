@@ -154,7 +154,6 @@ export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
 };
 
 const headerReasons = ["hdr-short", "hdr-long", "hdr-noncanon", "hdr-invalid"];
-const retryFirstReasons = new WeakMap();
 const downloadFailureReasons = new Map([
   ["registry identity", "identity"],
   ["integration.harness-material.failed", "deadline"],
@@ -171,47 +170,12 @@ const downloadFailureReasons = new Map([
     "deadline",
   ].map((reason) => [reason, reason]),
 ]);
-export const classifyMaterialDownloadFailureForTesting = (error) => {
-  const first =
-    error instanceof Error ? retryFirstReasons.get(error) : undefined;
-  if (headerReasons.includes(first)) {
-    const second = downloadFailureReasons.get(error.message) ?? "transport";
-    return `${first}-then-${second}`;
-  }
-  return (
-    downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
-    "transport"
-  );
-};
+export const classifyMaterialDownloadFailureForTesting = (error) =>
+  downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
+  "transport";
 
 export const classifyAttestationFailurePhaseForTesting = (descriptor, error) =>
   `download-attestation-${descriptor.installName === descriptor.packageName ? "root" : "variant"}-${classifyMaterialDownloadFailureForTesting(error)}`;
-
-const authenticatedOverlongBody = ({
-  bytes,
-  chunks,
-  deadline,
-  descriptor,
-  framingError,
-  response,
-  responseAborted,
-  signal,
-}) => {
-  // Node aborts an overlong HTTP message after the peer closes. Only the
-  // attestation caller may recover the already-received immutable pinned body.
-  if (
-    !responseAborted ||
-    !framingError ||
-    response.complete ||
-    bytes !== descriptor.bytes ||
-    signal.aborted ||
-    performance.now() >= deadline
-  )
-    return;
-  const body = Buffer.concat(chunks, bytes);
-  if (createHash("sha256").update(body).digest("hex") === descriptor.sha256)
-    return body;
-};
 
 const materialRequestOptions = (url) => ({
   agent: false,
@@ -236,7 +200,7 @@ const download = (
   signal,
   deadline,
   transport = request,
-  allowPinnedOverlong = false,
+  metadata = false,
 ) =>
   new Promise((resolveDownload, rejectDownload) => {
     if (signal.aborted) {
@@ -255,14 +219,11 @@ const download = (
     let terminalValue;
     let requestClosed = false;
     let responseClosed = false;
-    let pinnedOverlong = false;
-    let responseAborted = false;
-    let framingError = false;
     const chunks = [];
     let bytes = 0;
     const settle = () => {
       if (settled) return;
-      if (pinnedOverlong && terminalError === undefined) {
+      if (terminalError === undefined) {
         if (signal.aborted) terminalError = new Error("interrupted");
         else if (performance.now() >= deadline)
           terminalError = new Error("deadline");
@@ -275,7 +236,8 @@ const download = (
       else rejectDownload(terminalError ?? new Error("incomplete"));
     };
     const maybeSettle = () => {
-      if (requestClosed && (!pinnedOverlong || responseClosed)) settle();
+      if (requestClosed && (responseHandle === undefined || responseClosed))
+        settle();
     };
     const stop = (error) => {
       terminalError ??= error;
@@ -290,58 +252,43 @@ const download = (
     signal.addEventListener("abort", onAbort, { once: true });
     requestHandle = transport(materialRequestOptions(url), (response) => {
       responseHandle = response;
-      const rejection = classifyMaterialResponseForTesting(
-        response,
-        descriptor.bytes,
-      );
-      pinnedOverlong =
-        // Signed-manifest material and tarballs retain the strict header veto.
-        allowPinnedOverlong &&
-        rejection === "hdr-long" &&
-        typeof descriptor.sha256 === "string" &&
-        /^[a-f0-9]{64}$/u.test(descriptor.sha256);
-      if (rejection !== undefined && !pinnedOverlong) {
-        response.destroy();
-        stop(new Error(rejection));
-        return;
-      }
-      response.once("aborted", () => {
-        responseAborted = true;
-      });
+      const advertised = response.headers["content-length"];
+      const expectedBytes = metadata
+        ? typeof advertised === "string" &&
+          /^[1-9][0-9]{0,5}$/u.test(advertised)
+          ? Number(advertised)
+          : undefined
+        : descriptor.bytes;
+      const rejection =
+        metadata && advertised !== undefined && expectedBytes === undefined
+          ? "hdr-invalid"
+          : metadata && expectedBytes > descriptor.maximumBytes
+            ? "size"
+            : classifyMaterialResponseForTesting(response, expectedBytes);
+      response.once("aborted", () => stop(new Error("incomplete")));
       response.on("data", (chunk) => {
         bytes += chunk.byteLength;
-        if (bytes > descriptor.bytes) stop(new Error("size"));
+        if (bytes > (metadata ? descriptor.maximumBytes : descriptor.bytes))
+          stop(new Error("size"));
         else chunks.push(chunk);
       });
-      response.once("error", (error) => {
-        if (pinnedOverlong && error?.code === "ECONNRESET") {
-          framingError = true;
-          return;
-        }
-        stop(error);
-      });
+      response.once("error", stop);
       response.once("end", () => {
-        if (bytes !== descriptor.bytes) stop(new Error("size"));
+        if (
+          bytes < 1 ||
+          (expectedBytes !== undefined && bytes !== expectedBytes) ||
+          (metadata && !response.complete)
+        )
+          stop(new Error("size"));
         else terminalValue = Buffer.concat(chunks);
       });
       response.once("close", () => {
         responseClosed = true;
-        if (pinnedOverlong && terminalError === undefined) {
-          const body = authenticatedOverlongBody({
-            bytes,
-            chunks,
-            deadline,
-            descriptor,
-            framingError,
-            response,
-            responseAborted,
-            signal,
-          });
-          if (body !== undefined) terminalValue = body;
-          else terminalError = new Error("hdr-long");
-        }
+        if (metadata && terminalValue === undefined)
+          terminalError ??= new Error("incomplete");
         maybeSettle();
       });
+      if (rejection !== undefined) stop(new Error(rejection));
     });
     requestHandle.once("error", stop);
     requestHandle.once("close", () => {
@@ -358,25 +305,22 @@ export const downloadRegularHarnessMaterialForTesting = (
   transport,
 ) => download(descriptor, signal, deadline, transport);
 
-export const downloadAttestationWithRetry = async (
+// The API envelope is bounded transport, not an immutable artifact. Its
+// canonical signed bundles are pinned by the compiler and then checked against
+// the SAME bundles returned by fresh pinned npm cryptographic verification.
+export const downloadAttestationMetadata = (
   descriptor,
   signal,
   deadline,
   transport = request,
 ) => {
-  try {
-    return await download(descriptor, signal, deadline, transport, true);
-  } catch (error) {
-    if (!(error instanceof Error) || !headerReasons.includes(error.message))
-      throw error;
-    try {
-      return await download(descriptor, signal, deadline, transport, true);
-    } catch (retryError) {
-      if (retryError instanceof Error)
-        retryFirstReasons.set(retryError, error.message);
-      throw retryError;
-    }
-  }
+  if (
+    !Number.isSafeInteger(descriptor.maximumBytes) ||
+    descriptor.maximumBytes < 1 ||
+    descriptor.maximumBytes > 65_536
+  )
+    fail();
+  return download(descriptor, signal, deadline, transport, true);
 };
 
 const assertNpmPackageDescriptors = (material) => {
@@ -394,7 +338,7 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
   onPhase("download-attestation");
   let bytes;
   try {
-    bytes = await downloadAttestationWithRetry(
+    bytes = await downloadAttestationMetadata(
       descriptor.attestations,
       signal,
       deadline,
@@ -403,12 +347,6 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
     onPhase(classifyAttestationFailurePhaseForTesting(descriptor, error));
     throw error;
   }
-  onPhase("attestation-digest");
-  if (
-    createHash("sha256").update(bytes).digest("hex") !==
-    descriptor.attestations.sha256
-  )
-    fail();
   return bytes;
 };
 
@@ -531,7 +469,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
     const deadline = performance.now() + maximumMilliseconds;
     const aggregateBytes = material.packages.reduce(
       (total, descriptor) =>
-        total + descriptor.bytes + descriptor.attestations.bytes,
+        total + descriptor.bytes + descriptor.attestations.maximumBytes,
       0,
     );
     if (

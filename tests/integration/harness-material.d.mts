@@ -19,8 +19,8 @@ export declare const classifyMaterialResponseForTesting: (
   }>,
   expectedBytes: number,
 ) => string | undefined;
-export declare const downloadAttestationWithRetry: (
-  descriptor: Readonly<{ url: string; bytes: number }>,
+export declare const downloadAttestationMetadata: (
+  descriptor: Readonly<{ url: string; maximumBytes: number }>,
   signal: AbortSignal,
   deadline: number,
   transport?: (

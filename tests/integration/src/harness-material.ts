@@ -227,7 +227,12 @@ export const compileNpmAttestationAudit = (
     const response = record(parseStrictJson(bytes));
     exactKeys(response, ["attestations"]);
     const bundles = exactArray(response.attestations, 4);
-    if (bundles.length !== 2) return invalid();
+    if (
+      bundles.length !== 2 ||
+      sha256Bytes(Buffer.from(canonicalJson(bundles))) !==
+        descriptor.attestations.bundleDigest
+    )
+      return invalid();
     return {
       name: descriptor.packageName,
       version: descriptor.version,
@@ -254,6 +259,7 @@ export const compileNpmVerifierPolicy = (
   )
     return invalid();
   const verified = exactArray(audit.verified, 16).map(record);
+  if (verified.length !== material.packages.length) return invalid();
   return {
     packages: material.packages.map((descriptor) => {
       const matches = verified.filter(
@@ -263,11 +269,12 @@ export const compileNpmVerifierPolicy = (
       );
       if (matches.length !== 1) return invalid();
       const bundles = exactArray(matches[0]!.attestationBundles, 4);
+      const bundleDigest = sha256Bytes(Buffer.from(canonicalJson(bundles)));
+      if (bundleDigest !== descriptor.attestations.bundleDigest)
+        return invalid();
       return {
         ...descriptor,
-        attestationBundleDigest: sha256Bytes(
-          Buffer.from(canonicalJson(bundles)),
-        ),
+        attestationBundleDigest: bundleDigest,
       };
     }),
     registry: material.registry,
@@ -376,7 +383,9 @@ const verifyProvenance = (
     })
   )
     return invalid();
-  return sha256(canonicalJson(bundles));
+  const bundleDigest = sha256Bytes(Buffer.from(canonicalJson(bundles)));
+  if (bundleDigest !== descriptor.attestations.bundleDigest) return invalid();
+  return `sha256-${bundleDigest}`;
 };
 
 export const compileVerifiedNpmHarnessMaterial = (

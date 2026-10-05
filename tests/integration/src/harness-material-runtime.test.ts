@@ -229,7 +229,7 @@ describe("harness material failure-phase evidence", () => {
       bytes: 1,
       attestations: {
         url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
-        bytes: 1,
+        maximumBytes: 1,
       },
     };
     const acquisition = prepareNpmHarnessMaterial({
@@ -277,7 +277,7 @@ describe("harness material failure-phase evidence", () => {
             bytes: 1,
             attestations: {
               url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
-              bytes: 1,
+              maximumBytes: 1,
             },
           },
         ],

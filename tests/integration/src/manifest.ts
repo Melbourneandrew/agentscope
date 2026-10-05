@@ -73,7 +73,15 @@ const signedObjectSchema = z.strictObject({
 });
 
 const npmMaterialPackageSchema = z.strictObject({
-  attestations: signedObjectSchema,
+  attestations: z.strictObject({
+    url: httpsUrl,
+    maximumBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(64 * 1024),
+    bundleDigest: sha256Hex,
+  }),
   installName: npmPackageName,
   packageName: npmPackageName,
   version: semver,
