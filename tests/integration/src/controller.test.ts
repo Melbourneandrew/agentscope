@@ -294,3 +294,99 @@ describe("integration controller", () => {
     expect(dependencies.clean).not.toHaveBeenCalled();
   });
 });
+
+describe("research-only controller settlement", () => {
+  it("retains ordinary lifecycle execution and its original return", async () => {
+    const events: string[] = [];
+    await expect(
+      runIntegrationStages("lifecycle", stages(events)),
+    ).resolves.toBeUndefined();
+    expect(events).toEqual([
+      "select",
+      "prepareImages",
+      "prepareModelRoutes",
+      "runScenarios",
+      "maintainArtifacts",
+      "clean",
+    ]);
+  });
+
+  it("rejects a forged request value before admission", async () => {
+    const events: string[] = [];
+    await expect(
+      runIntegrationStages(
+        "lifecycle",
+        stages(events),
+        "other" as "mockserver-supplier",
+      ),
+    ).rejects.toThrow("research-request");
+    expect(events).toEqual([]);
+  });
+
+  it("cleans before returning a distinct noncertifying disposition", async () => {
+    const events: string[] = [];
+    await expect(
+      runIntegrationStages("lifecycle", stages(events), "mockserver-supplier"),
+    ).resolves.toBe("mockserver-research-cleaned");
+    expect(events).toEqual([
+      "select",
+      "prepareImages",
+      "prepareModelRoutes",
+      "clean",
+    ]);
+  });
+
+  it.each(["candidate", "crabbox"] as const)(
+    "rejects research in %s before any child",
+    async (mode) => {
+      const events: string[] = [];
+      await expect(
+        runIntegrationStages(mode, stages(events), "mockserver-supplier"),
+      ).rejects.toThrow("research-request");
+      expect(events).toEqual([]);
+    },
+  );
+
+  it("preserves research and cleanup failures without a complete disposition", async () => {
+    const events: string[] = [];
+    const dependencies = stages(events);
+    const primary = new Error("integration.synthetic.research");
+    const cleanup = new Error("integration.synthetic.cleanup");
+    vi.mocked(dependencies.prepareModelRoutes).mockRejectedValue(primary);
+    vi.mocked(dependencies.clean).mockRejectedValue(cleanup);
+    await expect(
+      runIntegrationStages("lifecycle", dependencies, "mockserver-supplier"),
+    ).rejects.toMatchObject({
+      primaryCause: primary,
+      cleanupCause: cleanup,
+      retirementRequired: true,
+    });
+    expect(dependencies.runScenarios).not.toHaveBeenCalled();
+    expect(dependencies.maintainArtifacts).not.toHaveBeenCalled();
+  });
+
+  it("does not complete on cleanup-only failure", async () => {
+    const dependencies = stages([]);
+    const cleanup = new Error("integration.synthetic.cleanup");
+    vi.mocked(dependencies.clean).mockRejectedValue(cleanup);
+    await expect(
+      runIntegrationStages("lifecycle", dependencies, "mockserver-supplier"),
+    ).rejects.toMatchObject({
+      primaryCause: cleanup,
+      cleanupCause: cleanup,
+      retirementRequired: true,
+    });
+  });
+
+  it("skips inner cleanup and later stages for unsettled research", async () => {
+    const dependencies = stages([]);
+    vi.mocked(dependencies.prepareModelRoutes).mockRejectedValue(
+      new Error("integration.controller.unsettled-operation"),
+    );
+    await expect(
+      runIntegrationStages("lifecycle", dependencies, "mockserver-supplier"),
+    ).rejects.toMatchObject({ retirementRequired: true });
+    expect(dependencies.clean).not.toHaveBeenCalled();
+    expect(dependencies.runScenarios).not.toHaveBeenCalled();
+  });
+});

@@ -96,7 +96,13 @@ export const settleAbortableOperation = async (
 export const runIntegrationStages = async (
   mode: IntegrationControllerMode,
   dependencies: IntegrationStageDependencies,
-): Promise<void> => {
+  research?: "mockserver-supplier",
+): Promise<void | "mockserver-research-cleaned"> => {
+  if (
+    research !== undefined &&
+    (research !== "mockserver-supplier" || mode !== "lifecycle")
+  )
+    throw new Error("integration.mockserver-material.research-request");
   let stage: ControllerStage = "prepareCandidate";
   if (mode === "candidate") {
     try {
@@ -122,10 +128,12 @@ export const runIntegrationStages = async (
     await dependencies.prepareImages();
     stage = "prepareModelRoutes";
     await dependencies.prepareModelRoutes();
-    stage = "runScenarios";
-    await dependencies.runScenarios();
-    stage = "maintainArtifacts";
-    await dependencies.maintainArtifacts();
+    if (research === undefined) {
+      stage = "runScenarios";
+      await dependencies.runScenarios();
+      stage = "maintainArtifacts";
+      await dependencies.maintainArtifacts();
+    }
   } catch (error) {
     if (
       error instanceof Error &&
@@ -154,4 +162,5 @@ export const runIntegrationStages = async (
       retirementRequired: true,
       stage: primaryCause === undefined ? "clean" : stage,
     });
+  if (research === "mockserver-supplier") return "mockserver-research-cleaned";
 };
