@@ -50,7 +50,22 @@ const own = (
   name: string,
 ): string | undefined => {
   const descriptor = Object.getOwnPropertyDescriptor(environment, name);
-  if (descriptor === undefined) return undefined;
+  if (descriptor === undefined) {
+    let prototype: object | null = Object.getPrototypeOf(environment) as
+      object | null;
+    let depth = 0;
+    while (prototype !== null) {
+      depth += 1;
+      if (
+        depth > 8 ||
+        types.isProxy(prototype) ||
+        Object.hasOwn(prototype, name)
+      )
+        return fail();
+      prototype = Object.getPrototypeOf(prototype) as object | null;
+    }
+    return undefined;
+  }
   if (!("value" in descriptor)) fail();
   const value: unknown = descriptor.value;
   if (value === undefined) return undefined;

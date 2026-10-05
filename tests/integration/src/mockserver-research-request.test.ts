@@ -167,6 +167,49 @@ describe("unchanged disposable-host classification", () => {
   });
 });
 
+describe("research request inherited configuration", () => {
+  it("rejects inherited conflicting data or accessor fields without evaluation", () => {
+    let reads = 0;
+    const prototypes = [
+      { AGENTSCOPE_INTEGRATION_SCENARIO: "codex" },
+      Object.defineProperty({}, "AGENTSCOPE_INTEGRATION_SCENARIO", {
+        get: () => {
+          reads += 1;
+          return "codex";
+        },
+      }),
+      new Proxy(
+        {},
+        {
+          getOwnPropertyDescriptor: () => {
+            reads += 1;
+            throw Error("synthetic");
+          },
+          getPrototypeOf: () => {
+            reads += 1;
+            throw Error("synthetic");
+          },
+        },
+      ),
+    ];
+    for (const prototype of prototypes) {
+      const input = environment();
+      Object.setPrototypeOf(input, prototype);
+      expect(() => parse(input)).toThrow("research-request");
+    }
+    expect(reads).toBe(0);
+  });
+  it("does not reinterpret an inherited request or provenance as absence", () => {
+    for (const name of ["AGENTSCOPE_MOCKSERVER_RESEARCH", "GITHUB_SHA"]) {
+      const input = environment();
+      const value = input[name];
+      Reflect.deleteProperty(input, name);
+      Object.setPrototypeOf(input, { [name]: value });
+      expect(() => parse(input)).toThrow("research-request");
+    }
+  });
+});
+
 describe("research stop terminal filter", () => {
   const terminal = {
     code: 3,
