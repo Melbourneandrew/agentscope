@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { codexPtyResearchHints } from "./codex-pty-research.mjs";
 
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
@@ -893,31 +894,11 @@ export const codexGateResearchHints = Object.freeze([
   "other",
 ]);
 
-export const codexPtyResearchHints = Object.freeze([
-  "arm-pty-reconciliation",
-  "arm-pty-startup",
-  "arm-pty-transport",
-  "arm-pty-kernel",
-  "arm-pty-other",
-]);
-
-// The selected PTY error is research-only after execution has already failed.
-// Map exact kernel codes to closed categories; never export an error message.
-export const codexArmPtyResearchHint = (error) => {
-  try {
-    const message = error instanceof Error ? error.message : undefined;
-    if (message === "testkit.headless.reconciliation.deadline")
-      return "arm-pty-reconciliation";
-    if (message === "testkit.headless.startup.deadline")
-      return "arm-pty-startup";
-    if (typeof message === "string" && message.startsWith("testkit.pty."))
-      return "arm-pty-transport";
-    if (message === "testkit.headless.kernel.failure") return "arm-pty-kernel";
-  } catch {
-    // A hostile thrown value cannot suppress terminal failure evidence.
-  }
-  return "arm-pty-other";
-};
+export {
+  codexArmPtyResearchHint,
+  codexPtyResearchHints,
+  extractUntrustedCodexPtyHint,
+} from "./codex-pty-research.mjs";
 
 // Only an already-failing fixture may publish this fixed exception category.
 // No message, code, path, or timing value crosses the scenario boundary.
@@ -1029,19 +1010,6 @@ export const extractUntrustedCodexGateHint = (output) => {
     /^integration\.runner\.untrusted-gate-hint:([a-z-]{1,32})$/u,
   )?.[1];
   return codexGateResearchHints.includes(hint) ? hint : undefined;
-};
-
-export const extractUntrustedCodexPtyHint = (output) => {
-  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
-    return undefined;
-  const lines = [
-    ...output.matchAll(/^integration\.runner\.untrusted-pty-hint:[^\n]*$/gmu),
-  ];
-  if (lines.length !== 1) return undefined;
-  const hint = lines[0]?.[0].match(
-    /^integration\.runner\.untrusted-pty-hint:([a-z-]{1,32})$/u,
-  )?.[1];
-  return codexPtyResearchHints.includes(hint) ? hint : undefined;
 };
 
 // Failure-only transport comparison. Neither number authorizes a receipt.
@@ -1231,6 +1199,8 @@ export const selectedRuntimeFiles = Object.freeze([
   "testkit/headless-supervisor-kernel.js",
   "testkit/headless-supervisor.js",
   "testkit/internal/headless-supervisor-backend.js",
+  "testkit/internal/kernel-errors.js",
+  "testkit/internal/kernel-promise.js",
   "testkit/pty-terminal-contract.js",
   "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
   "testkit/pty-runtime/node127-linux-x64-musl/pty.node",

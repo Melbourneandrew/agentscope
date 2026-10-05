@@ -21,6 +21,8 @@ import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
+import { readPtyReconciliationStage } from "./testkit/internal/kernel-errors.js";
+import { failedCodexSessionStartHint } from "./codex-pty-research.mjs";
 import {
   codexArmPtyResearchHint,
   codexGateResearchHints,
@@ -203,39 +205,6 @@ const retainedCandidateConfigStage = (ledger) => {
     }
   }
   return last;
-};
-// A post-failure, bounded and content-free snapshot only. The fixture's live
-// SessionStart checkpoint remains the sole authority for model-gate arming.
-const failedCodexSessionStartHint = async (home) => {
-  const directoryPath = join(home, ".codex", "diagnostic-log");
-  let directoryDescriptor;
-  try {
-    directoryDescriptor = openSync(
-      directoryPath,
-      constants.O_RDONLY |
-        constants.O_DIRECTORY |
-        constants.O_NOFOLLOW |
-        constants.O_NONBLOCK,
-    );
-    const directory = fstatSync(directoryDescriptor);
-    if (
-      !directory.isDirectory() ||
-      directory.uid !== 1000 ||
-      directory.gid !== 1000 ||
-      (directory.mode & 0o7777) !== 0o700
-    )
-      return "arm-log-invalid";
-    const { classifyCodexSessionStartAtFailedPty } =
-      await import("./runtime/codex-runtime-evidence.mjs");
-    return classifyCodexSessionStartAtFailedPty({
-      directoryDescriptor,
-      directoryPath,
-    });
-  } catch {
-    return "arm-log-invalid";
-  } finally {
-    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
-  }
 };
 const untrustedCodexJoinHint = (ledger) => {
   if (scenarioId !== "codex-tui-trace-smoke") return undefined;
@@ -693,7 +662,10 @@ try {
         retainedInteractivePhase(ledger) ===
           "integration.fixture.codex-model-gate-arm-health-pending"
       )
-        codexPtyFailureHint = codexArmPtyResearchHint(error);
+        codexPtyFailureHint = codexArmPtyResearchHint(
+          error,
+          readPtyReconciliationStage(error),
+        );
       throw error;
     }
     const returnedAtMs = performance.now();
