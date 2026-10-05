@@ -18,6 +18,19 @@ import {
 } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
+import {
+  runIntegrationStages,
+  settleAbortableOperation,
+  type IntegrationControllerMode,
+  type IntegrationStageDependencies,
+} from "./controller-stages.js";
+export {
+  IntegrationControllerFailure,
+  runIntegrationStages,
+  settleAbortableOperation,
+  type IntegrationControllerMode,
+  type IntegrationStageDependencies,
+} from "./controller-stages.js";
 
 import {
   createHarnessAdmissionKernel,
@@ -36,18 +49,6 @@ import {
   type SubstrateCertificationProjection,
   type SubstrateCertificationRequest,
 } from "./substrate-certification.js";
-
-export type IntegrationControllerMode = "candidate" | "crabbox" | "lifecycle";
-
-export type IntegrationStageDependencies = Readonly<{
-  clean: () => Promise<void>;
-  maintainArtifacts: () => Promise<void>;
-  prepareCandidate: () => Promise<void>;
-  prepareImages: () => Promise<void>;
-  prepareModelRoutes: () => Promise<void>;
-  runScenarios: () => Promise<void>;
-  select: () => Promise<void>;
-}>;
 
 export type DisposableOuterHostBinding = Readonly<{
   cleanupStartMonotonicMilliseconds: number;
@@ -132,7 +133,6 @@ type CapabilityState = {
 
 const totalLifecycleMilliseconds = 23 * 60 * 1000;
 const cleanupReserveMilliseconds = 60 * 1000;
-const settlementGraceMilliseconds = 5_000;
 const supervisorReserveMilliseconds = 60 * 1000;
 const runTokenPattern = /^[a-f0-9]{16}$/u;
 const candidatePattern = /^sha256-[a-f0-9]{64}$/u;
@@ -255,29 +255,6 @@ export const failureEvidenceCoverageIsExact = (
     [...required].every((runId) => recorded.has(runId))
   );
 };
-
-export class IntegrationControllerFailure extends Error {
-  readonly cleanupCause: unknown;
-  readonly primaryCause: unknown;
-  readonly retirementRequired: boolean;
-
-  constructor(input: {
-    cleanupCause?: unknown;
-    primaryCause: unknown;
-    retirementRequired: boolean;
-  }) {
-    super(
-      input.retirementRequired
-        ? "integration.controller.retire-outer-host"
-        : "integration.controller.failed",
-      { cause: input.primaryCause },
-    );
-    this.name = "IntegrationControllerFailure";
-    this.cleanupCause = input.cleanupCause;
-    this.primaryCause = input.primaryCause;
-    this.retirementRequired = input.retirementRequired;
-  }
-}
 
 /* v8 ignore start -- executable capability wiring is covered by disposable-host runs */
 const supplied = (
@@ -916,56 +893,6 @@ export const ownedIntegrationResources = (): Readonly<{
 };
 /* v8 ignore stop */
 
-export const settleAbortableOperation = async (
-  remaining: number,
-  operation: (signal: AbortSignal) => Promise<void>,
-  settlementGrace = settlementGraceMilliseconds,
-): Promise<void> => {
-  if (
-    !Number.isSafeInteger(remaining) ||
-    remaining < 1 ||
-    !Number.isSafeInteger(settlementGrace) ||
-    settlementGrace < 1
-  )
-    throw new Error("integration.controller.deadline");
-  const controller = new AbortController();
-  let deadlineTimer: NodeJS.Timeout | undefined;
-  let graceTimer: NodeJS.Timeout | undefined;
-  const settled = Promise.resolve()
-    .then(() => operation(controller.signal))
-    .then(
-      () => ({ ok: true as const }),
-      (error: unknown) => ({ error, ok: false as const }),
-    );
-  const first = await Promise.race([
-    settled,
-    new Promise<undefined>((resolveDeadline) => {
-      deadlineTimer = setTimeout(() => {
-        controller.abort();
-        resolveDeadline(undefined);
-      }, remaining);
-    }),
-  ]);
-  if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
-  if (first !== undefined) {
-    if (!first.ok) throw first.error;
-    return;
-  }
-  const terminal = await Promise.race([
-    settled,
-    new Promise<undefined>((resolveGrace) => {
-      graceTimer = setTimeout(() => {
-        resolveGrace(undefined);
-      }, settlementGrace);
-    }),
-  ]);
-  if (graceTimer !== undefined) clearTimeout(graceTimer);
-  if (terminal === undefined)
-    throw new Error("integration.controller.unsettled-operation");
-  if (!terminal.ok) throw terminal.error;
-  throw new Error("integration.controller.deadline");
-};
-
 const runCapabilityStage = async (
   capability: DisposableOuterHostCapability,
   stageName: keyof IntegrationStageDependencies,
@@ -983,56 +910,6 @@ const runCapabilityStage = async (
     state.signal = signal;
     await stageContext.run(stageName, operation);
   });
-};
-
-export const runIntegrationStages = async (
-  mode: IntegrationControllerMode,
-  dependencies: IntegrationStageDependencies,
-): Promise<void> => {
-  if (mode === "candidate") {
-    try {
-      await dependencies.prepareCandidate();
-      await dependencies.maintainArtifacts();
-    } catch (error) {
-      throw new IntegrationControllerFailure({
-        primaryCause: error,
-        retirementRequired: true,
-      });
-    }
-    return;
-  }
-  let primaryCause: unknown;
-  try {
-    if (mode === "crabbox") await dependencies.prepareCandidate();
-    await dependencies.select();
-    await dependencies.prepareImages();
-    await dependencies.prepareModelRoutes();
-    await dependencies.runScenarios();
-    await dependencies.maintainArtifacts();
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "integration.controller.unsettled-operation"
-    )
-      throw new IntegrationControllerFailure({
-        cleanupCause: error,
-        primaryCause: error,
-        retirementRequired: true,
-      });
-    primaryCause = error;
-  }
-  let cleanupCause: unknown;
-  try {
-    await dependencies.clean();
-  } catch (error) {
-    cleanupCause = error;
-  }
-  if (primaryCause !== undefined || cleanupCause !== undefined)
-    throw new IntegrationControllerFailure({
-      cleanupCause,
-      primaryCause: primaryCause ?? cleanupCause,
-      retirementRequired: true,
-    });
 };
 
 /* v8 ignore start -- executable-only imports are checked by policy tests */

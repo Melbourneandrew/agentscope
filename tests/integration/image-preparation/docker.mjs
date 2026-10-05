@@ -21,18 +21,15 @@ import {
   jsonRecord,
   localImageRecord,
   maximumEvidenceBytes,
-  maximumManifestBytes,
   maximumResponseBytes,
   normalizePlatform,
   preparationPolicy,
   preparationTeardownMilliseconds,
   productionDockerEnvironment,
   productionDockerExecutable,
-  productionDockerSocket,
   requestWith,
   resolveBuildxExecutable,
   resolveDockerExecutable,
-  resolveDockerSocket,
   runOwnedImageCommandForTesting,
   sameDaemon,
   sameExecutable,
@@ -49,7 +46,12 @@ import {
   cleanupPrivateClient,
   createPrivateClientRoot,
 } from "./private-storage.mjs";
-import { acquireManifestProof, registryTransport } from "./registry.mjs";
+import { acquireManifestProof } from "./registry.mjs";
+import {
+  createPullOperation,
+  prepareImageOperation,
+  recordUnexpectedEngineStatus,
+} from "./preparation.mjs";
 // eslint-disable-next-line max-lines-per-function -- one private closure owns the complete client lifecycle authority without exporting mutable stores.
 export const createDockerOperations = (state) => {
   const engineTransport = (socket) => {
@@ -74,7 +76,9 @@ export const createDockerOperations = (state) => {
       ...(body === undefined ? {} : { body }),
     });
     if (!expected.includes(response.statusCode))
-      throw fixedError("integration.images.daemon");
+      throw recordUnexpectedEngineStatus(
+        fixedError("integration.images.daemon"),
+      );
     return response;
   };
   const inspectDaemon = async (transport, socket, policy, signal) => {
@@ -118,59 +122,8 @@ export const createDockerOperations = (state) => {
       : localImageRecord(response.body, image);
   };
 
-  const pullImage = async ({
-    daemon,
-    image,
-    platform,
-    policy,
-    signal,
-    transport,
-  }) => {
-    const separator = image.lastIndexOf("@");
-    const repository = image.slice(0, separator);
-    const digest = image.slice(separator + 1);
-    try {
-      const response = await engineCall(
-        { policy, signal, transport },
-        {
-          expected: [200],
-          method: "POST",
-          path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}&platform=${encodeURIComponent(platformText(platform))}`,
-        },
-      );
-      const lines = response.body
-        .toString("utf8")
-        .trim()
-        .split("\n")
-        .filter(Boolean);
-      if (lines.length === 0) throw fixedError("integration.images.daemon");
-      for (const line of lines) {
-        const event = jsonRecord(line, "integration.images.daemon");
-        if (event.error !== undefined || event.errorDetail !== undefined)
-          throw fixedError("integration.images.daemon");
-      }
-    } catch (error) {
-      try {
-        await inspectLocalImage({
-          daemon,
-          image,
-          missingAllowed: true,
-          policy: { ...policy, workDeadline: policy.reconciliationDeadline },
-          signal: undefined,
-          transport,
-        });
-      } catch {
-        // The current attempt remains failed even if exact reconciliation fails.
-      }
-      throw fixedError(
-        error instanceof Error &&
-          error.message === "integration.images.interrupted"
-          ? "integration.images.interrupted-uncertain"
-          : "integration.images.daemon-uncertain",
-        error?.code === "ETIMEDOUT",
-      );
-    }
-  };
+  const pullImage = (input) =>
+    createPullOperation({ engineCall, inspectLocalImage, platformText })(input);
 
   const assertSocketCurrentFor = (engine, socket) => {
     if (engine.production === true) assertSocketCurrent(socket);
@@ -247,12 +200,6 @@ export const createDockerOperations = (state) => {
     });
   };
 
-  const preparationFailure = (error) =>
-    error instanceof Error &&
-    /^integration\.images\.[a-z-]+$/u.test(error.message)
-      ? error
-      : fixedError("integration.images.setup");
-
   const imagePreparationFailureRequiresOuterHostRetirement = (error) =>
     error instanceof Error &&
     [
@@ -260,64 +207,18 @@ export const createDockerOperations = (state) => {
       "integration.images.interrupted-uncertain",
     ].includes(error.message);
 
-  const preparePinnedDockerImages = async (images, options = {}) => {
-    const policy = preparationPolicy(images, options);
-    let privateClient;
-    let prepared;
-    let failure;
-    try {
-      const socket =
-        options.socketIdentityForTesting === undefined
-          ? options.dockerSocket === undefined
-            ? resolveDockerSocket(options.dockerSocketForTesting)
-            : productionDockerSocket(options.dockerSocket)
-          : Object.freeze({ ...options.socketIdentityForTesting });
-      if (!validSocketEvidence(socket))
-        throw fixedError("integration.images.socket");
-      privateClient = createPrivateClientRoot(options);
-      const engine =
-        options.engineRequestForTesting === undefined
-          ? engineTransport(socket)
-          : options.engineRequestForTesting;
-      const registry = options.registryRequestForTesting ?? registryTransport;
-      prepared = await prepareImageSet({
-        engine,
-        images,
-        policy,
-        registry,
-        signal: options.signal,
-        socket,
-      });
-    } catch (error) {
-      failure = preparationFailure(error);
-    }
-    if (privateClient !== undefined) {
-      try {
-        options.beforePrivateCleanupForTesting?.(privateClient.root);
-        cleanupPrivateClient(privateClient, policy.deadline);
-      } catch {
-        failure = fixedError("integration.images.cleanup");
-      }
-    }
-    if (failure !== undefined) throw failure;
-    const completed = Object.freeze({
-      ...prepared,
-      preparationPolicy: Object.freeze({
-        maximumPreparationMilliseconds: policy.maximumPreparationMilliseconds,
-        teardownMilliseconds: policy.teardownMilliseconds,
-        maximumResponseBytes,
-        maximumManifestBytes,
-        maximumEvidenceBytes,
-      }),
-      terminalCleanup: Object.freeze({
-        daemon: "stable",
-        handles: "settled",
-        privateState: "retained-for-outer-host-retirement",
-      }),
-    });
-    state.admitPreparedSet(completed);
-    return completed;
-  };
+  const preparePinnedDockerImages = (images, options = {}) =>
+    prepareImageOperation(
+      state,
+      {
+        engineTransport,
+        prepareImageSet,
+        createPrivateClientRoot,
+        cleanupPrivateClient,
+      },
+      images,
+      options,
+    );
 
   const revalidatePreparedImageAdmission = async (
     evidence,
