@@ -6,7 +6,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
+  readSync,
   writeFileSync,
 } from "node:fs";
 
@@ -39,7 +39,15 @@ export const readMaterialSource = (path) => {
   try {
     const before = fstatSync(fd);
     if (!before.isFile() || before.size < 1 || before.size > 1_048_576) fail();
-    const bytes = readFileSync(fd);
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const length = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (length < 1) fail();
+      offset += length;
+    }
+    // At most one extra byte is inspected solely to reject overlong input.
+    if (readSync(fd, Buffer.alloc(1), 0, 1, offset) !== 0) fail();
     const after = fstatSync(fd);
     if (
       bytes.length !== before.size ||

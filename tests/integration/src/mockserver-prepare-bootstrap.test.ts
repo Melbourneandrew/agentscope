@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -12,6 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { runInNewContext } from "node:vm";
+import { fileURLToPath } from "node:url";
 import type * as MaterialIO from "../harness-material-io.mjs";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,6 +40,7 @@ const state = vi.hoisted(() => ({
   afterAcquire: () => {},
   afterBuild: () => {},
   sourceSnapshots: [] as Buffer[],
+  failRootBinding: false,
 }));
 function sha(bytes: Buffer) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -69,6 +73,14 @@ vi.mock("../harness-material-io.mjs", async (importOriginal) => {
   const actual = await importOriginal<typeof MaterialIO>();
   return {
     ...actual,
+    exactDirectory: (path: string) => {
+      if (
+        state.failRootBinding &&
+        path.endsWith("mockserver-bootstrap-0123456789abcdef")
+      )
+        throw new Error("root-binding");
+      return actual.exactDirectory(path);
+    },
     readMaterialSource: (path: string) => {
       let value;
       if (path.endsWith("bootstrap-pin.json"))
@@ -209,6 +221,7 @@ beforeEach(() => {
   state.built.length = 0;
   state.retired.length = 0;
   state.failure = "";
+  state.failRootBinding = false;
   state.marked = false;
   state.afterAcquire = () => {};
   state.afterBuild = () => {};
@@ -401,6 +414,70 @@ describe("bootstrap deadline and physical cleanup boundaries", () => {
 });
 
 describe("shared private material I/O", () => {
+  it("quarantines a created root when its first identity bind fails", async () => {
+    const input = setup();
+    state.failRootBinding = true;
+    await expect(prepareMockServerBootstrap(input)).rejects.toThrow(
+      "root-binding",
+    );
+    expect(state.marked).toBe(true);
+    expect(
+      existsSync(
+        resolve(input.privateRoot, "mockserver-bootstrap-" + input.runId),
+      ),
+    ).toBe(true);
+    expect(state.acquired).toHaveLength(0);
+  });
+  it("bounds actual reader bytes when the source grows after pre-stat", () => {
+    const input = setup();
+    const file = resolve(input.privateRoot, "growing-source");
+    writeFileSync(file, "code");
+    const implementation = readFileSync(
+      fileURLToPath(new URL("../harness-material-io.mjs", import.meta.url)),
+      "utf8",
+    );
+    const body = implementation
+      .slice(
+        implementation.indexOf("export const readMaterialSource ="),
+        implementation.indexOf("export const writeExclusive ="),
+      )
+      .replace("export const readMaterialSource =", "const reader =");
+    let readBytes = 0;
+    let stats = 0;
+    const reader = runInNewContext(
+      body + "\nreader;",
+      {
+        Buffer,
+        createHash,
+        constants: fs.constants,
+        openSync: fs.openSync,
+        closeSync: fs.closeSync,
+        fail: () => {
+          throw new Error("bounded-source");
+        },
+        fstatSync: (fd: number) => {
+          const status = fs.fstatSync(fd);
+          if (++stats === 1)
+            fs.appendFileSync(file, Buffer.alloc(2 * 1024 * 1024));
+          return status;
+        },
+        readSync: (
+          fd: number,
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) => {
+          const bytes = fs.readSync(fd, buffer, offset, length, position);
+          readBytes += bytes;
+          return bytes;
+        },
+      },
+      { timeout: 1_000 },
+    ) as (path: string) => unknown;
+    expect(() => reader(file)).toThrow();
+    expect(readBytes).toBeLessThanOrEqual(5); // four admitted bytes plus bounded overlength probe
+  });
   it("refuses nonprivate parents and exclusive-write collisions", () => {
     const input = setup();
     chmodSync(input.privateRoot, 0o755);

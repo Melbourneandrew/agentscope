@@ -273,6 +273,7 @@ export const prepareMockServerBootstrap = async (input) => {
   const timer = setTimeout(() => work.abort(), Math.floor(budget));
   const workSignal = AbortSignal.any([signal, work.signal]);
   let owned;
+  let rootCreated = false;
   let primary;
   try {
     check(workSignal, deadline - reserveMilliseconds);
@@ -299,6 +300,7 @@ export const prepareMockServerBootstrap = async (input) => {
     )
       fail();
     mkdirSync(rootPath, { mode: 0o700 });
+    rootCreated = true;
     owned = { parent, root: exactDirectory(rootPath), contexts: [] };
     if (owned.root.dev !== parent.dev) fail();
     const objects = await acquire(workSignal, deadline - reserveMilliseconds);
@@ -310,6 +312,7 @@ export const prepareMockServerBootstrap = async (input) => {
     }
     cleanup(owned, deadline);
     owned = undefined;
+    rootCreated = false;
     check(signal, deadline);
     return Object.freeze({
       archives: Object.freeze(objects.archives),
@@ -329,6 +332,9 @@ export const prepareMockServerBootstrap = async (input) => {
       } catch {
         markPreparedDockerClientForOuterHostRetirement(dockerClient);
       }
+    } else if (rootCreated) {
+      // Creation without a bound identity is quarantined, never deleted.
+      markPreparedDockerClientForOuterHostRetirement(dockerClient);
     }
     throw primary;
   } finally {
