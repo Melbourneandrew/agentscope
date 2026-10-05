@@ -420,9 +420,8 @@ describe("integration cleanup authority", () => {
       resolve(workspaceRoot, "tests/integration/runner.mjs"),
       "utf8",
     );
-    expect(runner).toContain("classifyCodexSessionStartAtFailedPty({");
     expect(runner).toContain(
-      'await import("./runtime/codex-runtime-evidence.mjs")',
+      'import { failedCodexSessionStartHint } from "./codex-pty-research.mjs"',
     );
     expect(runner).not.toContain('from "./codex-runtime-evidence.mjs"');
     expect(runner).toContain(
@@ -437,11 +436,9 @@ describe("integration cleanup authority", () => {
     expect(selectedPtyBoundary).toContain(
       "receipt = await executeSelectedPtyProcess(headlessCapability, {",
     );
-    expect(selectedPtyBoundary).toContain(
-      "codexPtyFailureHint = codexArmPtyResearchHint(error);",
-    );
+    expect(selectedPtyBoundary).toContain("readPtyReconciliationStage(error)");
     expect(selectedPtyBoundary).toContain("throw error;");
-    expect(runner.split("codexArmPtyResearchHint(error)")).toHaveLength(2);
+    expect(runner.split("codexArmPtyResearchHint(")).toHaveLength(2);
     const otherInteractiveFailures = runner.slice(
       runner.indexOf("const returnedAtMs = performance.now();"),
       runner.indexOf(

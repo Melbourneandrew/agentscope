@@ -19,6 +19,10 @@ import type {
   SelectedPtyExecutionReceipt,
   SelectedPtyExecutionRequest,
 } from "./pty-terminal-contract.js";
+import {
+  kernelError,
+  readPtyReconciliationStage,
+} from "./internal/kernel-errors.js";
 
 /**
  * Executes one family-owned non-PTY scenario through the package-authenticated
@@ -88,9 +92,10 @@ export const executeSelectedPtyProcess = async (
       options,
     );
   } catch (error: unknown) {
-    throw new HeadlessSupervisorError(
+    throw kernelError(
       readHeadlessSupervisorKernelErrorCode(error) ??
         "testkit.headless.kernel.failure",
+      readPtyReconciliationStage(error),
     );
   }
 };

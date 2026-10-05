@@ -30,11 +30,26 @@ import {
   type HeadlessProcessSetObservation,
   type HostileHeadlessProcessSeed,
 } from "../headless-supervisor-contract.js";
-import {
-  HeadlessSupervisorError,
-  type HeadlessSupervisorCapability,
-  type HeadlessSupervisorExecutionOptions,
+import type {
+  HeadlessSupervisorCapability,
+  HeadlessSupervisorExecutionOptions,
 } from "../headless-supervisor.js";
+import {
+  fail,
+  failObserverIdentity,
+  failObserverRead,
+  ptyAuthorityFailureStage,
+  readPtyReconciliationStage,
+  observerReadFailureStage,
+  trustedErrorCode,
+} from "./kernel-errors.js";
+import {
+  boundedInvoke,
+  observeAtCreation,
+  remaining,
+  terminalOf,
+  terminalSnapshot,
+} from "./kernel-promise.js";
 import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
@@ -90,7 +105,6 @@ const selectedBackendAuthorities = new WeakMap<
 >();
 // Deliberately write-closed in c1k.2. c1k.5 owns the restricted composition
 // with a real external parent/container isolation backend.
-const internalErrorCodes = new WeakMap<object, string>();
 const SafePromise = Promise;
 const SafeArray = Array;
 const SafeTextEncoder = TextEncoder;
@@ -130,7 +144,6 @@ const emulatorTakeTerminalResponses =
   BoundedTerminalEmulator.prototype.takeTerminalResponses;
 /* eslint-enable @typescript-eslint/unbound-method */
 const safeSetTimeout = setTimeout;
-const safeClearTimeout = clearTimeout;
 const safeSetInterval = setInterval;
 const safeClearInterval = clearInterval;
 const isProxy = types.isProxy;
@@ -214,8 +227,6 @@ const maximumStringBytes = 16_384;
 const containerPollMilliseconds = 10;
 let selectedContainerCompositionConsumed = false;
 
-type Terminal<T> =
-  Readonly<{ ok: true; value: T }> | Readonly<{ error: unknown; ok: false }>;
 const readWeakMap = <K extends object, V>(map: WeakMap<K, V>, key: K) =>
   safeReflectApply(weakMapGet, map, [key]) as V | undefined;
 const writeWeakMap = <K extends object, V>(
@@ -224,14 +235,6 @@ const writeWeakMap = <K extends object, V>(
   value: V,
 ): void => {
   safeReflectApply(weakMapSet, map, [key, value]);
-};
-const kernelError = (code: string): HeadlessSupervisorError => {
-  const error = new HeadlessSupervisorError(code);
-  writeWeakMap(internalErrorCodes, error, code);
-  return error;
-};
-const fail = (code: string): never => {
-  throw kernelError(code);
 };
 const defineArrayIndex = <T>(values: T[], index: number, value: T): void => {
   if (
@@ -247,31 +250,6 @@ const defineArrayIndex = <T>(values: T[], index: number, value: T): void => {
     ])
   )
     return fail("testkit.pty.request");
-};
-const trustedErrorCode = (error: unknown): string | undefined =>
-  typeof error === "object" && error !== null
-    ? readWeakMap(internalErrorCodes, error)
-    : undefined;
-const terminalOf = <T>(promise: Promise<T>): Promise<Terminal<T>> =>
-  safeReflectApply(promiseThen, promise, [
-    (value: T) => ({ ok: true as const, value }),
-    (error: unknown) => ({ error, ok: false as const }),
-  ]) as Promise<Terminal<T>>;
-const observeAtCreation = <T>(promise: Promise<T>): Promise<T> => {
-  void terminalOf(promise);
-  return promise;
-};
-const terminalSnapshot = <T>(
-  promise: Promise<T>,
-): (() => Terminal<T> | undefined) => {
-  let terminal: Terminal<T> | undefined;
-  const observed = terminalOf(promise);
-  void safeReflectApply(promiseThen, observed, [
-    (value: Terminal<T>) => {
-      terminal = value;
-    },
-  ]);
-  return () => terminal;
 };
 const isAborted = (signal: AbortSignal): boolean => {
   if (abortSignalAborted === undefined) return fail("testkit.headless.aborted");
@@ -334,45 +312,6 @@ const cancellationAuthority = (
   } catch {
     return fail("testkit.headless.aborted");
   }
-};
-const remaining = (deadline: number): number =>
-  maximum(0, deadline - safeReflectApply(performanceNow, performance, []));
-const boundedInvoke = <T>(
-  operation: () => Promise<T>,
-  deadline: number,
-  code: string,
-): Promise<T> => {
-  const initialWait = remaining(deadline);
-  if (initialWait <= 0) return fail(code);
-  let operationPromise: Promise<T>;
-  try {
-    operationPromise = operation();
-  } catch (error: unknown) {
-    return fail(trustedErrorCode(error) ?? "testkit.headless.kernel.failure");
-  }
-  const observed = terminalOf(operationPromise);
-  const wait = remaining(deadline);
-  if (wait <= 0) return fail(code);
-  return observeAtCreation(
-    new SafePromise<T>((resolve, reject) => {
-      const timer = safeSetTimeout(() => {
-        reject(kernelError(code));
-      }, wait);
-      void safeReflectApply(promiseThen, observed, [
-        (settled: Terminal<T>) => {
-          safeClearTimeout(timer);
-          if (settled.ok) resolve(settled.value);
-          else
-            reject(
-              kernelError(
-                trustedErrorCode(settled.error) ??
-                  "testkit.headless.kernel.failure",
-              ),
-            );
-        },
-      ]);
-    }),
-  );
 };
 
 const ownData = (value: object, key: string): unknown => {
@@ -857,7 +796,7 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
   try {
     const value = readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = value.lastIndexOf(")");
-    if (close < 1) return fail("testkit.headless.observer.read");
+    if (close < 1) return failObserverRead("observer-stat");
     const fields = value
       .slice(close + 2)
       .trim()
@@ -873,12 +812,14 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
       start === undefined ||
       !/^\d+$/u.test(start)
     )
-      return fail("testkit.headless.observer.read");
+      return failObserverRead("observer-stat");
     const parentPid = Number(encodedParent);
     if (!numberIsSafeInteger(parentPid) || parentPid < 0)
-      return fail("testkit.headless.observer.read");
+      return failObserverRead("observer-stat");
     return { parentPid, pid, startIdentity: `${pid}:${start}`, state };
   } catch (error: unknown) {
+    if (trustedErrorCode(error) === "testkit.headless.observer.read")
+      return failObserverRead(readPtyReconciliationStage(error));
     if (
       typeof error === "object" &&
       error !== null &&
@@ -886,7 +827,13 @@ const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
       (error as { code?: unknown }).code === "ENOENT"
     )
       return undefined;
-    return fail("testkit.headless.observer.read");
+    return failObserverRead(
+      observerReadFailureStage(
+        typeof error === "object" && error !== null && "code" in error
+          ? (error as { code?: unknown }).code
+          : undefined,
+      ),
+    );
   }
 };
 
@@ -896,7 +843,7 @@ const assertNamespaceIdentity = (expected: string): void => {
       readlinkSync("/proc/self/ns/pid") !== expected ||
       readlinkSync("/proc/1/ns/pid") !== expected
     )
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-namespace");
   } catch (error: unknown) {
     if (trustedErrorCode(error) !== undefined) throw error;
     return fail("testkit.headless.observer.read");
@@ -1481,7 +1428,7 @@ const signalExactProcess = (
   const current = runtime.readProcess(identity.pid);
   if (current === undefined) return false;
   if (current.startIdentity !== identity.startIdentity)
-    return fail("testkit.headless.observer.identity");
+    return failObserverIdentity("observer-target-reuse");
   try {
     runtime.sendSignal(identity.pid, signal);
   } catch (error: unknown) {
@@ -1830,7 +1777,7 @@ const processesDescendantsFirst = (
   const identities = new Set<string>();
   for (const identity of processes) {
     if (byPid.has(identity.pid) || identities.has(identity.startIdentity))
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     byPid.set(identity.pid, identity);
     identities.add(identity.startIdentity);
   }
@@ -1839,11 +1786,11 @@ const processesDescendantsFirst = (
     const cached = depths.get(identity.pid);
     if (cached !== undefined) return cached;
     if (visiting.has(identity.pid))
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     visiting.add(identity.pid);
     const parent = byPid.get(identity.parentPid);
     if (parent === undefined && identity.parentPid !== 1)
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-graph");
     const value = parent === undefined ? 0 : depth(parent, visiting) + 1;
     visiting.delete(identity.pid);
     depths.set(identity.pid, value);
@@ -1879,7 +1826,7 @@ const reapAdoptedZombies = (
       current.parentPid !== 1 ||
       current.state !== "Z"
     )
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-zombie-before");
     const receipt = exactAdoptedZombieReapReceipt(
       runtime.reapAdoptedZombie(
         identity.pid,
@@ -1891,7 +1838,7 @@ const reapAdoptedZombies = (
     );
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
-      return fail("testkit.headless.observer.identity");
+      return failObserverIdentity("observer-zombie-after");
     if (
       (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
       after !== undefined
@@ -2801,6 +2748,11 @@ const armSelectedPty = (
     const observed = new Map<string, ProcessSnapshot>();
     if (root !== undefined) observed.set(root.startIdentity, root);
     let authorityFailure: string | undefined;
+    let authorityFailureStage: ReturnType<typeof readPtyReconciliationStage>;
+    const retainAuthorityFailure = (error: unknown, fallback: string): void => {
+      authorityFailure = trustedErrorCode(error) ?? fallback;
+      authorityFailureStage = readPtyReconciliationStage(error);
+    };
     const currentProcessSet = (): readonly ProcessSnapshot[] => {
       if (authorityFailure !== undefined) return [];
       try {
@@ -2811,26 +2763,28 @@ const armSelectedPty = (
             identity.pid === root.pid &&
             identity.startIdentity !== root.startIdentity
           )
-            return fail("testkit.headless.observer.identity");
+            return failObserverIdentity("observer-root-reuse");
         return current;
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.read";
+        retainAuthorityFailure(error, "testkit.headless.observer.read");
         return [];
       }
     };
     const failAfterHandleSettlement = async (): Promise<never> => {
+      const stage =
+        authorityFailureStage ?? ptyAuthorityFailureStage(authorityFailure);
       try {
         child.close();
       } catch {
-        return fail("testkit.headless.reconciliation.deadline");
+        return fail("testkit.headless.reconciliation.deadline", stage);
       }
       await boundedInvoke(
         () => child.closed,
         processRequest.monotonicShutdownDeadlineMs,
         "testkit.headless.reconciliation.deadline",
+        stage,
       );
-      return fail("testkit.headless.reconciliation.deadline");
+      return fail("testkit.headless.reconciliation.deadline", stage);
     };
     const signals: HeadlessObservedSignal[] = [];
     const chunks: Buffer[] = [];
@@ -3481,8 +3435,7 @@ const armSelectedPty = (
         try {
           return runtime.readProcess(identity.pid) !== undefined;
         } catch (error) {
-          authorityFailure =
-            trustedErrorCode(error) ?? "testkit.headless.observer.read";
+          retainAuthorityFailure(error, "testkit.headless.observer.read");
           return false;
         }
       }),
@@ -3503,8 +3456,7 @@ const armSelectedPty = (
             runtime,
           );
         } catch (error) {
-          authorityFailure =
-            trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+          retainAuthorityFailure(error, "testkit.headless.observer.signal");
           break;
         }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
@@ -3527,8 +3479,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        retainAuthorityFailure(error, "testkit.headless.observer.reap");
         break;
       }
       pumpTransport(false);
@@ -3549,8 +3500,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+        retainAuthorityFailure(error, "testkit.headless.observer.signal");
         break;
       }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
@@ -3569,8 +3519,7 @@ const armSelectedPty = (
           runtime,
         );
       } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        retainAuthorityFailure(error, "testkit.headless.observer.reap");
         break;
       }
       pumpTransport(false);
@@ -3586,8 +3535,7 @@ const armSelectedPty = (
         runtime,
       );
     } catch (error) {
-      authorityFailure =
-        trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+      retainAuthorityFailure(error, "testkit.headless.observer.reap");
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     const residual = currentProcessSet();
@@ -3598,7 +3546,7 @@ const armSelectedPty = (
       } catch {
         // The terminal classification remains reconciliation uncertainty.
       }
-      return fail("testkit.headless.reconciliation.deadline");
+      return fail("testkit.headless.reconciliation.deadline", "residual");
     }
     if (exit === undefined)
       exit = exactPtyExit(
@@ -3606,6 +3554,7 @@ const armSelectedPty = (
           () => child.closed,
           processRequest.monotonicShutdownDeadlineMs,
           "testkit.headless.reconciliation.deadline",
+          "child-join",
         ),
       );
     while (
@@ -3624,7 +3573,10 @@ const armSelectedPty = (
       transportClosed = false;
     }
     if (!outputTerminal || !transportClosed)
-      return fail("testkit.headless.reconciliation.deadline");
+      return fail(
+        "testkit.headless.reconciliation.deadline",
+        !outputTerminal ? "output-join" : "transport-close",
+      );
     if (primaryFailure !== undefined) return fail(primaryFailure);
     if (
       exit.signal !== 0 &&
@@ -4496,9 +4448,15 @@ export const executeSelectedPtyProcessWithCapability = async (
         const expiry = readExpiryReceipt();
         if (expiry?.ok === true && expiry.value.cleanup === "clean")
           assertPtyReceiptBinding(expiry.value, stableRequest);
-        return fail("testkit.headless.reconciliation.deadline");
+        return fail(
+          "testkit.headless.reconciliation.deadline",
+          "outer-shutdown",
+        );
       }
-      return fail(trustedErrorCode(error) ?? "testkit.headless.kernel.failure");
+      return fail(
+        trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
+        readPtyReconciliationStage(error),
+      );
     }
     assertPtyReceiptBinding(receipt, stableRequest);
     return receipt;
@@ -5098,7 +5056,9 @@ export const executeSelectedContainerBackendForTest = async (
 type SelectedPtyTestSeed =
   | "active-terminal"
   | "action-deadline-crossing"
+  | "shutdown-deadline-crossing"
   | "adopted-zombie"
+  | "adopted-zombie-reap-failure"
   | "blocked-input-completion"
   | "challenge-marker-prompt"
   | "clean"
@@ -5149,7 +5109,9 @@ type SelectedPtyTestSeed =
   | "mode-substitution"
   | "nonzero-exit"
   | "observer-failure"
+  | "observer-esrch-failure"
   | "output-limit"
+  | "output-join-failure"
   | "partial-input"
   | "partial-input-output-limit"
   | "partial-input-timeout"
@@ -5300,6 +5262,8 @@ const selectedPtyRuntimeForTest = (
     listProcesses: () => {
       if (seed === "observer-failure")
         return fail("testkit.headless.observer.read");
+      if (seed === "observer-esrch-failure")
+        return failObserverRead("observer-esrch");
       return [...processes.values()];
     },
     readProcess: (pid) => {
@@ -5324,6 +5288,8 @@ const selectedPtyRuntimeForTest = (
         return fail("testkit.headless.observer.identity");
       if (selected.state !== "Z")
         return { pid, startIdentity, status: "not-ready" };
+      if (seed === "adopted-zombie-reap-failure")
+        return fail("testkit.headless.observer.reap");
       processes.delete(pid);
       return { pid, startIdentity, status: "reaped" };
     },
@@ -5364,7 +5330,10 @@ const selectedPtyRuntimeForTest = (
         signal === "SIGTERM"
       )
         return;
-      if (seed === "adopted-zombie" && pid === descendant.pid) {
+      if (
+        (seed === "adopted-zombie" || seed === "adopted-zombie-reap-failure") &&
+        pid === descendant.pid
+      ) {
         processes.set(pid, { ...descendant, parentPid: 1, state: "Z" });
         return;
       }
@@ -5908,7 +5877,11 @@ const selectedPtyRuntimeForTest = (
           throw new Error("testkit.pty.test-read-during-partial-input");
       };
       queueMicrotask(() => {
-        if (seed === "residual" || seed === "adopted-zombie")
+        if (
+          seed === "residual" ||
+          seed === "adopted-zombie" ||
+          seed === "adopted-zombie-reap-failure"
+        )
           processes.set(descendant.pid, descendant);
         if (
           !requiresCausalPromptRedraw &&
@@ -6002,10 +5975,17 @@ const selectedPtyRuntimeForTest = (
           transportReads += 1;
           if (seed === "immediate-output" && !immediateActionApplied)
             throw new Error("testkit.pty.test-read-before-immediate-action");
-          if (seed === "action-deadline-crossing" && transportReads === 1) {
-            const stopAt = request.monotonicExecutionDeadlineMs + 1;
+          if (
+            (seed === "action-deadline-crossing" ||
+              seed === "shutdown-deadline-crossing") &&
+            transportReads === 1
+          ) {
+            const stopAt =
+              (seed === "shutdown-deadline-crossing"
+                ? request.monotonicShutdownDeadlineMs
+                : request.monotonicExecutionDeadlineMs) + 1;
             while (performance.now() < stopAt) {
-              // Cross the one execution deadline while observing readiness.
+              // Cross the selected absolute deadline while observing readiness.
             }
           }
           if (seed === "transport-failure")
@@ -6131,7 +6111,7 @@ const selectedPtyRuntimeForTest = (
             terminal = true;
             close({ code: 0, signal: 0 });
           }
-          return terminal
+          return terminal && seed !== "output-join-failure"
             ? { status: "eio" as const }
             : { status: "would-block" as const };
         },

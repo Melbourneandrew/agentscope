@@ -65,6 +65,7 @@ import {
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
+import { projectUntrustedCodexPtyReceipt } from "./codex-pty-research.mjs";
 import {
   codexFailureExitPair,
   compileImmutableCandidateHandoff,
@@ -408,29 +409,8 @@ const stageBuildContext = (plan) => {
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
     ],
     [
-      "testkit/headless-supervisor.js",
-      resolve(workspaceRoot, "packages/testkit/dist/headless-supervisor.js"),
-    ],
-    [
-      "testkit/headless-supervisor-contract.js",
-      resolve(
-        workspaceRoot,
-        "packages/testkit/dist/headless-supervisor-contract.js",
-      ),
-    ],
-    [
-      "testkit/headless-supervisor-kernel.js",
-      resolve(
-        workspaceRoot,
-        "packages/testkit/dist/headless-supervisor-kernel.js",
-      ),
-    ],
-    [
-      "testkit/internal/headless-supervisor-backend.js",
-      resolve(
-        workspaceRoot,
-        "packages/testkit/dist/internal/headless-supervisor-backend.js",
-      ),
+      "codex-pty-research.mjs",
+      resolve(integrationRoot, "codex-pty-research.mjs"),
     ],
     [
       "capability-manifest.json",
@@ -574,7 +554,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
@@ -1931,10 +1911,11 @@ const recordInteractiveExecutionFailure = (
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   codexResearchDiagnostics.set(plan.runId, {
-    diagnosticVersion: 3,
+    diagnosticVersion: 4,
     untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
     untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null,
     untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null,
+    untrustedPtyReceipt: projectUntrustedCodexPtyReceipt(receipt) ?? null,
     exitPair:
       codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
       null,
