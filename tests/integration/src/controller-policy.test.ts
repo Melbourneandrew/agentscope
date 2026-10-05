@@ -818,21 +818,16 @@ describe("integration workflow policy", () => {
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
       "utf8",
     );
-    expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(3);
-    expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(4);
-    expect(
-      workflow.match(/NPM_CONFIG_GLOBALCONFIG=.*agentscope-global\.npmrc/gu),
-    ).toHaveLength(3);
-    expect(
-      workflow.match(/NPM_CONFIG_USERCONFIG=.*agentscope-user\.npmrc/gu),
-    ).toHaveLength(3);
-    expect(
-      workflow.match(/Initialize closed npm configuration/gu),
-    ).toHaveLength(3);
+    for (const [pattern, count] of [
+      [/pnpm test:integration/gu, 4],
+      [/persist-credentials: false/gu, 5],
+      [/NPM_CONFIG_GLOBALCONFIG=.*agentscope-global\.npmrc/gu, 4],
+      [/NPM_CONFIG_USERCONFIG=.*agentscope-user\.npmrc/gu, 4],
+      [/Initialize closed npm configuration/gu, 4],
+      [/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu, 4],
+    ] as const)
+      expect(workflow.match(pattern)).toHaveLength(count);
     expect(workflow).not.toMatch(/\$\{\{ runner\.temp \}\}/gu);
-    expect(
-      workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
-    ).toHaveLength(3);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runSupervisedProcess } from "./supervisor.mjs";
+import { mockServerResearchStopFitsTerminalObservation } from "./dist/mockserver-research-request.js";
 
 const defaultMaximumControllerMilliseconds = 24 * 60 * 1000;
 const suppliedOuterDeadline =
@@ -26,9 +27,16 @@ const result = await runSupervisedProcess({
   arguments_: [resolve(import.meta.dirname, "controller-process.mjs")],
   maximumMilliseconds: maximumControllerMilliseconds,
 });
-if (result.code !== 0 || !result.contained || result.residualWorkObserved) {
+if (mockServerResearchStopFitsTerminalObservation(result)) {
+  process.exitCode = 3;
+} else if (
+  result.code !== 0 ||
+  !result.contained ||
+  result.residualWorkObserved
+) {
   process.stderr.write(
     `${result.contained && !result.residualWorkObserved ? "integration.controller.failed" : "integration.controller.containment"}\n`,
   );
-  process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
+  process.exitCode =
+    result.code === 0 || result.code === 3 ? 1 : (result.code ?? 1);
 }

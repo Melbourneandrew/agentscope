@@ -14,8 +14,12 @@ on:
       shard:
         description: Deterministic index/total shard selector
         required: false
-        default: 0/1
         type: string
+      mockserver_research:
+        description: Run bounded MockServer supplier research only; never scenario or certification evidence
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -71,6 +75,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   hermetic-platform:
+    if: ${{ !inputs.mockserver_research }}
     name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
     needs: prepare-candidate
     runs-on: ubuntu-latest
@@ -152,6 +157,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   controlled-negative:
+    if: ${{ !inputs.mockserver_research }}
     name: Substrate rejects ${{ matrix.case }}
     needs: prepare-candidate
     runs-on: ubuntu-latest
@@ -244,6 +250,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   substrate-certification-fan-in:
+    if: ${{ !inputs.mockserver_research }}
     name: substrate-certification
     needs: hermetic-platform
     runs-on: ubuntu-latest
@@ -276,7 +283,7 @@ jobs:
           node tests/integration/verify-substrate-certification.mjs fan-in
   hermetic-integration:
     name: hermetic-integration
-    if: always()
+    if: always() && !inputs.mockserver_research
     needs:
       [
         prepare-candidate,
@@ -298,3 +305,69 @@ jobs:
           test "$PLATFORM_RESULT" = success
           test "$NEGATIVE_RESULT" = success
           test "$CERTIFICATION_RESULT" = success
+  mockserver-supplier-research:
+    name: MockServer supplier research (not certification)
+    if: github.event_name == 'workflow_dispatch' && inputs.mockserver_research
+    needs: prepare-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AGENTSCOPE_MOCKSERVER_RESEARCH: supplier
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+    steps:
+      - name: Reject contradictory research selectors
+        env:
+          REQUEST_SCENARIO: ${{ inputs.scenario }}
+          REQUEST_SHARD: ${{ inputs.shard }}
+        run: |
+          test -z "$REQUEST_SCENARIO"
+          test -z "$REQUEST_SHARD"
+      - name: Establish job-scoped integration deadline
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
+      - name: Initialize closed npm configuration
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.npmrc"
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
+          echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace fixture code
+        run: pnpm build
+      - name: Download exact prepared candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: integration-candidate-${{ github.sha }}
+          path: artifacts/integration
+      - name: Require settled research stop and independently verified packet
+        id: research_packet
+        run: |
+          set +e
+          pnpm test:integration
+          status=$?
+          set -e
+          test "$status" -eq 3
+          node tests/integration/verify-mockserver-research.mjs
+      - name: Upload bounded research observations only
+        if: success() && steps.research_packet.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mockserver-supplier-research-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/integration/mockserver-research/inventory.json
+            artifacts/integration/mockserver-research/receipt.json
+          if-no-files-found: error
+          retention-days: 7
