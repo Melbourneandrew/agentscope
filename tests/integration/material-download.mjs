@@ -34,6 +34,13 @@ const responsePolicy = (response, descriptor, mode) => {
     const raw = response.headers.location;
     try {
       if (
+        !Array.isArray(response.rawHeaders) ||
+        response.rawHeaders.filter(
+          (value, index) =>
+            index % 2 === 0 &&
+            typeof value === "string" &&
+            value.toLowerCase() === "location",
+        ).length !== 1 ||
         typeof raw !== "string" ||
         raw.length < 1 ||
         raw.length > 16_384 ||

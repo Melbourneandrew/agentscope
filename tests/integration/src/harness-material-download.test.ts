@@ -186,6 +186,7 @@ const releaseFixture = (
   const headers: Record<string, unknown> = { location, "content-length": "0" };
   const response = Object.assign(new EventEmitter(), {
     headers,
+    rawHeaders: ["Location", location],
     statusCode: 302,
     complete: true,
     destroy() {
@@ -213,6 +214,54 @@ const releaseDescriptor = {
   url: "https://github.com/adoptium/temurin17-binaries/releases/download/canary",
   bytes: 2,
 };
+
+describe("wire release redirect headers", () => {
+  it.each([false, true])(
+    "rejects duplicate Location on the wire (%s)",
+    async (mixedCase) => {
+      const server = createServer((_request, response) => {
+        response.writeHead(302, [
+          "Location",
+          "https://release-assets.githubusercontent.com/release/canary",
+          mixedCase ? "lOcAtIoN" : "Location",
+          "https://other.invalid/release/canary",
+          "Content-Length",
+          "0",
+        ]);
+        response.end();
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+      );
+      try {
+        const address = server.address();
+        if (address === null || typeof address === "string")
+          throw new Error("address");
+        await expect(
+          downloadMaterialObject(
+            releaseDescriptor,
+            new AbortController().signal,
+            performance.now() + 3_000,
+            (_options, callback) =>
+              httpRequest(
+                { hostname: "127.0.0.1", port: address.port, agent: false },
+                callback,
+              ),
+            "release-asset",
+          ),
+        ).rejects.toThrow("redirect");
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => {
+            if (error) reject(error);
+            else resolve();
+          }),
+        );
+      }
+    },
+  );
+});
 
 describe("one-hop release transport closure", () => {
   it.each([false, true])(
