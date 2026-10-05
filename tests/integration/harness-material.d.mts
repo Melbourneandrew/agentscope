@@ -4,6 +4,7 @@ import type {
   VerifiedHarnessMaterial,
 } from "./src/harness-material.js";
 import type { PreparedDockerClient } from "./image-preparation.mjs";
+export { prepareMockServerBootstrap } from "./mockserver-material/prepare-bootstrap.mjs";
 
 declare const tokenBrand: unique symbol;
 export declare const downloadMockServerJdkArchive: (

@@ -1,18 +1,6 @@
 /* eslint import-x/no-cycle: "off" -- authenticated prepared-Docker capability */
 import { createHash } from "node:crypto";
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  rmdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
 import { request } from "node:https";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -29,6 +17,13 @@ import {
   retirePreparedDockerImage,
 } from "./image-preparation.mjs";
 import { downloadMaterialObject as download } from "./material-download.mjs";
+import {
+  exactDirectory,
+  sameDirectory,
+  writeExclusive,
+  readMaterialSource,
+} from "./harness-material-io.mjs";
+export { prepareMockServerBootstrap } from "./mockserver-material/prepare-bootstrap.mjs";
 export { classifyMaterialResponseForTesting } from "./material-download.mjs";
 
 const maximumAuditBytes = 8 * 1024 * 1024;
@@ -55,24 +50,6 @@ const remaining = (deadline) => {
   return value;
 };
 
-const exactDirectory = (path) => {
-  const status = lstatSync(path);
-  if (
-    !status.isDirectory() ||
-    status.isSymbolicLink() ||
-    (status.mode & 0o7777) !== 0o700 ||
-    status.uid !== process.getuid?.() ||
-    status.gid !== process.getgid?.()
-  )
-    fail();
-  return Object.freeze({ dev: status.dev, ino: status.ino, path });
-};
-
-const sameDirectory = (identity) => {
-  const current = exactDirectory(identity.path);
-  if (current.dev !== identity.dev || current.ino !== identity.ino) fail();
-};
-
 export const retireEmptyAuthenticatedHarnessMaterialDirectory = (identity) => {
   sameDirectory(identity);
   // rmdir refuses unexpected children; rm on a directory fails with EISDIR
@@ -80,58 +57,7 @@ export const retireEmptyAuthenticatedHarnessMaterialDirectory = (identity) => {
   rmdirSync(identity.path);
 };
 
-const commandSourceAuthority = (() => {
-  const descriptor = openSync(
-    commandSource,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  );
-  try {
-    const before = fstatSync(descriptor);
-    const bytes = readFileSync(descriptor);
-    const after = fstatSync(descriptor);
-    if (
-      !before.isFile() ||
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      bytes.byteLength !== before.size ||
-      bytes.byteLength < 1 ||
-      bytes.byteLength > 1_048_576
-    )
-      fail();
-    return Object.freeze({
-      bytes,
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    });
-  } finally {
-    closeSync(descriptor);
-  }
-})();
-
-const writeExclusive = (path, bytes) => {
-  const descriptor = openSync(
-    path,
-    constants.O_CREAT |
-      constants.O_EXCL |
-      constants.O_NOFOLLOW |
-      constants.O_WRONLY,
-    0o600,
-  );
-  try {
-    writeFileSync(descriptor, bytes);
-  } finally {
-    closeSync(descriptor);
-  }
-  const status = lstatSync(path);
-  if (
-    !status.isFile() ||
-    status.isSymbolicLink() ||
-    status.nlink !== 1 ||
-    status.size !== bytes.byteLength ||
-    (status.mode & 0o7777) !== 0o600
-  )
-    fail();
-};
+const commandSourceAuthority = readMaterialSource(commandSource);
 
 const headerReasons = ["hdr-short", "hdr-long", "hdr-noncanon", "hdr-invalid"];
 const downloadFailureReasons = new Map([
