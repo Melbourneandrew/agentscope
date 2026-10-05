@@ -1,6 +1,9 @@
 import {
+  chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   realpathSync,
   symlinkSync,
@@ -38,6 +41,15 @@ const root = () => {
   );
   roots.push(directory);
   return directory;
+};
+const executableFixture = () => {
+  const source = realpathSync(process.execPath).replaceAll("'", "'\\''");
+  const target = resolve(root(), "node");
+  const script = `#!/bin/sh\nexec '${source}' "$@"\n`;
+  writeFileSync(target, script, { flag: "wx", mode: 0o500 });
+  chmodSync(target, 0o500);
+  expect(readFileSync(target, "utf8")).toBe(script);
+  return target;
 };
 afterEach(() => {
   for (const directory of roots.splice(0))
@@ -297,14 +309,15 @@ describe("same-kernel binary output", () => {
       "-e",
       "process.stdout.write(Buffer.from([255,192]));setTimeout(()=>process.stdout.write(Buffer.from([128,0])),5)",
     ];
-    const bytes = await runOwnedImageCommandForTesting(process.execPath, args, {
+    const node = executableFixture();
+    const bytes = await runOwnedImageCommandForTesting(node, args, {
       ...options(),
       output: "binary",
     });
     expect(bytes).toEqual(Buffer.from([255, 192, 128, 0]));
     expect(
       await runOwnedImageCommandForTesting(
-        process.execPath,
+        node,
         ["-e", "process.stdout.write('text')"],
         options(),
       ),
@@ -324,7 +337,7 @@ describe("same-kernel binary output", () => {
   it("preserves the combined output cap in binary mode", async () => {
     await expect(
       runOwnedImageCommandForTesting(
-        process.execPath,
+        executableFixture(),
         [
           "-e",
           "process.stderr.write(Buffer.alloc(16*1024*1024));process.stdout.write(Buffer.from([1]))",
@@ -337,7 +350,7 @@ describe("same-kernel binary output", () => {
     const controller = new AbortController();
     await expect(
       runOwnedImageCommandForTesting(
-        process.execPath,
+        executableFixture(),
         ["-e", "process.stdout.write(Buffer.from([255]))"],
         {
           ...options(),
@@ -350,6 +363,22 @@ describe("same-kernel binary output", () => {
         },
       ),
     ).rejects.toThrow("integration.images.interrupted");
+  });
+  it("rejects an owned writable executable before payload execution", async () => {
+    const node = executableFixture();
+    const marker = resolve(node, "..", "payload");
+    chmodSync(node, 0o775);
+    await expect(
+      runOwnedImageCommandForTesting(
+        node,
+        [
+          "-e",
+          `require('node:fs').writeFileSync(${JSON.stringify(marker)},'must-not-run')`,
+        ],
+        options(),
+      ),
+    ).rejects.toThrow("integration.images.executable");
+    expect(existsSync(marker)).toBe(false);
   });
   it("uses only the fixed tar stdout exporter without tag or image load", () => {
     expect(selectBuildOutput(undefined)).toBe("image");
