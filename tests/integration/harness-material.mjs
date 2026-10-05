@@ -24,6 +24,7 @@ import {
   readMaterialSource,
 } from "./harness-material-io.mjs";
 export { prepareMockServerBootstrap } from "./mockserver-material/prepare-bootstrap.mjs";
+export { researchMockServerSupplier } from "./mockserver-material/prepare-supplier.mjs";
 export { classifyMaterialResponseForTesting } from "./material-download.mjs";
 
 const maximumAuditBytes = 8 * 1024 * 1024;

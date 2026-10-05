@@ -109,3 +109,4 @@ export declare const retirePreparedHarnessMaterial: (
 export declare const retireEmptyAuthenticatedHarnessMaterialDirectory: (
   identity: Readonly<{ dev: number; ino: number; path: string }>,
 ) => void;
+export { researchMockServerSupplier } from "./mockserver-material/prepare-supplier.mjs";
