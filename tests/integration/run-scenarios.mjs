@@ -65,6 +65,7 @@ import {
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
+import { projectUntrustedCodexPtyReceipt } from "./codex-pty-research.mjs";
 import {
   codexFailureExitPair,
   compileImmutableCandidateHandoff,
@@ -1910,10 +1911,11 @@ const recordInteractiveExecutionFailure = (
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   codexResearchDiagnostics.set(plan.runId, {
-    diagnosticVersion: 3,
+    diagnosticVersion: 4,
     untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
     untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null,
     untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null,
+    untrustedPtyReceipt: projectUntrustedCodexPtyReceipt(receipt) ?? null,
     exitPair:
       codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
       null,

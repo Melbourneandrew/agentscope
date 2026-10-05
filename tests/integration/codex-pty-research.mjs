@@ -22,6 +22,95 @@ const reconciliationHints = Object.freeze({
   "outer-shutdown": "arm-pty-outer-shutdown",
 });
 
+const receiptOutcomes = Object.freeze([
+  "completed",
+  "signaled",
+  "exited-nonzero",
+  "aborted",
+  "timeout",
+  "output-limit",
+  "transport-failed",
+  "input-incomplete",
+]);
+const checkpointCategories = Object.freeze([
+  "not-requested",
+  "no-live-readiness",
+  "terminal-order-rejected",
+  "terminal-reply-unsettled",
+  "protocol-not-ready",
+  "deadline",
+  "ready-gate-other",
+  "ready-gate-open",
+  "topology-root-missing",
+  "topology-nonroot-missing",
+  "topology-identity-conflict",
+  "publication-unsettled",
+  "advanced",
+]);
+
+// Failure retention only. Copy two closed observations from an already parsed
+// receipt, never its terminal text, identifiers, paths, timings or raw errors.
+export const projectUntrustedCodexPtyReceipt = (receipt) => {
+  try {
+    if (
+      typeof receipt !== "object" ||
+      receipt === null ||
+      Object.getPrototypeOf(receipt) !== Object.prototype
+    )
+      return undefined;
+    const outcome = Object.getOwnPropertyDescriptor(receipt, "outcome");
+    const checkpoint = Object.getOwnPropertyDescriptor(
+      receipt,
+      "checkpointProgressDiagnostic",
+    );
+    if (
+      !outcome ||
+      !("value" in outcome) ||
+      !receiptOutcomes.includes(outcome.value) ||
+      (checkpoint &&
+        (!("value" in checkpoint) ||
+          !checkpointCategories.includes(checkpoint.value)))
+    )
+      return undefined;
+    return Object.freeze({
+      outcome: outcome.value,
+      checkpointProgressDiagnostic: checkpoint?.value ?? null,
+    });
+  } catch {
+    return undefined;
+  }
+};
+
+export const validUntrustedCodexPtyReceipt = (value) => {
+  if (value === null) return true;
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Reflect.ownKeys(value).sort().join("\0") !==
+        "checkpointProgressDiagnostic\0outcome"
+    )
+      return false;
+    const outcome = Object.getOwnPropertyDescriptor(value, "outcome");
+    const checkpoint = Object.getOwnPropertyDescriptor(
+      value,
+      "checkpointProgressDiagnostic",
+    );
+    return (
+      outcome !== undefined &&
+      "value" in outcome &&
+      receiptOutcomes.includes(outcome.value) &&
+      checkpoint !== undefined &&
+      "value" in checkpoint &&
+      (checkpoint.value === null ||
+        checkpointCategories.includes(checkpoint.value))
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const codexPtyResearchHints = Object.freeze([
   "arm-pty-reconciliation",
   "arm-pty-startup",
