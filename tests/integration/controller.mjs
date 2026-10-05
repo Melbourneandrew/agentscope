@@ -13,9 +13,11 @@ let maximumControllerMilliseconds = defaultMaximumControllerMilliseconds;
 if (suppliedOuterDeadline !== undefined) {
   if (!/^\d{7,15}$/u.test(suppliedOuterDeadline))
     throw new Error("integration.controller.outer-deadline");
-  maximumControllerMilliseconds = Math.min(
-    maximumControllerMilliseconds,
-    Number(suppliedOuterDeadline) - hostMonotonicMilliseconds(),
+  maximumControllerMilliseconds = Math.floor(
+    Math.min(
+      maximumControllerMilliseconds,
+      Number(suppliedOuterDeadline) - hostMonotonicMilliseconds(),
+    ),
   );
 }
 if (maximumControllerMilliseconds < 2 * 60 * 1000)
