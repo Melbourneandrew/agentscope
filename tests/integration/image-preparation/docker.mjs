@@ -41,6 +41,11 @@ import {
   readImageProcessDiagnostic,
 } from "./boundary.mjs";
 import { createBoundedBuildContext } from "./build-context.mjs";
+import {
+  buildArgumentsFor,
+  builderNetworkFor,
+  selectBuildNetwork,
+} from "./build-policy.mjs";
 import { evidenceImage } from "./evidence.mjs";
 import {
   cleanupPrivateClient,
@@ -533,7 +538,7 @@ export const createDockerOperations = (state) => {
     container.Mounts[0]?.RW === true;
   const builderContainerFailureReason = (
     container,
-    { buildkit, buildkitImage, requireRunning, resources },
+    { buildkit, buildkitImage, buildNetwork, requireRunning, resources },
   ) => {
     if (!/^[a-f\d]{64}$/u.test(container?.Id ?? "")) return "id";
     if (
@@ -546,10 +551,11 @@ export const createDockerOperations = (state) => {
     if (container.Image !== buildkit.configDigest) return "image-id";
     if (container.Config?.Image !== buildkitImage) return "image-reference";
     if (container.Platform !== buildkit.platform.os) return "platform";
-    if (container.HostConfig?.NetworkMode !== "bridge") return "network-mode";
+    const network = builderNetworkFor(buildNetwork);
+    if (container.HostConfig?.NetworkMode !== network) return "network-mode";
     if (
       JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
-      JSON.stringify(["bridge"])
+      JSON.stringify([network])
     )
       return "network-attachment";
     if (!validBuilderMount(container, resources)) return "mount";
@@ -562,12 +568,13 @@ export const createDockerOperations = (state) => {
   };
   const assertBuilderContainer = (
     container,
-    { buildkit, buildkitImage, requireRunning, resources },
+    { buildkit, buildkitImage, buildNetwork, requireRunning, resources },
   ) => {
     if (
       builderContainerFailureReason(container, {
         buildkit,
         buildkitImage,
+        buildNetwork,
         requireRunning,
         resources,
       }) !== "matched"
@@ -657,6 +664,7 @@ export const createDockerOperations = (state) => {
         : builderContainerFailureReason(container, {
             buildkit: authority.buildkit,
             buildkitImage: authority.client.buildkitImage,
+            buildNetwork: authority.buildNetwork,
             requireRunning,
             resources,
           });
@@ -676,6 +684,7 @@ export const createDockerOperations = (state) => {
           : assertBuilderContainer(container, {
               buildkit: authority.buildkit,
               buildkitImage: authority.client.buildkitImage,
+              buildNetwork: authority.buildNetwork,
               requireRunning,
               resources,
             }),
@@ -745,41 +754,12 @@ export const createDockerOperations = (state) => {
       throw fixedError("integration.images.build");
     return built;
   };
-  const buildArgumentsFor = ({
-    buildArguments,
-    builder,
-    dockerfile,
-    labels,
-    platform,
-    tag,
-  }) => {
-    const result = [
-      "build",
-      "--builder",
-      builder,
-      "--file",
-      dockerfile,
-      "--load",
-      "--network",
-      "default",
-      "--platform",
-      platformText(platform),
-      "--pull=false",
-      "--tag",
-      tag,
-    ];
-    for (const [name, value] of Object.entries(buildArguments).sort())
-      result.push("--build-arg", `${name}=${value}`);
-    for (const [name, value] of Object.entries(labels).sort())
-      result.push("--label", `${name}=${value}`);
-    result.push("-");
-    return result;
-  };
   const createBuildAuthority = async (
     client,
     policy,
     signal,
     runGeneration,
+    buildNetwork,
   ) => {
     const engine =
       client.engineRequestForTesting ?? engineTransport(client.socket);
@@ -838,6 +818,7 @@ export const createDockerOperations = (state) => {
     };
     const authority = {
       builder,
+      buildNetwork,
       buildkit,
       client,
       daemon,
@@ -888,7 +869,7 @@ export const createDockerOperations = (state) => {
       "--driver-opt",
       `image=${client.buildkitImage}`,
       "--driver-opt",
-      "network=bridge",
+      `network=${builderNetworkFor(authority.buildNetwork)}`,
       "--platform",
       platformText(buildkit.platform),
       `unix://${client.socket.path}`,
@@ -911,6 +892,7 @@ export const createDockerOperations = (state) => {
     await run(
       buildArgumentsFor({
         ...options,
+        buildNetwork: authority.buildNetwork,
         builder,
         platform: buildkit.platform,
       }),
@@ -1192,10 +1174,19 @@ export const createDockerOperations = (state) => {
   const preparedDockerClientDiagnostic = (client) =>
     state.readDiagnostic(client);
 
+  const imageBuildPolicy = (client, maximumMilliseconds) =>
+    preparationPolicy([client.evidence.images[0].image], {
+      maximumPreparationMilliseconds: maximumMilliseconds,
+      teardownMilliseconds: Math.min(
+        preparationTeardownMilliseconds,
+        Math.floor(maximumMilliseconds / 4),
+      ),
+    });
   const buildPreparedDockerImage = async (
     client,
     {
       buildArguments,
+      buildNetwork,
       afterBuildContextEntryForTesting,
       context,
       dockerfile,
@@ -1207,6 +1198,7 @@ export const createDockerOperations = (state) => {
       tag,
     },
   ) => {
+    const selectedNetwork = selectBuildNetwork(buildNetwork);
     if (
       !state.clientIsUsable(client) ||
       typeof context !== "string" ||
@@ -1222,13 +1214,7 @@ export const createDockerOperations = (state) => {
       state.pendingCount(client) !== 0
     )
       throw fixedError("integration.images.build.input");
-    const policy = preparationPolicy([client.evidence.images[0].image], {
-      maximumPreparationMilliseconds: maximumMilliseconds,
-      teardownMilliseconds: Math.min(
-        preparationTeardownMilliseconds,
-        Math.floor(maximumMilliseconds / 4),
-      ),
-    });
+    const policy = imageBuildPolicy(client, maximumMilliseconds);
     let archive;
     try {
       archive = createBoundedBuildContext(context, {
@@ -1251,6 +1237,7 @@ export const createDockerOperations = (state) => {
         policy,
         signal,
         labels["com.agentscope.integration.run"],
+        selectedNetwork,
       );
     } catch (error) {
       throw buildPhaseFailure(error, "authority", [

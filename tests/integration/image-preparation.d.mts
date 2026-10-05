@@ -232,6 +232,7 @@ export declare const buildPreparedDockerImage: (
   client: PreparedDockerClient,
   options: Readonly<{
     buildArguments: Readonly<Record<string, string>>;
+    buildNetwork?: "default" | "none";
     afterBuildContextEntryForTesting?: (entryCount: number) => void;
     context: string;
     dockerfile: string;
