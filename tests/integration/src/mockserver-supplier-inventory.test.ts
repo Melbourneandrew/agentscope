@@ -134,6 +134,44 @@ describe("supplier cache/JAR observations (not dependency authentication)", () =
   });
 });
 describe("supplier inventory byte bounds", () => {
+  it("reads at most the remaining entry budget plus one and closes before rejection", () => {
+    const root = fixture();
+    const body = readFileSync(
+      new URL("../mockserver-material/supplier-inventory.mjs", import.meta.url),
+      "utf8",
+    )
+      .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
+      .replace(
+        "export const inventoryMockServerSupplier",
+        "const inventoryMockServerSupplier",
+      );
+    let reads = 0;
+    let closed = false;
+    const io = {
+      ...fileSystem,
+      opendirSync: (_path: string, options: { bufferSize: number }) => {
+        expect(options.bufferSize).toBe(1);
+        return {
+          readSync: () => ({ name: `entry-${++reads}` }),
+          closeSync: () => {
+            closed = true;
+          },
+        };
+      },
+    };
+    expect(() => {
+      runInNewContext(`${body}\ninventoryMockServerSupplier(root);`, {
+        ...io,
+        createHash,
+        resolve,
+        root,
+        Buffer,
+        process,
+      });
+    }).toThrow("supplier-inventory");
+    expect(reads).toBe(16_384);
+    expect(closed).toBe(true);
+  });
   it("rejects a sparse over-ceiling file before reading its body", () => {
     const root = fixture();
     truncateSync(resolve(root, jar), 256 * 1024 * 1024 + 1);

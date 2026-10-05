@@ -6,8 +6,8 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  opendirSync,
   readSync,
-  readdirSync,
 } from "node:fs";
 import { resolve } from "node:path";
 
@@ -49,6 +49,23 @@ const directory = (path) => {
   )
     fail();
   return status;
+};
+const boundedNames = (path, remaining) => {
+  const handle = opendirSync(path, { bufferSize: 1 });
+  const names = [];
+  try {
+    for (
+      let entry = handle.readSync();
+      entry !== null;
+      entry = handle.readSync()
+    ) {
+      if (names.length >= remaining) fail();
+      names.push(entry.name);
+    }
+  } finally {
+    handle.closeSync();
+  }
+  return names.sort();
 };
 const observeFile = (path, state) => {
   const named = lstatSync(path);
@@ -112,8 +129,7 @@ export const inventoryMockServerSupplier = (root) => {
     const status = lstatSync(path);
     if (status.isDirectory()) {
       const before = directory(path);
-      const names = readdirSync(path).sort();
-      if (names.length > maximumEntries - state.entries) fail();
+      const names = boundedNames(path, maximumEntries - state.entries);
       append({ path: relative, type: "directory", mode: status.mode & 0o7777 });
       for (const name of names) {
         if (

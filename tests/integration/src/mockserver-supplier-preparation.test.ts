@@ -18,12 +18,13 @@ const state = vi.hoisted(() => ({
   mutated: false,
   marked: false,
   afterBuild: () => {},
+  waitBootstrap: () => Promise.resolve(),
 }));
 vi.mock("../mockserver-material/prepare-bootstrap.mjs", () => ({
   prepareMockServerBootstrap: (input: Record<string, unknown>) => {
     state.inputs.push(input);
     if (state.failure === "bootstrap") throw Error("bootstrap");
-    return Promise.resolve({
+    return state.waitBootstrap().then(() => ({
       archives: {
         source: Buffer.from(state.mutated ? "altered" : "source"),
         maven: Buffer.from("maven"),
@@ -31,7 +32,7 @@ vi.mock("../mockserver-material/prepare-bootstrap.mjs", () => ({
         jdk: Buffer.from("jdk"),
       },
       verification: { evidenceScope: "bootstrap-input-verification-only" },
-    });
+    }));
   },
 }));
 vi.mock("../mockserver-material/source-archive.mjs", () => ({
@@ -85,11 +86,13 @@ beforeEach(() => {
   state.mutated = false;
   state.marked = false;
   state.afterBuild = () => {};
+  state.waitBootstrap = () => Promise.resolve();
 });
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { force: true, recursive: true });
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 describe("connected supplier research under inherited lifecycle (synthetic builder)", () => {
   it("stages complete helper graph and exact compressed inputs through the existing builder", async () => {
@@ -134,6 +137,7 @@ describe("connected supplier research under inherited lifecycle (synthetic build
     expect(result.inventory.toString()).toBe("synthetic-research");
     expect(state.inputs[0]?.deadline).toBe(input.deadline);
     expect(state.inputs[0]?.dockerClient).toBe(input.dockerClient);
+    expect(state.inputs[0]?.signal).toBe(input.signal);
     expect(state.builds[0]).toMatchObject({
       buildNetwork: "default",
       buildOutput: "evidence-tar",
@@ -189,6 +193,26 @@ describe("connected supplier research under inherited lifecycle (synthetic build
   });
 });
 describe("supplier deadline and cancellation boundary", () => {
+  it("preserves bootstrap retirement signal after work cutoff while rejecting later supplier work", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const input = fixture();
+    input.deadline = performance.now() + 6_050;
+    let finish = () => {};
+    state.waitBootstrap = () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    const pending = researchMockServerSupplier(input as never);
+    const rejected = expect(pending).rejects.toThrow("supplier");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(state.inputs[0]?.signal).toBe(input.signal);
+    expect((state.inputs[0]?.signal as AbortSignal).aborted).toBe(false);
+    finish();
+    await rejected;
+    expect(state.builds).toEqual([]);
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("rejects exhausted, oversized, cancelled and malformed authorities before bootstrap", async () => {
     for (const change of [
       { deadline: performance.now() },

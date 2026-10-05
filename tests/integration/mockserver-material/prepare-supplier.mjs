@@ -128,10 +128,9 @@ export const researchMockServerSupplier = async (input) => {
   let owned;
   let created = false;
   try {
-    const bootstrap = await prepareMockServerBootstrap({
-      ...input,
-      signal: workSignal,
-    });
+    // Bootstrap owns its own cutoff at this same absolute deadline. Its original
+    // caller signal must remain usable during reserved late-image retirement.
+    const bootstrap = await prepareMockServerBootstrap(input);
     check(workSignal, deadline - reserve);
     // Mutable returned bytes are never accepted on the strength of the receipt.
     const archives = {
