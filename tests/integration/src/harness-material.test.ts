@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -10,6 +11,10 @@ import {
   type NpmHarnessMaterial,
   type SignedManifestHarnessMaterial,
 } from "./harness-material.js";
+import {
+  compileCapabilityManifest,
+  type CapabilityManifest,
+} from "./manifest.js";
 
 const bytes = Buffer.from("exact harness archive");
 const descriptor = {
@@ -123,6 +128,61 @@ const compile = (changes: Record<string, unknown> = {}) =>
     },
     ...changes,
   });
+
+describe("refreshed attestation manifest binding", () => {
+  it("binds each refreshed attestation transport pin into the committed identity", () => {
+    const committed = JSON.parse(
+      readFileSync(
+        new URL("../capability-manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ) as CapabilityManifest;
+    const compiled = compileCapabilityManifest(committed);
+    const codex = compiled.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    )!;
+    if (codex.material.kind !== "npm") throw new Error("expected npm material");
+    expect(
+      codex.material.packages.map(({ version, attestations }) => ({
+        version,
+        ...attestations,
+      })),
+    ).toEqual([
+      {
+        version: "0.149.1",
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
+        bytes: 14441,
+        sha256:
+          "32462896e63e6451d6549fcf54047e225396f6e537077e4435ea16472ab743dc",
+      },
+      {
+        version: "0.149.1-linux-x64",
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1-linux-x64",
+        bytes: 14473,
+        sha256:
+          "3a7a87dd01a2e0f201fe2b71689f87a2f667bd50614cd9b87903240a219636f6",
+      },
+    ]);
+    // This tests manifest binding only; cryptographic verification is separate.
+    for (const index of [0, 1]) {
+      for (const field of ["bytes", "sha256"] as const) {
+        const substituted = structuredClone(committed);
+        const evidence = substituted.evidence.find(
+          ({ evidenceId }) => evidenceId === codex.evidenceId,
+        )!;
+        if (evidence.material.kind !== "npm")
+          throw new Error("expected npm material");
+        const pin = evidence.material.packages[index]!.attestations;
+        if (field === "bytes") pin.bytes += 1;
+        else pin.sha256 = "0".repeat(64);
+        expect(() => compileCapabilityManifest(substituted)).toThrow(
+          "integration.manifest.identity",
+        );
+      }
+    }
+    expect(codex.admission).toBeUndefined();
+  });
+});
 
 describe("authenticated npm harness material", () => {
   it("strictly converts only the exact downloaded attestation response", () => {
