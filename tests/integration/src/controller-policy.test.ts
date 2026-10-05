@@ -137,26 +137,31 @@ describe("integration controller policy", () => {
     expect(source).toContain("failureEvidenceCoverageIsExact(");
   });
 
-  it("rejects direct execution of every mutation stage", () => {
-    for (const stage of [
-      "clean.mjs",
-      "maintain-artifacts.mjs",
-      "prepare-cli.mjs",
-      "prepare-images.mjs",
-      "prepare-model-routes.mjs",
-      "run-scenarios.mjs",
-      "select.mjs",
-    ]) {
-      const result = spawnSync(process.execPath, [stage], {
-        cwd: resolve(workspaceRoot, "tests/integration"),
-        encoding: "utf8",
-        env: { LANG: "C.UTF-8", PATH: process.env.PATH },
-      });
-      expect(result.status, stage).not.toBe(0);
-      expect(`${result.stdout}${result.stderr}`, stage).toContain(
-        "integration.outer-host.capability-required",
-      );
-    }
+  it.each([
+    "clean.mjs",
+    "maintain-artifacts.mjs",
+    "prepare-cli.mjs",
+    "prepare-images.mjs",
+    "prepare-model-routes.mjs",
+    "run-scenarios.mjs",
+    "select.mjs",
+  ])("rejects direct execution of mutation stage %s", (stage) => {
+    // Keep the existing 5 s case deadline, rather than charging seven Node
+    // startups to one case. Child settlement uses only that case's budget.
+    const result = spawnSync(process.execPath, [stage], {
+      cwd: resolve(workspaceRoot, "tests/integration"),
+      encoding: "utf8",
+      env: { LANG: "C.UTF-8", PATH: process.env.PATH },
+      timeout: 4_500,
+      killSignal: "SIGKILL",
+      maxBuffer: 16_384,
+    });
+    expect(result.error, stage).toBeUndefined();
+    expect(result.signal, stage).toBeNull();
+    expect(result.status, stage).not.toBe(0);
+    expect(`${result.stdout}${result.stderr}`, stage).toContain(
+      "integration.outer-host.capability-required",
+    );
   });
 });
 
