@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-f3829e2f55c3a1bc8bcaae12053066302a92c04c09c00836b7f8d48614061a78",
+  "manifestIdentity": "sha256-7859d20533aed0a22445bee65e05e76457a2743ebc0de537c74983429def1c67",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -22,8 +22,8 @@
           {
             "attestations": {
               "url": "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
-              "bytes": 14368,
-              "sha256": "37960391dc8c43f5c1b88d0b4835a3f9479d2f39859ba64f9a0318626d4a7af7"
+              "maximumBytes": 65536,
+              "bundleDigest": "c0f476449a3ccecb2e1c0540100d42ce08196ab3ac7959474a037504553d04a8"
             },
             "installName": "@openai/codex",
             "packageName": "@openai/codex",
@@ -36,8 +36,8 @@
           {
             "attestations": {
               "url": "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1-linux-x64",
-              "bytes": 14400,
-              "sha256": "b51be7ef1149cb1233a3147da4f9b8b227e9c62aab9a708817c6f461322598da"
+              "maximumBytes": 65536,
+              "bundleDigest": "97b8929769e5f413b83fbaccf75e0ee953d7f06685fb0afc160e2eb8c85420d2"
             },
             "installName": "@openai/codex-linux-x64",
             "packageName": "@openai/codex",

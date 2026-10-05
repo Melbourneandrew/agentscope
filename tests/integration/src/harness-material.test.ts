@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
+
+import { canonicalJson } from "./canonical.js";
 
 import {
   compileNpmAttestationAudit,
@@ -10,12 +13,16 @@ import {
   type NpmHarnessMaterial,
   type SignedManifestHarnessMaterial,
 } from "./harness-material.js";
+import {
+  compileCapabilityManifest,
+  type CapabilityManifest,
+} from "./manifest.js";
 
 const bytes = Buffer.from("exact harness archive");
 const descriptor = {
   attestations: {
-    bytes: 1,
-    sha256: "f".repeat(64),
+    maximumBytes: 65536,
+    bundleDigest: "f".repeat(64),
     url: "https://registry.npmjs.org/-/npm/v1/attestations/@vendor%2fharness@1.2.3",
   },
   installName: "@vendor/harness",
@@ -107,6 +114,9 @@ const audit = (payload = provenanceStatement()) => ({
     },
   ],
 });
+descriptor.attestations.bundleDigest = createHash("sha256")
+  .update(canonicalJson(audit().verified[0]!.attestationBundles))
+  .digest("hex");
 const compile = (changes: Record<string, unknown> = {}) =>
   compileVerifiedNpmHarnessMaterial({
     audit: audit(),
@@ -124,6 +134,61 @@ const compile = (changes: Record<string, unknown> = {}) =>
     ...changes,
   });
 
+describe("signed attestation manifest binding", () => {
+  it("binds reviewed canonical bundles rather than API serialization", () => {
+    const committed = JSON.parse(
+      readFileSync(
+        new URL("../capability-manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ) as CapabilityManifest;
+    const compiled = compileCapabilityManifest(committed);
+    const codex = compiled.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    )!;
+    if (codex.material.kind !== "npm") throw new Error("expected npm material");
+    expect(
+      codex.material.packages.map(({ version, attestations }) => ({
+        version,
+        ...attestations,
+      })),
+    ).toEqual([
+      {
+        version: "0.149.1",
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1",
+        maximumBytes: 65536,
+        bundleDigest:
+          "c0f476449a3ccecb2e1c0540100d42ce08196ab3ac7959474a037504553d04a8",
+      },
+      {
+        version: "0.149.1-linux-x64",
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.149.1-linux-x64",
+        maximumBytes: 65536,
+        bundleDigest:
+          "97b8929769e5f413b83fbaccf75e0ee953d7f06685fb0afc160e2eb8c85420d2",
+      },
+    ]);
+    // This tests manifest binding only; cryptographic verification is separate.
+    for (const index of [0, 1]) {
+      for (const field of ["maximumBytes", "bundleDigest"] as const) {
+        const substituted = structuredClone(committed);
+        const evidence = substituted.evidence.find(
+          ({ evidenceId }) => evidenceId === codex.evidenceId,
+        )!;
+        if (evidence.material.kind !== "npm")
+          throw new Error("expected npm material");
+        const pin = evidence.material.packages[index]!.attestations;
+        if (field === "maximumBytes") pin.maximumBytes -= 1;
+        else pin.bundleDigest = "0".repeat(64);
+        expect(() => compileCapabilityManifest(substituted)).toThrow(
+          "integration.manifest.identity",
+        );
+      }
+    }
+    expect(codex.admission).toBeUndefined();
+  });
+});
+
 describe("authenticated npm harness material", () => {
   it("strictly converts only the exact downloaded attestation response", () => {
     const bundles = audit().verified[0]!.attestationBundles;
@@ -136,6 +201,30 @@ describe("authenticated npm harness material", () => {
         ]),
       ),
     ).toEqual(audit());
+    expect(
+      compileNpmAttestationAudit(
+        material,
+        new Map([
+          [
+            key,
+            Buffer.from(JSON.stringify({ attestations: bundles }, null, 2)),
+          ],
+        ]),
+      ),
+    ).toEqual(audit());
+    expect(() =>
+      compileNpmAttestationAudit(
+        material,
+        new Map([
+          [
+            key,
+            Buffer.from(
+              JSON.stringify({ attestations: [...bundles].reverse() }),
+            ),
+          ],
+        ]),
+      ),
+    ).toThrow("integration.harness-material.invalid");
     expect(() =>
       compileNpmAttestationAudit(
         material,
@@ -150,7 +239,21 @@ describe("authenticated npm harness material", () => {
       ),
     ).toThrow("integration.harness-material.invalid");
   });
+});
 
+describe("authenticated npm subject and source", () => {
+  it("rejects extra verified packages and signed bundle substitution before execution", () => {
+    const first = audit().verified[0]!;
+    for (const value of [
+      { ...audit(), verified: [first, first] },
+      { ...audit(), verified: [{ ...first, attestationBundles: [] }] },
+      { ...audit(), missing: ["missing"] },
+      { ...audit(), invalid: ["invalid"] },
+    ])
+      expect(() => compileNpmVerifierPolicy(material, value)).toThrow(
+        "integration.harness-material.invalid",
+      );
+  });
   it("binds exact archive bytes and verified provenance", () => {
     const result = compile();
     expect(result.materialIdentity).toMatch(/^sha256-[a-f0-9]{64}$/u);
@@ -186,6 +289,9 @@ describe("authenticated npm harness material", () => {
         { predicateType: "distinct-version-marker" },
       ],
     };
+    otherDescriptor.attestations.bundleDigest = createHash("sha256")
+      .update(canonicalJson(second.attestationBundles))
+      .digest("hex");
     const policy = compileNpmVerifierPolicy(
       { ...material, packages: [descriptor, otherDescriptor] },
       { invalid: [], missing: [], verified: [first, second] },

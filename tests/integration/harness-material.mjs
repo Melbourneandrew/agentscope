@@ -143,10 +143,17 @@ export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
   if (
     response.headers["content-length"] !== undefined &&
     response.headers["content-length"] !== String(expectedBytes)
-  )
-    return "length-header";
+  ) {
+    const observed = response.headers["content-length"];
+    if (typeof observed !== "string" || !/^[0-9]+$/u.test(observed))
+      return "hdr-invalid";
+    const length = BigInt(observed);
+    if (length === BigInt(expectedBytes)) return "hdr-noncanon";
+    return length < BigInt(expectedBytes) ? "hdr-short" : "hdr-long";
+  }
 };
 
+const headerReasons = ["hdr-short", "hdr-long", "hdr-noncanon", "hdr-invalid"];
 const downloadFailureReasons = new Map([
   ["registry identity", "identity"],
   ["integration.harness-material.failed", "deadline"],
@@ -156,7 +163,7 @@ const downloadFailureReasons = new Map([
     "status",
     "redirect",
     "encoding",
-    "length-header",
+    ...headerReasons,
     "size",
     "incomplete",
     "interrupted",
@@ -167,16 +174,41 @@ export const classifyMaterialDownloadFailureForTesting = (error) =>
   downloadFailureReasons.get(error instanceof Error ? error.message : "") ??
   "transport";
 
-const download = (descriptor, signal, deadline) =>
+export const classifyAttestationFailurePhaseForTesting = (descriptor, error) =>
+  `download-attestation-${descriptor.installName === descriptor.packageName ? "root" : "variant"}-${classifyMaterialDownloadFailureForTesting(error)}`;
+
+const materialRequestOptions = (url) => ({
+  agent: false,
+  ca: rootCertificates,
+  hostname: url.hostname,
+  maxHeaderSize: maximumHeaderBytes,
+  method: "GET",
+  path: `${url.pathname}${url.search}`,
+  protocol: "https:",
+  rejectUnauthorized: true,
+  servername: url.hostname,
+});
+const authorizedMaterialUrl = (url) =>
+  url.protocol === "https:" &&
+  url.username === "" &&
+  url.password === "" &&
+  url.hash === "" &&
+  url.port === "";
+
+const download = (
+  descriptor,
+  signal,
+  deadline,
+  transport = request,
+  metadata = false,
+) =>
   new Promise((resolveDownload, rejectDownload) => {
+    if (signal.aborted) {
+      rejectDownload(new Error("interrupted"));
+      return;
+    }
     const url = new URL(descriptor.tarballUrl ?? descriptor.url);
-    if (
-      url.protocol !== "https:" ||
-      url.username !== "" ||
-      url.password !== "" ||
-      url.hash !== "" ||
-      url.port !== ""
-    ) {
+    if (!authorizedMaterialUrl(url)) {
       rejectDownload(new Error("registry identity"));
       return;
     }
@@ -185,16 +217,27 @@ const download = (descriptor, signal, deadline) =>
     let responseHandle;
     let terminalError;
     let terminalValue;
+    let requestClosed = false;
+    let responseClosed = false;
     const chunks = [];
     let bytes = 0;
     const settle = () => {
       if (settled) return;
+      if (terminalError === undefined) {
+        if (signal.aborted) terminalError = new Error("interrupted");
+        else if (performance.now() >= deadline)
+          terminalError = new Error("deadline");
+      }
       settled = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
       if (terminalError === undefined && terminalValue !== undefined)
         resolveDownload(terminalValue);
       else rejectDownload(terminalError ?? new Error("incomplete"));
+    };
+    const maybeSettle = () => {
+      if (requestClosed && (responseHandle === undefined || responseClosed))
+        settle();
     };
     const stop = (error) => {
       terminalError ??= error;
@@ -207,45 +250,78 @@ const download = (descriptor, signal, deadline) =>
       remaining(deadline),
     );
     signal.addEventListener("abort", onAbort, { once: true });
-    requestHandle = request(
-      {
-        agent: false,
-        ca: rootCertificates,
-        hostname: url.hostname,
-        maxHeaderSize: maximumHeaderBytes,
-        method: "GET",
-        path: `${url.pathname}${url.search}`,
-        protocol: "https:",
-        rejectUnauthorized: true,
-        servername: url.hostname,
-      },
-      (response) => {
-        responseHandle = response;
-        const rejection = classifyMaterialResponseForTesting(
-          response,
-          descriptor.bytes,
-        );
-        if (rejection !== undefined) {
-          response.destroy();
-          stop(new Error(rejection));
-          return;
-        }
-        response.on("data", (chunk) => {
-          bytes += chunk.byteLength;
-          if (bytes > descriptor.bytes) stop(new Error("size"));
-          else chunks.push(chunk);
-        });
-        response.once("error", stop);
-        response.once("end", () => {
-          if (bytes !== descriptor.bytes) stop(new Error("size"));
-          else terminalValue = Buffer.concat(chunks);
-        });
-      },
-    );
+    requestHandle = transport(materialRequestOptions(url), (response) => {
+      responseHandle = response;
+      const advertised = response.headers["content-length"];
+      const expectedBytes = metadata
+        ? typeof advertised === "string" &&
+          /^[1-9][0-9]{0,5}$/u.test(advertised)
+          ? Number(advertised)
+          : undefined
+        : descriptor.bytes;
+      const rejection =
+        metadata && advertised !== undefined && expectedBytes === undefined
+          ? "hdr-invalid"
+          : metadata && expectedBytes > descriptor.maximumBytes
+            ? "size"
+            : classifyMaterialResponseForTesting(response, expectedBytes);
+      response.once("aborted", () => stop(new Error("incomplete")));
+      response.on("data", (chunk) => {
+        bytes += chunk.byteLength;
+        if (bytes > (metadata ? descriptor.maximumBytes : descriptor.bytes))
+          stop(new Error("size"));
+        else chunks.push(chunk);
+      });
+      response.once("error", stop);
+      response.once("end", () => {
+        if (
+          bytes < 1 ||
+          (expectedBytes !== undefined && bytes !== expectedBytes) ||
+          (metadata && !response.complete)
+        )
+          stop(new Error("size"));
+        else terminalValue = Buffer.concat(chunks);
+      });
+      response.once("close", () => {
+        responseClosed = true;
+        if (metadata && terminalValue === undefined)
+          terminalError ??= new Error("incomplete");
+        maybeSettle();
+      });
+      if (rejection !== undefined) stop(new Error(rejection));
+    });
     requestHandle.once("error", stop);
-    requestHandle.once("close", settle);
+    requestHandle.once("close", () => {
+      requestClosed = true;
+      maybeSettle();
+    });
     requestHandle.end();
   });
+
+export const downloadRegularHarnessMaterialForTesting = (
+  descriptor,
+  signal,
+  deadline,
+  transport,
+) => download(descriptor, signal, deadline, transport);
+
+// The API envelope is bounded transport, not an immutable artifact. Its
+// canonical signed bundles are pinned by the compiler and then checked against
+// the SAME bundles returned by fresh pinned npm cryptographic verification.
+export const downloadAttestationMetadata = (
+  descriptor,
+  signal,
+  deadline,
+  transport = request,
+) => {
+  if (
+    !Number.isSafeInteger(descriptor.maximumBytes) ||
+    descriptor.maximumBytes < 1 ||
+    descriptor.maximumBytes > 65_536
+  )
+    fail();
+  return download(descriptor, signal, deadline, transport, true);
+};
 
 const assertNpmPackageDescriptors = (material) => {
   for (const descriptor of material.packages)
@@ -262,19 +338,15 @@ const acquireNpmAttestation = async (descriptor, signal, deadline, onPhase) => {
   onPhase("download-attestation");
   let bytes;
   try {
-    bytes = await download(descriptor.attestations, signal, deadline);
-  } catch (error) {
-    onPhase(
-      `download-attestation-${classifyMaterialDownloadFailureForTesting(error)}`,
+    bytes = await downloadAttestationMetadata(
+      descriptor.attestations,
+      signal,
+      deadline,
     );
+  } catch (error) {
+    onPhase(classifyAttestationFailurePhaseForTesting(descriptor, error));
     throw error;
   }
-  onPhase("attestation-digest");
-  if (
-    createHash("sha256").update(bytes).digest("hex") !==
-    descriptor.attestations.sha256
-  )
-    fail();
   return bytes;
 };
 
@@ -397,7 +469,7 @@ export const prepareNpmHarnessMaterial = async (input) => {
     const deadline = performance.now() + maximumMilliseconds;
     const aggregateBytes = material.packages.reduce(
       (total, descriptor) =>
-        total + descriptor.bytes + descriptor.attestations.bytes,
+        total + descriptor.bytes + descriptor.attestations.maximumBytes,
       0,
     );
     if (

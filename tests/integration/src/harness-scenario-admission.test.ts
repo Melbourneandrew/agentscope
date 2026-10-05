@@ -26,8 +26,8 @@ const fixture = () => ({
         {
           attestations: {
             url: "https://registry.npmjs.org/-/npm/v1/attestations/@vendor%2ftool@1.2.3",
-            bytes: 1,
-            sha256: "1".repeat(64),
+            maximumBytes: 1,
+            bundleDigest: "1".repeat(64),
           },
           installName: "@vendor/tool",
           packageName: "@vendor/tool",

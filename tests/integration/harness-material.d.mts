@@ -19,7 +19,29 @@ export declare const classifyMaterialResponseForTesting: (
   }>,
   expectedBytes: number,
 ) => string | undefined;
+export declare const downloadAttestationMetadata: (
+  descriptor: Readonly<{ url: string; maximumBytes: number }>,
+  signal: AbortSignal,
+  deadline: number,
+  transport?: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
+export declare const downloadRegularHarnessMaterialForTesting: (
+  descriptor: Readonly<{ url: string; bytes: number; sha256?: string }>,
+  signal: AbortSignal,
+  deadline: number,
+  transport: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
 export declare const classifyMaterialDownloadFailureForTesting: (
+  error: unknown,
+) => string;
+export declare const classifyAttestationFailurePhaseForTesting: (
+  descriptor: Readonly<{ installName: string; packageName: string }>,
   error: unknown,
 ) => string;
 

@@ -697,6 +697,10 @@ function localNxEnvironment(runtime) {
     CACHE_RUNTIME: runtime,
     NX_DAEMON: "false",
     NX_NO_CLOUD: "true",
+    // This closed fixture has no custom plugins. Keep built-in graph loading
+    // in-process: plugin-worker startup is not part of the cache contract.
+    // Real Nx commands, hashing, cache and output restoration stay enabled.
+    NX_ISOLATE_PLUGINS: "false",
   };
 }
 
