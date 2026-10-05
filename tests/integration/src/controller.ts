@@ -421,7 +421,7 @@ export const integrationStageSignal = (): AbortSignal => {
 export const requireMockServerResearchRequest = () => {
   const capability = requireDisposableOuterHostCapability();
   const state = capabilityStates.get(capability)!;
-  if (stageContext.getStore() !== "prepareModelRoutes")
+  if (!["select", "prepareModelRoutes"].includes(stageContext.getStore() ?? ""))
     throw new Error("integration.mockserver-material.research-request");
   return state.researchRequest.kind === "supplier"
     ? Object.freeze({
