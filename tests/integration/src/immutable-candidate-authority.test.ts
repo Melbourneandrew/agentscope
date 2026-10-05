@@ -22,6 +22,7 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 
 const {
   codexArmPendingResearchHint,
+  codexArmPtyResearchHint,
   codexFailureExitPair,
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
@@ -37,6 +38,7 @@ const {
   extractInteractiveChildDiagnostic,
   extractUntrustedCodexConfigHint,
   extractUntrustedCodexGateHint,
+  extractUntrustedCodexPtyHint,
   extractUntrustedCodexJoinHint,
   extractUntrustedCodexTraceHint,
   gateReceiptResearchRejection,
@@ -542,9 +544,10 @@ describe("Codex failure exit comparison", () => {
 
 describe("bounded research-only Codex failure evidence", () => {
   const valid = {
-    diagnosticVersion: 2,
+    diagnosticVersion: 3,
     untrustedConfigHint: "render",
     untrustedGateHint: "receipt-shape",
+    untrustedPtyHint: "arm-pty-reconciliation",
     exitPair: "150:78",
   };
   it("accepts only the exact bounded record or null", () => {
@@ -569,6 +572,7 @@ describe("bounded research-only Codex failure evidence", () => {
   it.each([
     { ...valid, untrustedConfigHint: "secret" },
     { ...valid, untrustedGateHint: "secret" },
+    { ...valid, untrustedPtyHint: "secret" },
     { ...valid, exitPair: "150:0" },
     { ...valid, exitPair: "256:78" },
     { ...valid, extra: true },
@@ -576,6 +580,64 @@ describe("bounded research-only Codex failure evidence", () => {
     { ...valid, untrustedConfigHint: "render\nsecret" },
   ])("rejects substituted or expanded diagnostic authority", (record) => {
     expect(validCodexResearchDiagnostic(record)).toBe(false);
+  });
+});
+
+describe("Codex selected PTY failure classification", () => {
+  it.each([
+    ["testkit.headless.reconciliation.deadline", "arm-pty-reconciliation"],
+    ["testkit.headless.startup.deadline", "arm-pty-startup"],
+    ["testkit.pty.transport", "arm-pty-transport"],
+    ["testkit.headless.kernel.failure", "arm-pty-kernel"],
+    ["unexpected private error", "arm-pty-other"],
+  ])("publishes only a closed category for %s", (message, expected) => {
+    const hint = codexArmPtyResearchHint(new Error(message));
+    expect(hint).toBe(expected);
+    expect(
+      extractUntrustedCodexPtyHint(
+        `integration.runner.untrusted-pty-hint:${hint}\n`,
+      ),
+    ).toBe(expected);
+  });
+
+  it("keeps the PTY error and hook state independently observable", () => {
+    const output =
+      "integration.runner.untrusted-gate-hint:arm-hook-unseen\n" +
+      "integration.runner.untrusted-pty-hint:arm-pty-reconciliation\n";
+    expect(extractUntrustedCodexGateHint(output)).toBe("arm-hook-unseen");
+    expect(extractUntrustedCodexPtyHint(output)).toBe("arm-pty-reconciliation");
+    expect(
+      validCodexResearchDiagnostic({
+        diagnosticVersion: 3,
+        untrustedConfigHint: null,
+        untrustedGateHint: extractUntrustedCodexGateHint(output),
+        untrustedPtyHint: extractUntrustedCodexPtyHint(output),
+        exitPair: "none:1",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects duplicate or substituted PTY hints", () => {
+    const line = "integration.runner.untrusted-pty-hint:arm-pty-kernel\n";
+    for (const output of [
+      `${line}${line}`,
+      `${line}integration.runner.untrusted-pty-hint:arm-pty-other\n`,
+      "integration.runner.untrusted-pty-hint:secret\n",
+      `prefix:${line}`,
+    ])
+      expect(extractUntrustedCodexPtyHint(output)).toBeUndefined();
+  });
+
+  it("contains a hostile thrown object", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf: () => {
+          throw new Error("private content");
+        },
+      },
+    );
+    expect(codexArmPtyResearchHint(hostile)).toBe("arm-pty-other");
   });
 });
 

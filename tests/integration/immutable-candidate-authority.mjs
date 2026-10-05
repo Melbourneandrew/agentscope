@@ -893,6 +893,32 @@ export const codexGateResearchHints = Object.freeze([
   "other",
 ]);
 
+export const codexPtyResearchHints = Object.freeze([
+  "arm-pty-reconciliation",
+  "arm-pty-startup",
+  "arm-pty-transport",
+  "arm-pty-kernel",
+  "arm-pty-other",
+]);
+
+// The selected PTY error is research-only after execution has already failed.
+// Map exact kernel codes to closed categories; never export an error message.
+export const codexArmPtyResearchHint = (error) => {
+  try {
+    const message = error instanceof Error ? error.message : undefined;
+    if (message === "testkit.headless.reconciliation.deadline")
+      return "arm-pty-reconciliation";
+    if (message === "testkit.headless.startup.deadline")
+      return "arm-pty-startup";
+    if (typeof message === "string" && message.startsWith("testkit.pty."))
+      return "arm-pty-transport";
+    if (message === "testkit.headless.kernel.failure") return "arm-pty-kernel";
+  } catch {
+    // A hostile thrown value cannot suppress terminal failure evidence.
+  }
+  return "arm-pty-other";
+};
+
 // Only an already-failing fixture may publish this fixed exception category.
 // No message, code, path, or timing value crosses the scenario boundary.
 export const codexArmPendingResearchHint = (error) => {
@@ -1005,6 +1031,19 @@ export const extractUntrustedCodexGateHint = (output) => {
   return codexGateResearchHints.includes(hint) ? hint : undefined;
 };
 
+export const extractUntrustedCodexPtyHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-pty-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-pty-hint:([a-z-]{1,32})$/u,
+  )?.[1];
+  return codexPtyResearchHints.includes(hint) ? hint : undefined;
+};
+
 // Failure-only transport comparison. Neither number authorizes a receipt.
 export const codexFailureExitPair = (
   fixtureExit,
@@ -1026,20 +1065,22 @@ export const codexFailureExitPair = (
 };
 
 // Strictly research-only failure evidence; never a receipt or admission input.
-// Preserve exact version-1 retired evidence while version 2 adds one closed hint.
+// Preserve exact version-1/2 retired evidence while version 3 adds a distinct
+// selected-PTY hint without replacing the post-failure hook state.
 export const validCodexResearchDiagnostic = (value) =>
   value === null ||
   (typeof value === "object" &&
     value !== null &&
     Object.getPrototypeOf(value) === Object.prototype &&
-    (value.diagnosticVersion === 1 || value.diagnosticVersion === 2) &&
+    [1, 2, 3].includes(value.diagnosticVersion) &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(
         [
           "diagnosticVersion",
           "exitPair",
           "untrustedConfigHint",
-          ...(value.diagnosticVersion === 2 ? ["untrustedGateHint"] : []),
+          ...(value.diagnosticVersion >= 2 ? ["untrustedGateHint"] : []),
+          ...(value.diagnosticVersion === 3 ? ["untrustedPtyHint"] : []),
         ].sort(),
       ) &&
     (value.untrustedConfigHint === null ||
@@ -1054,6 +1095,9 @@ export const validCodexResearchDiagnostic = (value) =>
     (value.diagnosticVersion === 1 ||
       value.untrustedGateHint === null ||
       codexGateResearchHints.includes(value.untrustedGateHint)) &&
+    (value.diagnosticVersion !== 3 ||
+      value.untrustedPtyHint === null ||
+      codexPtyResearchHints.includes(value.untrustedPtyHint)) &&
     (value.exitPair === null ||
       /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
         value.exitPair,
