@@ -919,30 +919,29 @@ const removeRetainedRoot = (value: string | undefined) => {
   roots.splice(roots.indexOf(value), 1);
 };
 
-describe("subprocess-free pinned image preparation", () => {
+describe("subprocess-free owned image preparation transport", () => {
   it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
     const engine = engineFixture();
     const registry = registryFixture();
-    let ownedRoot: string | undefined;
-    let unrelatedRoot = mkdtempSync(
-      resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
+    const prefix = resolve(
+      realpathSync("/tmp"),
+      "agentscope-image-preparation-",
     );
-    roots.push(unrelatedRoot);
+    let unrelated = mkdtempSync(prefix);
+    roots.push(unrelated);
+    let ownedRoot: string | undefined;
     const prior = process.env.HTTPS_PROXY;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
     try {
       await expect(
         preparePinnedDockerImages([image], {
           ...options(engine, registry),
-          afterPrivateRootCreatedForTesting: (value: string) => {
+          afterPrivateRootCreatedForTesting(value: string) {
             ownedRoot = value;
             roots.push(value);
-            // A separate fixture may disappear and be replaced during setup.
-            rmSync(unrelatedRoot, { recursive: true });
-            unrelatedRoot = mkdtempSync(
-              resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
-            );
-            roots.push(unrelatedRoot);
+            removeRetainedRoot(unrelated);
+            unrelated = mkdtempSync(prefix);
+            roots.push(unrelated);
           },
         }),
       ).resolves.toEqual({
@@ -964,12 +963,17 @@ describe("subprocess-free pinned image preparation", () => {
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
       ),
     ).toBe(true);
-    expect(
-      readFileSync(resolve(ownedRoot ?? "", "docker/config.json"), "utf8"),
-    ).toBe('{"auths":{}}\n');
+    if (ownedRoot === undefined) throw new Error("missing owned private root");
+    expect(roots).toEqual([ownedRoot, unrelated]);
+    expect(readdirSync(ownedRoot).sort()).toEqual(
+      "buildx docker gitconfig home npm-cache npmrc tmp xdg".split(" "),
+    );
+    expect(readFileSync(resolve(ownedRoot, "docker/config.json"), "utf8")).toBe(
+      '{"auths":{}}\n',
+    );
     removeRetainedRoot(ownedRoot);
-    expect(existsSync(ownedRoot ?? "")).toBe(false);
-    expect(existsSync(unrelatedRoot)).toBe(true);
+    expect(existsSync(ownedRoot)).toBe(false);
+    expect(existsSync(unrelated)).toBe(true);
   });
 });
 
