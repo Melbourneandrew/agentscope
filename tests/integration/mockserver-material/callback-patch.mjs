@@ -1,5 +1,6 @@
 /** Exact upstream callback patch; not a build, runtime or admission receipt. */
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 
 export const callbackSourcePin = Object.freeze({
   repository: "https://github.com/mock-server/mockserver-monorepo",
@@ -58,9 +59,11 @@ const authenticateUpgrade = `    private boolean callbackUpgradeAuthenticated(Ch
 `;
 
 export const patchCallbackSource = (input) => {
-  if (!Buffer.isBuffer(input) || input.byteLength !== callbackSourcePin.bytes)
-    fail();
-  const bytes = Buffer.from(input);
+  if (!types.isUint8Array(input)) fail();
+  // Node's intrinsic copy reads typed-array slots, not caller length/valueOf
+  // hooks. One excess byte detects oversized input without an unbounded copy.
+  const bytes = Buffer.copyBytesFrom(input, 0, callbackSourcePin.bytes + 1);
+  if (bytes.byteLength !== callbackSourcePin.bytes) fail();
   const digest = createHash("sha256").update(bytes).digest("hex");
   const blob = createHash("sha1")
     .update(`blob ${bytes.byteLength}\0`)

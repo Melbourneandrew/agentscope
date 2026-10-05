@@ -56,6 +56,49 @@ describe("exact upstream MockServer callback patch input", () => {
     ).toBe("8dada3edaf50dbc082c9a125058f25def75e625a");
   });
 
+  it("rejects a proxy without reading its caller-controlled properties", () => {
+    let reads = 0;
+    const proxy = new Proxy(Buffer.from(source), {
+      get() {
+        reads += 1;
+        throw new Error("caller getter executed");
+      },
+      getPrototypeOf() {
+        reads += 1;
+        throw new Error("caller prototype trap executed");
+      },
+    });
+    expect(() => patchCallbackSource(proxy)).toThrow(
+      "integration.mockserver-material.callback-preimage",
+    );
+    expect(reads).toBe(0);
+  });
+
+  it("copies intrinsic byte slots without executing length/valueOf hooks", () => {
+    const hostile = Buffer.from(source);
+    let reads = 0;
+    for (const key of [
+      "byteLength",
+      "length",
+      "buffer",
+      "byteOffset",
+      "valueOf",
+    ]) {
+      Object.defineProperty(hostile, key, {
+        get() {
+          reads += 1;
+          throw new Error("caller getter executed");
+        },
+      });
+    }
+    expect(sha256(patchCallbackSource(hostile))).toBe(
+      "6fba7800f61cfcf92ffe62b1269a6395d1f4d4da84429480771a95dbcbdd3920",
+    );
+    expect(reads).toBe(0);
+  });
+});
+
+describe("exact patched callback source", () => {
   it.each(["missing", "extra", "substituted", "already-patched"])(
     "rejects %s preimages instead of patching a different source",
     (kind) => {

@@ -1,5 +1,3 @@
-import type { Buffer } from "node:buffer";
-
 export const callbackSourcePin: Readonly<{
   repository: string;
   commit: string;
@@ -10,4 +8,4 @@ export const callbackSourcePin: Readonly<{
   sha256: string;
 }>;
 /** Returns exact patched source only, not compiled or admitted service evidence. */
-export const patchCallbackSource: (input: Buffer) => string;
+export const patchCallbackSource: (input: Uint8Array) => string;
