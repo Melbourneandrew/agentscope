@@ -12,6 +12,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { runInNewContext } from "node:vm";
 
 import {
   createDestinationConnectionId,
@@ -108,7 +109,7 @@ const sendResult = (value, after) => {
 };
 let buffer = "";
 process.stdin.setEncoding("utf8");
-process.stdin.on("end",()=>process.exit(0));
+process.stdin.on("end",()=>process.exit(${state === "result-error" ? 1 : 0}));
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
   for (;;) {
@@ -523,6 +524,60 @@ describe("Local SQLite Retriever private-channel framing", () => {
     await expect(missingMessages.ready).resolves.toBeUndefined();
     await expect(missingMessages.result).resolves.toBeUndefined();
   });
+});
+
+describe("Local SQLite Retriever fixture terminal ordering", () => {
+  it.each([
+    ["accepted", "stdin"],
+    ["accepted", "writer"],
+    ["result-error", "stdin"],
+    ["result-error", "writer"],
+  ] as const)(
+    "fixture %s establishes its terminal exit when %s closes first",
+    (state, firstClose) => {
+      const stdin = Object.assign(new EventEmitter(), { setEncoding() {} });
+      let resultFrame = "";
+      let terminalCode: number | undefined;
+      const writer = Object.assign(new EventEmitter(), {
+        end(value: string) {
+          resultFrame = value;
+        },
+      });
+      // Replay the exact generated fixture with controlled event delivery.
+      // Throwing from exit models process termination: no later callback wins.
+      runInNewContext(workerProgram(state, "unused", "unused"), {
+        process: {
+          pid: 42,
+          stdin,
+          stdout: { write() {} },
+          exit(code: number) {
+            terminalCode = code;
+            throw new Error("fixture exited");
+          },
+        },
+        require(name: string) {
+          if (name === "node:fs") return { createWriteStream: () => writer };
+          if (name === "node:child_process") return {};
+          throw new Error("unexpected fixture dependency");
+        },
+      });
+      const nonce = "2".repeat(32);
+      stdin.emit("data", `${JSON.stringify({ type: "retrieve", nonce })}\n`);
+      stdin.emit("data", `${JSON.stringify({ type: "permission", nonce })}\n`);
+      expect(JSON.parse(resultFrame)).toMatchObject({
+        type: "retrieval-result",
+        nonce,
+        ok: true,
+        evidence: { rows: [] },
+      });
+      expect(() => {
+        if (firstClose === "writer") writer.emit("close");
+        stdin.emit("end");
+        writer.emit("close");
+      }).toThrow("fixture exited");
+      expect(terminalCode).toBe(state === "result-error" ? 1 : 0);
+    },
+  );
 });
 
 describe("Local SQLite Retriever child parent", () => {
