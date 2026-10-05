@@ -154,6 +154,14 @@ describe("untrusted supplier research inventory boundary", () => {
 });
 
 describe("canonical supplier research claims and metadata", () => {
+  it("rejects a UTF-8 BOM rather than stripping bytes from canonical evidence", () => {
+    const bytes = encode(fixture());
+    expect(() =>
+      parseMockServerResearchInventory(
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), bytes]),
+      ),
+    ).toThrow("research-inventory");
+  });
   it("rejects duplicate keys, alternate escapes/numbers, whitespace and trailing documents", () => {
     const text = encode(fixture()).toString();
     for (const changed of [

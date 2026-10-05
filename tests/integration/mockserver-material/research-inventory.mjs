@@ -120,7 +120,10 @@ const caches = (rows) => {
 export const parseMockServerResearchInventory = (input) => {
   try {
     const bytes = snapshot(input);
-    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const decoded = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: true,
+    }).decode(bytes);
     const value = JSON.parse(decoded);
     if (
       !exactKeys(value, [
