@@ -1,8 +1,16 @@
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { inferModeAndIdentity } from "./controller-host-identity.js";
 import {
   parseMockServerResearchRequest,
@@ -16,7 +24,87 @@ type WorkflowStep = {
   if?: string;
   with?: Record<string, unknown>;
 };
-type WorkflowJob = { if?: string; steps: WorkflowStep[]; needs?: string };
+type WorkflowJob = {
+  if?: string;
+  steps: WorkflowStep[];
+  needs?: string | string[];
+};
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+});
+describe("public research script terminal status", () => {
+  it("measures the exact pnpm script/filter chain's synthetic exit status", () => {
+    const root = realpathSync(
+      mkdtempSync(resolve(tmpdir(), "agentscope-research-pnpm-")),
+    );
+    roots.push(root);
+    mkdirSync(resolve(root, "integration"));
+    writeFileSync(
+      resolve(root, "pnpm-workspace.yaml"),
+      "packages:\n  - integration\n",
+    );
+    writeFileSync(
+      resolve(root, "package.json"),
+      JSON.stringify({
+        private: true,
+        scripts: {
+          "test:integration":
+            "pnpm --filter @agentscope/integration integration",
+        },
+      }),
+    );
+    writeFileSync(
+      resolve(root, "integration/package.json"),
+      JSON.stringify({
+        name: "@agentscope/integration",
+        version: "0.0.0",
+        private: true,
+        scripts: { integration: "node -e 'process.exit(3)'" },
+      }),
+    );
+    let status: number | null = null;
+    try {
+      execFileSync("pnpm", ["test:integration"], {
+        cwd: root,
+        timeout: 10_000,
+        stdio: "pipe",
+      });
+    } catch (error) {
+      status = (error as { status: number | null }).status;
+    }
+    expect(status).toBe(3);
+  });
+});
+function assertImmutableResearchAncestors(jobs: Record<string, WorkflowJob>) {
+  const visited = new Set<string>();
+  const pending = ["mockserver-supplier-research"];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const ancestor = jobs[name]!;
+    expect(ancestor).toBeDefined();
+    for (const step of ancestor.steps)
+      if (step.uses !== undefined)
+        expect(step.uses).toMatch(
+          /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+@[a-f0-9]{40}$/u,
+        );
+    const needs = ancestor.needs;
+    pending.push(
+      ...(needs === undefined
+        ? []
+        : typeof needs === "string"
+          ? [needs]
+          : needs),
+    );
+  }
+  expect([...visited].sort()).toEqual([
+    "mockserver-supplier-research",
+    "prepare-candidate",
+  ]);
+}
 describe("connected hosted supplier research boundary", () => {
   it("uses the real source stage but rejects a forged caller before reading its fields", () => {
     const modulePath = resolve(
@@ -81,6 +169,7 @@ describe("connected hosted supplier research boundary", () => {
       "github.event_name == 'workflow_dispatch' && inputs.mockserver_research",
     );
     expect(job.needs).toBe("prepare-candidate");
+    assertImmutableResearchAncestors(value.jobs);
     for (const name of [
       "hermetic-platform",
       "controlled-negative",

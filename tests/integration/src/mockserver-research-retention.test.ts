@@ -1,11 +1,9 @@
 import { performance } from "node:perf_hooks";
 import { syncBuiltinESMExports } from "node:module";
-import { execFileSync } from "node:child_process";
 import fs, {
   chmodSync,
   existsSync,
   linkSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -105,47 +103,6 @@ const child = () =>
   });
 
 describe("existing supervisor research terminal observations", () => {
-  it("measures the exact pnpm script/filter chain's synthetic exit status", () => {
-    const root = realpathSync(
-      mkdtempSync(resolve(tmpdir(), "agentscope-research-pnpm-")),
-    );
-    roots.push(root);
-    mkdirSync(resolve(root, "integration"));
-    writeFileSync(
-      resolve(root, "pnpm-workspace.yaml"),
-      "packages:\n  - integration\n",
-    );
-    writeFileSync(
-      resolve(root, "package.json"),
-      JSON.stringify({
-        private: true,
-        scripts: {
-          "test:integration":
-            "pnpm --filter @agentscope/integration integration",
-        },
-      }),
-    );
-    writeFileSync(
-      resolve(root, "integration/package.json"),
-      JSON.stringify({
-        name: "@agentscope/integration",
-        version: "0.0.0",
-        private: true,
-        scripts: { integration: "node -e 'process.exit(3)'" },
-      }),
-    );
-    let status: number | null = null;
-    try {
-      execFileSync("pnpm", ["test:integration"], {
-        cwd: root,
-        timeout: 10_000,
-        stdio: "pipe",
-      });
-    } catch (error) {
-      status = (error as { status: number | null }).status;
-    }
-    expect(status).toBe(3);
-  });
   it("observes a normally joined synthetic exit3 without an intervention", async () => {
     const result = await child();
     expect(result).toMatchObject({
