@@ -213,6 +213,24 @@ test("verifies one exact certified agentscope-cli tarball without rebuilding", (
   });
 });
 
+test("the 0.1.0 release gate rejects an inserted Local native tuple", () => {
+  for (const path of [
+    "package/dist/internal/local-sqlite/records/support-manifest.json",
+    "package/dist/internal/local-sqlite/loader/owned-loader.cjs",
+    "package/dist/internal/local-sqlite/native/node127-linux-x64-glibc/agentscope_sqlite.node",
+    "package/dist/alternate/agentscope_sqlite.node",
+    "package/dist/alternate/AGENTSCOPE_SQLITE.NODE",
+  ]) {
+    const fixture = createCandidateFixture({
+      extraEntries: [{ path, content: "unadmitted" }],
+    });
+    assert.throws(
+      verify(fixture),
+      /Alpha candidate contains an unadmitted Local native artifact/,
+    );
+  }
+});
+
 test("resolves only regular files contained by the downloaded artifact root", () => {
   const fixture = createCandidateFixture();
   assert.equal(

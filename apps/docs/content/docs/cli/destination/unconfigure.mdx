@@ -2,7 +2,7 @@
 title: Unconfigure a destination
 description: Remove a named connection while preserving destination-owned data.
 command: agentscope destination unconfigure
-commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
+commandContract: sha256:26053e3dcfcd9d235f5fb6e9df923c1a94685d6e66956c033b971090df300b1a
 ---
 
 Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
