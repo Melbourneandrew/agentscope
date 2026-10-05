@@ -4,6 +4,12 @@ import { basename, dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
+import {
+  processAuthorityFiles,
+  purePolicyFiles,
+  requiredPolicyFiles,
+} from "./workspace-policy-inventory.mjs";
+export { processAuthorityFiles, purePolicyFiles, requiredPolicyFiles };
 
 const workspaceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const runnerPath = fileURLToPath(import.meta.url);
@@ -16,31 +22,9 @@ const vitestPath = realpathSync(
   ),
 );
 
-export const processAuthorityFiles = Object.freeze([
-  "code-quality-policy.test.mjs",
-  "prepush.test.mjs",
-  "pty-runtime-proof-controller.test.mjs",
-]);
-
-export const purePolicyFiles = Object.freeze([
-  "acceptance-evidence.test.mjs",
-  "documentation-policy.test.mjs",
-  "native-ci-policy.test.mjs",
-  "release-lane-substrate.test.mjs",
-  "restricted-import-policy.test.mjs",
-  "review-skill.test.mjs",
-  "workspace-dependency-policy.test.mjs",
-  "workspace-policy-runner.test.mjs",
-  "workspace-target-policy.test.mjs",
-]);
-
 const classificationsByName = new Map([
   ...purePolicyFiles.map((name) => [name, "pure"]),
   ...processAuthorityFiles.map((name) => [name, "authority"]),
-]);
-export const requiredPolicyFiles = Object.freeze([
-  ...purePolicyFiles,
-  "code-quality-policy.test.mjs",
 ]);
 const forwardedSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
 const terminalSignals = Object.freeze(Object.keys(osConstants.signals).sort());

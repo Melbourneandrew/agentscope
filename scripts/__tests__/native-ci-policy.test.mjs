@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -16,10 +15,8 @@ import { parse } from "yaml";
 
 import {
   parseChangedPaths,
-  parseTrackedEntries,
   pruneNativeIrrelevantPaths,
   selectNativeCertification,
-  validateNativeCiPolicy,
 } from "../native-ci-selection.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -61,126 +58,6 @@ test("native PR selection skips only explicit irrelevant paths", () => {
     true,
   );
   assert.equal(selectNativeCertification("pull_request", []).required, true);
-});
-
-test("finite irrelevant inventory is disjoint from the recomputed authority closure", () => {
-  const trackedEntries = parseTrackedEntries(
-    execFileSync("git", ["ls-files", "--stage", "-z"], { cwd: root }),
-  );
-  const trackedPaths = trackedEntries.map(({ path }) => path);
-  const manifest = JSON.parse(
-    readFileSync(join(root, "scripts/native-ci-irrelevant-paths.json"), "utf8"),
-  );
-  const irrelevantPaths = new Set(manifest.irrelevantPaths);
-  const authorities = trackedPaths.filter(
-    (path) =>
-      path !== "scripts/native-ci-irrelevant-paths.json" &&
-      !irrelevantPaths.has(path),
-  );
-  assert.ok(authorities.length > 0);
-  for (const path of authorities)
-    assert.equal(
-      selectNativeCertification("pull_request", [path]).required,
-      true,
-      path,
-    );
-  assert.doesNotThrow(() => validateNativeCiPolicy(manifest, trackedEntries));
-  for (const productionAuthority of [
-    "apps/cli/src/program.ts",
-    "packages/destinations/local-sqlite/src/production/runtime.ts",
-  ])
-    assert.ok(authorities.includes(productionAuthority), productionAuthority);
-  const nxGraph = JSON.parse(
-    execFileSync("pnpm", ["nx", "graph", "--file=stdout"], {
-      cwd: root,
-      encoding: "utf8",
-    }),
-  ).graph;
-  const packedProjectClosure = new Set(["agentscope-cli"]);
-  const pendingProjects = ["agentscope-cli"];
-  while (pendingProjects.length > 0) {
-    const project = pendingProjects.pop();
-    for (const { target } of nxGraph.dependencies[project] ?? []) {
-      if (packedProjectClosure.has(target)) continue;
-      packedProjectClosure.add(target);
-      pendingProjects.push(target);
-    }
-  }
-  const projectNodes = Object.values(nxGraph.nodes).sort(
-    (left, right) => right.data.root.length - left.data.root.length,
-  );
-  for (const path of manifest.irrelevantPaths) {
-    const owner = projectNodes.find(
-      ({ data }) => path === data.root || path.startsWith(`${data.root}/`),
-    );
-    if (owner !== undefined)
-      assert.equal(packedProjectClosure.has(owner.name), false, path);
-  }
-  const contentChangedEntries = trackedEntries.map((entry) =>
-    entry.path === "apps/cli/src/program.ts"
-      ? { ...entry, objectId: "f".repeat(40) }
-      : entry,
-  );
-  assert.doesNotThrow(() =>
-    validateNativeCiPolicy(manifest, contentChangedEntries),
-  );
-  const newAuthorityPath = "apps/cli/src/new-command.ts";
-  const pathChangedEntries = [
-    ...trackedEntries,
-    { mode: "100644", objectId: "e".repeat(40), path: newAuthorityPath },
-  ].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  );
-  const pathChangedPolicy = validateNativeCiPolicy(
-    manifest,
-    pathChangedEntries,
-  );
-  assert.ok(pathChangedPolicy.authorityFiles.includes(newAuthorityPath));
-  assert.equal(
-    selectNativeCertification("pull_request", [newAuthorityPath]).required,
-    true,
-  );
-  const closureAuthorities = trackedPaths.filter(
-    (path) =>
-      path.startsWith(".github/workflows/") || path.startsWith("scripts/"),
-  );
-  for (const closureAuthority of closureAuthorities) {
-    const selfAuthorizingManifest = {
-      ...manifest,
-      irrelevantPaths: [...manifest.irrelevantPaths, closureAuthority].sort(),
-    };
-    assert.throws(
-      () => validateNativeCiPolicy(selfAuthorizingManifest, trackedEntries),
-      /native-ci-policy-invalid/u,
-      closureAuthority,
-    );
-    assert.equal(
-      selectNativeCertification("pull_request", [closureAuthority]).required,
-      true,
-      closureAuthority,
-    );
-  }
-  for (const authorityPath of [
-    ".github/workflows/pr-validation.yml",
-    ".github/workflows/release-candidate-rehearsal.yml",
-    "scripts/__tests__/native-ci-policy.test.mjs",
-    "scripts/native-ci-irrelevant-paths.json",
-    "scripts/native-ci-selection.mjs",
-    "scripts/workspace-policy-runner.mjs",
-  ]) {
-    for (const substitutedMode of ["100755", "120000", "160000"]) {
-      const substitutedEntries = trackedEntries.map((entry) =>
-        entry.path === authorityPath
-          ? { ...entry, mode: substitutedMode }
-          : entry,
-      );
-      assert.throws(
-        () => validateNativeCiPolicy(manifest, substitutedEntries),
-        /native-ci-policy-invalid/u,
-        `${authorityPath}:${substitutedMode}`,
-      );
-    }
-  }
 });
 
 test("required native execution removes every certified non-input", () => {

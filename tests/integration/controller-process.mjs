@@ -1,15 +1,9 @@
 import { executeIntegrationController } from "./dist/controller.js";
+import { formatControllerFailureDiagnostic } from "./dist/controller-failure-diagnostic.js";
 
 try {
   await executeIntegrationController();
 } catch (error) {
-  const messages = [
-    error?.message ?? "integration.controller.failed",
-    error?.primaryCause?.message,
-    error?.cleanupCause?.message,
-  ].filter(
-    (message, index, values) => message && values.indexOf(message) === index,
-  );
-  process.stderr.write(`${messages.join("\n")}\n`);
+  process.stderr.write(formatControllerFailureDiagnostic(error));
   process.exit(1);
 }

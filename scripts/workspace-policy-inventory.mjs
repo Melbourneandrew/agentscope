@@ -1,0 +1,26 @@
+export const processAuthorityFiles = Object.freeze([
+  "code-quality-policy.test.mjs",
+  "native-ci-closure.test.mjs",
+  "nx-cache-policy.test.mjs",
+  "prepush.test.mjs",
+  "pty-runtime-proof-controller.test.mjs",
+]);
+
+export const purePolicyFiles = Object.freeze([
+  "acceptance-evidence.test.mjs",
+  "documentation-policy.test.mjs",
+  "native-ci-policy.test.mjs",
+  "release-lane-substrate.test.mjs",
+  "restricted-import-policy.test.mjs",
+  "review-skill.test.mjs",
+  "workspace-dependency-policy.test.mjs",
+  "workspace-policy-runner.test.mjs",
+  "workspace-target-policy.test.mjs",
+]);
+
+export const requiredPolicyFiles = Object.freeze([
+  ...purePolicyFiles,
+  "code-quality-policy.test.mjs",
+  "native-ci-closure.test.mjs",
+  "nx-cache-policy.test.mjs",
+]);
