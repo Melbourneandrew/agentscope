@@ -5,7 +5,6 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import {
-  BUILDKIT_IMAGE,
   IMAGE_PREPARATION_EXECUTION_POLICY,
   apiVersionPattern,
   assertSocketCurrent,
@@ -22,20 +21,14 @@ import {
   maximumResponseBytes,
   normalizePlatform,
   preparationPolicy,
-  preparationTeardownMilliseconds,
-  productionDockerEnvironment,
-  productionDockerExecutable,
   requestWith,
   resolveBuildxExecutable,
-  resolveDockerExecutable,
   runOwnedImageCommandForTesting,
   sameDaemon,
   sameExecutable,
   samePlatform,
   sameSocket,
   socketRecord,
-  validEvidenceDaemon,
-  validSocketEvidence,
   readImageProcessDiagnostic,
 } from "./boundary.mjs";
 import { readBuildArtifactTar } from "./build-artifact.mjs";
@@ -57,6 +50,7 @@ import {
   createPrivateClientRoot,
 } from "./private-storage.mjs";
 import { acquireManifestProof } from "./registry.mjs";
+import { createPreparedClient } from "./prepared-client.mjs";
 import {
   createPullOperation,
   prepareImageOperation,
@@ -284,61 +278,8 @@ export const createDockerOperations = (state) => {
     }
   };
 
-  const createPreparedDockerClient = (evidence, options = {}) => {
-    let privateClient;
-    try {
-      if (
-        typeof evidence !== "object" ||
-        evidence === null ||
-        !validSocketEvidence(evidence.dockerSocket) ||
-        !validEvidenceDaemon(evidence.dockerDaemon) ||
-        !Array.isArray(evidence.images) ||
-        evidence.images.length === 0
-      )
-        throw fixedError("integration.images.docker-client");
-      const socket =
-        options.socketIdentityForTesting === undefined
-          ? socketRecord(evidence.dockerSocket.path)
-          : Object.freeze({ ...options.socketIdentityForTesting });
-      if (!sameSocket(socket, evidence.dockerSocket))
-        throw fixedError("integration.images.docker-client");
-      const executable =
-        options.dockerExecutable === undefined
-          ? resolveDockerExecutable(options.dockerExecutableForTesting)
-          : productionDockerExecutable(options.dockerExecutable);
-      const requestedBuildxExecutable =
-        options.buildxExecutable ?? options.buildxExecutableForTesting;
-      const buildxExecutable =
-        requestedBuildxExecutable === undefined
-          ? undefined
-          : resolveBuildxExecutable(requestedBuildxExecutable);
-      const environment =
-        options.dockerEnvironment === undefined
-          ? Object.freeze({})
-          : productionDockerEnvironment(options.dockerEnvironment, socket);
-      privateClient = createPrivateClientRoot(options);
-      const client = Object.freeze({
-        evidence,
-        buildxExecutable,
-        buildkitImage: options.buildkitImageForTesting ?? BUILDKIT_IMAGE,
-        buildxRunForTesting: options.buildxRunForTesting,
-        executable,
-        environment,
-        privateClient,
-        socket,
-        engineRequestForTesting: options.engineRequestForTesting,
-      });
-      state.admitClient(client);
-      return client;
-    } catch {
-      if (privateClient !== undefined)
-        cleanupPrivateClient(
-          privateClient,
-          performance.now() + preparationTeardownMilliseconds,
-        );
-      throw fixedError("integration.images.docker-client");
-    }
-  };
+  const createPreparedDockerClient = (evidence, options = {}) =>
+    createPreparedClient(state, evidence, options);
 
   const prepareDockerInvocation = async (client, arguments_, signal) => {
     if (

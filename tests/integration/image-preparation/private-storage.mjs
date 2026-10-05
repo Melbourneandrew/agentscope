@@ -29,9 +29,41 @@ import {
   maximumPrivateStateEntries,
   maximumPrivateStateFileBytes,
   maximumPrivateStateTotalBytes,
+  preparationTeardownMilliseconds,
 } from "./boundary.mjs";
+import { recordClientSetupCleanupFailure } from "./preparation.mjs";
 
-export const createPrivateClientRoot = (options) => {
+const setupBoundary = (options, setupDeadline) => {
+  const enteredAt = performance.now();
+  const lifecycleDeadline = options.deadline;
+  if (
+    !Number.isFinite(setupDeadline) ||
+    (lifecycleDeadline !== undefined &&
+      (!Number.isFinite(lifecycleDeadline) ||
+        lifecycleDeadline <= enteredAt ||
+        lifecycleDeadline - enteredAt > 300_000))
+  )
+    throw fixedError("integration.images.deadline");
+  return {
+    lifecycleDeadline,
+    rollbackDeadline: Math.min(setupDeadline, lifecycleDeadline ?? Infinity),
+  };
+};
+
+export const createPrivateClientRoot = (
+  options,
+  setupDeadline = performance.now() + preparationTeardownMilliseconds,
+  deadlineInput = options,
+) => {
+  const { lifecycleDeadline, rollbackDeadline } = setupBoundary(
+    deadlineInput,
+    setupDeadline,
+  );
+  const withinSetupDeadline = () => {
+    if (performance.now() >= rollbackDeadline)
+      throw fixedError("integration.images.deadline");
+  };
+  withinSetupDeadline();
   const testing =
     options.socketIdentityForTesting !== undefined ||
     options.engineRequestForTesting !== undefined ||
@@ -42,26 +74,8 @@ export const createPrivateClientRoot = (options) => {
   const parentStatus = lstatSync(parent);
   const outerParentStatus =
     authority === undefined ? undefined : lstatSync(authority.parent);
-  if (
-    authority !== undefined &&
-    (!/^sha256:[a-f\d]{64}$/u.test(authority.authorityDigest ?? "") ||
-      authority.parent !== realpathSync("/tmp") ||
-      !outerParentStatus.isDirectory() ||
-      outerParentStatus.isSymbolicLink() ||
-      outerParentStatus.dev !== authority.parentDev ||
-      outerParentStatus.ino !== authority.parentIno ||
-      outerParentStatus.uid !== authority.parentUid ||
-      outerParentStatus.gid !== authority.parentGid ||
-      (outerParentStatus.mode & 0o7777) !== authority.parentMode ||
-      authority.root !== realpathSync(authority.root) ||
-      parentStatus.dev !== authority.rootDev ||
-      parentStatus.ino !== authority.rootIno ||
-      parentStatus.uid !== authority.rootUid ||
-      parentStatus.gid !== authority.rootGid ||
-      (parentStatus.mode & 0o7777) !== authority.rootMode ||
-      authority.rootMode !== 0o700)
-  )
-    throw fixedError("integration.images.private-storage");
+  assertStorageParent(authority, parent, parentStatus, outerParentStatus);
+  withinSetupDeadline();
   const root = mkdtempSync(
     resolve(
       parent,
@@ -87,6 +101,10 @@ export const createPrivateClientRoot = (options) => {
     beforeRemovalForTesting: options.beforePrivateRemovalForTesting,
     authorityDigest: authority?.authorityDigest,
   };
+  Object.defineProperty(owned, "lifecycleDeadline", {
+    value: lifecycleDeadline,
+    enumerable: true,
+  });
   try {
     chmodSync(root, 0o700);
     const rootStatus = lstatSync(root);
@@ -107,6 +125,7 @@ export const createPrivateClientRoot = (options) => {
       "npm-cache",
     ]) {
       const path = resolve(root, name);
+      withinSetupDeadline();
       mkdirSync(path, { mode: 0o700 });
       owned.directories.push(path);
     }
@@ -116,14 +135,48 @@ export const createPrivateClientRoot = (options) => {
       ["npmrc", ""],
     ]) {
       const path = resolve(root, name);
+      withinSetupDeadline();
       writeFileSync(path, content, { flag: "wx", mode: 0o600 });
       owned.files.push(path);
     }
+    withinSetupDeadline();
     return owned;
   } catch (error) {
-    cleanupPrivateClient(owned, Number.POSITIVE_INFINITY);
+    try {
+      cleanupPrivateClient(owned, rollbackDeadline);
+    } catch (cleanupError) {
+      throw recordClientSetupCleanupFailure(error, cleanupError);
+    }
     throw error;
   }
+};
+
+const assertStorageParent = (
+  authority,
+  parent,
+  parentStatus,
+  outerParentStatus,
+) => {
+  if (authority === undefined) return;
+  if (
+    !/^sha256:[a-f\d]{64}$/u.test(authority.authorityDigest ?? "") ||
+    authority.parent !== realpathSync("/tmp") ||
+    !outerParentStatus.isDirectory() ||
+    outerParentStatus.isSymbolicLink() ||
+    outerParentStatus.dev !== authority.parentDev ||
+    outerParentStatus.ino !== authority.parentIno ||
+    outerParentStatus.uid !== authority.parentUid ||
+    outerParentStatus.gid !== authority.parentGid ||
+    (outerParentStatus.mode & 0o7777) !== authority.parentMode ||
+    authority.root !== realpathSync(authority.root) ||
+    parentStatus.dev !== authority.rootDev ||
+    parentStatus.ino !== authority.rootIno ||
+    parentStatus.uid !== authority.rootUid ||
+    parentStatus.gid !== authority.rootGid ||
+    (parentStatus.mode & 0o7777) !== authority.rootMode ||
+    authority.rootMode !== 0o700
+  )
+    throw fixedError("integration.images.private-storage");
 };
 /* eslint-disable complexity, max-depth, max-lines-per-function -- one bounded no-follow inventory and identity-checked retirement state machine */
 export const cleanupPrivateClient = (owned, deadline) => {
@@ -146,7 +199,7 @@ export const cleanupPrivateClient = (owned, deadline) => {
     return error;
   };
   const withinDeadline = () => {
-    if (performance.now() > deadline) throw cleanupFailure("deadline");
+    if (performance.now() >= deadline) throw cleanupFailure("deadline");
   };
   const mode = (status) => status.mode & 0o7777;
   const sameDirectoryIdentity = (status, identity) =>

@@ -24,6 +24,8 @@ export interface ImagePreparationResponse {
 }
 
 export interface PreparePinnedDockerImagesOptions {
+  /** Optional inherited absolute monotonic client-lifecycle boundary. */
+  deadline?: number;
   maximumPreparationMilliseconds?: number;
   teardownMilliseconds?: number;
   dockerSocket?: string;

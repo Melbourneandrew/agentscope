@@ -449,7 +449,10 @@ export const createRetirementOperations = (state, docker) => {
     try {
       cleanupPrivateClient(
         client.privateClient,
-        performance.now() + preparationTeardownMilliseconds,
+        Math.min(
+          performance.now() + preparationTeardownMilliseconds,
+          client.privateClient.lifecycleDeadline ?? Infinity,
+        ),
       );
       state.finishClose(client);
     } catch (error) {
