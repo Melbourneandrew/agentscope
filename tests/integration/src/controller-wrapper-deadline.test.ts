@@ -21,6 +21,7 @@ type Observation = {
 function observeWrapper(
   outer: string | undefined,
   uptime: string,
+  diagnosticFailure?: "sync" | "async",
 ): Observation {
   const directory = resolve(import.meta.dirname, "..");
   const result = spawnSync(
@@ -34,12 +35,21 @@ function observeWrapper(
       import { readFileSync } from 'node:fs';
       import { resolve } from 'node:path';
       import { performance } from 'node:perf_hooks';
+      import { EventEmitter } from 'node:events';
       import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
       import { mockServerResearchStopFitsTerminalObservation } from ${JSON.stringify(resolve(directory, "dist/mockserver-research-request.js"))};
       const directory = ${JSON.stringify(directory)};
       const outer = ${JSON.stringify(outer) ?? "undefined"};
       const uptime = ${JSON.stringify(uptime)};
       const observed = { spawned: 0, exitCode: 0 };
+      const diagnosticFailure = ${JSON.stringify(diagnosticFailure) ?? "undefined"};
+      const stdout = new EventEmitter();
+      stdout.write = (value) => {
+        if (diagnosticFailure === 'sync') throw new Error('synthetic-write');
+        observed.diagnostic = value;
+        if (diagnosticFailure === 'async') queueMicrotask(() =>
+          stdout.emit('error', new Error('synthetic-EPIPE')));
+      };
       const context = createContext({ process, setTimeout, clearTimeout });
       const synthetic = (values, selectedContext) => new SyntheticModule(
         Object.keys(values), function() {
@@ -66,7 +76,7 @@ function observeWrapper(
           AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: outer,
         }, execPath: process.execPath, exitCode: 0,
         stderr: { write() { throw new Error('unexpected-wrapper-stderr'); } },
-        stdout: { write(value) { observed.diagnostic = value; } },
+        stdout,
       };
       const wrapperContext = createContext({ process: wrapperProcess });
       const wrapper = new SourceTextModule(
@@ -105,6 +115,18 @@ function observeWrapper(
 }
 
 describe("actual controller wrapper preserves the original deadline", () => {
+  it.each(["sync", "async"] as const)(
+    "preserves settled research outcome after %s diagnostic failure",
+    (failure) => {
+      const result = observeWrapper("3248010", "2048.01", failure);
+      expect(result.error).toBeUndefined();
+      expect(result.exitCode).toBe(3);
+      expect(result.terminal).toMatchObject({
+        contained: true,
+        residualWorkObserved: false,
+      });
+    },
+  );
   it("floors a valid fractional host-derived budget and really joins the child", () => {
     const original = 3_248_010 - Number("2048.01") * 1000;
     expect(Number.isSafeInteger(original)).toBe(false);
