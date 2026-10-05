@@ -19,6 +19,8 @@ import {
   classifyCodexSessionStartAtFailedPty,
   classifyCodexTraceDeadlineObservation,
   classifyCodexTraceFailureHint,
+  classifyCodexTraceGetFailure,
+  codexTraceGetChildFailureCategory,
   codexTraceSearchChildFailureCategory,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
@@ -353,6 +355,66 @@ describe("Codex bounded native ledgers", () => {
     );
     expect(() =>
       codexTraceSearchChildFailureCategory({ ...base, stdoutBytes: -1 }),
+    ).toThrow("integration.codex.trace-search-child-observation");
+  });
+
+  it.each([
+    ["trace-get-locator-input", "locator-input"],
+    ["child-spawn", "child-spawn"],
+    ["child-deadline", "child-deadline"],
+    ["trace-get-child-deadline", "child-deadline"],
+    ["trace-get-child-signal", "child-signal"],
+    ["trace-get-child-exit", "child-exit"],
+    ["trace-get-child-output-limit", "child-output-limit"],
+    ["trace-deadline", "terminal-deadline"],
+    ["deadline", "terminal-deadline"],
+    ["cli-output", "machine-output"],
+    ["trace-get-record-count", "record-count"],
+    ["trace-get-locator-result", "locator-result"],
+  ])("maps only the fixed trace-get failure %s", (message, category) => {
+    expect(classifyCodexTraceGetFailure(`integration.codex.${message}`)).toBe(
+      category,
+    );
+    expect(
+      classifyCodexTraceGetFailure(`integration.codex.${message}:canary`),
+    ).toBe("unclassified");
+  });
+
+  it.each([undefined, null, {}, "canary", "integration.codex.child"])(
+    "does not retain unknown trace-get error content",
+    (message) => {
+      expect(classifyCodexTraceGetFailure(message)).toBe("unclassified");
+    },
+  );
+
+  it("classifies joined get-child failures without allowing unavailable or timeout", () => {
+    const base = {
+      code: 0,
+      deadlineExpired: false,
+      signal: null,
+      stdoutBytes: 0,
+      stderrBytes: 0,
+      maximumBytes: 1024,
+    };
+    for (const code of [1, 5, 132])
+      expect(codexTraceGetChildFailureCategory({ ...base, code })).toBe("exit");
+    expect(
+      codexTraceGetChildFailureCategory({ ...base, signal: "SIGTERM" }),
+    ).toBe("signal");
+    expect(
+      codexTraceGetChildFailureCategory({ ...base, deadlineExpired: true }),
+    ).toBe("deadline");
+    expect(
+      codexTraceGetChildFailureCategory({ ...base, stdoutBytes: 1025 }),
+    ).toBe("output-limit");
+    expect(
+      codexTraceGetChildFailureCategory({ ...base, stderrBytes: 1025 }),
+    ).toBe("output-limit");
+    expect(() => codexTraceGetChildFailureCategory(base)).toThrow(
+      "integration.codex.trace-search-child-observation",
+    );
+    expect(() =>
+      codexTraceGetChildFailureCategory({ ...base, stdoutBytes: -1 }),
     ).toThrow("integration.codex.trace-search-child-observation");
   });
 

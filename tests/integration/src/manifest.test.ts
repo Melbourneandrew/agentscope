@@ -485,8 +485,18 @@ describe("integration capability manifest", () => {
     );
     expect(source).toContain("codexUninstallFailureDiagnostic(error?.message)");
     expect(source).toContain(
-      "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    projectionDiagnostic ??\n    uninstallDiagnostic;",
+      "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    postTraceFailureDiagnostic(error);",
     );
+    expect(source).toContain(
+      'if (interactiveFailurePhase === "verify-projection")',
+    );
+    expect(source).toContain(
+      'if (interactiveFailurePhase === "verify-uninstall")',
+    );
+    expect(source).toContain(
+      'if (interactiveFailurePhase === "verify-trace-get")',
+    );
+    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
     expect(source).toContain(
       "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
     );

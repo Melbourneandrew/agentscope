@@ -122,6 +122,33 @@ export const codexTraceSearchChildFailureCategory = ({
   throw new Error("integration.codex.trace-search-child-observation");
 };
 
+// Closed, content-free diagnosis only. These categories never satisfy trace
+// acceptance, retry a child, or grant another observation window.
+const traceGetFailureKinds = new Map([
+  ["integration.codex.trace-get-locator-input", "locator-input"],
+  ["integration.codex.child-spawn", "child-spawn"],
+  ["integration.codex.child-deadline", "child-deadline"],
+  ["integration.codex.trace-get-child-deadline", "child-deadline"],
+  ["integration.codex.trace-get-child-signal", "child-signal"],
+  ["integration.codex.trace-get-child-exit", "child-exit"],
+  ["integration.codex.trace-get-child-output-limit", "child-output-limit"],
+  ["integration.codex.trace-deadline", "terminal-deadline"],
+  ["integration.codex.deadline", "terminal-deadline"],
+  ["integration.codex.cli-output", "machine-output"],
+  ["integration.codex.trace-get-record-count", "record-count"],
+  ["integration.codex.trace-get-locator-result", "locator-result"],
+]);
+
+export const classifyCodexTraceGetFailure = (message) =>
+  typeof message === "string"
+    ? (traceGetFailureKinds.get(message) ?? "unclassified")
+    : "unclassified";
+
+export const codexTraceGetChildFailureCategory = (observation) => {
+  const category = codexTraceSearchChildFailureCategory(observation);
+  return category === "exit-5" || category === "exit-other" ? "exit" : category;
+};
+
 export const codexTraceSearchUnavailable = ({
   code,
   signal,
