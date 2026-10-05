@@ -29,6 +29,37 @@ const result = await runSupervisedProcess({
   arguments_: [resolve(import.meta.dirname, "controller-process.mjs")],
   maximumMilliseconds: maximumControllerMilliseconds,
 });
+// Content-free diagnostics after settlement, never an admission predicate.
+process.stdout.write(
+  `${JSON.stringify({
+    kind: "integration.controller.supervised-terminal",
+    code:
+      Number.isInteger(result.code) && result.code >= 0 && result.code <= 255
+        ? result.code
+        : null,
+    signal: [
+      "SIGTERM",
+      "SIGKILL",
+      "SIGINT",
+      "SIGABRT",
+      "SIGSEGV",
+      "SIGBUS",
+      "SIGILL",
+      "SIGFPE",
+      "SIGHUP",
+      "SIGQUIT",
+      "SIGPIPE",
+    ].includes(result.signal)
+      ? result.signal
+      : result.signal === null
+        ? null
+        : "unknown",
+    contained: result.contained === true,
+    residualWorkObserved: result.residualWorkObserved === true,
+    terminationInitiated: result.terminationInitiated === true,
+    completedWithinDeadline: result.completedWithinDeadline === true,
+  })}\n`,
+);
 if (mockServerResearchStopFitsTerminalObservation(result)) {
   process.exitCode = 3;
 } else if (

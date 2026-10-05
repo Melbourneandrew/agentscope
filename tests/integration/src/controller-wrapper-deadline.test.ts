@@ -7,6 +7,7 @@ type Observation = {
   spawned: number;
   exitCode: number;
   error?: string;
+  diagnostic?: string;
   terminal?: {
     contained: boolean;
     residualWorkObserved: boolean;
@@ -65,6 +66,7 @@ function observeWrapper(
           AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: outer,
         }, execPath: process.execPath, exitCode: 0,
         stderr: { write() { throw new Error('unexpected-wrapper-stderr'); } },
+        stdout: { write(value) { observed.diagnostic = value; } },
       };
       const wrapperContext = createContext({ process: wrapperProcess });
       const wrapper = new SourceTextModule(
@@ -121,6 +123,15 @@ describe("actual controller wrapper preserves the original deadline", () => {
       },
     });
     expect(result.error).toBeUndefined();
+    expect(JSON.parse(result.diagnostic!)).toEqual({
+      kind: "integration.controller.supervised-terminal",
+      code: 3,
+      signal: null,
+      contained: true,
+      residualWorkObserved: false,
+      terminationInitiated: false,
+      completedWithinDeadline: true,
+    });
   });
 
   it.each([
@@ -145,10 +156,12 @@ describe("actual controller wrapper preserves the original deadline", () => {
   ])(
     "rejects insufficient, expired or malformed authority before spawn (%s)",
     (outer, uptime) => {
-      expect(observeWrapper(outer, uptime)).toMatchObject({
+      const result = observeWrapper(outer, uptime);
+      expect(result).toMatchObject({
         spawned: 0,
         error: "integration.controller.outer-deadline",
       });
+      expect(result.diagnostic).toBeUndefined();
     },
   );
 

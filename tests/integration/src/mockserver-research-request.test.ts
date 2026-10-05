@@ -188,7 +188,7 @@ describe("connected hosted supplier research boundary", () => {
         "Require settled research stop and independently verified packet",
     )!;
     expect(execution.run).toBe(
-      'set +e\npnpm test:integration\nstatus=$?\nset -e\ntest "$status" -eq 3\nnode tests/integration/verify-mockserver-research.mjs\n',
+      "set +e\npnpm test:integration\nstatus=$?\nset -e\nprintf 'integration.mockserver-research.command-status=%s\\n' \"$status\"\ntest \"$status\" -eq 3\nprintf 'integration.mockserver-research.verifier-enter\\n'\nnode tests/integration/verify-mockserver-research.mjs\nprintf 'integration.mockserver-research.verifier-complete\\n'\n",
     );
     const upload = job.steps.at(-1)!;
     expect(upload.if).toBe(
@@ -206,6 +206,56 @@ describe("connected hosted supplier research boundary", () => {
 });
 
 const revision = "a".repeat(40);
+describe("actual research shell diagnostics with synthetic commands", () => {
+  it.each([
+    [0, 0],
+    [1, 0],
+    [7, 0],
+    [137, 0],
+    [143, 0],
+    [3, 1],
+    [3, 0],
+  ])(
+    "preserves command status %s and verifier outcome %s without admission changes",
+    (status, verifier) => {
+      const workflow = parseYaml(
+        readFileSync(
+          resolve(
+            import.meta.dirname,
+            "../../../.github/workflows/integration.yml",
+          ),
+          "utf8",
+        ),
+      ) as { jobs: Record<string, WorkflowJob> };
+      const script = workflow.jobs["mockserver-supplier-research"]!.steps.find(
+        ({ name }) =>
+          name ===
+          "Require settled research stop and independently verified packet",
+      )!.run!;
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "-e",
+          "-c",
+          `pnpm() { return ${status}; }\nnode() { return ${verifier}; }\n${script}`,
+        ],
+        { env: {}, encoding: "utf8", timeout: 5_000, maxBuffer: 4096 },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(status === 3 && verifier === 0 ? 0 : 1);
+      expect(result.stdout).toBe(
+        `integration.mockserver-research.command-status=${status}\n` +
+          (status === 3
+            ? "integration.mockserver-research.verifier-enter\n"
+            : "") +
+          (status === 3 && verifier === 0
+            ? "integration.mockserver-research.verifier-complete\n"
+            : ""),
+      );
+    },
+  );
+});
 const environment = (): NodeJS.ProcessEnv => ({
   AGENTSCOPE_MOCKSERVER_RESEARCH: "supplier",
   AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: "123456789",

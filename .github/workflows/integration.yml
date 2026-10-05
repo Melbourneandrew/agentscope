@@ -359,8 +359,11 @@ jobs:
           pnpm test:integration
           status=$?
           set -e
+          printf 'integration.mockserver-research.command-status=%s\n' "$status"
           test "$status" -eq 3
+          printf 'integration.mockserver-research.verifier-enter\n'
           node tests/integration/verify-mockserver-research.mjs
+          printf 'integration.mockserver-research.verifier-complete\n'
       - name: Upload bounded research observations only
         if: success() && steps.research_packet.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
