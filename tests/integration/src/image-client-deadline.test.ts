@@ -2,6 +2,7 @@ import * as fileSystem from "node:fs";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   readImagePreparationDiagnostic,
@@ -252,8 +253,8 @@ describe("actual constructor and close bodies clamp rather than restart", () => 
     const calls: number[] = [];
     let uncertain = false;
     const client = { privateClient: { lifecycleDeadline: 200 } };
-    const operation = runInNewContext(
-      `${source("retirement")}\ncreateRetirementOperations;`,
+    const closePreparedClient: unknown = runInNewContext(
+      `${source("prepared-client")}\nclosePreparedClient;`,
       {
         performance: { now: () => 200 },
         preparationTeardownMilliseconds: 1000,
@@ -262,6 +263,16 @@ describe("actual constructor and close bodies clamp rather than restart", () => 
           calls.push(deadline);
           if (deadline <= 200) throw Error("expired");
         },
+      },
+      { timeout: 1000 },
+    );
+    const operation = runInNewContext(
+      `${source("retirement")}\ncreateRetirementOperations;`,
+      {
+        performance: { now: () => 200 },
+        preparationTeardownMilliseconds: 1000,
+        fixedError,
+        closePreparedClient,
       },
       { timeout: 1000 },
     ) as (
@@ -289,4 +300,120 @@ describe("actual constructor and close bodies clamp rather than restart", () => 
     expect(calls).toEqual([200]);
     expect(uncertain).toBe(true);
   });
+});
+
+const timingPolicy = (clock: { now: number }) => {
+  const body = source("boundary").match(
+    /const preparationPolicy =[\s\S]*?\n\};/u,
+  )?.[0];
+  expect(body).toBeDefined();
+  return runInNewContext(
+    `${source("preparation-deadline")}\n${body}\npreparationPolicy;`,
+    {
+      performance: { now: () => clock.now },
+      maximumPreparationMilliseconds: 300_000,
+      preparationTeardownMilliseconds: 5000,
+      fixedError,
+      imagePattern: /^image@sha256:[a-f\d]{64}$/u,
+    },
+    { timeout: 1000 },
+  ) as (
+    images: string[],
+    options: Record<string, unknown>,
+  ) => {
+    deadline: number;
+    workDeadline: number;
+    reconciliationDeadline: number;
+  };
+};
+describe("canonical preparation and terminal publication obey inherited time", () => {
+  const image = `image@sha256:${"a".repeat(64)}`;
+  it("clamps the actual policy while retaining both original reserve intervals", () => {
+    const policy = timingPolicy({ now: 100 })([image], {
+      deadline: 200,
+      maximumPreparationMilliseconds: 900,
+      teardownMilliseconds: 10,
+    });
+    expect(policy).toMatchObject({
+      deadline: 200,
+      workDeadline: 190,
+      reconciliationDeadline: 195,
+      maximumPreparationMilliseconds: 100,
+      teardownMilliseconds: 10,
+    });
+  });
+  it.each([NaN, Infinity, 100, 130])(
+    "rejects %s rather than borrowing terminal reserves",
+    (deadline) => {
+      expect(() =>
+        timingPolicy({ now: 100 })([image], {
+          deadline,
+          maximumPreparationMilliseconds: 900,
+          teardownMilliseconds: 10,
+        }),
+      ).toThrow("images.deadline");
+    },
+  );
+  it.each(["supplier", "cleanup"])(
+    "never publishes after late %s settlement",
+    async (phase) => {
+      const clock = { now: 100 };
+      const cleanup: number[] = [];
+      const admissions: unknown[] = [];
+      const prepare = runInNewContext(
+        `${source("preparation")}\nprepareImageOperation;`,
+        {
+          performance: { now: () => clock.now },
+          types,
+          Error,
+          preparationPolicy: timingPolicy(clock),
+          fixedError,
+          validSocketEvidence: () => true,
+          registryTransport: () => {},
+          maximumResponseBytes: 100,
+          maximumManifestBytes: 100,
+          maximumEvidenceBytes: 100,
+        },
+        { timeout: 1000 },
+      ) as (
+        state: unknown,
+        dependencies: unknown,
+        images: string[],
+        options: unknown,
+      ) => Promise<unknown>;
+      await expect(
+        prepare(
+          {
+            admitPreparedSet: (value: unknown) => {
+              admissions.push(value);
+            },
+          },
+          {
+            createPrivateClientRoot: (_options: unknown, deadline: number) => {
+              expect(deadline).toBe(200);
+              return { root: "/synthetic-owned" };
+            },
+            prepareImageSet: () => {
+              clock.now = phase === "supplier" ? 250 : 180;
+              return Promise.resolve({});
+            },
+            cleanupPrivateClient: (_owned: unknown, deadline: number) => {
+              cleanup.push(deadline);
+              if (phase === "cleanup") clock.now = 200;
+            },
+          },
+          [image],
+          {
+            ...testing,
+            engineRequestForTesting: () => {},
+            deadline: 200,
+            maximumPreparationMilliseconds: 900,
+            teardownMilliseconds: 10,
+          },
+        ),
+      ).rejects.toThrow("images.timeout");
+      expect(cleanup).toEqual([200]);
+      expect(admissions).toEqual([]);
+    },
+  );
 });

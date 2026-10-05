@@ -19,6 +19,7 @@ import {
   selectCommandOutput,
   serializeCommandOutput,
 } from "./process-output.mjs";
+import { selectPreparationDeadline } from "./preparation-deadline.mjs";
 
 const maximumPreparationMilliseconds = 300_000;
 export const preparationTeardownMilliseconds = 5_000;
@@ -844,20 +845,10 @@ export const localImageRecord = (value, image) => {
 };
 
 export const preparationPolicy = (images, options) => {
-  const preparationMilliseconds =
-    options.maximumPreparationMilliseconds ?? maximumPreparationMilliseconds;
-  const teardownMilliseconds =
-    options.teardownMilliseconds ?? preparationTeardownMilliseconds;
-  if (
-    !Number.isSafeInteger(preparationMilliseconds) ||
-    preparationMilliseconds < 4 ||
-    preparationMilliseconds > maximumPreparationMilliseconds ||
-    !Number.isSafeInteger(teardownMilliseconds) ||
-    teardownMilliseconds < 1 ||
-    teardownMilliseconds > preparationTeardownMilliseconds ||
-    preparationMilliseconds <= teardownMilliseconds * 3
-  )
-    throw fixedError("integration.images.deadline");
+  const timing = selectPreparationDeadline(options, {
+    maximum: maximumPreparationMilliseconds,
+    teardown: preparationTeardownMilliseconds,
+  });
   if (
     !Array.isArray(images) ||
     images.length === 0 ||
@@ -865,14 +856,7 @@ export const preparationPolicy = (images, options) => {
     new Set(images).size !== images.length
   )
     throw fixedError("integration.images.digest");
-  const deadline = performance.now() + preparationMilliseconds;
-  return Object.freeze({
-    deadline,
-    workDeadline: deadline - teardownMilliseconds,
-    reconciliationDeadline: deadline - Math.floor(teardownMilliseconds / 2),
-    maximumPreparationMilliseconds: preparationMilliseconds,
-    teardownMilliseconds,
-  });
+  return timing;
 };
 
 export const IMAGE_PREPARATION_LIMITS = Object.freeze({

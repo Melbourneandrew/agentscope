@@ -100,3 +100,35 @@ export const createPreparedClient = (state, evidence, options = {}) => {
     throw fixedError("integration.images.docker-client");
   }
 };
+
+/** Same facade state and inventory kernel, separated only to shrink its owner. */
+export const closePreparedClient = (state, client, markForRetirement) => {
+  if (
+    state.pendingCount(client) !== 0 ||
+    state.pendingNetworkCount(client) !== 0 ||
+    state.pendingControlVolumeCount(client) !== 0
+  ) {
+    if (state.hasClient(client)) markForRetirement(client);
+    throw fixedError("integration.images.docker-client");
+  }
+  if (!state.hasClient(client) || state.clientIsUncertain(client))
+    throw fixedError("integration.images.docker-client");
+  state.beginClose(client);
+  try {
+    cleanupPrivateClient(
+      client.privateClient,
+      Math.min(
+        performance.now() + preparationTeardownMilliseconds,
+        client.privateClient.lifecycleDeadline ?? Infinity,
+      ),
+    );
+    state.finishClose(client);
+  } catch (error) {
+    state.markUncertain(client);
+    if (error?.privateCleanupDiagnostic !== undefined)
+      state.recordDiagnostic(client, error.privateCleanupDiagnostic);
+    throw error;
+  } finally {
+    state.endClose(client);
+  }
+};

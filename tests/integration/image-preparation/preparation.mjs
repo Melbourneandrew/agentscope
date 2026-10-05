@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { performance } from "node:perf_hooks";
 import {
   fixedError,
   jsonRecord,
@@ -185,6 +186,8 @@ export const prepareImageOperation = async (
       signal: options.signal,
       socket,
     });
+    if (performance.now() >= policy.workDeadline)
+      throw fixedError("integration.images.timeout", true);
   } catch (error) {
     failure = preparationFailure(error);
     primaryDiagnostic =
@@ -218,6 +221,8 @@ export const prepareImageOperation = async (
     }
   }
   if (failure !== undefined) throw failure;
+  if (performance.now() >= policy.deadline)
+    throw fixedError("integration.images.timeout", true);
   const completed = Object.freeze({
     ...prepared,
     preparationPolicy: Object.freeze({

@@ -10,7 +10,7 @@ import {
   preparationTeardownMilliseconds,
   sameDaemon,
 } from "./boundary.mjs";
-import { cleanupPrivateClient } from "./private-storage.mjs";
+import { closePreparedClient } from "./prepared-client.mjs";
 
 // eslint-disable-next-line max-lines-per-function -- one private closure owns retirement transitions over the facade's unexported lifecycle state.
 export const createRetirementOperations = (state, docker) => {
@@ -433,37 +433,12 @@ export const createRetirementOperations = (state, docker) => {
     }
   };
 
-  const closePreparedDockerClient = (client) => {
-    if (
-      state.pendingCount(client) !== 0 ||
-      state.pendingNetworkCount(client) !== 0 ||
-      state.pendingControlVolumeCount(client) !== 0
-    ) {
-      if (state.hasClient(client))
-        markPreparedDockerClientForOuterHostRetirement(client);
-      throw fixedError("integration.images.docker-client");
-    }
-    if (!state.hasClient(client) || state.clientIsUncertain(client))
-      throw fixedError("integration.images.docker-client");
-    state.beginClose(client);
-    try {
-      cleanupPrivateClient(
-        client.privateClient,
-        Math.min(
-          performance.now() + preparationTeardownMilliseconds,
-          client.privateClient.lifecycleDeadline ?? Infinity,
-        ),
-      );
-      state.finishClose(client);
-    } catch (error) {
-      state.markUncertain(client);
-      if (error?.privateCleanupDiagnostic !== undefined)
-        state.recordDiagnostic(client, error.privateCleanupDiagnostic);
-      throw error;
-    } finally {
-      state.endClose(client);
-    }
-  };
+  const closePreparedDockerClient = (client) =>
+    closePreparedClient(
+      state,
+      client,
+      markPreparedDockerClientForOuterHostRetirement,
+    );
 
   const preparedDockerClientRequiresOuterHostRetirement = (client) =>
     state.clientIsUncertain(client);
