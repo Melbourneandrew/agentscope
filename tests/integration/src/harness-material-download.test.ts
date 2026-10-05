@@ -5,7 +5,11 @@ import { performance } from "node:perf_hooks";
 
 import { describe, expect, it } from "vitest";
 
-import { downloadAttestationMetadata } from "../harness-material.mjs";
+import {
+  downloadAttestationMetadata,
+  downloadMockServerJdkArchive,
+} from "../harness-material.mjs";
+import { downloadMaterialObject } from "../material-download.mjs";
 
 const acquireMetadata = async (
   headers: Record<string, string>,
@@ -173,5 +177,212 @@ describe("metadata terminal authority", () => {
       ),
     ).rejects.toThrow();
     expect(called).toBe(false);
+  });
+});
+
+const releaseFixture = (
+  location: unknown = "https://release-assets.githubusercontent.com/release/canary",
+) => {
+  const headers: Record<string, unknown> = { location, "content-length": "0" };
+  const response = Object.assign(new EventEmitter(), {
+    headers,
+    statusCode: 302,
+    complete: true,
+    destroy() {
+      queueMicrotask(() => response.emit("close"));
+    },
+  });
+  let callback: (response: IncomingMessage) => void;
+  const request = Object.assign(new EventEmitter(), {
+    destroy() {
+      queueMicrotask(() => request.emit("close"));
+    },
+    end() {
+      queueMicrotask(() => {
+        callback(response as unknown as IncomingMessage);
+      });
+    },
+  });
+  const transport = (_options: unknown, incoming: typeof callback) => {
+    callback = incoming;
+    return request as unknown as ClientRequest;
+  };
+  return { response, request, transport };
+};
+const releaseDescriptor = {
+  url: "https://github.com/adoptium/temurin17-binaries/releases/download/canary",
+  bytes: 2,
+};
+
+describe("one-hop release transport closure", () => {
+  it.each([false, true])(
+    "requires a complete final response (%s)",
+    async (complete) => {
+      const fixture = releaseFixture();
+      fixture.response.statusCode = 200;
+      fixture.response.complete = complete;
+      delete fixture.response.headers.location;
+      fixture.response.headers["content-length"] = "2";
+      const acquisition = downloadMaterialObject(
+        releaseDescriptor,
+        new AbortController().signal,
+        performance.now() + 3_000,
+        fixture.transport,
+        "release-body",
+      );
+      const observed = acquisition.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.response.emit("data", Buffer.from("{}"));
+      fixture.response.emit("end");
+      fixture.response.emit("close");
+      fixture.request.emit("close");
+      if (complete)
+        expect(await observed).toEqual({ value: Buffer.from("{}") });
+      else expect(await observed).toMatchObject({ error: { message: "size" } });
+    },
+  );
+
+  it("expires the original deadline without admitting hop two", async () => {
+    const fixture = releaseFixture();
+    let requests = 0;
+    const acquisition = downloadMockServerJdkArchive(
+      new AbortController().signal,
+      performance.now() + 50,
+      (options, callback) => {
+        requests += 1;
+        return fixture.transport(options, callback);
+      },
+    );
+    const observed = expect(acquisition).rejects.toThrow("deadline");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    fixture.response.emit("end");
+    fixture.request.emit("close");
+    await observed;
+    expect(requests).toBe(1);
+  });
+  it.each([false, true])(
+    "waits for both redirect closes in either order (%s)",
+    async (requestFirst) => {
+      const fixture = releaseFixture();
+      let settled = false;
+      const acquisition = downloadMaterialObject(
+        releaseDescriptor,
+        new AbortController().signal,
+        performance.now() + 3_000,
+        fixture.transport,
+        "release-asset",
+      ).finally(() => {
+        settled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.response.emit("end");
+      (requestFirst ? fixture.request : fixture.response).emit("close");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      (requestFirst ? fixture.response : fixture.request).emit("close");
+      expect(await acquisition).toBe(
+        "https://release-assets.githubusercontent.com/release/canary",
+      );
+    },
+  );
+});
+
+describe("closed release redirect rejection", () => {
+  it.each([
+    undefined,
+    [],
+    "http://release-assets.githubusercontent.com/a",
+    "https://other.invalid/a",
+    "https://user@release-assets.githubusercontent.com/a",
+    "https://release-assets.githubusercontent.com:443/a",
+    "https://release-assets.githubusercontent.com/a#fragment",
+    "https://release-assets.githubusercontent.com/" + "x".repeat(16_384),
+  ])("rejects nonclosed Location %#", async (location) => {
+    const fixture = releaseFixture(location);
+    if (location === undefined) delete fixture.response.headers.location;
+    await expect(
+      downloadMaterialObject(
+        releaseDescriptor,
+        new AbortController().signal,
+        performance.now() + 3_000,
+        fixture.transport,
+        "release-asset",
+      ),
+    ).rejects.toThrow("redirect");
+  });
+
+  it.each(["incomplete", "overflow", "encoding", "length", "status"])(
+    "rejects redirect framing %s",
+    async (kind) => {
+      const fixture = releaseFixture();
+      if (kind === "incomplete") fixture.response.complete = false;
+      if (kind === "encoding")
+        fixture.response.headers["content-encoding"] = "gzip";
+      if (kind === "length") fixture.response.headers["content-length"] = "000";
+      if (kind === "status") fixture.response.statusCode = 307;
+      const acquisition = downloadMaterialObject(
+        releaseDescriptor,
+        new AbortController().signal,
+        performance.now() + 3_000,
+        fixture.transport,
+        "release-asset",
+      );
+      const observed = expect(acquisition).rejects.toThrow();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (kind === "overflow")
+        fixture.response.emit("data", Buffer.alloc(16_385));
+      fixture.response.emit("end");
+      fixture.response.emit("close");
+      fixture.request.emit("close");
+      await observed;
+    },
+  );
+
+  it("blocks hop two if cancellation happens before terminal handoff", async () => {
+    const fixture = releaseFixture();
+    const controller = new AbortController();
+    let requests = 0;
+    const acquisition = downloadMockServerJdkArchive(
+      controller.signal,
+      performance.now() + 3_000,
+      (options, callback) => {
+        requests += 1;
+        return fixture.transport(options, callback);
+      },
+    );
+    const observed = expect(acquisition).rejects.toThrow("interrupted");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    fixture.response.emit("end");
+    fixture.request.emit("close");
+    controller.abort();
+    fixture.response.emit("close");
+    await observed;
+    expect(requests).toBe(1);
+  });
+
+  it("does not admit a second redirect", async () => {
+    let requests = 0;
+    const acquisition = downloadMockServerJdkArchive(
+      new AbortController().signal,
+      performance.now() + 3_000,
+      (options, callback) => {
+        requests += 1;
+        const fixture = releaseFixture();
+        const handle = fixture.transport(options, callback);
+        queueMicrotask(() => {
+          queueMicrotask(() => {
+            fixture.response.emit("end");
+            fixture.response.emit("close");
+            fixture.request.emit("close");
+          });
+        });
+        return handle;
+      },
+    );
+    await expect(acquisition).rejects.toThrow("status");
+    expect(requests).toBe(2);
   });
 });

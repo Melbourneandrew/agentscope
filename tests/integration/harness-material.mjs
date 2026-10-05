@@ -16,7 +16,6 @@ import {
 import { request } from "node:https";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { rootCertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -29,10 +28,11 @@ import {
   buildPreparedDockerImage,
   retirePreparedDockerImage,
 } from "./image-preparation.mjs";
+import { downloadMaterialObject as download } from "./material-download.mjs";
+export { classifyMaterialResponseForTesting } from "./material-download.mjs";
 
 const maximumAuditBytes = 8 * 1024 * 1024;
 const maximumAggregateArchiveBytes = 320 * 1024 * 1024;
-const maximumHeaderBytes = 16 * 1024;
 const materialRetirementReserveMilliseconds = 5_000;
 const materialSettlementReserveMilliseconds = 1_000;
 const commandSource = resolve(
@@ -133,26 +133,6 @@ const writeExclusive = (path, bytes) => {
     fail();
 };
 
-export const classifyMaterialResponseForTesting = (response, expectedBytes) => {
-  if (response.statusCode === 429) return "rate-limit";
-  if (response.statusCode >= 500 && response.statusCode <= 599)
-    return "upstream";
-  if (response.statusCode !== 200) return "status";
-  if (response.headers.location !== undefined) return "redirect";
-  if (response.headers["content-encoding"] !== undefined) return "encoding";
-  if (
-    response.headers["content-length"] !== undefined &&
-    response.headers["content-length"] !== String(expectedBytes)
-  ) {
-    const observed = response.headers["content-length"];
-    if (typeof observed !== "string" || !/^[0-9]+$/u.test(observed))
-      return "hdr-invalid";
-    const length = BigInt(observed);
-    if (length === BigInt(expectedBytes)) return "hdr-noncanon";
-    return length < BigInt(expectedBytes) ? "hdr-short" : "hdr-long";
-  }
-};
-
 const headerReasons = ["hdr-short", "hdr-long", "hdr-noncanon", "hdr-invalid"];
 const downloadFailureReasons = new Map([
   ["registry identity", "identity"],
@@ -177,133 +157,52 @@ export const classifyMaterialDownloadFailureForTesting = (error) =>
 export const classifyAttestationFailurePhaseForTesting = (descriptor, error) =>
   `download-attestation-${descriptor.installName === descriptor.packageName ? "root" : "variant"}-${classifyMaterialDownloadFailureForTesting(error)}`;
 
-const materialRequestOptions = (url) => ({
-  agent: false,
-  ca: rootCertificates,
-  hostname: url.hostname,
-  maxHeaderSize: maximumHeaderBytes,
-  method: "GET",
-  path: `${url.pathname}${url.search}`,
-  protocol: "https:",
-  rejectUnauthorized: true,
-  servername: url.hostname,
-});
-const authorizedMaterialUrl = (url) =>
-  url.protocol === "https:" &&
-  url.username === "" &&
-  url.password === "" &&
-  url.hash === "" &&
-  url.port === "";
-
-const download = (
-  descriptor,
-  signal,
-  deadline,
-  transport = request,
-  metadata = false,
-) =>
-  new Promise((resolveDownload, rejectDownload) => {
-    if (signal.aborted) {
-      rejectDownload(new Error("interrupted"));
-      return;
-    }
-    const url = new URL(descriptor.tarballUrl ?? descriptor.url);
-    if (!authorizedMaterialUrl(url)) {
-      rejectDownload(new Error("registry identity"));
-      return;
-    }
-    let settled = false;
-    let requestHandle;
-    let responseHandle;
-    let terminalError;
-    let terminalValue;
-    let requestClosed = false;
-    let responseClosed = false;
-    const chunks = [];
-    let bytes = 0;
-    const settle = () => {
-      if (settled) return;
-      if (terminalError === undefined) {
-        if (signal.aborted) terminalError = new Error("interrupted");
-        else if (performance.now() >= deadline)
-          terminalError = new Error("deadline");
-      }
-      settled = true;
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      if (terminalError === undefined && terminalValue !== undefined)
-        resolveDownload(terminalValue);
-      else rejectDownload(terminalError ?? new Error("incomplete"));
-    };
-    const maybeSettle = () => {
-      if (requestClosed && (responseHandle === undefined || responseClosed))
-        settle();
-    };
-    const stop = (error) => {
-      terminalError ??= error;
-      responseHandle?.destroy();
-      requestHandle?.destroy();
-    };
-    const onAbort = () => stop(new Error("interrupted"));
-    const timer = setTimeout(
-      () => stop(new Error("deadline")),
-      remaining(deadline),
-    );
-    signal.addEventListener("abort", onAbort, { once: true });
-    requestHandle = transport(materialRequestOptions(url), (response) => {
-      responseHandle = response;
-      const advertised = response.headers["content-length"];
-      const expectedBytes = metadata
-        ? typeof advertised === "string" &&
-          /^[1-9][0-9]{0,5}$/u.test(advertised)
-          ? Number(advertised)
-          : undefined
-        : descriptor.bytes;
-      const rejection =
-        metadata && advertised !== undefined && expectedBytes === undefined
-          ? "hdr-invalid"
-          : metadata && expectedBytes > descriptor.maximumBytes
-            ? "size"
-            : classifyMaterialResponseForTesting(response, expectedBytes);
-      response.once("aborted", () => stop(new Error("incomplete")));
-      response.on("data", (chunk) => {
-        bytes += chunk.byteLength;
-        if (bytes > (metadata ? descriptor.maximumBytes : descriptor.bytes))
-          stop(new Error("size"));
-        else chunks.push(chunk);
-      });
-      response.once("error", stop);
-      response.once("end", () => {
-        if (
-          bytes < 1 ||
-          (expectedBytes !== undefined && bytes !== expectedBytes) ||
-          (metadata && !response.complete)
-        )
-          stop(new Error("size"));
-        else terminalValue = Buffer.concat(chunks);
-      });
-      response.once("close", () => {
-        responseClosed = true;
-        if (metadata && terminalValue === undefined)
-          terminalError ??= new Error("incomplete");
-        maybeSettle();
-      });
-      if (rejection !== undefined) stop(new Error(rejection));
-    });
-    requestHandle.once("error", stop);
-    requestHandle.once("close", () => {
-      requestClosed = true;
-      maybeSettle();
-    });
-    requestHandle.end();
-  });
-
 export const downloadRegularHarnessMaterialForTesting = (
   descriptor,
   signal,
   deadline,
   transport,
 ) => download(descriptor, signal, deadline, transport);
+
+export const downloadMockServerJdkArchive = async (
+  signal,
+  deadline,
+  transport = request,
+) => {
+  const descriptor = {
+    url: "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20.1_1.tar.gz",
+    bytes: 193252603,
+  };
+  const initial = await download(
+    descriptor,
+    signal,
+    deadline,
+    transport,
+    "release-asset",
+  );
+  const bytes =
+    typeof initial === "string"
+      ? await download(
+          { ...descriptor, url: initial },
+          signal,
+          deadline,
+          transport,
+          "release-body",
+        )
+      : initial;
+  if (
+    signal.aborted ||
+    performance.now() >= deadline ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length !== descriptor.bytes ||
+    createHash("sha256").update(bytes).digest("hex") !==
+      "3808d1d15e3ec6bd5b84057fb5d84c33d8a1536a258146bcea2e603fc726e08e"
+  )
+    throw new Error("integration.harness-material.failed");
+  if (signal.aborted || performance.now() >= deadline)
+    throw new Error("integration.harness-material.failed");
+  return bytes;
+};
 
 // The API envelope is bounded transport, not an immutable artifact. Its
 // canonical signed bundles are pinned by the compiler and then checked against

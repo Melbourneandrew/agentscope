@@ -6,6 +6,14 @@ import type {
 import type { PreparedDockerClient } from "./image-preparation.mjs";
 
 declare const tokenBrand: unique symbol;
+export declare const downloadMockServerJdkArchive: (
+  signal: AbortSignal,
+  deadline: number,
+  transport?: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
 export type PreparedNpmHarnessMaterial = Readonly<{
   authorityKind: "authenticated-harness-material";
   authorityVersion: 1;
