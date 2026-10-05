@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { HeadlessSupervisorError } from "../headless-supervisor.js";
+import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
 import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
 import { executeSelectedPtyTransportForTest } from "../internal/headless-supervisor-backend.js";
+import type * as Backend from "../internal/headless-supervisor-backend.js";
 import {
   kernelError,
   ptyAuthorityFailureStage,
@@ -275,5 +277,48 @@ describe("kernel diagnostic authenticity", () => {
     expect(ptyAuthorityFailureStage("private-unexpected-code")).toBe(
       "authority",
     );
+  });
+});
+
+describe("public selected PTY diagnostic consumer", () => {
+  it("preserves only authentic provenance across the actual public rewrap", async () => {
+    let backendError = new Error("test-backend-not-configured");
+    vi.doMock("../internal/headless-supervisor-backend.js", async () => ({
+      ...(await vi.importActual<typeof Backend>(
+        "../internal/headless-supervisor-backend.js",
+      )),
+      executeSelectedPtyProcessWithCapability: () =>
+        Promise.reject(backendError),
+    }));
+    try {
+      const { executeSelectedPtyProcess } =
+        await import("../headless-supervisor-kernel.js");
+      for (const stage of ["observer", "outer-shutdown"] as const) {
+        backendError = kernelError(code, stage);
+        const publicError = await rejection(
+          executeSelectedPtyProcess(
+            {} as HeadlessSupervisorCapability,
+            request(),
+          ),
+        );
+        expect(publicError).not.toBe(backendError);
+        expect(trustedErrorCode(publicError)).toBe(code);
+        expect(readPtyReconciliationStage(publicError)).toBe(stage);
+      }
+      backendError = new HeadlessSupervisorError(code);
+      const publicError = await rejection(
+        executeSelectedPtyProcess(
+          {} as HeadlessSupervisorCapability,
+          request(),
+        ),
+      );
+      expect(trustedErrorCode(publicError)).toBe(
+        "testkit.headless.kernel.failure",
+      );
+      expect(readPtyReconciliationStage(publicError)).toBeUndefined();
+    } finally {
+      vi.doUnmock("../internal/headless-supervisor-backend.js");
+      vi.resetModules();
+    }
   });
 });
