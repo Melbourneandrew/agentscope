@@ -296,6 +296,36 @@ describe("integration controller", () => {
 });
 
 describe("research-only controller settlement", () => {
+  it.each([undefined, null])(
+    "preserves primitive rejection %s without publishing a research disposition",
+    async (cause) => {
+      for (const failedStage of ["prepareModelRoutes", "clean"] as const) {
+        const dependencies = stages([]);
+        vi.mocked(dependencies[failedStage]).mockRejectedValue(cause);
+        await expect(
+          runIntegrationStages(
+            "lifecycle",
+            dependencies,
+            "mockserver-supplier",
+          ),
+        ).rejects.toMatchObject({
+          primaryCause: cause,
+          retirementRequired: true,
+        });
+        expect(dependencies.runScenarios).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("does not replace a null primary with the cleanup rejection", async () => {
+    const dependencies = stages([]);
+    vi.mocked(dependencies.prepareModelRoutes).mockRejectedValue(null);
+    const cleanup = new Error("integration.synthetic.cleanup");
+    vi.mocked(dependencies.clean).mockRejectedValue(cleanup);
+    await expect(
+      runIntegrationStages("lifecycle", dependencies, "mockserver-supplier"),
+    ).rejects.toMatchObject({ primaryCause: null, cleanupCause: cleanup });
+  });
   it("retains ordinary lifecycle execution and its original return", async () => {
     const events: string[] = [];
     await expect(

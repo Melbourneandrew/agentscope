@@ -120,6 +120,7 @@ export const runIntegrationStages = async (
     return;
   }
   let primaryCause: unknown;
+  let primaryFailed = false;
   try {
     if (mode === "crabbox") await dependencies.prepareCandidate();
     stage = "select";
@@ -147,20 +148,23 @@ export const runIntegrationStages = async (
         stage,
       });
     primaryCause = error;
+    primaryFailed = true;
   }
   let cleanupCause: unknown;
+  let cleanupFailed = false;
   try {
     await dependencies.clean();
   } catch (error) {
     cleanupCause = error;
+    cleanupFailed = true;
   }
-  if (primaryCause !== undefined || cleanupCause !== undefined)
+  if (primaryFailed || cleanupFailed)
     throw new IntegrationControllerFailure({
       cleanupCause,
       cleanupAttempted: true,
-      primaryCause: primaryCause ?? cleanupCause,
+      primaryCause: primaryFailed ? primaryCause : cleanupCause,
       retirementRequired: true,
-      stage: primaryCause === undefined ? "clean" : stage,
+      stage: primaryFailed ? stage : "clean",
     });
   if (research === "mockserver-supplier") return "mockserver-research-cleaned";
 };
