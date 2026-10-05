@@ -46,7 +46,7 @@ describe("exact upstream MockServer callback patch input", () => {
 
   it("retains the exact upstream Apache license", () => {
     const license = readFileSync(
-      new URL("../mockserver-material/upstream/LICENSE.md", import.meta.url),
+      new URL("../mockserver-material/upstream/LICENSE", import.meta.url),
     );
     expect(
       createHash("sha1")
