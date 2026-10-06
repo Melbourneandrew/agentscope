@@ -27,6 +27,7 @@ const headerNames = Object.freeze([
   "node_api_types.h",
 ]);
 const xcode = "/Applications/Xcode_16.2.app";
+const xcodeResourceSealMaximum = 27_446_666;
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const fail = () => {
   throw new Error("harness.directory.candidate-invalid");
@@ -291,7 +292,7 @@ const darwinMaterials = (run, headersRoot, context) => {
       appleSealVerified: true,
       resourceSeal: observation(
         `${xcode}/Contents/_CodeSignature/CodeResources`,
-        16_777_216,
+        xcodeResourceSealMaximum,
       ),
       compiler: { path: compiler, ...observation(compiler, 268_435_456) },
       linker: { path: linker, ...observation(linker, 268_435_456) },

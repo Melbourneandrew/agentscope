@@ -52,9 +52,16 @@ describe("fixed resource-seal read guard evidence", () => {
     [true, 0n, "regular=true:nonempty=false:bytes=0:cap=16777216"],
     [true, 16777217n, "regular=true:nonempty=true:bytes=16777217:cap=16777216"],
     [true, 1n, null],
+    [true, 27446666n, null, 27446666],
+    [
+      true,
+      27446667n,
+      "regular=true:nonempty=true:bytes=27446667:cap=27446666",
+      27446666,
+    ],
   ])(
     "projects only fixed metadata while closing the held fd",
-    (regular, size, expected) => {
+    (regular, size, expected, maximum = 16777216) => {
       const start = driver.indexOf("const readExact =");
       const stop = driver.indexOf("export const candidateProfile =", start);
       let closed = 0;
@@ -101,9 +108,9 @@ describe("fixed resource-seal read guard evidence", () => {
       const call = () =>
         Reflect.apply(read, undefined, [
           "/fixed/Xcode/Contents/_CodeSignature/CodeResources",
-          16777216,
+          maximum,
         ]) as unknown;
-      if (expected === null) expect(call()).toHaveLength(1);
+      if (expected === null) expect(call()).toHaveLength(Number(size));
       else {
         expect(call).toThrow(
           `harness.directory.candidate-invalid:resource-seal:${expected}`,
@@ -113,13 +120,24 @@ describe("fixed resource-seal read guard evidence", () => {
           () =>
             Reflect.apply(read, undefined, [
               "/secret/path",
-              16777216,
+              maximum,
             ]) as unknown,
         ).toThrow(/^harness.directory.candidate-invalid$/u);
       }
       expect(closed).toBe(expected === null ? 1 : 2);
     },
   );
+  it("binds the measured maximum only to the fixed Xcode resource-seal callsite", () => {
+    const declaration = driver.match(
+      /^const xcodeResourceSealMaximum = ([0-9_]+);$/mu,
+    );
+    expect(declaration?.[1]).toBe("27_446_666");
+    expect(driver.match(/xcodeResourceSealMaximum/gu)).toHaveLength(2);
+    expect(driver).toContain(
+      "`${xcode}/Contents/_CodeSignature/CodeResources`,\n        xcodeResourceSealMaximum,",
+    );
+    expect(driver).toContain("const readExact = (path, maximum = 1_048_576)");
+  });
 });
 
 describe("nonpublishing directory native candidate", () => {
