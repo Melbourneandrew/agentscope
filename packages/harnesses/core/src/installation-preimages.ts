@@ -5,7 +5,7 @@ import { open } from "node:fs/promises";
 export const MAXIMUM_TARGET_BYTES = 1_048_576;
 /* v8 ignore next -- every supported Node platform exposes O_NOFOLLOW. */
 const noFollow = constants.O_NOFOLLOW ?? 0;
-const readFlags = constants.O_RDONLY | noFollow;
+const readFlags = constants.O_RDONLY | noFollow | constants.O_NONBLOCK;
 const emptyDigest = createHash("sha256").update("").digest("hex");
 
 export type FileSnapshot = Readonly<{

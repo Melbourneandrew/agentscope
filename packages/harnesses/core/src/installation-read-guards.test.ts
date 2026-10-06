@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -201,6 +202,51 @@ describe("read-only guard authority and mutation ownership stay separate", () =>
 });
 
 describe("unchanged guards retain the existing closed input bounds", () => {
+  it("refuses an unwritten FIFO substituted after a genuine unchanged plan", async () => {
+    const value = await fixture(false);
+    const module = new URL("./installation.ts", import.meta.url).href;
+    const script = `import { unlink } from "node:fs/promises";
+      import { execFileSync } from "node:child_process";
+      import { inspectHarnessInstallation, applyHarnessInstallation } from ${JSON.stringify(module)};
+      const target = ${JSON.stringify(value.guard)};
+      const plan = await inspectHarnessInstallation({
+        manifestPath: ${JSON.stringify(value.input.manifestPath)},
+        operation: "install", targetPaths: [target],
+        planner: () => ({kind: "unchanged"})
+      });
+      if (plan.disposition !== "unchanged") process.exit(2);
+      await unlink(target);
+      execFileSync("/usr/bin/mkfifo", [target], {env: {}, timeout: 1000});
+      console.log("apply-entered");
+      const result = await applyHarnessInstallation(plan);
+      console.log(JSON.stringify(result));
+      if (result.ok || result.state !== "invalid") process.exitCode = 3;`;
+    // Source public API under the standard TypeScript test loader; no test seam.
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", script],
+      {
+        env: {},
+        timeout: 1_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 4_096,
+        encoding: "utf8",
+      },
+    );
+    expect(child.error).toBeUndefined();
+    expect(child.signal).toBeNull();
+    expect(child.status).toBe(0);
+    expect(child.stderr).toBe("");
+    expect(child.stdout).toBe(
+      'apply-entered\n{"ok":false,"state":"invalid","changedTargetCount":0}\n',
+    );
+    expect(await readFile(value.owned, "utf8")).toBe("owned-before");
+    expect((await readdir(value.root)).sort()).toEqual([
+      "owned.json",
+      "registry.json",
+    ]);
+  });
+
   it("refuses an oversized unchanged target", async () => {
     const value = await fixture(false);
     await writeFile(value.guard, Buffer.alloc(1_048_577));
