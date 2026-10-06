@@ -222,6 +222,7 @@ assertGraph("production runtime", productionRuntime, [
   "index.js",
   "lifecycle.js",
   "owned-profile.js",
+  "plugin-inventory.js",
   "mapping.js",
   "root-hook.js",
 ]);
@@ -231,6 +232,7 @@ assertGraph("production declarations", productionDeclarations, [
   "index.d.ts",
   "lifecycle.d.ts",
   "owned-profile.d.ts",
+  "plugin-inventory.d.ts",
   "mapping.d.ts",
   "root-hook.d.ts",
 ]);
@@ -239,6 +241,7 @@ assertGraph("testing runtime", testingRuntime, [
   "fixture.js",
   "lifecycle.js",
   "owned-profile.js",
+  "plugin-inventory.js",
   "mapping.js",
   "root-hook.js",
   "testing.js",
