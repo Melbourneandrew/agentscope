@@ -1,4 +1,10 @@
 import { randomBytes } from "node:crypto";
+import {
+  credentialWriteFailureEvidence,
+  referencedByCandidate,
+  sameReference,
+  referenceAt,
+} from "./credential-reference-evidence.js";
 
 import type {
   DestinationConnectionId,
@@ -262,40 +268,6 @@ const exactInput = (
   return Object.freeze(values);
 };
 
-const referencedByCandidate = (
-  candidate: AgentscopeConfigurationSnapshot,
-  ownership: CredentialOwnership,
-  reference: ConfigurationCredentialReference,
-): boolean => {
-  const connection = candidate.connections.find(
-    (value) => value.connectionId === ownership.connectionId,
-  );
-  if (!connection || connection.destinationType !== ownership.destinationType)
-    return false;
-  const actual = connection.credentialReferences[ownership.slot];
-  return (
-    actual !== undefined && JSON.stringify(actual) === JSON.stringify(reference)
-  );
-};
-
-const sameReference = (
-  left: ConfigurationCredentialReference | undefined,
-  right: ConfigurationCredentialReference,
-): boolean =>
-  left !== undefined && JSON.stringify(left) === JSON.stringify(right);
-
-const referenceAt = (
-  snapshot: AgentscopeConfigurationSnapshot,
-  ownership: CredentialOwnership,
-): ConfigurationCredentialReference | undefined => {
-  const connection = snapshot.connections.find(
-    (value) => value.connectionId === ownership.connectionId,
-  );
-  return connection?.destinationType === ownership.destinationType
-    ? connection.credentialReferences[ownership.slot]
-    : undefined;
-};
-
 const compensate = async (
   remove: (() => Promise<boolean>) | undefined,
   complete: (() => Promise<void>) | undefined,
@@ -505,6 +477,19 @@ export const configureCredential = async (
         : undefined),
     });
   } catch {
+    if (staged.intent) {
+      const evidence = await credentialWriteFailureEvidence(
+        validated.store,
+        staged.reference,
+      );
+      if (evidence !== "unreferenced")
+        return fixedFailure(
+          evidence === "referenced" ? "referenced-pending" : "orphan-pending",
+          "core.credential.configuration-failed",
+          evidence === "referenced",
+          staged.reference,
+        );
+    }
     return compensate(
       staged.remove,
       staged.complete,
