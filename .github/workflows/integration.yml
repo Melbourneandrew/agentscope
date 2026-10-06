@@ -428,7 +428,7 @@ jobs:
           case "$OBSERVED_CLEANUP" in none|failed|not-attempted) cleanup="$OBSERVED_CLEANUP" ;; esac
           case "$OBSERVED_PULL_TRIGGER" in abort|timeout|transport|unexpected-status|empty-events|malformed-event|daemon-error-event) trigger="$OBSERVED_PULL_TRIGGER" ;; esac
           case "$OBSERVED_RECONCILIATION" in completed|failed|not-attempted) reconciliation="$OBSERVED_RECONCILIATION" ;; esac
-          if [[ "$supervisor" != unknown || "$failure" != unknown ]]; then
+          if [[ "$supervisor" != unknown || "$failure" != unknown || "$material_phase" != unknown ]]; then
             observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation material_phase=$material_phase"
             ( printf '%s\n' "$observation" ) || :
             { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :

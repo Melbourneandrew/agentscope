@@ -282,6 +282,20 @@ describe("closed-reader causal seed", () => {
   );
 });
 
+describe("partial material-step observation", () => {
+  it("retains an entered material step when terminal observations are unavailable", () => {
+    const summary = resolve(root(), "summary");
+    const result = shell(projection.run!, {
+      OBSERVED_MATERIAL_PHASE: "download-source",
+      GITHUB_STEP_SUMMARY: summary,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("supervisor=unknown");
+    expect(result.stdout).toContain("material_phase=download-source");
+    expect(readFileSync(summary, "utf8")).toBe(result.stdout);
+  });
+});
+
 describe("closed always-after projection", () => {
   it("projects file-command controller observations despite prior unavailable stdout", () => {
     const summary = resolve(root(), "summary");
