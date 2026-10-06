@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import {
-  cpSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, test } from "vitest";
+import { performance } from "node:perf_hooks";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -21,28 +30,117 @@ const validator = join(
   ".agents/skills/review-agentscope/scripts/validate_review_skill.py",
 );
 const fixtures = [];
+const skillDirectory = ".agents/skills/review-agentscope";
+const inputFiles = [
+  "AGENTS.md",
+  `${skillDirectory}/SKILL.md`,
+  `${skillDirectory}/agents/openai.yaml`,
+  ...[
+    "review-map",
+    "architecture-blueprints",
+    "trust-data-privacy",
+    "lifecycle-recovery-concurrency",
+    "api-package-artifacts",
+    "testing-evidence-acceptance",
+    "release-practice",
+    "review-language",
+  ].map((name) => `${skillDirectory}/references/${name}.md`),
+];
+const directories = [
+  ".agents",
+  ".agents/skills",
+  skillDirectory,
+  `${skillDirectory}/agents`,
+  `${skillDirectory}/references`,
+];
 
-afterEach(() => {
-  for (const fixture of fixtures.splice(0)) {
-    rmSync(fixture, { force: true, recursive: true });
+function inspectFixture(fixture) {
+  const root = lstatSync(fixture.root);
+  assert.ok(
+    root.isDirectory() &&
+      root.dev === fixture.identity.dev &&
+      root.ino === fixture.identity.ino &&
+      root.uid === fixture.identity.uid &&
+      root.mode === fixture.identity.mode,
+    "review fixture root identity changed",
+  );
+  let bytes = 0;
+  for (const directory of ["", ...directories]) {
+    const path = join(fixture.root, directory);
+    assert.ok(
+      lstatSync(path).isDirectory(),
+      "review fixture directory changed",
+    );
+    for (const name of readdirSync(path)) {
+      const relative = directory ? `${directory}/${name}` : name;
+      const stat = lstatSync(join(fixture.root, relative));
+      if (directories.includes(relative)) assert.ok(stat.isDirectory());
+      else {
+        assert.ok(
+          inputFiles.includes(relative) && stat.isFile(),
+          "unexpected review fixture member",
+        );
+        bytes += stat.size;
+      }
+    }
   }
+  assert.ok(bytes <= 256 * 1024, "review fixture bytes exceeded");
+}
+
+function cleanupFixture(fixture, deadline, remove = rmSync) {
+  inspectFixture(fixture);
+  assert.ok(performance.now() < deadline, "review fixture cleanup deadline");
+  remove(fixture.root, { recursive: true });
+  fixtures.splice(fixtures.indexOf(fixture), 1);
+}
+afterEach(() => {
+  const deadline = performance.now() + 10_000;
+  for (const fixture of [...fixtures]) cleanupFixture(fixture, deadline);
 });
 
 function createFixture() {
+  const deadline = performance.now() + 5000;
   const root = mkdtempSync(join(tmpdir(), "agentscope-review-skill-"));
-  fixtures.push(root);
-  const skillRoot = join(root, ".agents/skills/review-agentscope");
-  cpSync(join(repositoryRoot, ".agents/skills/review-agentscope"), skillRoot, {
-    recursive: true,
-  });
-  writeFileSync(
-    join(root, "AGENTS.md"),
-    readFileSync(join(repositoryRoot, "AGENTS.md")),
-  );
-  return { root, skillRoot };
+  const fixture = {
+    root,
+    skillRoot: join(root, skillDirectory),
+    identity: lstatSync(root),
+    deadline,
+  };
+  fixtures.push(fixture);
+  for (const directory of directories)
+    assert.ok(
+      lstatSync(join(repositoryRoot, directory)).isDirectory(),
+      "review source directory changed",
+    );
+  for (const directory of directories) mkdirSync(join(root, directory));
+  let bytes = 0;
+  for (const file of inputFiles) {
+    const fd = openSync(
+      join(repositoryRoot, file),
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      const stat = fstatSync(fd);
+      assert.ok(stat.isFile() && stat.size <= 128 * 1024);
+      bytes += stat.size;
+      assert.ok(bytes <= 256 * 1024);
+      const contents = readFileSync(fd);
+      assert.equal(contents.length, stat.size);
+      assert.equal(fstatSync(fd).mtimeMs, stat.mtimeMs);
+      writeFileSync(join(root, file), contents, { flag: "wx", mode: 0o600 });
+    } finally {
+      closeSync(fd);
+    }
+  }
+  inspectFixture(fixture);
+  return fixture;
 }
 
 function validate(fixture) {
+  inspectFixture(fixture);
+  const timeout = Math.floor(fixture.deadline - performance.now());
+  assert.ok(timeout > 0, "review fixture validation deadline");
   return spawnSync(
     "python3",
     [
@@ -52,7 +150,7 @@ function validate(fixture) {
       "--repository-root",
       fixture.root,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", timeout, maxBuffer: 64 * 1024, killSignal: "SIGKILL" },
   );
 }
 
@@ -60,6 +158,46 @@ test("validates the committed review skill contract", () => {
   const result = validate(createFixture());
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Validated review-agentscope/);
+});
+
+test("retains cleanup ownership on removal failure or root substitution", () => {
+  const fixture = createFixture();
+  const moved = `${fixture.root}-moved`;
+  const failure = new Error("seeded removal failure");
+  assert.throws(
+    () =>
+      cleanupFixture(fixture, fixture.deadline, () => {
+        throw failure;
+      }),
+    (error) => error === failure,
+  );
+  assert.ok(fixtures.includes(fixture));
+  renameSync(fixture.root, moved);
+  symlinkSync(moved, fixture.root, "dir");
+  try {
+    assert.throws(
+      () => cleanupFixture(fixture, fixture.deadline),
+      /root identity/,
+    );
+    assert.ok(fixtures.includes(fixture));
+    assert.ok(lstatSync(moved).isDirectory());
+  } finally {
+    rmSync(fixture.root);
+    renameSync(moved, fixture.root);
+  }
+});
+
+test("rejects unowned fixture members and expired child authority", () => {
+  const fixture = createFixture();
+  const foreign = join(fixture.root, "unexpected");
+  writeFileSync(foreign, "not admitted");
+  try {
+    assert.throws(() => validate(fixture), /unexpected review fixture member/);
+  } finally {
+    rmSync(foreign);
+  }
+  fixture.deadline = performance.now() - 1;
+  assert.throws(() => validate(fixture), /validation deadline/);
 });
 
 test("rejects removal of the standalone Blueprint exception gate", () => {

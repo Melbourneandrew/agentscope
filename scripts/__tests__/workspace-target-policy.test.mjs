@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,10 +13,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "vitest";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { auditWorkspaceTargets } from "../workspace-target-policy.mjs";
 import { expectedWorkspacePackages } from "../workspace-packages.mjs";
+import { createWorkspaceCleanupFixture } from "../fixtures/workspace-cleanup-fixture.mjs";
 
 const repositoryRoot = resolve(
   fileURLToPath(new URL("../..", import.meta.url)),
@@ -197,13 +200,17 @@ test("rejects any unscoped cleaner invocation in a build script", () => {
 });
 
 test("build cleanup preserves coverage while full cleanup owns it", () => {
-  const workspaceDirectory = join(repositoryRoot, "packages/testkit");
+  const fixture = createWorkspaceCleanupFixture(repositoryRoot);
+  const { workspaceDirectory, cleaner } = fixture;
+  const realOutputs = ["dist", "coverage"].map((name) => {
+    const path = join(repositoryRoot, "packages/testkit", name);
+    return [path, existsSync(path) ? lstatSync(path) : undefined];
+  });
   const coverageCanary = join(
     workspaceDirectory,
     "coverage/artifact-owner-canary",
   );
   const buildCanary = join(workspaceDirectory, "dist/build-owner-canary");
-  const cleaner = join(repositoryRoot, "scripts/clean-workspace.mjs");
   try {
     mkdirSync(join(workspaceDirectory, "coverage"), { recursive: true });
     mkdirSync(join(workspaceDirectory, "dist"), { recursive: true });
@@ -213,7 +220,7 @@ test("build cleanup preserves coverage while full cleanup owns it", () => {
     const buildCleanup = spawnSync(
       process.execPath,
       [cleaner, "--build-outputs"],
-      { cwd: workspaceDirectory, encoding: "utf8" },
+      fixture.childOptions(),
     );
     assert.equal(buildCleanup.status, 0, buildCleanup.stderr);
     assert.equal(existsSync(coverageCanary), true);
@@ -222,7 +229,7 @@ test("build cleanup preserves coverage while full cleanup owns it", () => {
     const invalidCleanup = spawnSync(
       process.execPath,
       [cleaner, "--build-outputs", "--unexpected"],
-      { cwd: workspaceDirectory, encoding: "utf8" },
+      fixture.childOptions(),
     );
     assert.notEqual(invalidCleanup.status, 0);
     assert.match(
@@ -231,67 +238,47 @@ test("build cleanup preserves coverage while full cleanup owns it", () => {
     );
     assert.equal(existsSync(coverageCanary), true);
 
-    const fullCleanup = spawnSync(process.execPath, [cleaner], {
-      cwd: workspaceDirectory,
-      encoding: "utf8",
-    });
+    const fullCleanup = spawnSync(
+      process.execPath,
+      [cleaner],
+      fixture.childOptions(),
+    );
     assert.equal(fullCleanup.status, 0, fullCleanup.stderr);
     assert.equal(existsSync(coverageCanary), false);
   } finally {
-    rmSync(coverageCanary, { force: true });
-    rmSync(buildCanary, { force: true });
+    fixture.cleanup();
+    for (const [path, before] of realOutputs) {
+      assert.equal(existsSync(path), before !== undefined);
+      if (before) assert.deepEqual(lstatSync(path), before);
+    }
   }
 });
 
 test("cleanup remains bound to its authenticated directory after parent replacement", () => {
-  const root = mkdtempSync(join(tmpdir(), "agentscope-clean-identity-"));
-  const workspaceDirectory = join(root, "packages/protocol");
+  const fixture = createWorkspaceCleanupFixture(repositoryRoot);
+  const { root, workspaceDirectory, cleaner } = fixture;
   const movedWorkspaceDirectory = join(root, "packages/protocol-moved");
   const externalDirectory = join(root, "external");
-  const cleaner = join(root, "scripts/clean-workspace.mjs");
-  const preload = join(root, "replace-parent.cjs");
   try {
-    mkdirSync(workspaceDirectory, { recursive: true });
     mkdirSync(join(externalDirectory, ".next"), { recursive: true });
     mkdirSync(join(workspaceDirectory, ".next"), { recursive: true });
-    mkdirSync(join(root, "scripts"), { recursive: true });
     writeFileSync(
       join(workspaceDirectory, ".next/original-canary"),
       "original",
     );
     writeFileSync(join(externalDirectory, ".next/external-canary"), "external");
-    writeFileSync(
-      cleaner,
-      readFileSync(join(repositoryRoot, "scripts/clean-workspace.mjs")),
-    );
-    writeFileSync(
-      join(root, "scripts/workspace-packages.mjs"),
-      'export const expectedWorkspacePackages = new Map([["packages/protocol", "@agentscope/protocol"]]);\n',
-    );
-    writeFileSync(
-      preload,
-      `const fs = require("node:fs");
-const { syncBuiltinESMExports } = require("node:module");
-const originalRmSync = fs.rmSync;
-const originalDirectory = process.cwd();
-let replaced = false;
-fs.rmSync = function (target, options) {
-  if (!replaced) {
-    replaced = true;
-    fs.renameSync(originalDirectory, ${JSON.stringify(movedWorkspaceDirectory)});
-    fs.symlinkSync(${JSON.stringify(externalDirectory)}, originalDirectory, "dir");
-  }
-  return Reflect.apply(originalRmSync, this, [target, options]);
-};
-syncBuiltinESMExports();
-`,
+    const preload = fixture.replacementPreload(
+      movedWorkspaceDirectory,
+      externalDirectory,
     );
 
-    const result = spawnSync(process.execPath, [cleaner, "--build-outputs"], {
-      cwd: workspaceDirectory,
-      encoding: "utf8",
-      env: { ...process.env, NODE_OPTIONS: `--require=${preload}` },
-    });
+    const result = spawnSync(
+      process.execPath,
+      [cleaner, "--build-outputs"],
+      fixture.childOptions({
+        env: { ...process.env, NODE_OPTIONS: `--require=${preload}` },
+      }),
+    );
     assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
     assert.equal(
       existsSync(join(movedWorkspaceDirectory, ".next/original-canary")),
@@ -302,11 +289,12 @@ syncBuiltinESMExports();
       true,
     );
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    fixture.cleanup();
   }
 });
 
 test("the shared strict configuration rejects a seeded type error", () => {
+  const deadline = performance.now() + 5000;
   const root = createFixture();
   try {
     mkdirSync(join(root, "packages/protocol/src"));
@@ -315,9 +303,14 @@ test("the shared strict configuration rejects a seeded type error", () => {
       'const count: number = "not-a-number";\nexport { count };\n',
     );
     const tsc = join(repositoryRoot, "node_modules/typescript/bin/tsc");
+    const timeout = Math.floor(deadline - performance.now());
+    assert.ok(timeout > 0, "target fixture deadline");
     const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
       cwd: join(root, "packages/protocol"),
       encoding: "utf8",
+      timeout,
+      maxBuffer: 64 * 1024,
+      killSignal: "SIGKILL",
     });
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}${result.stderr}`, /TS2322/);
@@ -330,7 +323,13 @@ test("workspace cleanup refuses to run from the repository root", () => {
   const result = spawnSync(
     process.execPath,
     [join(repositoryRoot, "scripts/clean-workspace.mjs")],
-    { cwd: repositoryRoot, encoding: "utf8" },
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      timeout: 5000,
+      maxBuffer: 64 * 1024,
+      killSignal: "SIGKILL",
+    },
   );
   assert.notEqual(result.status, 0);
   assert.match(`${result.stdout}${result.stderr}`, /Refusing to clean/);

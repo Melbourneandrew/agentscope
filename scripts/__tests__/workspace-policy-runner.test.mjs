@@ -263,18 +263,16 @@ test("the checked-in inventory is classified exactly once", () => {
   );
   assert.ok(plan.pure.includes("workspace-policy-runner.test.mjs"));
   assert.deepEqual(plan.pure, purePolicyFiles);
-  for (const name of processAuthorityFiles) {
-    if (inventory.includes(name)) {
-      assert.ok(plan.authority.includes(name));
-      assert.ok(!plan.pure.includes(name));
-    }
-  }
-  assert.equal(
-    plan.authority.filter(
-      (name) => name === "pty-runtime-proof-controller.test.mjs",
-    ).length,
-    1,
+  assert.deepEqual(
+    plan.authority,
+    processAuthorityFiles.filter((file) => inventory.includes(file)),
   );
+  for (const name of [
+    "review-skill.test.mjs",
+    "workspace-target-policy.test.mjs",
+  ]) {
+    assert.ok(requiredPolicyFiles.includes(name) && !plan.pure.includes(name));
+  }
 });
 
 test("the checked-in inventory rejects omissions and unreviewed growth", () => {
