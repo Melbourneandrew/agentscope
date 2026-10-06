@@ -17,6 +17,8 @@ const observe = (chunks: readonly string[]) => {
 const absent = {
   stderrClass: "unknown",
 };
+const sourceAt = (path: string) =>
+  readFileSync(new URL(path, import.meta.url), "utf8");
 
 describe("bounded untrusted bootstrap text observations", () => {
   it("retains only enums across every byte split and BuildKit prefix", () => {
@@ -105,10 +107,7 @@ describe("bounded untrusted bootstrap text observations", () => {
 
 describe("actual owned kernel output consumer (VM dependencies, no processes)", () => {
   it("keeps the original combined output cap and retains late marker enums", () => {
-    const source = readFileSync(
-      new URL("../image-preparation/boundary.mjs", import.meta.url),
-      "utf8",
-    );
+    const source = sourceAt("../image-preparation/boundary.mjs");
     const start = source.indexOf("  const consume = (chunk, retain) => {");
     const body = source.slice(
       start,
@@ -150,10 +149,7 @@ describe("actual owned kernel output consumer (VM dependencies, no processes)", 
 
 type Projection = (value: unknown, environment: Record<string, string>) => void;
 const fileCommandProjection = (write: (bytes: Buffer) => void) => {
-  const source = readFileSync(
-    new URL("../controller-file-command.mjs", import.meta.url),
-    "utf8",
-  );
+  const source = sourceAt("../controller-file-command.mjs");
   return runInNewContext(
     source.replace(/^import .*;$/gmu, "").replaceAll("export const", "const") +
       "\npublishBootstrapGpgObservation;",
@@ -172,6 +168,187 @@ const fileCommandProjection = (write: (bytes: Buffer) => void) => {
     { timeout: 1_000 },
   ) as Projection;
 };
+
+interface BuildReplay {
+  mapped: Error;
+  build: () => Promise<unknown>;
+  diagnostic: () => unknown;
+  usable: () => boolean;
+  retirementRequired: () => boolean;
+  block: (kind: "uncertain" | "pending") => void;
+}
+const builderReplay = (settings: {
+  failure?: Error;
+  settlementFailure?: Error;
+  archiveFailure?: Error;
+  diagnosticFailure?: boolean;
+}): BuildReplay => {
+  const source = sourceAt("../image-preparation/docker.mjs");
+  const stateSource = sourceAt("../image-preparation/state.mjs");
+  const capture = source.slice(
+    source.indexOf("  const captureFirstBuildFailure ="),
+    source.indexOf("  const finalizeBuildResult ="),
+  );
+  const start = source.indexOf("  const buildPreparedDockerImage = async (");
+  const build = source.slice(
+    start,
+    source.indexOf("\n  return Object.freeze({", start),
+  );
+  const mapped = new Error("integration.images.build.image-build.unknown");
+  const process = observe([
+    marker("import-key"),
+    marker("import-key", "gpg-execution"),
+  ]);
+  return runInNewContext(
+    stateSource.replace("export const", "const") +
+      `
+      const lifecycle = createImagePreparationState();
+      const state = lifecycle.docker;
+      const client = { evidence: { images: [{ image: "fixture" }] } };
+      state.admitClient(client);
+      ${capture}\n${build}
+      ({
+        mapped,
+        build: () => buildPreparedDockerImage(client, {
+          buildArguments: {}, buildNetwork: "none", buildOutput: "image",
+          context: "/fixture", dockerfile: "Verifier.Dockerfile", labels: {},
+          maximumMilliseconds: 1000, tag: "fixture:tag"
+        }),
+        diagnostic: () => state.readDiagnostic(client),
+        usable: () => state.clientIsUsable(client),
+        retirementRequired: () => lifecycle.retirement.clientIsUncertain(client),
+        block: (kind) => kind === "uncertain" ? state.markUncertain(client) : state.recordPendingImage(client, "fixture:tag", "fixture")
+      });`,
+    {
+      mapped,
+      selectBuildNetwork: (value: unknown) => value,
+      selectBuildOutput: (value: unknown) => value,
+      validBuildInput: () => true,
+      imageBuildPolicy: () => ({ workDeadline: 100, deadline: 200 }),
+      defaultMaximumBuildContextBytes: 1024,
+      createBuildArchive: () => {
+        if (settings.archiveFailure) throw settings.archiveFailure;
+        return Buffer.alloc(0);
+      },
+      createBuildAuthority: () => ({
+        requestCapable: true,
+        currentOperationKind: "image-build",
+        builder: "fixture",
+        buildkit: {},
+        client: {},
+        reconciliationReasons: {},
+      }),
+      executeBuilderBuild: () => {
+        if (settings.failure) throw settings.failure;
+        return {};
+      },
+      readImageProcessDiagnostic: (error: unknown) =>
+        error === settings.settlementFailure
+          ? observe([
+              marker("authenticate-inputs"),
+              marker("authenticate-inputs", "input"),
+            ])
+          : process,
+      builderResources: () => ({
+        container: "fixture-container",
+        volume: "fixture-volume",
+      }),
+      diagnosticDigest: () => {
+        if (settings.diagnosticFailure) throw new Error("fixture-diagnostic");
+        return "sha256-fixture";
+      },
+      settleBuilderBuild: () => {
+        if (settings.settlementFailure) throw settings.settlementFailure;
+      },
+      settledBuildFailure: () => mapped,
+      fixedError: (code: string) => new Error(code),
+      finalizeBuildResult: () => "fixture-result",
+    },
+    { timeout: 1000 },
+  ) as BuildReplay;
+};
+
+describe("actual builder failure observation and existing state map", () => {
+  it("retains joined failed-build enums without changing failure or usability", async () => {
+    const replay = builderReplay({ failure: new Error("fixture-command") });
+    await expect(replay.build()).rejects.toBe(replay.mapped);
+    expect(replay.usable()).toBe(true);
+    expect(replay.diagnostic()).toMatchObject({
+      outcome: "failed-settled",
+      process: {
+        untrustedBootstrapStage: "import-key",
+        untrustedBootstrapFailureFamily: "gpg-execution",
+      },
+    });
+    let output = "";
+    fileCommandProjection((bytes) => {
+      output += bytes.toString();
+    })(replay.diagnostic(), {
+      AGENTSCOPE_MOCKSERVER_RESEARCH: "supplier",
+      GITHUB_OUTPUT: "/output",
+    });
+    expect(output).toContain("untrusted_bootstrap_stage=import-key\n");
+    expect(output).toContain(
+      "untrusted_bootstrap_failure_family=gpg-execution\n",
+    );
+  });
+
+  it("preserves the exact controlling error and first failure when settlement fails", async () => {
+    const primary = new Error("integration.images.output");
+    const ordinary = builderReplay({ failure: primary });
+    await expect(ordinary.build()).rejects.toBe(primary);
+    const optional = builderReplay({
+      failure: new Error("fixture-command"),
+      diagnosticFailure: true,
+    });
+    await expect(optional.build()).rejects.toBe(optional.mapped);
+    const cleanup = new Error("fixture-cleanup");
+    const unsettled = builderReplay({
+      failure: new Error("fixture-command"),
+      settlementFailure: cleanup,
+    });
+    await expect(unsettled.build()).rejects.toBe(cleanup);
+    expect(unsettled.usable()).toBe(false);
+    expect(unsettled.diagnostic()).toMatchObject({
+      outcome: "retired-failure",
+      process: { untrustedBootstrapStage: "import-key" },
+    });
+  });
+
+  it("clears stale settled observations before a valid build's pre-invocation failure", async () => {
+    const settings: { failure: Error; archiveFailure?: Error } = {
+      failure: new Error("fixture-command"),
+    };
+    const replay = builderReplay(settings);
+    await expect(replay.build()).rejects.toThrow();
+    expect(replay.diagnostic()).toMatchObject({ outcome: "failed-settled" });
+    settings.archiveFailure = new Error("fixture-context");
+    await expect(replay.build()).rejects.toBe(settings.archiveFailure);
+    expect(replay.diagnostic()).toBeUndefined();
+  });
+
+  it.each(["uncertain", "pending"] as const)(
+    "does not erase evidence for a %s client rejected before work",
+    async (kind) => {
+      const replay = builderReplay({ failure: new Error("fixture-command") });
+      await expect(replay.build()).rejects.toThrow();
+      const diagnostic = replay.diagnostic();
+      replay.block(kind);
+      expect(replay.retirementRequired()).toBe(kind === "uncertain");
+      await expect(replay.build()).rejects.toThrow(
+        "integration.images.build.input",
+      );
+      expect(replay.diagnostic()).toBe(diagnostic);
+    },
+  );
+
+  it("keeps successful builds silent and non-certifying", async () => {
+    const replay = builderReplay({});
+    await expect(replay.build()).resolves.toBe("fixture-result");
+    expect(replay.diagnostic()).toBeUndefined();
+    expect(replay.usable()).toBe(true);
+  });
+});
 
 describe("existing outer observation projection", () => {
   it("projects fixed private-process observations without inspecting thrown contents", () => {
@@ -235,13 +412,7 @@ describe("actual bootstrap host failure boundary", () => {
   it.each([false, true])(
     "projects the existing client observation without replacing primary (sink failure=%s)",
     async (sinkFails) => {
-      const source = readFileSync(
-        new URL(
-          "../mockserver-material/prepare-bootstrap.mjs",
-          import.meta.url,
-        ),
-        "utf8",
-      );
+      const source = sourceAt("../mockserver-material/prepare-bootstrap.mjs");
       const start = source.indexOf("const verifyKind =");
       const body = source.slice(
         start,
@@ -297,10 +468,7 @@ describe("actual bootstrap host failure boundary", () => {
 
 type Step = { name?: string; run?: string; env?: Record<string, string> };
 const workflow = parseYaml(
-  readFileSync(
-    new URL("../../../.github/workflows/integration.yml", import.meta.url),
-    "utf8",
-  ),
+  sourceAt("../../../.github/workflows/integration.yml"),
 ) as {
   jobs: Record<string, { steps: Step[] }>;
 };

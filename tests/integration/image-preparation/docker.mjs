@@ -1045,6 +1045,7 @@ export const createDockerOperations = (state) => {
     authority,
     labels,
     failure,
+    outcome = "retired-failure",
   ) => {
     if (state.hasDiagnostic(client)) return;
     const resources = builderResources(authority.builder);
@@ -1084,13 +1085,35 @@ export const createDockerOperations = (state) => {
         ]),
         observedResourceDigest: observation.observedDigest,
         reconciliationReasons: authority.reconciliationReasons,
-        outcome: "retired-failure",
+        outcome,
       }),
     );
   };
 
   const preparedDockerClientDiagnostic = (client) =>
     state.readDiagnostic(client);
+
+  const rejectSettledBuild = (client, authority, labels, failure) => {
+    try {
+      recordPreparedDockerDiagnostic(
+        client,
+        authority,
+        labels,
+        failure,
+        "failed-settled",
+      );
+    } catch {
+      // Optional observation cannot replace the original controlling failure.
+    }
+    throw [
+      "integration.images.executable",
+      "integration.images.interrupted",
+      "integration.images.output",
+      "integration.images.timeout",
+    ].includes(failure?.message)
+      ? failure
+      : settledBuildFailure(authority, failure);
+  };
 
   const finalizeBuildResult = (
     authority,
@@ -1153,6 +1176,7 @@ export const createDockerOperations = (state) => {
       state.pendingCount(client) !== 0
     )
       throw fixedError("integration.images.build.input");
+    state.clearDiagnostic(client);
     const policy = imageBuildPolicy(
       client.evidence.images[0].image,
       maximumMilliseconds,
@@ -1220,14 +1244,7 @@ export const createDockerOperations = (state) => {
       throw error;
     }
     if (failure !== undefined)
-      throw [
-        "integration.images.executable",
-        "integration.images.interrupted",
-        "integration.images.output",
-        "integration.images.timeout",
-      ].includes(failure?.message)
-        ? failure
-        : settledBuildFailure(authority, failure);
+      rejectSettledBuild(client, authority, labels, failure);
     return finalizeBuildResult(authority, built, {
       retirementRequired,
       tag,

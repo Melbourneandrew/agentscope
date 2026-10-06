@@ -299,7 +299,8 @@ export declare const preparedDockerClientDiagnostic: (
       expectedResourceDigest: string;
       observedResourceDigest: string;
       reconciliationReasons: Readonly<Record<string, string>>;
-      outcome: "retired-failure";
+      /** First build observation, not overall client retirement/cleanup authority. */
+      outcome: "retired-failure" | "failed-settled";
     }>
   | undefined;
 

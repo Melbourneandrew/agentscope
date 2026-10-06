@@ -23,6 +23,8 @@ export const createImagePreparationState = () => {
       admitClient: (client) => preparedDockerClients.add(client),
       admitPreparedSet: (prepared) => preparedSets.add(prepared),
       clientIsUsable,
+      clearDiagnostic: (client) =>
+        preparedDockerClientDiagnostics.delete(client),
       hasDiagnostic: (client) => preparedDockerClientDiagnostics.has(client),
       markUncertain: (client) => uncertainPreparedDockerClients.add(client),
       pendingCount,
