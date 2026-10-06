@@ -85,7 +85,7 @@ describe("macOS Keychain command construction", () => {
     expect(command.arguments.at(0)).toBe("add-generic-password");
     expect(command.arguments.at(-1)).toBe("-w");
     expect(command.arguments.join(" ")).not.toContain("CANARY_SECRET");
-    expect(command.stdin).toBe("CANARY_SECRET\n");
+    expect(command.stdin).toBe("CANARY_SECRET\nCANARY_SECRET\n");
     expect(JSON.stringify(created)).not.toContain("CANARY_SECRET");
   });
 

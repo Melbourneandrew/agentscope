@@ -111,7 +111,12 @@ describe("macOS credential mutation caller cutoff", () => {
       expect(captured[0]).toMatchObject(boundary);
       expect(captured[0]?.arguments).not.toContain("CANARY");
       expect(native.end).toHaveBeenCalledWith(
-        kind === "createPending" ? "CANARY\n" : undefined,
+        kind === "createPending" ? "CANARY\nCANARY\n" : undefined,
+      );
+      expect(native.spawn).toHaveBeenCalledWith(
+        "/usr/bin/security",
+        captured[0]?.arguments,
+        expect.objectContaining({ detached: true }),
       );
     },
   );
