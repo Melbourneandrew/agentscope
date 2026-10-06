@@ -28,5 +28,11 @@ export {
 } from "./lifecycle.js";
 export {
   mapClaudeCodeCapture,
+  mapClaudeCodeRootHookCapture,
   type ClaudeCodeNativeCapture,
 } from "./mapping.js";
+export {
+  decodeClaudeCodeRootHookInput,
+  type ClaudeCodeRootHookInput,
+  type ClaudeCodeRootHookEvent,
+} from "./root-hook.js";

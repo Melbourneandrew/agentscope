@@ -37,6 +37,8 @@ assertExactKeys("production root", rootModule, [
   "createClaudeCodeInstallationPlanner",
   "inspectClaudeCodePluginOverlap",
   "mapClaudeCodeCapture",
+  "decodeClaudeCodeRootHookInput",
+  "mapClaudeCodeRootHookCapture",
 ]);
 
 const testingModule = await import(
@@ -220,6 +222,7 @@ assertGraph("production runtime", productionRuntime, [
   "index.js",
   "lifecycle.js",
   "mapping.js",
+  "root-hook.js",
 ]);
 assertGraph("production declarations", productionDeclarations, [
   "descriptor.d.ts",
@@ -227,12 +230,14 @@ assertGraph("production declarations", productionDeclarations, [
   "index.d.ts",
   "lifecycle.d.ts",
   "mapping.d.ts",
+  "root-hook.d.ts",
 ]);
 assertGraph("testing runtime", testingRuntime, [
   "descriptor.js",
   "fixture.js",
   "lifecycle.js",
   "mapping.js",
+  "root-hook.js",
   "testing.js",
 ]);
 assertGraph("testing declarations", testingDeclarations, [
