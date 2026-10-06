@@ -2,7 +2,7 @@
 title: Initialize Agentscope
 description: Inspect current authoritative state and optionally apply a non-destructive initialization plan.
 command: agentscope init
-commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
+commandContract: sha256:e4344e6e0b317acf331df5558c099328d3eae02ae5fc14c7b2b065a7d4b4427e
 ---
 
 `agentscope init` is a stateless, plan-first orchestrator. Without `--yes` it reports the complete current plan and performs no mutation. With `--yes`, Core inspects one exact one-use plan, the CLI displays and flushes that plan, and Core applies only the same authority if it remains current. A replacement, deletion, or conflict always requires fresh explicit authority.

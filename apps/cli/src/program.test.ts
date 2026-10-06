@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CLI_EXIT_CODES } from "./cli-contract.js";
-import { createCapturedOutput, runFixture } from "./__tests__/cli-fixture.js";
+import {
+  createCapturedOutput,
+  fixtureModule,
+  fixtureRegistry,
+  runFixture,
+} from "./__tests__/cli-fixture.js";
+import type { CliCommandBoundary } from "./command-runtime.js";
 import { createProgram, runCli } from "./program.js";
 
 const success = Object.freeze({
@@ -11,6 +17,7 @@ const success = Object.freeze({
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("agentscope root command", () => {
@@ -130,6 +137,135 @@ describe("process output", () => {
     expect(await runCli(["--bad"], { version: "1.2.3" })).toBe(2);
     expect(stdout).toEqual(["1.2.3\n"]);
     expect(stderr).toEqual(["error [cli.input.invalid]\n"]);
+  });
+});
+
+describe("original foreground command authority", () => {
+  it("uses and removes its own cancellation listener without changing other handlers", async () => {
+    const previous = process.listeners("SIGINT");
+    const output = createCapturedOutput();
+    let boundary: CliCommandBoundary | undefined;
+    const exit = await runCli(["sample", "list", "--name", "one"], {
+      modules: [fixtureModule],
+      registry: fixtureRegistry,
+      output: output.output,
+      version: "1.2.3",
+      createServices: (received) => {
+        boundary = received;
+        return {
+          run: () => {
+            process
+              .listeners("SIGINT")
+              .find((listener) => !previous.includes(listener))!("SIGINT");
+            return success;
+          },
+        };
+      },
+    });
+    expect(exit).toBe(70);
+    expect(boundary?.credentialContext.signal.aborted).toBe(true);
+    expect(process.listeners("SIGINT")).toEqual(previous);
+  });
+  it("refuses command work when service construction consumes the original allowance", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const output = createCapturedOutput();
+    const run = vi.fn(() => success);
+    const exit = await runCli(["sample", "list", "--name", "one"], {
+      modules: [fixtureModule],
+      registry: fixtureRegistry,
+      output: output.output,
+      version: "1.2.3",
+      createServices: () => {
+        vi.advanceTimersByTime(60_000);
+        return { run };
+      },
+    });
+    expect(exit).toBe(70);
+    expect(run).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("captures one original allowance before services and restores owned cancellation handlers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const signals = [process.listeners("SIGINT"), process.listeners("SIGTERM")];
+    let boundary: CliCommandBoundary | undefined;
+    const output = createCapturedOutput();
+    const exit = await runCli(
+      ["sample", "list", "--name", "one", "--output", "json"],
+      {
+        modules: [fixtureModule],
+        registry: fixtureRegistry,
+        output: output.output,
+        version: "1.2.3",
+        createServices: (received) => {
+          boundary = received;
+          return { run: () => success };
+        },
+      },
+    );
+    expect(exit).toBe(0);
+    expect(boundary?.credentialContext.expiresAtMonotonicMilliseconds).toBe(
+      60_000,
+    );
+    expect(boundary?.outputMode).toBe("json");
+    expect(process.listeners("SIGINT")).toEqual(signals[0]);
+    expect(process.listeners("SIGTERM")).toEqual(signals[1]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("foreground terminal result precedence", () => {
+  it("refuses late success without resetting the allowance", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const output = createCapturedOutput();
+    let boundary: CliCommandBoundary | undefined;
+    const exit = await runCli(["sample", "list", "--name", "one"], {
+      modules: [fixtureModule],
+      registry: fixtureRegistry,
+      output: output.output,
+      version: "1.2.3",
+      createServices: (received) => {
+        boundary = received;
+        return {
+          run: () => {
+            vi.advanceTimersByTime(60_000);
+            return success;
+          },
+        };
+      },
+    });
+    expect(exit).toBe(70);
+    expect(output.stdout).toEqual([]);
+    expect(boundary?.credentialContext.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("preserves a validated late failure's observed commit fact", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const output = createCapturedOutput();
+    const exit = await runCli(
+      ["sample", "list", "--name", "one", "--output", "json"],
+      {
+        modules: [fixtureModule],
+        registry: fixtureRegistry,
+        output: output.output,
+        version: "1.2.3",
+        createServices: () => ({
+          run: () => {
+            vi.advanceTimersByTime(60_000);
+            return {
+              status: "failure",
+              diagnostic: {
+                category: "unavailable",
+                code: "sample.unavailable",
+                facts: { configurationCommitted: true },
+              },
+            };
+          },
+        }),
+      },
+    );
+    expect(exit).toBe(CLI_EXIT_CODES.unavailable);
+    expect(output.stderr.join("")).toContain('"configurationCommitted":true');
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
