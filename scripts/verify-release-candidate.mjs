@@ -4,6 +4,10 @@ import {
   resolveContainedArtifactPath,
   verifyCandidateArtifact,
 } from "./release-lane/candidate.mjs";
+import {
+  readReleaseEvidence,
+  validateReleaseEvidence,
+} from "./release-lane/admission.mjs";
 
 const value = (name) => {
   const index = process.argv.indexOf(name);
@@ -21,16 +25,25 @@ const manifestPath = resolveArtifact("--manifest-relative");
 const certificationRecordPath = resolveArtifact("--certification-relative");
 const tarballPath = resolveArtifact("--tarball-relative");
 
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const certificationRecord = JSON.parse(
+  readFileSync(certificationRecordPath, "utf8"),
+);
 const result = verifyCandidateArtifact({
-  manifest: JSON.parse(readFileSync(manifestPath, "utf8")),
-  certificationRecord: JSON.parse(
-    readFileSync(certificationRecordPath, "utf8"),
-  ),
+  manifest,
+  certificationRecord,
   tarballPath,
   expectedManifestDigest: value("--manifest-digest"),
   expectedSourceRevision: value("--source-revision"),
   expectedProtectedTag: value("--protected-tag"),
 });
+const evidence = validateReleaseEvidence({
+  manifest,
+  certificationRecord,
+  supportAdmission: readReleaseEvidence(artifactRoot, "support-admission.json"),
+  evidenceIndex: readReleaseEvidence(artifactRoot, "evidence-index.json"),
+  readEvidence: (path) => readReleaseEvidence(artifactRoot, path),
+});
 process.stdout.write(
-  `Verified exact certified release candidate without rebuilding: ${JSON.stringify(result)}\n`,
+  `Verified retained candidate records without rebuilding; final advertised roster and publication admission remain unclaimed: ${JSON.stringify({ ...result, ...evidence })}\n`,
 );

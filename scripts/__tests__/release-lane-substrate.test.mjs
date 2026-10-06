@@ -1730,7 +1730,7 @@ test("enforces the checked-in reusable workflow as read-only and offline", () =>
       scriptPaths: releaseEntryPoints,
     }),
     {
-      scripts: 10,
+      scripts: 11,
       workflow: ".github/workflows/release-candidate-rehearsal.yml",
     },
   );
