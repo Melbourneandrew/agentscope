@@ -1,0 +1,85 @@
+name: Directory native candidate (nonpublishing)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/directory-native-candidate.yml
+      - packages/harnesses/core/native-directory/**
+      - packages/harnesses/core/src/native-directory-candidate.test.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: directory-native-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4
+    outputs:
+      header-artifact-id: ${{ steps.headers.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact Linux candidate and retain pinned-image headers
+        run: /usr/local/bin/node packages/harnesses/core/native-directory/build-candidate.mjs linux-x64
+      - uses: actions/upload-artifact@v4
+        id: headers
+        with:
+          name: directory-native-headers-${{ github.run_id }}
+          path: artifacts/directory-native/headers/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: directory-native-linux-x64-${{ github.run_id }}
+          path: |
+            artifacts/directory-native/linux-x64/directory.node
+            artifacts/directory-native/linux-x64/observed-materials.json
+          if-no-files-found: error
+          retention-days: 7
+
+  darwin-arm64:
+    needs: linux-x64
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          architecture: arm64
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.linux-x64.outputs.header-artifact-id }}
+          path: artifacts/directory-native/headers/
+          merge-multiple: true
+      - name: Verify Apple material, then build exact Darwin candidate
+        run: node packages/harnesses/core/native-directory/build-candidate.mjs darwin-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: directory-native-darwin-arm64-${{ github.run_id }}
+          path: |
+            artifacts/directory-native/darwin-arm64/directory.node
+            artifacts/directory-native/darwin-arm64/observed-materials.json
+          if-no-files-found: error
+          retention-days: 7
+
+  candidate-terminal:
+    if: always()
+    needs: [linux-x64, darwin-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require both candidate rows, never assert publication admission
+        env:
+          LINUX_RESULT: ${{ needs.linux-x64.result }}
+          DARWIN_RESULT: ${{ needs.darwin-arm64.result }}
+        run: |
+          test "$LINUX_RESULT" = success
+          test "$DARWIN_RESULT" = success
+          printf '%s\n' 'Both native candidates produced; retained artifacts remain unadmitted.'
