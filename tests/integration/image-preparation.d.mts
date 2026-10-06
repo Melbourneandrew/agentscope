@@ -289,6 +289,8 @@ export declare const preparedDockerClientDiagnostic: (
         outputBytes: number;
         outputTruncated: boolean;
         stderrClass: string;
+        untrustedBootstrapStage?: string;
+        untrustedBootstrapFailureFamily?: string;
       }>;
       responseBytes: number;
       responseTruncated: false;

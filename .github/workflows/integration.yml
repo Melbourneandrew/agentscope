@@ -399,6 +399,8 @@ jobs:
           OBSERVED_PULL_TRIGGER: ${{ steps.research_packet.outputs.controller_pull_trigger }}
           OBSERVED_RECONCILIATION: ${{ steps.research_packet.outputs.controller_reconciliation }}
           OBSERVED_MATERIAL_PHASE: ${{ steps.research_packet.outputs.material_phase }}
+          OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: ${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}
+          OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: ${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}
         run: |
           outcome=unknown
           case "$OBSERVED_OUTCOME" in success|failure|cancelled|skipped) outcome="$OBSERVED_OUTCOME" ;; esac
@@ -414,6 +416,9 @@ jobs:
           supervisor=unknown; supervisor_code=unknown; supervisor_signal=unknown; contained=unknown; residual=unknown; termination=unknown; within_deadline=unknown
           failure=unknown; stage=unknown; kind=unknown; cleanup=unknown; trigger=unknown; reconciliation=unknown
           material_phase=unknown
+          untrusted_bootstrap_stage=unknown; untrusted_bootstrap_failure_family=unknown
+          case "$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" in authenticate-inputs|keyrings|import-key|export-key|selected-key-file|import-selected|list-key|listing-policy|verify-signature|signature-policy|checksum-policy|completed) untrusted_bootstrap_stage="$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" ;; esac
+          case "$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" in none|input|filesystem|gpg-execution|listing-policy|signature-policy|checksum-policy) untrusted_bootstrap_failure_family="$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" ;; esac
           case "$OBSERVED_MATERIAL_PHASE" in research-preflight|research-client|research-inventory|research-close|bootstrap-preflight|download-source|download-maven|download-node|download-jdk|verify-archives|pinned-metadata|download-maven-key|download-maven-signature|verify-maven|verify-node|verify-jdk|retire-maven|retire-node|retire-jdk|bootstrap-cleanup|supplier-context|supplier-build|supplier-inventory|supplier-cleanup) material_phase="$OBSERVED_MATERIAL_PHASE" ;; esac
           case "$OBSERVED_SUPERVISOR" in terminal|rejected) supervisor="$OBSERVED_SUPERVISOR" ;; esac
           if [[ "$OBSERVED_SUPERVISOR_CODE" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SUPERVISOR_CODE <= 255 )); then supervisor_code="$OBSERVED_SUPERVISOR_CODE"; fi
@@ -428,8 +433,8 @@ jobs:
           case "$OBSERVED_CLEANUP" in none|failed|not-attempted) cleanup="$OBSERVED_CLEANUP" ;; esac
           case "$OBSERVED_PULL_TRIGGER" in abort|timeout|transport|unexpected-status|empty-events|malformed-event|daemon-error-event) trigger="$OBSERVED_PULL_TRIGGER" ;; esac
           case "$OBSERVED_RECONCILIATION" in completed|failed|not-attempted) reconciliation="$OBSERVED_RECONCILIATION" ;; esac
-          if [[ "$supervisor" != unknown || "$failure" != unknown || "$material_phase" != unknown ]]; then
-            observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation material_phase=$material_phase"
+          if [[ "$supervisor" != unknown || "$failure" != unknown || "$material_phase" != unknown || "$untrusted_bootstrap_stage" != unknown ]]; then
+            observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation material_phase=$material_phase untrusted_bootstrap_stage=$untrusted_bootstrap_stage untrusted_bootstrap_failure_family=$untrusted_bootstrap_failure_family"
             ( printf '%s\n' "$observation" ) || :
             { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
           fi

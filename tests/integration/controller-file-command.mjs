@@ -52,6 +52,29 @@ const materialPhases = [
   "supplier-inventory",
   "supplier-cleanup",
 ];
+const bootstrapStages = [
+  "authenticate-inputs",
+  "keyrings",
+  "import-key",
+  "export-key",
+  "selected-key-file",
+  "import-selected",
+  "list-key",
+  "listing-policy",
+  "verify-signature",
+  "signature-policy",
+  "checksum-policy",
+  "completed",
+];
+const bootstrapFamilies = [
+  "none",
+  "input",
+  "filesystem",
+  "gpg-execution",
+  "listing-policy",
+  "signature-policy",
+  "checksum-policy",
+];
 const own = (value, key) => {
   if (typeof value !== "object" || value === null || types.isProxy(value))
     return undefined;
@@ -192,6 +215,33 @@ export const publishControllerFailureObservation = (
           "failed",
           "not-attempted",
         ]),
+      ],
+    ],
+    environment,
+  );
+};
+
+/** Builder text is untrusted; these observations never identify a causal fault. */
+export const publishBootstrapGpgObservation = (
+  diagnostic,
+  environment = process.env,
+) => {
+  const processObservation = own(diagnostic, "process");
+  append(
+    [
+      [
+        "untrusted_bootstrap_stage",
+        selected(
+          own(processObservation, "untrustedBootstrapStage"),
+          bootstrapStages,
+        ),
+      ],
+      [
+        "untrusted_bootstrap_failure_family",
+        selected(
+          own(processObservation, "untrustedBootstrapFailureFamily"),
+          bootstrapFamilies,
+        ),
       ],
     ],
     environment,

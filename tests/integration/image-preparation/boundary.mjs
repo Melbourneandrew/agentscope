@@ -16,6 +16,7 @@ import { rootCertificates } from "node:tls";
 
 import {
   classifyBuildxStderr,
+  createBuildStderrObservation,
   selectCommandOutput,
   serializeCommandOutput,
 } from "./process-output.mjs";
@@ -406,8 +407,7 @@ const runOwnedCommand = async (
   }
   let bytes = 0;
   const outputChunks = [];
-  const diagnosticStderr = [];
-  let diagnosticStderrBytes = 0;
+  const stderrObservation = createBuildStderrObservation();
   let outputTruncated = false;
   let failure;
   const fail = (code, timedOut = false, timeoutSource) => {
@@ -433,15 +433,7 @@ const runOwnedCommand = async (
         timeoutAfterOutputForTesting,
         fail,
       );
-    } else if (diagnosticStderrBytes < maximumHeaderBytes) {
-      const retained = chunk.subarray(
-        0,
-        Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
-      );
-      diagnosticStderr.push(retained);
-      diagnosticStderrBytes += retained.byteLength;
-      if (retained.byteLength !== chunk.byteLength) outputTruncated = true;
-    } else outputTruncated = true;
+    } else if (stderrObservation.consume(chunk)) outputTruncated = true;
   };
   child.stdout.on("data", (chunk) => consume(chunk, true));
   child.stderr.on("data", (chunk) => consume(chunk, false));
@@ -507,9 +499,7 @@ const runOwnedCommand = async (
       joined: state === "absent",
       outputBytes: bytes,
       outputTruncated,
-      stderrClass: classifyBuildxStderr(
-        Buffer.concat(diagnosticStderr).toString("utf8"),
-      ),
+      ...stderrObservation.snapshot(),
     });
     observeProcess?.(processDiagnostic);
     if (failure instanceof Error)

@@ -24,10 +24,14 @@ import {
   buildPreparedDockerImage,
   markPreparedDockerClientForOuterHostRetirement,
   prepareDockerInvocation,
+  preparedDockerClientDiagnostic,
   retirePreparedDockerImage,
 } from "../image-preparation.mjs";
 import { downloadMaterialObject } from "../material-download.mjs";
-import { publishMaterialResearchPhase } from "../controller-file-command.mjs";
+import {
+  publishBootstrapGpgObservation,
+  publishMaterialResearchPhase,
+} from "../controller-file-command.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyBootstrapMetadata } from "./bootstrap-metadata.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
@@ -248,6 +252,15 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
     retirementRequired: true,
     signal: workSignal,
     tag,
+  }).catch((error) => {
+    try {
+      publishBootstrapGpgObservation(
+        preparedDockerClientDiagnostic(dockerClient),
+      );
+    } catch {
+      // Optional text observation must never replace the original failure.
+    }
+    throw error;
   });
   // Retire a successfully created reference even after late work completion.
   publishMaterialResearchPhase(`retire-${kind}`);

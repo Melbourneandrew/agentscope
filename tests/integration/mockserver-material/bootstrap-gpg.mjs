@@ -9,6 +9,7 @@ import {
   readFileSync,
   readSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
 
@@ -261,12 +262,14 @@ const argumentsFor = (home) => [
 
 // execute is the existing command's promisified execFile, not a new executor.
 // The enclosing owned builder supplies the hard deadline and terminal boundary.
-export const runBootstrapGpgVerification = async (kind, execute) => {
+const runVerification = async (kind, execute, enter) => {
   const policy = policyFor(kind);
+  enter("authenticate-inputs", "input");
   for (const object of objects[kind]) authenticateObject(object);
   const root = "/verify";
   const importedHome = resolve(root, "bootstrap-import");
   const selectedHome = resolve(root, "bootstrap-selected");
+  enter("keyrings", "filesystem");
   mkdirSync(importedHome, { mode: 0o700 });
   mkdirSync(selectedHome, { mode: 0o700 });
   const environment = {
@@ -282,7 +285,9 @@ export const runBootstrapGpgVerification = async (kind, execute) => {
       encoding,
       maxBuffer: 8 * 1024 * 1024,
     });
+  enter("import-key", "gpg-execution");
   await invoke(importedHome, ["--import", resolve(root, "key")]);
+  enter("export-key", "gpg-execution");
   const { stdout: selected } = await invoke(
     importedHome,
     ["--export", policy.primary],
@@ -296,19 +301,24 @@ export const runBootstrapGpgVerification = async (kind, execute) => {
     fail();
   // Import only the exact selected primary, including its certifications and
   // revocations, into a second empty keyring. Maven KEYS may contain other keys.
+  enter("selected-key-file", "filesystem");
   writeFileSync(resolve(root, "selected-key"), selected, {
     flag: "wx",
     mode: 0o600,
   });
+  enter("import-selected", "gpg-execution");
   await invoke(selectedHome, ["--import", resolve(root, "selected-key")]);
+  enter("list-key", "gpg-execution");
   const { stdout: listing } = await invoke(selectedHome, [
     "--with-colons",
     "--fingerprint",
     "--list-keys",
   ]);
   const nowSeconds = Math.floor(Date.now() / 1_000);
+  enter("listing-policy", "listing-policy");
   const key = verifyBootstrapGpgListing(kind, listing, nowSeconds);
   const cleartext = kind === "node";
+  enter("verify-signature", "gpg-execution");
   const result = await invoke(
     selectedHome,
     cleartext
@@ -320,6 +330,7 @@ export const runBootstrapGpgVerification = async (kind, execute) => {
           resolve(root, "manifest"),
         ],
   );
+  enter("signature-policy", "signature-policy");
   const signature = verifyBootstrapGpgStatus(
     kind,
     cleartext ? result.stderr : result.stdout,
@@ -331,6 +342,7 @@ export const runBootstrapGpgVerification = async (kind, execute) => {
   )
     fail();
   if (cleartext) {
+    enter("checksum-policy", "checksum-policy");
     const decoded = Buffer.from(result.stdout, "utf8");
     const expected = readFileSync(resolve(root, "manifest"));
     if (
@@ -341,5 +353,34 @@ export const runBootstrapGpgVerification = async (kind, execute) => {
         "d67cdb735b1764bf5b553a0d9b067ed861b91a4d934afc20442c04f5234b55db"
     )
       fail();
+  }
+};
+
+/** Fixed observations only. A missing marker never changes verification. */
+export const runBootstrapGpgVerification = async (kind, execute) => {
+  let stage = "authenticate-inputs";
+  let failureFamily = "input";
+  const emit = (family) => {
+    try {
+      writeSync(
+        2,
+        `[agentscope-material:v1 stage=${stage} family=${family}]\n`,
+      );
+    } catch {
+      // Optional diagnostic sink; preserve the original success or rejection.
+    }
+  };
+  const enter = (next, family) => {
+    stage = next;
+    failureFamily = family;
+    emit("none");
+  };
+  try {
+    await runVerification(kind, execute, enter);
+    stage = "completed";
+    emit("none");
+  } catch (error) {
+    emit(failureFamily);
+    throw error;
   }
 };

@@ -1,5 +1,148 @@
 /** Pure output representation only; no subprocess or lifecycle authority. */
 const maximumHeaderBytes = 16_384;
+const bootstrapStages = [
+  "authenticate-inputs",
+  "keyrings",
+  "import-key",
+  "export-key",
+  "selected-key-file",
+  "import-selected",
+  "list-key",
+  "listing-policy",
+  "verify-signature",
+  "signature-policy",
+  "checksum-policy",
+  "completed",
+];
+const bootstrapFamilies = [
+  "none",
+  "input",
+  "filesystem",
+  "gpg-execution",
+  "listing-policy",
+  "signature-policy",
+  "checksum-policy",
+];
+const marker = "[agentscope-material";
+const markerBytes = Buffer.from(marker);
+const familyFor = (stage) =>
+  stage === "authenticate-inputs"
+    ? "input"
+    : ["keyrings", "selected-key-file"].includes(stage)
+      ? "filesystem"
+      : ["listing-policy", "signature-policy", "checksum-policy"].includes(
+            stage,
+          )
+        ? stage
+        : stage === "completed"
+          ? "none"
+          : "gpg-execution";
+
+/** Untrusted text observation only; neither markers nor absence grant authority. */
+export const createBuildStderrObservation = () => {
+  const prefix = Buffer.alloc(maximumHeaderBytes);
+  const pending = Buffer.alloc(maximumHeaderBytes);
+  let prefixBytes = 0;
+  let pendingBytes = 0;
+  let rawBytes = 0;
+  let suffix = "";
+  let lineBytes = 0;
+  let candidate = false;
+  let ambiguous = false;
+  let stage = "unknown";
+  let family = "unknown";
+  const line = () => {
+    if (!candidate) return false;
+    const match =
+      /^(?:#\d{1,8} \d{1,8}\.\d{1,6} )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)\]$/u.exec(
+        suffix,
+      );
+    if (
+      lineBytes > 256 ||
+      !match ||
+      !bootstrapStages.includes(match[1]) ||
+      !bootstrapFamilies.includes(match[2]) ||
+      (match[2] !== "none" && match[2] !== familyFor(match[1]))
+    ) {
+      ambiguous = true;
+      return false;
+    }
+    if (
+      (family !== "unknown" && family !== "none") ||
+      bootstrapStages.indexOf(match[1]) < bootstrapStages.indexOf(stage) ||
+      (match[1] === stage && match[2] === "none")
+    ) {
+      ambiguous = true;
+      return true;
+    }
+    stage = match[1];
+    family = match[2];
+    return true;
+  };
+  return Object.freeze({
+    consume(chunk) {
+      rawBytes += chunk.length;
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newline = chunk.indexOf(10, offset);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset, end);
+        const pendingSegment = chunk.subarray(
+          offset,
+          newline === -1 ? end : end + 1,
+        );
+        pendingBytes += pendingSegment.copy(
+          pending,
+          pendingBytes,
+          0,
+          Math.max(0, maximumHeaderBytes - prefixBytes - pendingBytes),
+        );
+        candidate ||=
+          (suffix + segment.subarray(0, 256).toString("latin1")).includes(
+            marker,
+          ) || segment.includes(markerBytes);
+        suffix =
+          segment.length >= 256
+            ? segment.subarray(-256).toString("latin1")
+            : (suffix + segment.toString("latin1")).slice(-256);
+        lineBytes += segment.length;
+        if (newline !== -1) {
+          // Fixed neutral marker lines do not displace the legacy classifier's
+          // first16KiB of non-marker text or introduce a classifier keyword.
+          if (!line()) {
+            pending.copy(prefix, prefixBytes, 0, pendingBytes);
+            prefixBytes += pendingBytes;
+          }
+          pendingBytes = 0;
+          suffix = "";
+          lineBytes = 0;
+          candidate = false;
+        }
+        offset = newline === -1 ? chunk.length : newline + 1;
+      }
+      return rawBytes > maximumHeaderBytes;
+    },
+    snapshot() {
+      if (candidate) ambiguous = true;
+      const observation =
+        !ambiguous && stage !== "unknown"
+          ? {
+              untrustedBootstrapStage: stage,
+              untrustedBootstrapFailureFamily: family,
+            }
+          : {};
+      return Object.freeze({
+        stderrClass: classifyBuildxStderr(
+          Buffer.concat([
+            prefix.subarray(0, prefixBytes),
+            pending.subarray(0, pendingBytes),
+          ]).toString("utf8"),
+        ),
+        ...observation,
+      });
+    },
+  });
+};
 const buildxStderrClassifiers = Object.freeze([
   ["resource-conflict", /(?:already exists|existing instance)/iu],
   ["build-failed", /(?:failed to solve|failed to build)/iu],

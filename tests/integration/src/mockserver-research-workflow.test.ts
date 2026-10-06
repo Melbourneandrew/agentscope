@@ -149,6 +149,10 @@ describe("actual research workflow shell file commands", () => {
         "${{ steps.research_packet.outputs.controller_reconciliation }}",
       OBSERVED_MATERIAL_PHASE:
         "${{ steps.research_packet.outputs.material_phase }}",
+      OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE:
+        "${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}",
+      OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY:
+        "${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}",
     });
     const upload = steps.at(-1)!;
     expect(upload.if).toBe(

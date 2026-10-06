@@ -1,7 +1,8 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -20,6 +21,105 @@ const status = (fingerprint: string, hash: string, signatureClass: string) =>
   `[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG ${fingerprint.slice(-16)} Synthetic Release\n[GNUPG:] VALIDSIG ${fingerprint} 2023-11-14 ${created} 0 4 0 1 ${hash} ${signatureClass} ${fingerprint}\n`;
 const listing = (fingerprint: string) =>
   `pub:-:4096:1:${fingerprint.slice(-16)}:${created - 1}:0:::::scSC:\nfpr:::::::::${fingerprint}:\nuid:-::::${created - 1}::canary::Synthetic Release:\n`;
+
+type Execute = (
+  ...values: unknown[]
+) => Promise<{ stdout: string | Buffer; stderr?: string }>;
+type Verification = (kind: string, execute: Execute) => Promise<void>;
+function observedVerification(options: {
+  authentication?: () => void;
+  mkdir?: () => void;
+  write?: (text: string) => void;
+  listing?: () => { created: number; expiry: number };
+  signature?: () => { created: number; expiry: number };
+  manifest?: () => Buffer;
+}) {
+  const source = readFileSync(
+    new URL("../mockserver-material/bootstrap-gpg.mjs", import.meta.url),
+    "utf8",
+  );
+  const body = source.slice(source.indexOf("const runVerification ="));
+  return runInNewContext(
+    body.replaceAll("export const", "const") + "\nrunBootstrapGpgVerification;",
+    {
+      Buffer,
+      Date,
+      resolve,
+      policyFor: () => ({ primary: policies[0][1] }),
+      objects: { maven: [["key", 1, "fixed"]], node: [["key", 1, "fixed"]] },
+      authenticateObject: options.authentication ?? (() => undefined),
+      mkdirSync: options.mkdir ?? (() => undefined),
+      writeFileSync: () => undefined,
+      writeSync: (_fd: number, text: string) => options.write?.(text),
+      verifyBootstrapGpgListing:
+        options.listing ?? (() => ({ created: 1, expiry: 0 })),
+      verifyBootstrapGpgStatus:
+        options.signature ?? (() => ({ created: 2, expiry: 0 })),
+      readFileSync: options.manifest ?? (() => Buffer.alloc(3777)),
+      argumentsFor: () => [],
+      fail: () => {
+        throw new Error("integration.mockserver-material.bootstrap-gpg");
+      },
+    },
+    { timeout: 1_000 },
+  ) as Verification;
+}
+
+describe("actual bootstrap run body observations (no GPG execution)", () => {
+  it.each([
+    "input",
+    "filesystem",
+    "gpg-execution",
+    "listing-policy",
+    "signature-policy",
+    "checksum-policy",
+  ])(
+    "preserves the exact original %s rejection despite diagnostic write failure",
+    async (family) => {
+      const primary = new Error("SECRET_CANARY");
+      const markers: string[] = [];
+      const reject = () => {
+        throw primary;
+      };
+      const run = observedVerification({
+        ...(family === "input" ? { authentication: reject } : {}),
+        ...(family === "filesystem" ? { mkdir: reject } : {}),
+        ...(family === "listing-policy" ? { listing: reject } : {}),
+        ...(family === "signature-policy" ? { signature: reject } : {}),
+        ...(family === "checksum-policy" ? { manifest: reject } : {}),
+        write: (text) => {
+          markers.push(text);
+          throw new Error("optional-write");
+        },
+      });
+      await expect(
+        run(family === "checksum-policy" ? "node" : "maven", () =>
+          family === "gpg-execution"
+            ? Promise.reject(primary)
+            : Promise.resolve({ stdout: Buffer.from("selected") }),
+        ),
+      ).rejects.toBe(primary);
+      expect(markers.at(-1)).toContain(`family=${family}]\n`);
+      expect(markers.join("")).not.toContain("SECRET_CANARY");
+    },
+  );
+
+  it("keeps actual synthetic success when every optional marker write throws", async () => {
+    const markers: string[] = [];
+    const run = observedVerification({
+      write: (text) => {
+        markers.push(text);
+        throw new Error("optional-write");
+      },
+    });
+    await expect(
+      run("maven", () => Promise.resolve({ stdout: Buffer.from("selected") })),
+    ).resolves.toBeUndefined();
+    expect(markers.at(-1)).toBe(
+      "[agentscope-material:v1 stage=completed family=none]\n",
+    );
+  });
+});
 
 describe("bootstrap input type rejection before blocking I/O", () => {
   it("rejects an unwritten FIFO through the actual file authenticator", () => {
