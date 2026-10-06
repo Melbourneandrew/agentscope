@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import {
   getDestinationDescriptor,
   isReporterDeadline,
@@ -27,6 +29,7 @@ import {
   readResolvedCredentialForCore,
   resolveCredentialReference,
   type CredentialBackendRegistry,
+  type CredentialResolutionContext,
 } from "../configuration/credential-adapter.js";
 import type {
   AgentscopeConfigurationSnapshot,
@@ -117,7 +120,7 @@ const prepareConnectionReporter = async (
   destinationRegistry: DestinationRegistry,
   credentialBackendRegistry: CredentialBackendRegistry,
   transportExecutor: DestinationTransportExecutor,
-  signal: AbortSignal,
+  context: CredentialResolutionContext,
 ): Promise<Reporter | undefined> => {
   try {
     const descriptor = getDestinationDescriptor(
@@ -134,8 +137,7 @@ const prepareConnectionReporter = async (
     const transport = prepared.endpoint
       ? bindDestinationTransport(prepared.endpoint, transportExecutor)
       : null;
-    if (signal.aborted) return undefined;
-    const context = createCredentialResolutionContext("hook", signal);
+    if (context.signal.aborted) return undefined;
     const credentials = await Promise.all(
       descriptor.credentialSlots.map(async (slot) => {
         const reference = connection.credentialReferences[slot.id];
@@ -152,7 +154,7 @@ const prepareConnectionReporter = async (
         ] as const;
       }),
     );
-    if (signal.aborted) return undefined;
+    if (context.signal.aborted) return undefined;
     return prepareDestinationReporter(prepared, {
       credentials: Object.freeze(
         Object.fromEntries(
@@ -178,9 +180,19 @@ const setupReporter = async (
   input: RouteRedactedTraceBatchInput,
   controller: AbortController,
 ): Promise<SetupSettlement> => {
+  const enteredAt = performance.now();
   const remaining = reporterDeadlineRemainingMilliseconds(input.deadline);
   if (remaining <= 0 || signalIsAborted(input.signal))
     return Object.freeze({ kind: "expired" });
+  const setupExpiresAt = Math.min(
+    input.deadline.expiresAtMonotonicMilliseconds,
+    enteredAt + CONNECTION_SETUP_TIMEOUT_MILLISECONDS,
+  );
+  const context = createCredentialResolutionContext(
+    "hook",
+    controller.signal,
+    setupExpiresAt,
+  );
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiration = new Promise<SetupSettlement>((resolve) => {
     timer = setTimeout(
@@ -188,7 +200,7 @@ const setupReporter = async (
         controller.abort();
         resolve(Object.freeze({ kind: "expired" }));
       },
-      Math.min(CONNECTION_SETUP_TIMEOUT_MILLISECONDS, remaining),
+      Math.max(0, setupExpiresAt - performance.now()),
     );
   });
   const preparation: Promise<SetupSettlement> = prepareConnectionReporter(
@@ -196,11 +208,15 @@ const setupReporter = async (
     input.configuration.destinationRegistry,
     input.credentialBackendRegistry,
     input.transportExecutor,
-    controller.signal,
+    context,
   ).then((reporter) => Object.freeze({ kind: "prepared", reporter }));
   const settlement = await Promise.race([preparation, expiration]);
   /* v8 ignore else -- the Promise executor synchronously initializes timer. */
   if (timer !== undefined) clearTimeout(timer);
+  if (controller.signal.aborted || performance.now() >= setupExpiresAt) {
+    controller.abort();
+    return Object.freeze({ kind: "expired" });
+  }
   return settlement;
 };
 

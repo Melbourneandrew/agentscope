@@ -97,12 +97,16 @@ const keychainCommand = (
   arguments_: readonly string[],
   signal: AbortSignal,
   stdin?: string,
+  expiresAtMonotonicMilliseconds?: number,
 ): MacosKeychainCommand =>
   Object.freeze({
     executable: MACOS_SECURITY_EXECUTABLE,
     arguments: Object.freeze([...arguments_]),
     ...(stdin === undefined ? {} : { stdin }),
     signal,
+    ...(expiresAtMonotonicMilliseconds === undefined
+      ? {}
+      : { expiresAtMonotonicMilliseconds }),
   });
 
 const exactStoredReference = (
@@ -188,6 +192,8 @@ const createImplementation = (
           "-w",
         ],
         context.signal,
+        undefined,
+        context.expiresAtMonotonicMilliseconds,
       ),
     );
     if (!result)

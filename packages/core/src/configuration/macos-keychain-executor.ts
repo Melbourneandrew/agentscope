@@ -11,6 +11,62 @@ import type {
 const MAXIMUM_OUTPUT_BYTES = 16_384;
 const COMMAND_TIMEOUT_MILLISECONDS = 15_000;
 const COMMAND_TEARDOWN_RESERVE_MILLISECONDS = 1_000;
+const RESOLUTION_TEARDOWN_RESERVE_MILLISECONDS = 100;
+
+const commandLifetime = (
+  command: MacosKeychainCommand,
+): Readonly<{ deadline: number; workCutoff: number }> => {
+  const enteredAt = performance.now();
+  if (types.isProxy(command))
+    throw new Error("core.credential.macos-keychain-deadline");
+  const descriptor = Object.getOwnPropertyDescriptor(
+    command,
+    "expiresAtMonotonicMilliseconds",
+  );
+  const initialPrototype: unknown = Object.getPrototypeOf(command);
+  let prototype = initialPrototype as object | null;
+  for (let depth = 0; prototype !== null; depth += 1) {
+    if (
+      depth >= 8 ||
+      types.isProxy(prototype) ||
+      Object.getOwnPropertyDescriptor(
+        prototype,
+        "expiresAtMonotonicMilliseconds",
+      )
+    )
+      throw new Error("core.credential.macos-keychain-deadline");
+    const nextPrototype: unknown = Object.getPrototypeOf(prototype);
+    prototype = nextPrototype as object | null;
+  }
+  const inherited: unknown = descriptor?.value;
+  if (
+    descriptor !== undefined &&
+    (!("value" in descriptor) ||
+      typeof inherited !== "number" ||
+      !Number.isFinite(inherited) ||
+      inherited < 0)
+  )
+    throw new Error("core.credential.macos-keychain-deadline");
+  const deadline = Math.min(
+    enteredAt + COMMAND_TIMEOUT_MILLISECONDS,
+    typeof inherited === "number" ? inherited : Number.POSITIVE_INFINITY,
+  );
+  const reserve =
+    descriptor === undefined
+      ? COMMAND_TEARDOWN_RESERVE_MILLISECONDS
+      : RESOLUTION_TEARDOWN_RESERVE_MILLISECONDS;
+  if (deadline - enteredAt <= reserve)
+    throw new Error("core.credential.macos-keychain-deadline");
+  return Object.freeze({
+    deadline,
+    workCutoff: Math.min(
+      enteredAt +
+        COMMAND_TIMEOUT_MILLISECONDS -
+        COMMAND_TEARDOWN_RESERVE_MILLISECONDS,
+      deadline - reserve,
+    ),
+  });
+};
 
 export type MacosSecurityByteStream = Readonly<{
   on(
@@ -102,8 +158,7 @@ const execute = (
   command: MacosKeychainCommand,
 ): Promise<MacosKeychainCommandResult> =>
   new Promise((resolve, reject) => {
-    const deadline = performance.now() + COMMAND_TIMEOUT_MILLISECONDS;
-    const workCutoff = deadline - COMMAND_TEARDOWN_RESERVE_MILLISECONDS;
+    const { deadline, workCutoff } = commandLifetime(command);
     const stdout: BoundedOutput = { chunks: [], size: 0, overflow: false };
     const stderr: BoundedOutput = { chunks: [], size: 0, overflow: false };
     let child: MacosSecurityChild | undefined;
@@ -170,7 +225,7 @@ const execute = (
       Math.max(0, deadline - performance.now()),
     );
     try {
-      if (command.signal.aborted) {
+      if (command.signal.aborted || performance.now() >= workCutoff) {
         stopped = true;
         finish(1);
         return;
