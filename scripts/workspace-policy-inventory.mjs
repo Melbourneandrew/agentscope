@@ -10,6 +10,7 @@ export const purePolicyFiles = Object.freeze([
   "acceptance-evidence.test.mjs",
   "documentation-policy.test.mjs",
   "native-ci-policy.test.mjs",
+  "release-candidate-admission.test.mjs",
   "release-lane-substrate.test.mjs",
   "restricted-import-policy.test.mjs",
   "review-skill.test.mjs",
