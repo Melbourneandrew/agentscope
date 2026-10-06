@@ -776,17 +776,15 @@ const keychainAdapter = createMacosKeychainCredentialAdapterForTesting({
   platform: "darwin",
   execute: (command) => {
     keychainCommands.push(command);
-    if (command.arguments[0] === "add-generic-password") {
-      storedKeychainSecret = command.stdin.slice(0, -1);
-      return Promise.resolve({
-        exitCode: 0,
-        stdout: new Uint8Array(),
-        stderr: new Uint8Array(),
-      });
+    const writing = command.arguments[0] === "add-generic-password";
+    if (writing) {
+      if (command.stdin !== `${keychainSecret}\n${keychainSecret}\n`)
+        throw new Error("macOS Keychain artifact confirmation failed.");
+      storedKeychainSecret = new TextEncoder().encode(`${keychainSecret}\n`);
     }
     return Promise.resolve({
       exitCode: 0,
-      stdout: new TextEncoder().encode(`${storedKeychainSecret}\n`),
+      stdout: writing ? new Uint8Array() : storedKeychainSecret,
       stderr: new Uint8Array(),
     });
   },

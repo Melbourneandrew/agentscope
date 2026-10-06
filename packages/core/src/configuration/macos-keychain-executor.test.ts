@@ -13,7 +13,7 @@ const command = (signal = new AbortController().signal): MacosKeychainCommand =>
   Object.freeze({
     executable: "/usr/bin/security",
     arguments: Object.freeze(["add-generic-password", "-w"]),
-    stdin: "CANARY_SECRET\n",
+    stdin: "CANARY_SECRET\nCANARY_SECRET\n",
     signal,
   });
 
@@ -128,11 +128,12 @@ describe("macOS security command executor", () => {
     expect(captured?.[0]).toBe("/usr/bin/security");
     expect(captured?.[1]).toEqual(["add-generic-password", "-w"]);
     expect(captured?.[2]).toMatchObject({
+      detached: true,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
-    expect(value.stdinValues).toEqual(["CANARY_SECRET\n"]);
+    expect(value.stdinValues).toEqual(["CANARY_SECRET\nCANARY_SECRET\n"]);
   });
 
   it("collapses process errors, malformed chunks, and overflow", async () => {

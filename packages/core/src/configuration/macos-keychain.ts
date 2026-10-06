@@ -218,7 +218,7 @@ const createImplementation = (
           "-w",
         ],
         signal,
-        `${secret}\n`,
+        `${secret}\n${secret}\n`,
         expiresAtMonotonicMilliseconds,
       ),
     );

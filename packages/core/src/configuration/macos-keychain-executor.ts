@@ -101,6 +101,7 @@ export type MacosSecuritySpawn = (
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{
+    detached: true;
     shell: false;
     signal: AbortSignal;
     stdio: readonly ["pipe", "pipe", "pipe"];
@@ -231,6 +232,7 @@ const execute = (
         return;
       }
       child = spawn(command.executable, command.arguments, {
+        detached: true,
         shell: false,
         signal: command.signal,
         stdio: ["pipe", "pipe", "pipe"],
