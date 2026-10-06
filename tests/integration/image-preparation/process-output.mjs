@@ -51,32 +51,45 @@ export const createBuildStderrObservation = () => {
   let ambiguous = false;
   let stage = "unknown";
   let family = "unknown";
+  const originalLines = new Set();
+  const replayedLines = new Set();
   const line = () => {
     if (!candidate) return false;
     const match =
-      /^(?:#\d{1,8} \d{1,8}\.\d{1,6} )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)\]$/u.exec(
+      /^(?:(#\d{1,8} )?(\d{1,8}\.\d{1,6}) )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)\]$/u.exec(
         suffix,
       );
     if (
       lineBytes > 256 ||
       !match ||
-      !bootstrapStages.includes(match[1]) ||
-      !bootstrapFamilies.includes(match[2]) ||
-      (match[2] !== "none" && match[2] !== familyFor(match[1]))
+      !bootstrapStages.includes(match[3]) ||
+      !bootstrapFamilies.includes(match[4]) ||
+      (match[4] !== "none" && match[4] !== familyFor(match[3]))
     ) {
       ambiguous = true;
       return false;
     }
+    const identity = `${match[2]} ${match[3]} ${match[4]}`;
+    // Plain BuildKit repeats failed-vertex logs without their #vertex prefix.
+    // Only an exact previously observed timestamp/enum tuple is a replay;
+    // it cannot advance the observation or introduce another marker value.
+    if (match[2] !== undefined && match[1] === undefined) {
+      if (!originalLines.has(identity) || replayedLines.has(identity))
+        ambiguous = true;
+      else replayedLines.add(identity);
+      return true;
+    }
     if (
       (family !== "unknown" && family !== "none") ||
-      bootstrapStages.indexOf(match[1]) < bootstrapStages.indexOf(stage) ||
-      (match[1] === stage && match[2] === "none")
+      bootstrapStages.indexOf(match[3]) < bootstrapStages.indexOf(stage) ||
+      (match[3] === stage && match[4] === "none")
     ) {
       ambiguous = true;
       return true;
     }
-    stage = match[1];
-    family = match[2];
+    stage = match[3];
+    family = match[4];
+    if (match[1] !== undefined) originalLines.add(identity);
     return true;
   };
   return Object.freeze({
