@@ -1,5 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
 import {
   link,
   lstat,
@@ -11,14 +10,19 @@ import {
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+import {
+  inspectInstallationPreimage,
+  MAXIMUM_TARGET_BYTES,
+  nodeErrorCode,
+  snapshotMatches,
+  snapshotMatchesManifestState,
+  type FileSnapshot,
+} from "./installation-preimages.js";
+
 const MAXIMUM_TARGETS = 16;
-const MAXIMUM_TARGET_BYTES = 1_048_576;
 const MAXIMUM_PATH_LENGTH = 4_096;
 const MANIFEST_VERSION = 1;
 const FILE_MODE = 0o600;
-/* v8 ignore next -- every supported Node platform exposes O_NOFOLLOW. */
-const noFollow = constants.O_NOFOLLOW ?? 0;
-const readFlags = constants.O_RDONLY | noFollow;
 const transactionPattern = /^[0-9a-f]{32}$/u;
 const digestPattern = /^[0-9a-f]{64}$/u;
 const typedArrayPrototype = Object.getPrototypeOf(
@@ -31,13 +35,6 @@ const typedArrayByteLength: unknown = Reflect.get(
   "get",
 );
 const typedArraySlice: unknown = Reflect.get(Uint8Array.prototype, "slice");
-
-type FileSnapshot = Readonly<{
-  exists: boolean;
-  bytes: Uint8Array | null;
-  digest: string;
-  mode: number | null;
-}>;
 
 export type HarnessTargetInspection = Readonly<{
   targetPath: string;
@@ -107,6 +104,11 @@ type PlannedTarget = Readonly<{
   after: FileSnapshot;
 }>;
 
+type InspectedPreimage = Readonly<{
+  targetPath: string;
+  before: FileSnapshot;
+}>;
+
 type PlanState = Readonly<{
   manifestPath: string;
   transactionId: string;
@@ -144,6 +146,7 @@ const plans = new WeakMap<
   Readonly<{
     disposition: HarnessInstallationDisposition;
     state?: PlanState;
+    preimages: readonly InspectedPreimage[];
   }>
 >();
 const consumedPlans = new WeakSet<object>();
@@ -382,56 +385,8 @@ const exactInput = async (
   }
 };
 
-const nodeErrorCode = (error: unknown): string | undefined =>
-  typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
-
-const inspectFile = async (path: string): Promise<FileSnapshot> => {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    handle = await open(path, readFlags);
-    const metadata = await handle.stat();
-    if (!metadata.isFile()) return invalid();
-    if (metadata.size > MAXIMUM_TARGET_BYTES) return invalid();
-    const buffer = Buffer.alloc(MAXIMUM_TARGET_BYTES + 1);
-    let offset = 0;
-    while (offset < buffer.byteLength) {
-      const result = await handle.read(
-        buffer,
-        offset,
-        buffer.byteLength - offset,
-        null,
-      );
-      if (result.bytesRead === 0) break;
-      offset += result.bytesRead;
-    }
-    /* v8 ignore next -- the pre-read metadata cap handles stable files; this
-       guard catches an external growth race without allocating past max+1. */
-    if (offset > MAXIMUM_TARGET_BYTES) return invalid();
-    const bytes = new Uint8Array(buffer.subarray(0, offset));
-    return Object.freeze({
-      exists: true,
-      bytes,
-      digest: hash(bytes),
-      mode: metadata.mode & 0o777,
-    });
-  } catch (error) {
-    /* v8 ignore next -- admission rejects links; this contains a link swapped
-       into place during the subsequent target-inspection race. */
-    if (nodeErrorCode(error) === "ELOOP") return invalid();
-    if (nodeErrorCode(error) === "ENOENT")
-      return Object.freeze({
-        exists: false,
-        bytes: null,
-        digest: emptyDigest,
-        mode: null,
-      });
-    throw error;
-  } finally {
-    await handle?.close();
-  }
-};
+const inspectFile = (path: string): Promise<FileSnapshot> =>
+  inspectInstallationPreimage(path, invalid);
 
 const safeDecision = (
   planner: HarnessInstallationPlanner,
@@ -501,9 +456,13 @@ const publicPlan = (
   targetCount: number,
   changedTargetCount: number,
   state?: PlanState,
+  preimages: readonly InspectedPreimage[] = [],
 ): HarnessInstallationPlan => {
   const plan = Object.freeze({ disposition, targetCount, changedTargetCount });
-  plans.set(plan, Object.freeze({ disposition, ...(state ? { state } : {}) }));
+  plans.set(
+    plan,
+    Object.freeze({ disposition, preimages, ...(state ? { state } : {}) }),
+  );
   return plan as HarnessInstallationPlan;
 };
 
@@ -533,8 +492,10 @@ export const inspectHarnessInstallation = async (
     if (await manifestExists(parsed.manifestPath))
       return publicPlan("recovery-required", parsed.targetPaths.length, 0);
     const targets: PlannedTarget[] = [];
+    const preimages: InspectedPreimage[] = [];
     for (const targetPath of parsed.targetPaths) {
       const before = await inspectFile(targetPath);
+      preimages.push(Object.freeze({ targetPath, before }));
       const decision = safeDecision(parsed.planner, targetPath, before);
       if (decision.kind === "conflict")
         return publicPlan("conflict", parsed.targetPaths.length, 0);
@@ -566,7 +527,13 @@ export const inspectHarnessInstallation = async (
       targets.push(Object.freeze({ targetPath, before, after }));
     }
     if (targets.length === 0)
-      return publicPlan("unchanged", parsed.targetPaths.length, 0);
+      return publicPlan(
+        "unchanged",
+        parsed.targetPaths.length,
+        0,
+        undefined,
+        Object.freeze(preimages),
+      );
     const transactionId = randomBytes(16).toString("hex");
     /* v8 ignore next -- new plans choose this 128-bit token only after caller
        paths are fixed; recovery parsing tests the adversarial collision path. */
@@ -592,6 +559,7 @@ export const inspectHarnessInstallation = async (
       parsed.targetPaths.length,
       targets.length,
       state,
+      Object.freeze(preimages),
     );
   } catch (error) {
     return publicPlan(
@@ -923,20 +891,6 @@ const replaceManifest = async (
   await syncDirectory(path);
 };
 
-const snapshotMatches = (
-  snapshot: FileSnapshot,
-  exists: boolean,
-  digest: string,
-) => snapshot.exists === exists && snapshot.digest === digest;
-
-const snapshotMatchesManifestState = (
-  snapshot: FileSnapshot,
-  exists: boolean,
-  digest: string,
-  mode: number | null,
-): boolean =>
-  snapshotMatches(snapshot, exists, digest) && snapshot.mode === mode;
-
 const prepareManifest = async (
   state: PlanState,
 ): Promise<TransactionManifest> => {
@@ -1146,23 +1100,33 @@ export const applyHarnessInstallation = async (
     typeof plan === "object" && plan !== null ? plans.get(plan) : undefined;
   if (!registered || consumedPlans.has(plan))
     return result(false, "invalid", 0);
-  if (registered.disposition === "unchanged")
-    return result(true, "unchanged", 0);
-  if (registered.disposition !== "ready")
+  if (
+    registered.disposition !== "ready" &&
+    registered.disposition !== "unchanged"
+  )
     return result(false, registered.disposition, 0);
   const state = registered.state;
-  /* v8 ignore next -- every registered ready plan stores its private state. */
-  if (!state) return result(false, "invalid", 0);
   consumedPlans.add(plan);
   let manifest: TransactionManifest | undefined;
   try {
-    if (await manifestExists(state.manifestPath))
-      return result(false, "recovery-required", 0);
-    for (const target of state.targets) {
-      const current = await inspectFile(target.targetPath);
-      if (!snapshotMatches(current, target.before.exists, target.before.digest))
+    for (const preimage of registered.preimages) {
+      const current = await inspectFile(preimage.targetPath);
+      if (
+        !snapshotMatchesManifestState(
+          current,
+          preimage.before.exists,
+          preimage.before.digest,
+          preimage.before.mode,
+        )
+      )
         return result(false, "conflict", 0);
     }
+    if (registered.disposition === "unchanged")
+      return result(true, "unchanged", 0);
+    /* v8 ignore next -- every registered ready plan stores its private state. */
+    if (!state) return result(false, "invalid", 0);
+    if (await manifestExists(state.manifestPath))
+      return result(false, "recovery-required", 0);
     manifest = await prepareManifest(state);
     await commitManifest(state.manifestPath, manifest);
     manifest = withState(manifest, "committed");
