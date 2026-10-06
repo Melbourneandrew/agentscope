@@ -75,6 +75,28 @@ describe("deterministic timeout and cleanup precedence", () => {
   );
 });
 const roots: { path: string; deadline: number }[] = [];
+const listenForFixture = async (
+  server: ReturnType<typeof createServer>,
+  socketPath: string,
+  directory: string,
+  connections: ReadonlySet<Socket>,
+) => {
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+  } catch (primary) {
+    if (server.listening === false && connections.size === 0) {
+      try {
+        rmSync(directory, { recursive: true });
+      } catch {
+        // Failed rollback preserves both the root and controlling setup error.
+      }
+    }
+    throw primary;
+  }
+};
 afterEach(() => {
   for (const value of roots.splice(0)) {
     expect(performance.now()).toBeLessThanOrEqual(value.deadline);
@@ -82,6 +104,31 @@ afterEach(() => {
     expect(existsSync(value.path)).toBe(false);
     expect(performance.now()).toBeLessThanOrEqual(value.deadline);
   }
+});
+
+describe("Engine socket setup rollback", () => {
+  it("rolls back only its owned root on definite listen setup failure", async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "ags-engine-"));
+    const server = createServer();
+    const primary = new Error("synthetic listen setup failure");
+    const listen = vi.spyOn(server, "listen").mockImplementationOnce(() => {
+      throw primary;
+    });
+    try {
+      await expect(
+        listenForFixture(
+          server,
+          resolve(directory, "engine.sock"),
+          directory,
+          new Set(),
+        ),
+      ).rejects.toBe(primary);
+      expect(server.listening).toBe(false);
+      expect(existsSync(directory)).toBe(false);
+    } finally {
+      listen.mockRestore();
+    }
+  });
 });
 
 describe("real Engine socket terminal settlement", () => {
@@ -113,10 +160,7 @@ describe("real Engine socket terminal settlement", () => {
           observePeerClose();
         });
       });
-      await new Promise<void>((resolveListen, rejectListen) => {
-        server.once("error", rejectListen);
-        server.listen(socketPath, resolveListen);
-      });
+      await listenForFixture(server, socketPath, directory, connections);
       // One fixture observation authority, entered before preparation; no join reset.
       const fixtureDeadline = performance.now() + 500;
       let timer: ReturnType<typeof setTimeout> | undefined;

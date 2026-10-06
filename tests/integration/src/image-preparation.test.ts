@@ -960,16 +960,28 @@ describe("subprocess-free pinned image preparation", () => {
   it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
     const engine = engineFixture();
     const registry = registryFixture();
-    const before = new Set(
-      readdirSync(realpathSync("/tmp")).filter((entry) =>
-        entry.startsWith("agentscope-image-preparation-"),
-      ),
+    let ownedRoot: string | undefined;
+    let unrelatedRoot = mkdtempSync(
+      resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
     );
+    roots.push(unrelatedRoot);
     const prior = process.env.HTTPS_PROXY;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
     try {
       await expect(
-        preparePinnedDockerImages([image], options(engine, registry)),
+        preparePinnedDockerImages([image], {
+          ...options(engine, registry),
+          afterPrivateRootCreatedForTesting: (value: string) => {
+            ownedRoot = value;
+            roots.push(value);
+            // A separate fixture may disappear and be replaced during setup.
+            rmSync(unrelatedRoot, { recursive: true });
+            unrelatedRoot = mkdtempSync(
+              resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
+            );
+            roots.push(unrelatedRoot);
+          },
+        }),
       ).resolves.toEqual({
         dockerSocket: socket,
         dockerDaemon: daemon,
@@ -989,16 +1001,16 @@ describe("subprocess-free pinned image preparation", () => {
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
       ),
     ).toBe(true);
-    removeRetainedRoot(roots.at(-1));
     expect(
-      new Set(
-        readdirSync(realpathSync("/tmp")).filter((entry) =>
-          entry.startsWith("agentscope-image-preparation-"),
-        ),
-      ),
-    ).toEqual(before);
+      readFileSync(resolve(ownedRoot ?? "", "docker/config.json"), "utf8"),
+    ).toBe('{"auths":{}}\n');
+    removeRetainedRoot(ownedRoot);
+    expect(existsSync(ownedRoot ?? "")).toBe(false);
+    expect(existsSync(unrelatedRoot)).toBe(true);
   });
+});
 
+describe("closed pinned image preparation policy", () => {
   it("admits only the closed disposable-Linux host defaults", () => {
     expect(IMAGE_PREPARATION_EXECUTION_POLICY).toEqual({
       platform: { os: "linux", architecture: "amd64", variant: "" },
