@@ -235,7 +235,7 @@ const darwinMaterials = (run, headersRoot, context) => {
     "--deep",
     "--strict",
     "-R",
-    "anchor apple",
+    "=anchor apple",
     xcode,
   ]);
   const transfer = JSON.parse(
@@ -426,7 +426,7 @@ const inspectCandidate = (run, row, output) => {
       "--deep",
       "--strict",
       "-R",
-      "anchor apple",
+      "=anchor apple",
       xcode,
     ]);
   }

@@ -214,9 +214,37 @@ describe("candidate material and workflow boundaries", () => {
     expect(seal).toBeGreaterThan(start);
     expect(compiler).toBeGreaterThan(seal);
     expect(driver).toMatch(
-      /"--verify",\s*"--deep",\s*"--strict",\s*"-R",\s*"anchor apple"/u,
+      /"--verify",\s*"--deep",\s*"--strict",\s*"-R",\s*"=anchor apple"/u,
     );
     expect(driver).toContain("sealedSdkInputs(run, inputs, outputRoot)");
+  });
+});
+
+describe("candidate Apple requirement and retained output", () => {
+  it("passes literal Apple requirements at both actual verification callsites, not a filename", () => {
+    const calls = [
+      ...driver.matchAll(
+        /run\("\/usr\/bin\/codesign",\s*(\[[\s\S]*?\])\s*\);/gu,
+      ),
+    ];
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const args: unknown = new Script(call[1] ?? "").runInNewContext({
+        xcode: "/Applications/Xcode_16.2.app",
+      });
+      expect(args).toEqual([
+        "--verify",
+        "--deep",
+        "--strict",
+        "-R",
+        "=anchor apple",
+        "/Applications/Xcode_16.2.app",
+      ]);
+    }
+    // codesign's documented grammar interprets plain text as a filename.
+    const prior = driver.replaceAll('"=anchor apple"', '"anchor apple"');
+    expect(prior.match(/"-R",\s*"=anchor apple"/gu)).toBeNull();
+    expect(prior.match(/"-R",\s*"anchor apple"/gu)).toHaveLength(2);
   });
   it("retains only unadmitted candidate artifacts in a read-only workflow", () => {
     expect(workflow).toContain("contents: read");
