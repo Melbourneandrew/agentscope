@@ -6,6 +6,9 @@ import {
   compileCredentialBackendRegistry,
   createCredentialResolutionContext,
   createStoredCredentialReference,
+  createCredentialOwnership,
+  deriveStoredCredentialReference,
+  getStoredCredentialImplementation,
   resolveCredentialReference,
 } from "./credential-adapter.js";
 import {
@@ -49,6 +52,69 @@ const fixture = () => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("macOS credential mutation caller cutoff", () => {
+  it.each([
+    "createPending",
+    "activate",
+    "removePending",
+    "removeOwned",
+  ] as const)(
+    "forwards the same expiry through the actual %s command without argv secrets",
+    async (kind) => {
+      vi.spyOn(performance, "now").mockReturnValue(100);
+      const native = fixture();
+      const captured: MacosKeychainCommand[] = [];
+      const registry = compileCredentialBackendRegistry([
+        createMacosKeychainCredentialAdapterForTesting({
+          platform: "darwin",
+          execute: (value) => {
+            captured.push(value);
+            return native.execute(value);
+          },
+        }),
+      ]);
+      const implementation = getStoredCredentialImplementation(
+        registry,
+        "macos-keychain",
+      );
+      const ownership = createCredentialOwnership({
+        destinationType: "@agentscope/destination-example",
+        connectionId: `destination-connection-v1-${"a".repeat(64)}`,
+        slot: "api-key",
+      });
+      const generationId = `credential-generation-v1-${"b".repeat(64)}`;
+      const reference = deriveStoredCredentialReference(
+        "macos-keychain",
+        ownership,
+        generationId,
+      );
+      const boundary = {
+        signal: new AbortController().signal,
+        expiresAtMonotonicMilliseconds: 1_100,
+      };
+      const pending =
+        kind === "createPending"
+          ? implementation.createPending({
+              ownership,
+              generationId,
+              secret: "CANARY",
+              ...boundary,
+            })
+          : kind === "removeOwned"
+            ? implementation.removeOwned({ ownership, reference, ...boundary })
+            : implementation[kind]({ reference, ...boundary });
+      native.child.emit("close", 0);
+      expect(await pending).toBeTruthy();
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toMatchObject(boundary);
+      expect(captured[0]?.arguments).not.toContain("CANARY");
+      expect(native.end).toHaveBeenCalledWith(
+        kind === "createPending" ? "CANARY\n" : undefined,
+      );
+    },
+  );
 });
 
 describe("macOS credential resolution caller cutoff", () => {

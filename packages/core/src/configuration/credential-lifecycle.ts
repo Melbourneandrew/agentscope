@@ -35,8 +35,19 @@ import {
   type CredentialBackendRegistry,
   type CredentialOwnership,
   type CredentialResolutionContext,
-  type StoredCredentialBackend,
 } from "./credential-adapter.js";
+import {
+  credentialResolutionExpired,
+  invokeCredentialMutationForCore,
+} from "./credential-resolution-context.js";
+import {
+  exactRequest,
+  exactInput,
+  exactRemovalInput,
+  type CredentialConfigurationRequest,
+  type ConfigureCredentialInput,
+  type RemoveCredentialInput,
+} from "./credential-mutation-input.js";
 import type {
   AgentscopeConfigurationSnapshot,
   ConfigurationCredentialReference,
@@ -45,7 +56,6 @@ import {
   ConfigurationStoreError,
   completeCredentialMutationIntent,
   createCredentialMutationIntent,
-  isConfigurationProcessIdentity,
   isConfigurationStore,
   readConfigurationBackupSnapshot,
   readConfigurationForHook,
@@ -58,38 +68,11 @@ import {
   type CredentialMutationIntent,
 } from "./transaction.js";
 
-export type CredentialConfigurationRequest =
-  | Readonly<{
-      kind: "stored";
-      backend: StoredCredentialBackend;
-      secret: string;
-    }>
-  | Readonly<{
-      kind: "ci-environment";
-      environmentVariable: string;
-    }>;
-
-export type ConfigureCredentialInput = Readonly<{
-  store: ConfigurationStore;
-  owner: ConfigurationProcessIdentity;
-  expectedGeneration: number | null;
-  ownership: CredentialOwnership;
-  request: CredentialConfigurationRequest;
-  resolutionContext: CredentialResolutionContext;
-  createCandidate: (
-    reference: ConfigurationCredentialReference,
-  ) => AgentscopeConfigurationSnapshot;
-}>;
-
-export type RemoveCredentialInput = Readonly<{
-  store: ConfigurationStore;
-  owner: ConfigurationProcessIdentity;
-  expectedGeneration: number;
-  ownership: CredentialOwnership;
-  reference: ConfigurationCredentialReference;
-  resolutionContext: CredentialResolutionContext;
-  createCandidate: () => AgentscopeConfigurationSnapshot;
-}>;
+export type {
+  CredentialConfigurationRequest,
+  ConfigureCredentialInput,
+  RemoveCredentialInput,
+} from "./credential-mutation-input.js";
 
 export type CredentialRemovalResult =
   | Readonly<{
@@ -100,7 +83,11 @@ export type CredentialRemovalResult =
     }>
   | Readonly<{
       ok: false;
-      state: "configuration-unchanged" | "intent-pending" | "owned-orphan";
+      state:
+        | "configuration-unchanged"
+        | "configuration-committed"
+        | "intent-pending"
+        | "owned-orphan";
       code:
         | "core.credential.reference-mismatch"
         | "core.credential.candidate-invalid"
@@ -142,102 +129,6 @@ const fixedFailure = (
 const randomIdentity = (prefix: string): string =>
   `${prefix}${randomBytes(32).toString("hex")}`;
 
-const exactRequest = (
-  request: CredentialConfigurationRequest,
-): CredentialConfigurationRequest => {
-  if (typeof request !== "object" || request === null) return invalid();
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(request);
-  } catch {
-    return invalid();
-  }
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-  )
-    return invalid();
-  if (
-    descriptors.kind?.value === "stored" &&
-    Object.keys(descriptors).sort().join(",") === "backend,kind,secret" &&
-    typeof descriptors.secret?.value === "string" &&
-    descriptors.secret.value.length > 0 &&
-    descriptors.secret.value.length <= 8_192 &&
-    !descriptors.secret.value.includes("\0") &&
-    !containsLoneSurrogate(descriptors.secret.value) &&
-    [
-      "macos-keychain",
-      "windows-credential-manager",
-      "linux-secret-service",
-    ].includes(descriptors.backend?.value as string)
-  )
-    return Object.freeze({
-      kind: "stored" as const,
-      backend: descriptors.backend?.value as StoredCredentialBackend,
-      secret: descriptors.secret.value,
-    });
-  if (
-    descriptors.kind?.value === "ci-environment" &&
-    Object.keys(descriptors).sort().join(",") === "environmentVariable,kind" &&
-    typeof descriptors.environmentVariable?.value === "string"
-  )
-    return Object.freeze({
-      kind: "ci-environment" as const,
-      environmentVariable: descriptors.environmentVariable.value,
-    });
-  return invalid();
-};
-
-const containsLoneSurrogate = (value: string): boolean => {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff)
-        return true;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) return true;
-  }
-  return false;
-};
-
-const exactInput = (
-  input: ConfigureCredentialInput,
-): ConfigureCredentialInput => {
-  if (typeof input !== "object" || input === null) return invalid();
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(input);
-  } catch {
-    return invalid();
-  }
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.keys(descriptors).sort().join(",") !==
-      "createCandidate,expectedGeneration,owner,ownership,request,resolutionContext,store" ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-  )
-    return invalid();
-  const values = Object.fromEntries(
-    Object.entries(descriptors).map(([key, descriptor]) => [
-      key,
-      dataValue(descriptor),
-    ]),
-  ) as unknown as ConfigureCredentialInput;
-  if (
-    !isConfigurationStore(values.store) ||
-    !isConfigurationProcessIdentity(values.owner) ||
-    !isCredentialOwnership(values.ownership) ||
-    !isCredentialResolutionContext(values.resolutionContext) ||
-    typeof values.createCandidate !== "function" ||
-    (values.expectedGeneration !== null &&
-      (!Number.isSafeInteger(values.expectedGeneration) ||
-        values.expectedGeneration < 0))
-  )
-    return invalid();
-  return Object.freeze(values);
-};
-
 const compensate = async (
   remove: (() => Promise<boolean>) | undefined,
   complete: (() => Promise<void>) | undefined,
@@ -278,6 +169,7 @@ const stageReference = async (
   request: CredentialConfigurationRequest,
   input: ConfigureCredentialInput,
 ): Promise<StagedReference | CredentialConfigurationResult> => {
+  if (credentialResolutionExpired(input.resolutionContext)) return invalid();
   const generationId = randomIdentity("credential-generation-v1-");
   /* v8 ignore next -- randomBytes(32).toString("hex") is structurally fixed to this identity grammar. */
   if (!generationPattern.test(generationId)) return invalid();
@@ -309,14 +201,21 @@ const stageReference = async (
   } catch {
     return fixedFailure("compensated", "core.credential.create-failed", false);
   }
-  const complete = () => completeCredentialMutationIntent(input.store, intent);
+  const complete = () =>
+    invokeCredentialMutationForCore(input.resolutionContext, () =>
+      completeCredentialMutationIntent(input.store, intent),
+    );
   try {
-    const created = await implementation.createPending({
-      ownership: input.ownership,
-      generationId,
-      secret: request.secret,
-      signal: input.resolutionContext.signal,
-    });
+    const created = await invokeCredentialMutationForCore(
+      input.resolutionContext,
+      (boundary) =>
+        implementation.createPending({
+          ownership: input.ownership,
+          generationId,
+          secret: request.secret,
+          ...boundary,
+        }),
+    );
     let createdDescriptors: PropertyDescriptorMap;
     try {
       createdDescriptors = Object.getOwnPropertyDescriptors(created);
@@ -352,15 +251,19 @@ const stageReference = async (
       intent,
       complete,
       remove: () =>
-        implementation.removePending({
-          reference,
-          signal: input.resolutionContext.signal,
-        }),
+        invokeCredentialMutationForCore(input.resolutionContext, (boundary) =>
+          implementation.removePending({
+            reference,
+            ...boundary,
+          }),
+        ),
       activate: () =>
-        implementation.activate({
-          reference,
-          signal: input.resolutionContext.signal,
-        }),
+        invokeCredentialMutationForCore(input.resolutionContext, (boundary) =>
+          implementation.activate({
+            reference,
+            ...boundary,
+          }),
+        ),
     });
   } catch {
     return fixedFailure(
@@ -438,6 +341,8 @@ export const configureCredential = async (
       staged.reference,
     );
   try {
+    if (credentialResolutionExpired(validated.resolutionContext))
+      throw new Error();
     await writeConfigurationSnapshot(validated.store, {
       expectedGeneration: validated.expectedGeneration,
       candidate,
@@ -497,6 +402,13 @@ export const configureCredential = async (
       );
     }
   }
+  if (credentialResolutionExpired(validated.resolutionContext))
+    return fixedFailure(
+      "referenced-pending",
+      "core.credential.activation-failed",
+      true,
+      staged.reference,
+    );
   return Object.freeze({
     ok: true as const,
     state: "active" as const,
@@ -531,44 +443,6 @@ const removalSuccess = (
 ): CredentialRemovalResult =>
   Object.freeze({ ok: true, state, configurationCommitted });
 
-const exactRemovalInput = (
-  input: RemoveCredentialInput,
-): RemoveCredentialInput => {
-  if (typeof input !== "object" || input === null) return invalid();
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(input);
-  } catch {
-    return invalid();
-  }
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.keys(descriptors).sort().join(",") !==
-      "createCandidate,expectedGeneration,owner,ownership,reference,resolutionContext,store" ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-  )
-    return invalid();
-  const value = Object.fromEntries(
-    Object.entries(descriptors).map(([key, descriptor]) => [
-      key,
-      dataValue(descriptor),
-    ]),
-  ) as unknown as RemoveCredentialInput;
-  if (
-    !isConfigurationStore(value.store) ||
-    !isConfigurationProcessIdentity(value.owner) ||
-    !isCredentialOwnership(value.ownership) ||
-    !isCredentialResolutionContext(value.resolutionContext) ||
-    !Number.isSafeInteger(value.expectedGeneration) ||
-    value.expectedGeneration < 0 ||
-    typeof value.reference !== "object" ||
-    value.reference === null ||
-    typeof value.createCandidate !== "function"
-  )
-    return invalid();
-  return Object.freeze(value);
-};
-
 const removalCandidate = (
   createCandidate: RemoveCredentialInput["createCandidate"],
   ownership: CredentialOwnership,
@@ -592,6 +466,7 @@ export const removeCredentialReference = async (
   input: RemoveCredentialInput,
 ): Promise<CredentialRemovalResult> => {
   const value = exactRemovalInput(input);
+  if (credentialResolutionExpired(value.resolutionContext)) return invalid();
   let current: AgentscopeConfigurationSnapshot;
   try {
     current = await readConfigurationSnapshot(value.store);
@@ -606,6 +481,7 @@ export const removeCredentialReference = async (
   const candidate = removalCandidate(value.createCandidate, value.ownership);
   if (!candidate) return removalFailure("core.credential.candidate-invalid");
   try {
+    if (credentialResolutionExpired(value.resolutionContext)) throw new Error();
     await writeConfigurationSnapshot(value.store, {
       expectedGeneration: value.expectedGeneration,
       candidate,
@@ -615,6 +491,12 @@ export const removeCredentialReference = async (
     /* v8 ignore next -- CAS write failure behavior is exhaustively exercised at the transaction boundary. */
     return removalFailure("core.credential.configuration-failed");
   }
+  if (credentialResolutionExpired(value.resolutionContext))
+    return removalFailure(
+      "core.credential.configuration-failed",
+      "configuration-committed",
+      true,
+    );
   return value.reference.backend === "ci-environment"
     ? removalSuccess("reference-removed", true)
     : removalSuccess("retained-last-known-good", true);
@@ -659,6 +541,7 @@ export const purgeUnreferencedCredential = async (
     values.reference === null
   )
     return invalid();
+  if (credentialResolutionExpired(values.resolutionContext)) return invalid();
   if (
     values.reference.backend !== "ci-environment" &&
     (values.intent === undefined ||
@@ -684,6 +567,7 @@ export const purgeUnreferencedCredential = async (
   } catch {
     return removalFailure("core.credential.configuration-failed");
   }
+  if (credentialResolutionExpired(values.resolutionContext)) return invalid();
   if (
     sameReference(referenceAt(active, values.ownership), values.reference) ||
     (backup &&
@@ -697,11 +581,15 @@ export const purgeUnreferencedCredential = async (
     values.reference.backend,
   );
   try {
-    return (await implementation.removeOwned({
-      ownership: values.ownership,
-      reference: values.reference,
-      signal: values.resolutionContext.signal,
-    }))
+    return (await invokeCredentialMutationForCore(
+      values.resolutionContext,
+      (boundary) =>
+        implementation.removeOwned({
+          ownership: values.ownership,
+          reference: values.reference,
+          ...boundary,
+        }),
+    ))
       ? removalSuccess("credential-removed", false)
       : removalFailure("core.credential.remove-failed", "owned-orphan");
   } catch {
@@ -727,6 +615,7 @@ export const recoverCredentialMutation = async (
     !isCredentialResolutionContext(input.resolutionContext)
   )
     return invalid();
+  if (credentialResolutionExpired(input.resolutionContext)) return invalid();
   const intent = await readRecoverableCredentialMutationIntent(
     input.store,
     input.ownerState,
@@ -778,16 +667,22 @@ export const recoverCredentialMutation = async (
       intent.reference.backend,
     );
     if (
-      !(await implementation.removeOwned({
-        ownership,
-        reference: intent.reference,
-        signal: input.resolutionContext.signal,
-      }))
+      !(await invokeCredentialMutationForCore(
+        input.resolutionContext,
+        (boundary) =>
+          implementation.removeOwned({
+            ownership,
+            reference: intent.reference,
+            ...boundary,
+          }),
+      ))
     )
       return invalid();
     orphanRemoved = true;
   }
-  await completeCredentialMutationIntent(input.store, intent);
+  await invokeCredentialMutationForCore(input.resolutionContext, () =>
+    completeCredentialMutationIntent(input.store, intent),
+  );
   return Object.freeze({
     ok: true as const,
     state: orphanRemoved
@@ -801,6 +696,7 @@ export const retireCredentialReference = async (
   input: RemoveCredentialInput,
 ): Promise<CredentialRemovalResult> => {
   const value = exactRemovalInput(input);
+  if (credentialResolutionExpired(value.resolutionContext)) return invalid();
   let current: AgentscopeConfigurationSnapshot;
   let backup: AgentscopeConfigurationSnapshot;
   try {
@@ -824,6 +720,7 @@ export const retireCredentialReference = async (
     return removalFailure("core.credential.candidate-invalid");
   let intent: CredentialMutationIntent;
   try {
+    if (credentialResolutionExpired(value.resolutionContext)) throw new Error();
     intent = await createCredentialMutationIntent(value.store, {
       recordVersion: 1,
       operation: "retire",
@@ -831,6 +728,7 @@ export const retireCredentialReference = async (
       ownership: value.ownership,
       reference: value.reference,
     });
+    if (credentialResolutionExpired(value.resolutionContext)) throw new Error();
     await writeConfigurationSnapshot(value.store, {
       expectedGeneration: value.expectedGeneration,
       candidate,
@@ -849,7 +747,9 @@ export const retireCredentialReference = async (
   });
   if (!removal.ok) return removalFailure(removal.code, removal.state, true);
   try {
-    await completeCredentialMutationIntent(value.store, intent);
+    await invokeCredentialMutationForCore(value.resolutionContext, () =>
+      completeCredentialMutationIntent(value.store, intent),
+    );
   } catch {
     return removalFailure(
       "core.credential.intent-finalization-failed",

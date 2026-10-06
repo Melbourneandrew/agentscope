@@ -323,9 +323,14 @@ describe("credential set operation failures retain exact ownership", () => {
         await configureCredentialSetForCore(value.registry, value.input),
       ).toMatchObject({
         state: "referenced-pending",
-        code: "core.credential.activation-failed",
+        code:
+          mode === "abort-activation"
+            ? "core.credential.intent-finalization-failed"
+            : "core.credential.activation-failed",
       });
       expect(value.values.size).toBe(1);
+      if (mode === "abort-activation")
+        expect(value.events).not.toContain("activate");
     },
   );
 });
@@ -366,7 +371,7 @@ describe("credential set candidate and CAS failure", () => {
       expect(value.values.size).toBe(0);
     },
   );
-  it("compensates when cancellation arrives at candidate creation before CAS", async () => {
+  it("retains pending values without compensation when cancellation arrives before CAS", async () => {
     const value = await fixture();
     expect(
       await configureCredentialSetForCore(value.registry, {
@@ -377,9 +382,11 @@ describe("credential set candidate and CAS failure", () => {
         },
       }),
     ).toMatchObject({
-      state: "compensated",
-      code: "core.credential.preflight-unavailable",
+      state: "orphan-pending",
+      code: "core.credential.compensation-failed",
     });
+    expect(value.events).toEqual(["create", "resolve"]);
+    expect(value.values.size).toBe(1);
     await expect(readConfigurationSnapshot(value.store)).rejects.toThrow();
   });
 });
@@ -442,35 +449,27 @@ describe("credential set cancellation preserves phase boundaries", () => {
     "admits no later backend phase after %s",
     async (mode) => {
       const value = await fixture(mode);
-      const requests =
-        mode === "abort-stage"
-          ? [
-              ...value.input.requests,
-              {
-                ownership: createCredentialOwnership({
-                  destinationType,
-                  connectionId,
-                  slot: "secret-key",
-                }),
-                secret: "other-private-value",
-              },
-            ]
-          : value.input.requests;
+      const requests = [...value.input.requests];
+      if (mode === "abort-stage")
+        requests.push({
+          ownership: createCredentialOwnership({
+            ...value.input.requests[0]!.ownership,
+            slot: "secret-key",
+          }),
+          secret: "other-private-value",
+        });
       expect(
         await configureCredentialSetForCore(value.registry, {
           ...value.input,
           requests,
         }),
       ).toMatchObject({
-        state: mode === "abort-stage" ? "orphan-pending" : "compensated",
+        state: "orphan-pending",
       });
-      expect(value.events.filter((event) => event === "create")).toHaveLength(
-        1,
+      expect(value.events).toEqual(
+        mode === "abort-resolve" ? ["create", "resolve"] : ["create"],
       );
-      expect(value.events.filter((event) => event === "resolve")).toHaveLength(
-        mode === "abort-resolve" ? 1 : 0,
-      );
-      expect(value.events).not.toContain("activate");
+      expect(value.values.size).toBe(1);
     },
   );
   it.each(["abort-recovery", "abort-before-remove", "lost-recovery"])(
