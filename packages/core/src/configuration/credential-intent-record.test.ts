@@ -105,6 +105,55 @@ const set = () => ({
   entries: [entry("public-key"), entry("secret-key", "d")],
 });
 
+describe("versioned retirement record codec", () => {
+  const retirement = () => ({
+    ...set(),
+    recordVersion: 3,
+    operation: "retire",
+    preimage: { generation: 4, digest: `sha256-${"a".repeat(64)}` },
+    removal: { generation: 5, digest: `sha256-${"b".repeat(64)}` },
+    final: { generation: 6, digest: `sha256-${"c".repeat(64)}` },
+  });
+  it("freezes one distinct v3 record and preserves exact canonical round trip", () => {
+    const value = canonicalCredentialIntent(retirement());
+    expect(parseCredentialIntentRecord(`${JSON.stringify(value)}\n`)).toEqual(
+      value,
+    );
+    expect(Object.isFrozen(value)).toBe(true);
+    if (value.recordVersion !== 3) throw new Error("unexpected-version");
+    expect(Object.isFrozen(value.final)).toBe(true);
+    expect(Object.isFrozen(value.entries)).toBe(true);
+  });
+  it.each([
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      operation: "create",
+    }),
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      removal: { ...value.removal, generation: 6 },
+    }),
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      final: { ...value.final, generation: 7 },
+    }),
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      final: { ...value.final, digest: value.removal.digest },
+    }),
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      preimage: { ...value.preimage, extra: true },
+    }),
+    (value: ReturnType<typeof retirement>) => ({
+      ...value,
+      entries: [...value.entries].reverse(),
+    }),
+  ])("rejects malformed retirement record %#", (change) => {
+    expect(() => canonicalCredentialIntent(change(retirement()))).toThrow();
+  });
+});
+
 describe("credential set input record refuses before intent or backend mutation", () => {
   const changes: readonly ((input: ConfigureCredentialSetInput) => unknown)[] =
     [

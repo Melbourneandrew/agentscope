@@ -8,7 +8,12 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { types } from "node:util";
+import { configurationWriteInput } from "./configuration-write-input.js";
+import {
+  retirementState,
+  retirementWriteMatches,
+  retirementFinalCandidate,
+} from "./credential-retirement-evidence.js";
 
 import {
   getDestinationDescriptor,
@@ -23,9 +28,10 @@ import {
 } from "./home.js";
 import {
   canonicalCredentialIntent,
+  credentialIntentInputOwner,
   parseCredentialIntentRecord,
-  MAXIMUM_CREDENTIAL_INTENT_BYTES,
   type CredentialMutationIntent,
+  type CredentialRetirementIntent,
 } from "./credential-intent-record.js";
 export type { CredentialMutationIntent } from "./credential-intent-record.js";
 import {
@@ -122,60 +128,19 @@ export type CredentialMutationInspection = Readonly<{
     | "unavailable";
 }>;
 
-export type LocalResourceConfigurationMutationIntent = Readonly<{
-  recordVersion: 1;
-  operation: "configure" | "delete" | "unconfigure";
-  operationId: string;
-  owner: ConfigurationProcessIdentity;
-  destinationType: string;
-  connectionId: string;
-  lifecycleFingerprint: string;
-  recoveryHandlerId: string;
-  expectedGeneration: number;
-  expectedDigest: string;
-  authorizedCandidates: readonly Readonly<{
-    generation: number;
-    digest: string;
-  }>[];
-}>;
-
-export type LocalResourceMaintenanceMutationIntent = Readonly<{
-  recordVersion: 2;
-  operation: "backup" | "restore";
-  operationId: string;
-  resourceSelector: string;
-  owner: ConfigurationProcessIdentity;
-  destinationType: string;
-  connectionId: string;
-  lifecycleFingerprint: string;
-  recoveryHandlerId: string;
-  expectedGeneration: number;
-  expectedDigest: string;
-  authorizedCandidates: readonly [];
-}>;
-
-export type LocalResourceMaintenanceMutationCompletion = Readonly<{
-  recordVersion: 3;
-  operation: "backup" | "restore";
-  operationId: string;
-  resourceSelector: string;
-  owner: ConfigurationProcessIdentity;
-  destinationType: string;
-  connectionId: string;
-  lifecycleFingerprint: string;
-  recoveryHandlerId: string;
-  expectedGeneration: number;
-  expectedDigest: string;
-  authorizedCandidates: readonly [];
-  terminalState: "backed-up" | "restored" | "rolled-back";
-}>;
-
-export type LocalResourceMutationIntent =
-  | LocalResourceConfigurationMutationIntent
-  | LocalResourceMaintenanceMutationIntent;
-
-export type LocalResourceMutationRecord =
-  LocalResourceMutationIntent | LocalResourceMaintenanceMutationCompletion;
+import {
+  parseLocalResourceIntentRecord,
+  sameLocalResourceIntent,
+  type LocalResourceMutationIntent,
+  type LocalResourceMutationRecord,
+} from "./local-resource-intent-record.js";
+export type {
+  LocalResourceConfigurationMutationIntent,
+  LocalResourceMaintenanceMutationIntent,
+  LocalResourceMaintenanceMutationCompletion,
+  LocalResourceMutationIntent,
+  LocalResourceMutationRecord,
+} from "./local-resource-intent-record.js";
 
 export type LocalResourceMutationInspection = Readonly<{
   state:
@@ -254,51 +219,6 @@ const lockRecordSchema = z.strictObject({
   candidateFileName: z.string().regex(/^\.config\.[0-9a-f]{64}\.candidate$/u),
   backupStageFileName: z.string().regex(/^\.config\.[0-9a-f]{64}\.backup$/u),
 });
-
-const localResourceIntentCommonSchema = {
-  operationId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
-  owner: lockRecordSchema.shape.owner,
-  destinationType: z
-    .string()
-    .regex(/^@agentscope\/destination-[a-z0-9-]{1,64}$/u),
-  connectionId: z.string().regex(/^destination-connection-v1-[0-9a-f]{64}$/u),
-  lifecycleFingerprint: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
-  recoveryHandlerId: z.string().min(1).max(256),
-  expectedGeneration: z.number().int().nonnegative().safe(),
-  expectedDigest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
-} as const;
-
-const localResourceIntentSchema = z.discriminatedUnion("recordVersion", [
-  z.strictObject({
-    recordVersion: z.literal(1),
-    operation: z.enum(["configure", "delete", "unconfigure"]),
-    ...localResourceIntentCommonSchema,
-    authorizedCandidates: z
-      .array(
-        z.strictObject({
-          generation: z.number().int().nonnegative().safe(),
-          digest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
-        }),
-      )
-      .min(1)
-      .max(2),
-  }),
-  z.strictObject({
-    recordVersion: z.literal(2),
-    operation: z.enum(["backup", "restore"]),
-    resourceSelector: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
-    ...localResourceIntentCommonSchema,
-    authorizedCandidates: z.tuple([]),
-  }),
-  z.strictObject({
-    recordVersion: z.literal(3),
-    operation: z.enum(["backup", "restore"]),
-    resourceSelector: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
-    ...localResourceIntentCommonSchema,
-    authorizedCandidates: z.tuple([]),
-    terminalState: z.enum(["backed-up", "restored", "rolled-back"]),
-  }),
-]);
 
 type ConfigurationLockRecord = z.infer<typeof lockRecordSchema>;
 
@@ -663,150 +583,26 @@ export const readConfigurationForHook = async (
   }
 };
 
-const assertWriteInput = (
-  input: ConfigurationWriteInput,
-): Readonly<{
-  expectedGeneration: number | null;
-  candidate: AgentscopeConfigurationSnapshot;
-  candidateText: string;
-  owner: ConfigurationProcessIdentity;
-  credentialMutationIntent: CredentialMutationIntent | undefined;
-  localResourceMutationIntent: LocalResourceMutationIntent | undefined;
-  // eslint-disable-next-line complexity -- hostile exact-record validation remains in one noncoercing boundary.
-}> => {
-  const descriptors =
-    typeof input === "object" && input !== null
-      ? Object.getOwnPropertyDescriptors(input)
-      : undefined;
-  if (
-    !descriptors ||
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    ![
-      "candidate,credentialMutationIntent,expectedGeneration,owner",
-      "candidate,expectedGeneration,localResourceMutationIntent,owner",
-      "candidate,expectedGeneration,owner",
-    ].includes(Object.keys(descriptors).sort().join(",")) ||
-    Reflect.ownKeys(descriptors).some((key) => {
-      const descriptor = descriptors[key as keyof typeof descriptors];
-      return !descriptor || !("value" in descriptor);
-    })
-  )
-    return invalid("core.configuration.invalid");
-  const expectedGeneration = descriptors.expectedGeneration?.value as unknown;
-  const candidate = descriptors.candidate?.value as unknown;
-  const owner = descriptors.owner?.value as unknown;
-  const credentialMutationIntent = descriptors.credentialMutationIntent
-    ?.value as unknown;
-  const localResourceMutationIntent = descriptors.localResourceMutationIntent
-    ?.value as unknown;
-  if (
-    (!Number.isSafeInteger(expectedGeneration) &&
-      expectedGeneration !== null) ||
-    (typeof expectedGeneration === "number" && expectedGeneration < 0) ||
-    typeof candidate !== "object" ||
-    candidate === null ||
-    typeof owner !== "object" ||
-    owner === null ||
-    !processIdentityRegistry.has(owner) ||
-    (credentialMutationIntent !== undefined &&
-      (typeof credentialMutationIntent !== "object" ||
-        credentialMutationIntent === null ||
-        !credentialMutationIntentRegistry.has(credentialMutationIntent))) ||
-    (localResourceMutationIntent !== undefined &&
-      (typeof localResourceMutationIntent !== "object" ||
-        localResourceMutationIntent === null ||
-        !localResourceMutationIntentRegistry.has(
-          localResourceMutationIntent,
-        ))) ||
-    (credentialMutationIntent !== undefined &&
-      localResourceMutationIntent !== undefined)
-  )
-    return invalid("core.configuration.invalid");
-  const typedCandidate = candidate as AgentscopeConfigurationSnapshot;
-  const candidateText = serializeAgentscopeConfiguration(typedCandidate);
-  /* v8 ignore next 2 -- the branded configuration schema's tighter aggregate
-     bound makes this outer file cap unreachable for a genuine snapshot. */
-  if (
-    Buffer.byteLength(candidateText, "utf8") > MAXIMUM_CONFIGURATION_FILE_BYTES
-  )
-    return invalid("core.configuration.invalid");
-  if (!typedCandidate.mutationSafe)
-    return invalid("core.configuration.downgrade");
-  const typedExpected = expectedGeneration as number | null;
-  const expectedCandidateGeneration = (typedExpected ?? -1) + 1;
-  if (typedCandidate.generation !== expectedCandidateGeneration)
-    return invalid("core.configuration.conflict");
-  return Object.freeze({
-    expectedGeneration: typedExpected,
-    candidate: typedCandidate,
-    candidateText,
-    owner: owner as ConfigurationProcessIdentity,
-    credentialMutationIntent: credentialMutationIntent as
-      CredentialMutationIntent | undefined,
-    localResourceMutationIntent: localResourceMutationIntent as
-      LocalResourceMutationIntent | undefined,
+const assertWriteInput = (input: ConfigurationWriteInput) =>
+  configurationWriteInput(input, {
+    owner: (value): value is ConfigurationProcessIdentity =>
+      processIdentityRegistry.has(value),
+    credential: (value): value is CredentialMutationIntent =>
+      credentialMutationIntentRegistry.has(value),
+    resource: (value): value is LocalResourceMutationIntent =>
+      localResourceMutationIntentRegistry.has(value),
+    invalid: (failure) => invalid(`core.configuration.${failure}`),
+    maximumBytes: MAXIMUM_CONFIGURATION_FILE_BYTES,
   });
-};
 
 const parseLocalResourceIntent = (
   value: string,
 ): LocalResourceMutationRecord => {
   try {
-    if (Buffer.byteLength(value, "utf8") > MAXIMUM_CREDENTIAL_INTENT_BYTES)
-      return invalid("core.configuration.invalid");
-    const parsed = localResourceIntentSchema.parse(JSON.parse(value));
-    for (
-      let index = 0;
-      index < parsed.authorizedCandidates.length;
-      index += 1
-    ) {
-      if (
-        parsed.authorizedCandidates[index]!.generation !==
-        parsed.expectedGeneration + index + 1
-      )
-        return invalid("core.configuration.invalid");
-    }
-    if (
-      parsed.recordVersion === 3 &&
-      ((parsed.operation === "backup" && parsed.terminalState === "restored") ||
-        (parsed.operation === "restore" &&
-          parsed.terminalState === "backed-up"))
-    )
-      return invalid("core.configuration.invalid");
-    if (parsed.recordVersion !== 1)
-      return Object.freeze({
-        ...parsed,
-        owner: Object.freeze(parsed.owner),
-        authorizedCandidates: Object.freeze([] satisfies []),
-      });
-    return Object.freeze({
-      ...parsed,
-      owner: Object.freeze(parsed.owner),
-      authorizedCandidates: Object.freeze(
-        parsed.authorizedCandidates.map((candidate) =>
-          Object.freeze(candidate),
-        ),
-      ),
-    });
-  } catch (error) {
-    if (error instanceof ConfigurationStoreError) throw error;
+    return parseLocalResourceIntentRecord(value);
+  } catch {
     return invalid("core.configuration.invalid");
   }
-};
-
-const sameLocalResourceIntent = (
-  left: LocalResourceMutationRecord,
-  right: LocalResourceMutationRecord,
-): boolean => {
-  if (left.recordVersion === 3 && right.recordVersion === 3)
-    return JSON.stringify(left) === JSON.stringify(right);
-  const base = (record: LocalResourceMutationRecord): object => {
-    if (record.recordVersion !== 3) return record;
-    const { terminalState, ...intent } = record;
-    void terminalState;
-    return { ...intent, recordVersion: 2 };
-  };
-  return JSON.stringify(base(left)) === JSON.stringify(base(right));
 };
 
 const authorizeLocalResourceFence = async (
@@ -903,28 +699,60 @@ const localResourceFencePresent = async (
 const authorizeCredentialFence = async (
   state: ConfigurationStoreInternals,
   intent: CredentialMutationIntent | undefined,
+  initialText: string | undefined,
+  candidateText: string,
 ): Promise<void> => {
   const value = await readBoundedFile(
     state.fileSystem,
     credentialIntentPath(state),
   );
+  const claim = await readBoundedFile(
+    state.fileSystem,
+    credentialRecoveryClaimPath(state),
+  );
+  const claimed = claim !== undefined;
   if (
-    (await readBoundedFile(
-      state.fileSystem,
-      credentialRecoveryClaimPath(state),
-    )) !== undefined
+    claimed &&
+    (intent?.recordVersion !== 3 ||
+      !claimedCredentialIntents.has(intent) ||
+      value !== undefined ||
+      !sameCredentialIntent(parseCredentialIntent(claim), intent))
   )
     return invalid("core.configuration.contention");
-  if (value === undefined) {
+  if (value === undefined && !claimed) {
     if (intent !== undefined) return invalid("core.configuration.conflict");
     return;
   }
   if (
     intent === undefined ||
     !credentialMutationIntentRegistry.has(intent) ||
-    !sameCredentialIntent(parseCredentialIntent(value), intent)
+    !sameCredentialIntent(
+      parseCredentialIntent((claimed ? claim : value)!),
+      intent,
+    )
   )
     return invalid("core.configuration.contention");
+  if (intent.recordVersion === 3) {
+    const activeText = await readBoundedFile(
+      state.fileSystem,
+      state.home.configFile,
+    );
+    if (activeText !== initialText)
+      return invalid("core.configuration.conflict");
+    const active = parseCurrent(activeText, state.registry);
+    const backup = parseCurrent(
+      await readBoundedFile(state.fileSystem, state.home.configBackupFile),
+      state.registry,
+    );
+    if (
+      !active ||
+      initialText === undefined ||
+      !retirementWriteMatches(intent, initialText, candidateText, claimed) ||
+      (active.generation === intent.removal.generation &&
+        retirementState(active, backup, intent) !== "removal")
+    )
+      return invalid("core.configuration.conflict");
+  }
 };
 
 const transactionPaths = (
@@ -1015,6 +843,24 @@ const cleanupTransaction = async (
   await syncDirectory(state.fileSystem, state.home.mutationDirectory);
 };
 
+const verifyActiveReplacementAuthority = async (
+  state: ConfigurationStoreInternals,
+  record: ConfigurationLockRecord,
+  validated: ReturnType<typeof assertWriteInput>,
+  currentText: string | undefined,
+): Promise<void> => {
+  const currentLock = await readLock(state);
+  if (JSON.stringify(currentLock) !== JSON.stringify(record))
+    return invalid("core.configuration.conflict");
+  if (validated.credentialMutationIntent?.recordVersion === 3)
+    await authorizeCredentialFence(
+      state,
+      validated.credentialMutationIntent,
+      currentText,
+      validated.candidateText,
+    );
+};
+
 export const writeConfigurationSnapshot = async (
   store: ConfigurationStore,
   input: ConfigurationWriteInput,
@@ -1055,7 +901,12 @@ export const writeConfigurationSnapshot = async (
   try {
     await acquireLock(state, paths.lock, record);
     lockAcquired = true;
-    await authorizeCredentialFence(state, validated.credentialMutationIntent);
+    await authorizeCredentialFence(
+      state,
+      validated.credentialMutationIntent,
+      initialText,
+      validated.candidateText,
+    );
     await authorizeLocalResourceFence(
       state,
       validated.localResourceMutationIntent,
@@ -1103,9 +954,12 @@ export const writeConfigurationSnapshot = async (
       expectedDigest,
     );
     state.afterStep?.("active-reverified");
-    const currentLock = await readLock(state);
-    if (JSON.stringify(currentLock) !== JSON.stringify(record))
-      return invalid("core.configuration.conflict");
+    await verifyActiveReplacementAuthority(
+      state,
+      record,
+      validated,
+      currentText,
+    );
     await state.fileSystem.rename(paths.candidate, state.home.configFile);
     await syncDirectory(state.fileSystem, state.home.root);
     state.afterStep?.("active-replaced");
@@ -1656,23 +1510,10 @@ export const createCredentialMutationIntent = async <
   input: Intent,
 ): Promise<Intent> => {
   const state = stored(store);
-  if (typeof input !== "object" || input === null || types.isProxy(input)) {
-    return invalid("core.configuration.invalid");
-  }
-  let descriptors: PropertyDescriptorMap;
-  try {
-    descriptors = Object.getOwnPropertyDescriptors(input);
-  } catch {
-    return invalid("core.configuration.invalid");
-  }
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
-    !isConfigurationProcessIdentity(descriptors.owner?.value)
-  )
-    return invalid("core.configuration.invalid");
   let record: CredentialMutationIntent;
   try {
+    if (!isConfigurationProcessIdentity(credentialIntentInputOwner(input)))
+      return invalid("core.configuration.invalid");
     record = canonicalCredentialIntent(input);
     record = parseCredentialIntent(`${JSON.stringify(record)}\n`);
   } catch {
@@ -1809,9 +1650,22 @@ export const inspectCredentialMutation = async (
 export const readRecoverableCredentialMutationIntent = async (
   store: ConfigurationStore,
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
-): Promise<CredentialMutationIntent> => {
+): Promise<Exclude<CredentialMutationIntent, CredentialRetirementIntent>> => {
   const state = stored(store);
   const record = await readCredentialIntent(state);
+  if (record.recordVersion === 3)
+    return invalid("core.configuration.contention");
+  return (await claimCredentialIntent(state, record, ownerState)) as Exclude<
+    CredentialMutationIntent,
+    CredentialRetirementIntent
+  >;
+};
+
+const claimCredentialIntent = async (
+  state: ConfigurationStoreInternals,
+  record: CredentialMutationIntent,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): Promise<CredentialMutationIntent> => {
   const disposition = ownerDisposition(ownerState, record);
   if (disposition === "live")
     return invalid("core.configuration.recovery-owner-live");
@@ -1852,6 +1706,109 @@ export const readRecoverableCredentialMutationIntent = async (
   claimedCredentialIntents.add(claimed);
   credentialMutationIntentRegistry.add(claimed);
   return claimed;
+};
+
+const sameRetirementClaimFile = async (
+  state: ConfigurationStoreInternals,
+): Promise<boolean> => {
+  let fixed: FileHandle | undefined;
+  let claim: FileHandle | undefined;
+  try {
+    fixed = await state.fileSystem.open(
+      credentialIntentPath(state),
+      readFlags | constants.O_NONBLOCK,
+    );
+    claim = await state.fileSystem.open(
+      credentialRecoveryClaimPath(state),
+      readFlags | constants.O_NONBLOCK,
+    );
+    const [left, right] = await Promise.all([fixed.stat(), claim.stat()]);
+    return (
+      left.isFile() &&
+      right.isFile() &&
+      left.dev === right.dev &&
+      left.ino === right.ino
+    );
+  } catch {
+    return false;
+  } finally {
+    await closeQuietly(fixed);
+    await closeQuietly(claim);
+  }
+};
+
+export const readRetirementReconciliationIntentForCore = async (
+  store: ConfigurationStore,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): Promise<CredentialRetirementIntent> => {
+  const state = stored(store);
+  const claim = await readBoundedFile(
+    state.fileSystem,
+    credentialRecoveryClaimPath(state),
+  );
+  if (claim === undefined) {
+    const record = await readCredentialIntent(state);
+    if (record.recordVersion !== 3)
+      return invalid("core.configuration.invalid");
+    return (await claimCredentialIntent(
+      state,
+      record,
+      ownerState,
+    )) as CredentialRetirementIntent;
+  }
+  const record = parseCredentialIntent(claim);
+  if (record.recordVersion !== 3) return invalid("core.configuration.invalid");
+  const fixed = await readBoundedFile(
+    state.fileSystem,
+    credentialIntentPath(state),
+  );
+  if (fixed !== undefined && fixed !== claim)
+    return invalid("core.configuration.conflict");
+  const disposition = ownerDisposition(ownerState, record);
+  if (disposition !== "dead")
+    return invalid(
+      disposition === "live"
+        ? "core.configuration.recovery-owner-live"
+        : "core.configuration.recovery-owner-unknown",
+    );
+  if (fixed !== undefined) {
+    if (!(await sameRetirementClaimFile(state)))
+      return invalid("core.configuration.conflict");
+    await state.fileSystem.unlink(credentialIntentPath(state));
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+  }
+  if (
+    (await readBoundedFile(state.fileSystem, credentialIntentPath(state))) !==
+      undefined ||
+    (await readBoundedFile(
+      state.fileSystem,
+      credentialRecoveryClaimPath(state),
+    )) !== claim ||
+    ownerDisposition(ownerState, record) !== "dead"
+  )
+    return invalid("core.configuration.conflict");
+  credentialMutationIntentRegistry.add(record);
+  claimedCredentialIntents.add(record);
+  return record;
+};
+
+export const retirementFinalCandidateForCore = async (
+  store: ConfigurationStore,
+  intent: CredentialRetirementIntent,
+): Promise<AgentscopeConfigurationSnapshot> => {
+  if (
+    !credentialMutationIntentRegistry.has(intent) ||
+    intent.recordVersion !== 3
+  )
+    return invalid("core.configuration.invalid");
+  const state = stored(store);
+  const active = await readConfigurationSnapshot(store);
+  return retirementFinalCandidate(
+    active,
+    await readConfigurationBackupSnapshot(store),
+    intent,
+    state.registry,
+  );
 };
 
 export const inspectConfigurationTransaction = async (

@@ -48,7 +48,23 @@ export type CredentialSetMutationIntent = Readonly<{
 }>;
 
 export type CredentialMutationIntent =
-  SingleCredentialMutationIntent | CredentialSetMutationIntent;
+  | SingleCredentialMutationIntent
+  | CredentialSetMutationIntent
+  | CredentialRetirementIntent;
+
+export type CredentialRetirementIdentity = Readonly<{
+  generation: number;
+  digest: string;
+}>;
+export type CredentialRetirementIntent = Readonly<{
+  recordVersion: 3;
+  operation: "retire";
+  owner: IntentOwner;
+  entries: CredentialSetMutationIntent["entries"];
+  preimage: CredentialRetirementIdentity;
+  removal: CredentialRetirementIdentity;
+  final: CredentialRetirementIdentity;
+}>;
 
 const ownerSchema = z.strictObject({
   processId: z.number().int().positive().safe(),
@@ -65,6 +81,10 @@ const entrySchema = z.strictObject({
   ownership: ownershipSchema,
   reference: z.unknown(),
 });
+const identitySchema = z.strictObject({
+  generation: z.number().int().nonnegative().safe(),
+  digest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+});
 const recordSchema = z.discriminatedUnion("recordVersion", [
   z.strictObject({
     recordVersion: z.literal(1),
@@ -78,6 +98,15 @@ const recordSchema = z.discriminatedUnion("recordVersion", [
     operation: z.literal("create"),
     owner: ownerSchema,
     entries: z.array(entrySchema).min(1).max(16),
+  }),
+  z.strictObject({
+    recordVersion: z.literal(3),
+    operation: z.literal("retire"),
+    owner: ownerSchema,
+    entries: z.array(entrySchema).min(1).max(16),
+    preimage: identitySchema,
+    removal: identitySchema,
+    final: identitySchema,
   }),
 ]);
 
@@ -135,12 +164,36 @@ export const canonicalCredentialIntent = (
   }
   const entries = Object.freeze(value.entries.map(entryFrom));
   validateSet(entries);
+  if (value.recordVersion === 3) {
+    if (
+      value.removal.generation !== value.preimage.generation + 1 ||
+      value.final.generation !== value.removal.generation + 1 ||
+      new Set([value.preimage.digest, value.removal.digest, value.final.digest])
+        .size !== 3
+    )
+      throw new Error();
+    return Object.freeze({
+      recordVersion: 3,
+      operation: "retire",
+      owner,
+      entries,
+      preimage: Object.freeze(value.preimage),
+      removal: Object.freeze(value.removal),
+      final: Object.freeze(value.final),
+    });
+  }
   return Object.freeze({
     recordVersion: 2,
     operation: "create",
     owner,
     entries,
   });
+};
+
+export const credentialIntentInputOwner = (input: unknown): unknown => {
+  if (typeof input !== "object" || input === null) throw new Error();
+  rejectProxyFields(input);
+  return Object.getOwnPropertyDescriptor(input, "owner")?.value as unknown;
 };
 
 const rejectProxyFields = (input: unknown, depth = 0): void => {
