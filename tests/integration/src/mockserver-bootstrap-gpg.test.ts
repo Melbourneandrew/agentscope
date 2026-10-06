@@ -182,7 +182,7 @@ describe("fixed signature-policy substages (untrusted observations only)", () =>
         const entered: string[] = [];
         const text =
           valid +
-          `[GNUPG:] ${token} SECRET_CANARY\n[GNUPG:] BADSIG SECOND_CANARY\n`;
+          `[GNUPG:] ${token} SECRET_CANARY%\n[GNUPG:] BADSIG SECOND_CANARY\n`;
         for (const sinkThrows of [false, true]) {
           expect(() =>
             statusVerifier()("maven", text, now, (stage) => {
@@ -299,6 +299,83 @@ describe("optional stock-GPG verification compliance information", () => {
       expect(() => verifyBootstrapGpgStatus("maven", input, now)).toThrow(
         "integration.mockserver-material.bootstrap-gpg",
       );
+  });
+});
+
+describe("non-authoritative GPG notation and policy metadata", () => {
+  const info =
+    "[GNUPG:] POLICY_URL https://example.invalid/p%20x\n[GNUPG:] NOTATION_NAME synthetic%40example.invalid\n[GNUPG:] NOTATION_FLAGS 0 1\n[GNUPG:] NOTATION_DATA SECRET_CANARY%0A\n[GNUPG:] NOTATION_DATA second%20piece\n[GNUPG:] NOTATION_NAME binary\n[GNUPG:] NOTATION_DATA %00%FF\n";
+  it.each(policies)(
+    "discards complete split/multiple metadata for %s",
+    (kind, fingerprint, hash, signatureClass) => {
+      const valid = status(fingerprint, hash, signatureClass);
+      const withInfo = valid.replace(
+        "[GNUPG:] VALIDSIG",
+        info + "[GNUPG:] VALIDSIG",
+      );
+      expect(verifyBootstrapGpgStatus(kind, withInfo, now)).toEqual(
+        verifyBootstrapGpgStatus(kind, valid, now),
+      );
+      expect(
+        verifyBootstrapGpgStatus(
+          kind,
+          withInfo + "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 23\n",
+          now,
+        ),
+      ).toEqual(verifyBootstrapGpgStatus(kind, valid, now));
+    },
+  );
+  it("metadata never substitutes authority and malformed groups still refuse", () => {
+    const valid = status(policies[0][1], "10", "00");
+    for (const output of [
+      info,
+      info + valid.replace("[GNUPG:] GOODSIG", "ignored GOODSIG"),
+      info + valid + "[GNUPG:] BADSIG canary\n",
+      info + valid + valid,
+      info + valid.replace(" 1 10 00 ", " 1 8 00 "),
+      valid + "[GNUPG:] NOTATION_FLAGS 0 1\n",
+      valid + "[GNUPG:] NOTATION_DATA data\n",
+      valid + "[GNUPG:] NOTATION_NAME name\n",
+      valid + info.replace("0 1", "2 1"),
+      valid + info.replace("%0A", "%xx"),
+      valid + info.replace("%0A", "\r"),
+      valid +
+        info.replace("NOTATION_DATA second%20piece", "NOTATION_FLAGS 0 1"),
+      valid +
+        info.replace(
+          "NOTATION_FLAGS 0 1",
+          "NOTATION_FLAGS 0 1\n[GNUPG:] NOTATION_FLAGS 0 1",
+        ),
+    ]) {
+      const stages: string[] = [];
+      expect(() =>
+        statusVerifier()("maven", output, now, (stage) => stages.push(stage)),
+      ).toThrow("integration.mockserver-material.bootstrap-gpg");
+      expect(stages.join(" ")).not.toContain("CANARY");
+    }
+  });
+  it("actual run discards metadata with no disclosure even when its sink fails", async () => {
+    const markers: string[] = [];
+    const run = observedVerification({
+      signature: statusVerifier(),
+      write: (text) => {
+        markers.push(text);
+        throw new Error("optional-sink");
+      },
+    });
+    let calls = 0;
+    await expect(
+      run("maven", () =>
+        Promise.resolve({
+          stdout:
+            ++calls === 5
+              ? info + status(policies[0][1], "10", "00")
+              : Buffer.from("selected"),
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(markers.join(" ")).not.toContain("SECRET_CANARY");
+    expect(markers.at(-1)).toContain("stage=completed family=none");
   });
 });
 

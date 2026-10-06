@@ -160,7 +160,7 @@ const seconds = (value) => {
 };
 
 // GnuPG doc/DETAILS at 7eea4e5ff901f45830910fc3ccde009298ae5175.
-// Category is diagnostic only; even informational records remain rejected.
+// Category is diagnostic only; malformed metadata never grants authority.
 const rejectedStatusCategory = (token) => {
   if (
     ["NOTATION_NAME", "NOTATION_FLAGS", "NOTATION_DATA", "POLICY_URL"].includes(
@@ -185,19 +185,62 @@ const rejectedStatusCategory = (token) => {
   return "unknown";
 };
 
-const verifyStatus = (kind, output, nowSeconds, enter) => {
-  const policy = policyFor(kind);
-  if (
-    typeof output !== "string" ||
-    Buffer.byteLength(output) > 16_384 ||
-    !Number.isSafeInteger(nowSeconds) ||
-    nowSeconds < 1
-  )
-    fail();
-  enter("signature-recordset", "signature-policy");
-  const records = output
-    .split("\n")
-    .filter((line) => line.startsWith("[GNUPG:] "));
+const rejectStatusRecord = (token, enter) => {
+  try {
+    enter(
+      `signature-recordset-${rejectedStatusCategory(token)}`,
+      "signature-policy",
+    );
+  } catch {
+    // Optional diagnostic failure cannot replace the original refusal.
+  }
+  fail();
+};
+// keylist.c emits NAME, conditional FLAGS, then split DATA; cpr.c escapes
+// controls/percent (and all non-ASCII notation bytes) as uppercase %XX.
+const discardStatusInformation = (records, enter, permitted) => {
+  let notation = "none";
+  const retained = [];
+  for (const line of records) {
+    const token = line.split(" ")[1];
+    if (rejectedStatusCategory(token) !== "information") {
+      if (notation === "name" || notation === "flags")
+        rejectStatusRecord("NOTATION_DATA", enter);
+      if (!permitted.has(token)) rejectStatusRecord(token, enter);
+      notation = "none";
+      retained.push(line);
+      continue;
+    }
+    const payload = line.slice(10 + token.length);
+    const escaped =
+      token === "POLICY_URL"
+        ? /^(?:[\x21-\x24\x26-\x7E\u0080-\u{10FFFF}]|%[0-9A-F]{2})*$/u
+        : /^(?:[\x21-\x24\x26-\x7E]|%[0-9A-F]{2})*$/u;
+    if (token === "NOTATION_FLAGS") {
+      if (notation !== "name" || !/^[01] [01]$/u.test(payload))
+        rejectStatusRecord(token, enter);
+      notation = "flags";
+    } else if (token === "NOTATION_DATA") {
+      if (notation === "none" || !escaped.test(payload))
+        rejectStatusRecord(token, enter);
+      notation = "data";
+    } else {
+      if (
+        notation === "name" ||
+        notation === "flags" ||
+        !escaped.test(payload) ||
+        payload.length === 0
+      )
+        rejectStatusRecord(token, enter);
+      notation = token === "NOTATION_NAME" ? "name" : "none";
+    }
+  }
+  if (notation === "name" || notation === "flags")
+    rejectStatusRecord("NOTATION_DATA", enter);
+  return retained;
+};
+
+const statusRecordSet = (output, enter) => {
   const permitted = new Set([
     "NEWSIG",
     "KEY_CONSIDERED",
@@ -211,16 +254,24 @@ const verifyStatus = (kind, output, nowSeconds, enter) => {
     "PLAINTEXT_LENGTH",
     "VERIFICATION_COMPLIANCE_MODE",
   ]);
-  const rejected = records.find((line) => !permitted.has(line.split(" ")[1]));
-  if (rejected !== undefined) {
-    const category = rejectedStatusCategory(rejected.split(" ")[1]);
-    try {
-      enter(`signature-recordset-${category}`, "signature-policy");
-    } catch {
-      // Optional diagnostic failure cannot replace the original refusal.
-    }
+  return discardStatusInformation(
+    output.split("\n").filter((line) => line.startsWith("[GNUPG:] ")),
+    enter,
+    permitted,
+  );
+};
+
+const verifyStatus = (kind, output, nowSeconds, enter) => {
+  const policy = policyFor(kind);
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output) > 16_384 ||
+    !Number.isSafeInteger(nowSeconds) ||
+    nowSeconds < 1
+  )
     fail();
-  }
+  enter("signature-recordset", "signature-policy");
+  const records = statusRecordSet(output, enter);
   enter("signature-count", "signature-policy");
   const valid = records.filter((line) => line.startsWith("[GNUPG:] VALIDSIG "));
   const good = records.filter((line) => line.startsWith("[GNUPG:] GOODSIG "));
