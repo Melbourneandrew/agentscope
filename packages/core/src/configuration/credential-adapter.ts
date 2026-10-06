@@ -10,6 +10,18 @@ import {
 } from "@agentscope/destinations-core/configuration";
 
 import type { ConfigurationCredentialReference } from "./schema.js";
+import {
+  CredentialAdapterError,
+  credentialResolutionExpired,
+  isCredentialResolutionContext,
+  type CredentialResolutionContext,
+} from "./credential-resolution-context.js";
+export {
+  CredentialAdapterError,
+  createCredentialResolutionContext,
+  isCredentialResolutionContext,
+  type CredentialResolutionContext,
+} from "./credential-resolution-context.js";
 
 export const CREDENTIAL_RESOLUTION_FAILURES = Object.freeze([
   "unavailable",
@@ -25,11 +37,6 @@ export type CredentialOwnership = Readonly<{
   destinationType: DestinationTypeId;
   connectionId: DestinationConnectionId;
   slot: CredentialSlotId;
-}>;
-
-export type CredentialResolutionContext = Readonly<{
-  context: "interactive" | "hook-equivalent" | "hook";
-  signal: AbortSignal;
 }>;
 
 export type ResolvedCredential = Readonly<{
@@ -106,7 +113,6 @@ type StoredAdapter = Readonly<{
 
 const adapters = new WeakMap<object, StoredAdapter>();
 const ownerships = new WeakSet<object>();
-const resolutionContexts = new WeakSet<object>();
 const registries = new WeakMap<
   object,
   ReadonlyMap<CredentialBackend, CredentialBackendAdapter>
@@ -120,15 +126,6 @@ const storedBackends = new Set<StoredCredentialBackend>([
   "windows-credential-manager",
   "linux-secret-service",
 ]);
-
-export class CredentialAdapterError extends Error {
-  public readonly code = "core.credential.invalid";
-
-  public constructor() {
-    super("core.credential.invalid");
-    this.name = "CredentialAdapterError";
-  }
-}
 
 const invalid = (): never => {
   throw new CredentialAdapterError();
@@ -260,25 +257,6 @@ export const isCredentialOwnership = (
   value: unknown,
 ): value is CredentialOwnership =>
   typeof value === "object" && value !== null && ownerships.has(value);
-
-export const createCredentialResolutionContext = (
-  context: CredentialResolutionContext["context"],
-  signal: AbortSignal,
-): CredentialResolutionContext => {
-  if (
-    !["interactive", "hook-equivalent", "hook"].includes(context) ||
-    !(signal instanceof AbortSignal)
-  )
-    return invalid();
-  const value = Object.freeze({ context, signal });
-  resolutionContexts.add(value);
-  return value;
-};
-
-export const isCredentialResolutionContext = (
-  value: unknown,
-): value is CredentialResolutionContext =>
-  typeof value === "object" && value !== null && resolutionContexts.has(value);
 
 const validateImplementation = (
   value: unknown,
@@ -461,10 +439,11 @@ export const resolveCredentialReference = async (
   if (!isCredentialResolutionContext(context)) return invalid();
   const validatedReference = exactReference(reference);
   const stored = storedAdapter(registry, validatedReference.backend);
-  if (context.signal.aborted) return failed("unavailable");
-  return stored.backend === "ci-environment"
+  if (credentialResolutionExpired(context)) return failed("unavailable");
+  const result = await (stored.backend === "ci-environment"
     ? ciResolution(stored, validatedReference)
-    : storedResolution(stored, validatedReference, context);
+    : storedResolution(stored, validatedReference, context));
+  return credentialResolutionExpired(context) ? failed("unavailable") : result;
 };
 
 export const isResolvedCredential = (

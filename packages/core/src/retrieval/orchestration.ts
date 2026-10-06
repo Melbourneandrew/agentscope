@@ -4,7 +4,6 @@ import {
   getDestinationDescriptor,
   createTraceLocator,
   type BoundDestinationTransport,
-  type DestinationDescriptor,
   type JsonObject,
   type ReporterDeadline,
   type Retriever,
@@ -33,12 +32,7 @@ import {
 import type { CanonicalTraceGraph } from "@agentscope/protocol";
 
 import { FIRST_PARTY_HARNESS_IDS } from "../capture/types.js";
-import {
-  createCredentialResolutionContext,
-  readResolvedCredentialForCore,
-  resolveCredentialReference,
-  type CredentialBackendRegistry,
-} from "../configuration/credential-adapter.js";
+import type { CredentialBackendRegistry } from "../configuration/credential-adapter.js";
 import {
   readConfigurationForHook,
   type ConfigurationStore,
@@ -60,6 +54,7 @@ import {
   governTraceSummary,
   type GovernedTraceSummary,
 } from "./governance.js";
+import { resolveCredentialsWithinDeadline } from "./credential-setup.js";
 
 export const RETRIEVAL_MAXIMUM_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS = 8;
@@ -490,67 +485,6 @@ export const prepareCoreRetrievalRuntime = async (
   });
 };
 
-type CredentialSettlement =
-  | Readonly<{
-      kind: "resolved";
-      credentials: Readonly<Record<string, string>>;
-    }>
-  | Readonly<{ kind: "failed" }>
-  | Readonly<{ kind: "expired" }>;
-
-const resolveCredentialsWithinDeadline = async (
-  descriptor: DestinationDescriptor,
-  connection: ConfiguredDestinationConnection,
-  credentialBackendRegistry: CredentialBackendRegistry,
-  controller: AbortController,
-): Promise<CredentialSettlement> => {
-  const credentialContext = createCredentialResolutionContext(
-    "interactive",
-    controller.signal,
-  );
-  const resolution = Promise.all(
-    descriptor.credentialSlots.map(async (slot) => {
-      const reference = connection.credentialReferences[slot.id];
-      if (!reference) return [slot.id, undefined] as const;
-      const resolved = await resolveCredentialReference(
-        credentialBackendRegistry,
-        reference,
-        credentialContext,
-      );
-      if (!resolved.ok) throw new Error("core.retrieval.unavailable");
-      return [
-        slot.id,
-        readResolvedCredentialForCore(resolved.credential),
-      ] as const;
-    }),
-  ).then(
-    (entries): CredentialSettlement =>
-      Object.freeze({
-        kind: "resolved",
-        credentials: Object.freeze(
-          Object.fromEntries(entries.filter((entry) => entry[1] !== undefined)),
-        ),
-      }),
-    (): CredentialSettlement => Object.freeze({ kind: "failed" }),
-  );
-  let resolveExpiration: (() => void) | undefined;
-  const expiration = new Promise<CredentialSettlement>((resolve) => {
-    resolveExpiration = () => {
-      resolve(Object.freeze({ kind: "expired" }));
-    };
-  });
-  /* v8 ignore else -- the Promise executor initializes this synchronously. */
-  if (resolveExpiration !== undefined)
-    controller.signal.addEventListener("abort", resolveExpiration, {
-      once: true,
-    });
-  const settlement = await Promise.race([resolution, expiration]);
-  /* v8 ignore else -- the Promise executor initializes this synchronously. */
-  if (resolveExpiration !== undefined)
-    controller.signal.removeEventListener("abort", resolveExpiration);
-  return settlement;
-};
-
 const prepareRetriever = async (
   runtime: CoreRetrievalRuntime,
   destinationName: unknown,
@@ -622,6 +556,7 @@ const prepareRetriever = async (
       connection,
       runtime.credentialBackendRegistry,
       controller,
+      runtime.deadline.expiresAtMonotonicMilliseconds,
     );
     if (credentialSettlement.kind === "expired")
       return unavailable("deadline-exceeded");

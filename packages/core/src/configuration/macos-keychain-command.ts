@@ -5,6 +5,7 @@ export type MacosKeychainCommand = Readonly<{
   arguments: readonly string[];
   stdin?: string;
   signal: AbortSignal;
+  expiresAtMonotonicMilliseconds?: number;
 }>;
 
 export type MacosKeychainCommandResult = Readonly<{
