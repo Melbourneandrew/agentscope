@@ -1,0 +1,243 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
+import { afterEach, describe, expect, it } from "vitest";
+
+type Step = {
+  name?: string;
+  id?: string;
+  if?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
+};
+const workflow = parseYaml(
+  readFileSync(
+    resolve(import.meta.dirname, "../../../.github/workflows/integration.yml"),
+    "utf8",
+  ),
+) as { jobs: Record<string, { steps: Step[] }> };
+const steps = workflow.jobs["mockserver-supplier-research"]!.steps;
+const execution = steps.find(({ id }) => id === "research_packet")!;
+const projection = steps.find(
+  ({ name }) => name === "Project closed research shell observations",
+)!;
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+});
+function root() {
+  const value = mkdtempSync(resolve(tmpdir(), "agentscope-research-shell-"));
+  roots.push(value);
+  return value;
+}
+function shell(script: string, env: NodeJS.ProcessEnv) {
+  const result = spawnSync(
+    "/bin/bash",
+    ["--noprofile", "--norc", "-e", "-c", script],
+    {
+      env,
+      encoding: "utf8",
+      timeout: 2_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 4_096,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  return result;
+}
+function run(
+  status: number,
+  verifier: number,
+  prefix = "",
+  outputFailure = false,
+) {
+  const directory = root();
+  const output = outputFailure ? directory : resolve(directory, "output");
+  const result = shell(
+    `pnpm() { return ${status}; }\nnode() { return ${verifier}; }\n${prefix}\n${execution.run!}`,
+    { GITHUB_OUTPUT: output },
+  );
+  return {
+    result,
+    output: outputFailure ? null : readFileSync(output, "utf8"),
+  };
+}
+
+describe("actual research workflow shell file commands", () => {
+  it("keeps diagnostics separate from the unchanged verifier and upload predicate", () => {
+    const script = execution.run!;
+    expect(script.indexOf("diagnostic_output shell_entered true")).toBeLessThan(
+      script.indexOf("pnpm test:integration"),
+    );
+    expect(script.indexOf("status=$?")).toBeLessThan(
+      script.indexOf("diagnostic_output command_status"),
+    );
+    expect(script.indexOf('test "$status" -eq 3')).toBeLessThan(
+      script.indexOf("node tests/integration/verify-mockserver-research.mjs"),
+    );
+    expect(script).not.toContain("eval");
+    expect(projection.if).toBe("always()");
+    expect(projection.env).toEqual({
+      OBSERVED_OUTCOME: "${{ steps.research_packet.outcome }}",
+      OBSERVED_ENTERED: "${{ steps.research_packet.outputs.shell_entered }}",
+      OBSERVED_COMMAND_STATUS:
+        "${{ steps.research_packet.outputs.command_status }}",
+      OBSERVED_SHELL_STATUS:
+        "${{ steps.research_packet.outputs.shell_status }}",
+    });
+    const upload = steps.at(-1)!;
+    expect(upload.if).toBe(
+      "success() && steps.research_packet.outcome == 'success'",
+    );
+    expect(upload.with).toMatchObject({
+      "retention-days": 7,
+      "if-no-files-found": "error",
+      path: "artifacts/integration/mockserver-research/inventory.json\nartifacts/integration/mockserver-research/receipt.json\n",
+    });
+  });
+  it.each([0, 1, 7, 137, 143, 255])(
+    "retains returned command %s but fails its predicate",
+    (status) => {
+      const { result, output } = run(status, 0);
+      expect(result.status).toBe(1);
+      expect(result.signal).toBeNull();
+      expect(output).toBe(
+        `shell_entered=true\ncommand_status=${status}\nshell_status=1\n`,
+      );
+      expect(result.stdout).not.toContain("verifier-enter");
+    },
+  );
+  it.each([0, 1, 7])(
+    "retains verifier result %s after exact command 3",
+    (verifier) => {
+      const { result, output } = run(3, verifier);
+      expect(result.status).toBe(verifier);
+      expect(result.signal).toBeNull();
+      expect(output).toBe(
+        `shell_entered=true\ncommand_status=3\nshell_status=${verifier}\n`,
+      );
+      expect(result.stdout).toContain("verifier-enter");
+      expect(result.stdout.includes("verifier-complete")).toBe(verifier === 0);
+    },
+  );
+  it("retains file commands when stdout is lost", () => {
+    const { result, output } = run(3, 0, "exec 1>/dev/null");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("");
+    expect(output).toBe(
+      "shell_entered=true\ncommand_status=3\nshell_status=0\n",
+    );
+  });
+  it.each([
+    [3, 0],
+    [3, 7],
+    [1, 0],
+  ])(
+    "does not replace status when output/trap writes fail (%s/%s)",
+    (status, verifier) => {
+      const { result, output } = run(status, verifier, "", true);
+      expect(result.status).toBe(status === 3 ? verifier : 1);
+      expect(result.signal).toBeNull();
+      expect(output).toBeNull();
+    },
+  );
+  it("does not replace outcome when stdout printf fails", () => {
+    const { result, output } = run(
+      3,
+      0,
+      'printf() { case "$1" in \'%s=%s\'*) builtin printf "$@" ;; *) return 1 ;; esac; }',
+    );
+    expect(result.status).toBe(0);
+    expect(output).toBe(
+      "shell_entered=true\ncommand_status=3\nshell_status=0\n",
+    );
+  });
+  it("preserves verifier failure when only the EXIT trap destination fails", () => {
+    const directory = root();
+    const output = resolve(directory, "output");
+    const result = shell(
+      `pnpm() { return 3; }\nnode() { GITHUB_OUTPUT=${JSON.stringify(directory)}; return 7; }\n${execution.run!}`,
+      { GITHUB_OUTPUT: output },
+    );
+    expect(result.status).toBe(7);
+    expect(result.signal).toBeNull();
+    expect(readFileSync(output, "utf8")).toBe(
+      "shell_entered=true\ncommand_status=3\n",
+    );
+  });
+  it("does not invent terminal fields for a shell killed inside the command", () => {
+    const directory = root();
+    const output = resolve(directory, "output");
+    const result = shell(`pnpm() { kill -KILL $$; }\n${execution.run!}`, {
+      GITHUB_OUTPUT: output,
+    });
+    expect(result.status).toBeNull();
+    expect(result.signal).toBe("SIGKILL");
+    expect(readFileSync(output, "utf8")).toBe("shell_entered=true\n");
+  });
+});
+
+describe("closed always-after projection", () => {
+  function project(values: NodeJS.ProcessEnv, summaryFailure = false) {
+    const directory = root();
+    const summary = summaryFailure ? directory : resolve(directory, "summary");
+    const result = shell(projection.run!, {
+      OBSERVED_OUTCOME: "",
+      OBSERVED_ENTERED: "",
+      OBSERVED_COMMAND_STATUS: "",
+      OBSERVED_SHELL_STATUS: "",
+      ...values,
+      GITHUB_STEP_SUMMARY: summary,
+    });
+    expect(result.status).toBe(0);
+    expect(result.signal).toBeNull();
+    if (!summaryFailure)
+      expect(readFileSync(summary, "utf8")).toBe(result.stdout);
+    return result.stdout;
+  }
+  it("projects only the allowed observations without implying containment", () => {
+    expect(
+      project({
+        OBSERVED_OUTCOME: "failure",
+        OBSERVED_ENTERED: "true",
+        OBSERVED_COMMAND_STATUS: "3",
+        OBSERVED_SHELL_STATUS: "7",
+      }),
+    ).toBe(
+      "integration.mockserver-research.shell-observation outcome=failure shell_entered=true command_status=3 shell_status=7\n",
+    );
+  });
+  it("reports absent terminal observations as unknown", () => {
+    expect(
+      project({ OBSERVED_OUTCOME: "cancelled", OBSERVED_ENTERED: "true" }),
+    ).toContain("command_status=unknown shell_status=unknown");
+  });
+  it.each([
+    "256",
+    "-1",
+    "03",
+    "1.0",
+    "1\nsecret",
+    "$(exit 8)",
+    "99999999999999999999999999",
+  ])("sanitizes hostile numeric input %s", (value) => {
+    expect(
+      project({ OBSERVED_COMMAND_STATUS: value, OBSERVED_SHELL_STATUS: value }),
+    ).toContain("command_status=unknown shell_status=unknown");
+  });
+  it("sanitizes unknown outcomes and entered values without evaluating them", () => {
+    expect(
+      project({
+        OBSERVED_OUTCOME: "success\ncanary",
+        OBSERVED_ENTERED: "$(exit 8)",
+      }),
+    ).toContain("outcome=unknown shell_entered=unknown");
+  });
+  it("does not fail the diagnostic step when summary output fails", () => {
+    expect(project({}, true)).toContain("outcome=unknown");
+  });
+});

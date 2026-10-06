@@ -187,8 +187,8 @@ describe("connected hosted supplier research boundary", () => {
         name ===
         "Require settled research stop and independently verified packet",
     )!;
-    expect(execution.run).toBe(
-      "set +e\npnpm test:integration\nstatus=$?\nset -e\nprintf 'integration.mockserver-research.command-status=%s\\n' \"$status\"\ntest \"$status\" -eq 3\nprintf 'integration.mockserver-research.verifier-enter\\n'\nnode tests/integration/verify-mockserver-research.mjs\nprintf 'integration.mockserver-research.verifier-complete\\n'\n",
+    expect(execution.run).toMatch(
+      /test "\$status" -eq 3\n[\s\S]*node tests\/integration\/verify-mockserver-research\.mjs\n/u,
     );
     const upload = job.steps.at(-1)!;
     expect(upload.if).toBe(

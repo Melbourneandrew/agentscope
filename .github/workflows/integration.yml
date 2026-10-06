@@ -355,15 +355,48 @@ jobs:
       - name: Require settled research stop and independently verified packet
         id: research_packet
         run: |
+          diagnostic_output() {
+            { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/null}"; } 2>/dev/null || :
+          }
+          diagnostic_exit() {
+            original_status=$?
+            trap - EXIT
+            diagnostic_output shell_status "$original_status"
+            exit "$original_status"
+          }
+          trap diagnostic_exit EXIT
+          diagnostic_output shell_entered true
           set +e
           pnpm test:integration
           status=$?
+          if [[ "$status" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( status <= 255 )); then
+            diagnostic_output command_status "$status"
+          fi
           set -e
-          printf 'integration.mockserver-research.command-status=%s\n' "$status"
+          printf 'integration.mockserver-research.command-status=%s\n' "$status" || :
           test "$status" -eq 3
-          printf 'integration.mockserver-research.verifier-enter\n'
+          printf 'integration.mockserver-research.verifier-enter\n' || :
           node tests/integration/verify-mockserver-research.mjs
-          printf 'integration.mockserver-research.verifier-complete\n'
+          printf 'integration.mockserver-research.verifier-complete\n' || :
+      - name: Project closed research shell observations
+        if: always()
+        env:
+          OBSERVED_OUTCOME: ${{ steps.research_packet.outcome }}
+          OBSERVED_ENTERED: ${{ steps.research_packet.outputs.shell_entered }}
+          OBSERVED_COMMAND_STATUS: ${{ steps.research_packet.outputs.command_status }}
+          OBSERVED_SHELL_STATUS: ${{ steps.research_packet.outputs.shell_status }}
+        run: |
+          outcome=unknown
+          case "$OBSERVED_OUTCOME" in success|failure|cancelled|skipped) outcome="$OBSERVED_OUTCOME" ;; esac
+          entered=unknown
+          test "$OBSERVED_ENTERED" != true || entered=true
+          command_status=unknown
+          shell_status=unknown
+          if [[ "$OBSERVED_COMMAND_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_COMMAND_STATUS <= 255 )); then command_status="$OBSERVED_COMMAND_STATUS"; fi
+          if [[ "$OBSERVED_SHELL_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SHELL_STATUS <= 255 )); then shell_status="$OBSERVED_SHELL_STATUS"; fi
+          observation="integration.mockserver-research.shell-observation outcome=$outcome shell_entered=$entered command_status=$command_status shell_status=$shell_status"
+          printf '%s\n' "$observation" || :
+          { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
       - name: Upload bounded research observations only
         if: success() && steps.research_packet.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
