@@ -26,6 +26,7 @@ import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { prepareMockServerBootstrap } from "./prepare-bootstrap.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
+import { publishMaterialResearchPhase } from "../controller-file-command.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const modules = Object.freeze(
@@ -132,6 +133,7 @@ export const researchMockServerSupplier = async (input) => {
     // caller signal must remain usable during reserved late-image retirement.
     const bootstrap = await prepareMockServerBootstrap(input);
     check(workSignal, deadline - reserve);
+    publishMaterialResearchPhase("supplier-context");
     // Mutable returned bytes are never accepted on the strength of the receipt.
     const archives = {
       "source.tar.gz": verifyMockServerSourceArchive(bootstrap.archives.source),
@@ -173,6 +175,7 @@ export const researchMockServerSupplier = async (input) => {
       owned.files.push({ path, status: lstatSync(path) });
     }
     check(workSignal, deadline - reserve);
+    publishMaterialResearchPhase("supplier-build");
     const inventory = await buildPreparedDockerImage(dockerClient, {
       buildArguments: { BASE_IMAGE: base },
       buildNetwork: "default",
@@ -189,6 +192,7 @@ export const researchMockServerSupplier = async (input) => {
       signal: workSignal,
     });
     check(workSignal, deadline - reserve);
+    publishMaterialResearchPhase("supplier-inventory");
     if (
       !Buffer.isBuffer(inventory) ||
       inventory.length < 1 ||
@@ -196,6 +200,7 @@ export const researchMockServerSupplier = async (input) => {
     )
       fail();
     const bytes = Buffer.from(inventory);
+    publishMaterialResearchPhase("supplier-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     created = false;

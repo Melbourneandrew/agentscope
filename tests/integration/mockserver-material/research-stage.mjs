@@ -23,6 +23,7 @@ import {
 import { researchMockServerSupplier } from "./prepare-supplier.mjs";
 import { parseMockServerResearchInventory } from "./research-inventory.mjs";
 import { markUnsettledOperation } from "../dist/controller-failure-diagnostic.js";
+import { publishMaterialResearchPhase } from "../controller-file-command.mjs";
 
 const recipeSources = Object.freeze([
   "bootstrap-archive.mjs",
@@ -54,6 +55,7 @@ export const mockServerResearchRecipeDigest = () =>
 
 /** Uses a fresh existing client; no client or mutation authority crosses stages. */
 export const runMockServerResearchStage = async (input) => {
+  publishMaterialResearchPhase("research-preflight");
   const capability = requireDisposableOuterHostCapability();
   const { request, sourceTree } = input;
   const started = performance.now();
@@ -91,6 +93,7 @@ export const runMockServerResearchStage = async (input) => {
   let cause;
   try {
     check();
+    publishMaterialResearchPhase("research-client");
     client = createPreparedDockerClient(evidence, {
       deadline,
       signal,
@@ -106,6 +109,7 @@ export const runMockServerResearchStage = async (input) => {
       runId: runToken,
     });
     check();
+    publishMaterialResearchPhase("research-inventory");
     const parsed = parseMockServerResearchInventory(result.inventory);
     if (mockServerResearchRecipeDigest() !== sourceDigest)
       throw new Error("integration.mockserver-material.research-stage");
@@ -138,6 +142,7 @@ export const runMockServerResearchStage = async (input) => {
     );
   if (client !== undefined) {
     try {
+      if (!failed) publishMaterialResearchPhase("research-close");
       closePreparedDockerClient(client);
     } catch (cleanupCause) {
       const error = new Error("integration.controller.unsettled-operation", {

@@ -20,6 +20,7 @@ import type * as MaterialIO from "../harness-material-io.mjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
+  phases: [] as string[],
   acquired: [] as string[],
   built: [] as Record<string, unknown>[],
   retired: [] as Record<string, unknown>[],
@@ -41,6 +42,9 @@ const state = vi.hoisted(() => ({
   afterBuild: () => {},
   sourceSnapshots: [] as Buffer[],
   failRootBinding: false,
+}));
+vi.mock("../controller-file-command.mjs", () => ({
+  publishMaterialResearchPhase: (phase: string) => state.phases.push(phase),
 }));
 function sha(bytes: Buffer) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -217,6 +221,7 @@ const setup = () => {
   };
 };
 beforeEach(() => {
+  state.phases = [];
   state.acquired.length = 0;
   state.built.length = 0;
   state.retired.length = 0;
@@ -245,6 +250,24 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
       "jdk",
     ]);
     expect(state.retired).toHaveLength(3);
+    expect(state.phases).toEqual([
+      "bootstrap-preflight",
+      "download-source",
+      "download-maven",
+      "download-node",
+      "download-jdk",
+      "verify-archives",
+      "pinned-metadata",
+      "download-maven-key",
+      "download-maven-signature",
+      "verify-maven",
+      "retire-maven",
+      "verify-node",
+      "retire-node",
+      "verify-jdk",
+      "retire-jdk",
+      "bootstrap-cleanup",
+    ]);
     for (const build of state.built) {
       expect(build.maximumBuildContextBytes).toBe(384 * 1024 * 1024);
       expect(build.buildNetwork).toBe("none");
@@ -290,6 +313,14 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
       state.failure = kind;
       await expect(prepareMockServerBootstrap(input)).rejects.toThrow();
       expect(state.built.length).toBeLessThan(3);
+      expect(state.phases.at(-1)).toBe(
+        {
+          source: "download-source",
+          "maven-key": "download-maven-key",
+          "node-build": "verify-node",
+          retirement: "retire-maven",
+        }[kind],
+      );
       expect(readdirSync(input.privateRoot)).toEqual([]);
     },
   );

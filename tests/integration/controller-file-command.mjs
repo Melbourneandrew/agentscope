@@ -26,6 +26,32 @@ const signals = [
   "SIGQUIT",
   "SIGPIPE",
 ];
+const materialPhases = [
+  "research-preflight",
+  "research-client",
+  "research-inventory",
+  "research-close",
+  "bootstrap-preflight",
+  "download-source",
+  "download-maven",
+  "download-node",
+  "download-jdk",
+  "verify-archives",
+  "pinned-metadata",
+  "download-maven-key",
+  "download-maven-signature",
+  "verify-maven",
+  "verify-node",
+  "verify-jdk",
+  "retire-maven",
+  "retire-node",
+  "retire-jdk",
+  "bootstrap-cleanup",
+  "supplier-context",
+  "supplier-build",
+  "supplier-inventory",
+  "supplier-cleanup",
+];
 const own = (value, key) => {
   if (typeof value !== "object" || value === null || types.isProxy(value))
     return undefined;
@@ -106,6 +132,14 @@ export const publishSupervisorObservation = (
     ],
     environment,
   );
+};
+
+/** Last entered work step only; never success, cleanup or acquisition evidence. */
+export const publishMaterialResearchPhase = (
+  phase,
+  environment = process.env,
+) => {
+  append([["material_phase", selected(phase, materialPhases)]], environment);
 };
 
 export const publishControllerFailureObservation = (

@@ -5,11 +5,16 @@ import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error Private executable diagnostics have no public type API.
 import * as fileCommands from "../controller-file-command.mjs";
-const { publishControllerFailureObservation, publishSupervisorObservation } =
-  fileCommands as unknown as Record<
-    "publishControllerFailureObservation" | "publishSupervisorObservation",
-    (value: unknown, environment: NodeJS.ProcessEnv) => void
-  >;
+const {
+  publishControllerFailureObservation,
+  publishSupervisorObservation,
+  publishMaterialResearchPhase,
+} = fileCommands as unknown as Record<
+  | "publishControllerFailureObservation"
+  | "publishSupervisorObservation"
+  | "publishMaterialResearchPhase",
+  (value: unknown, environment: NodeJS.ProcessEnv) => void
+>;
 
 const roots: string[] = [];
 afterEach(() => {
@@ -46,6 +51,26 @@ const failure = Object.freeze({
 });
 
 describe("optional closed controller file commands", () => {
+  it("projects only a fixed material step without a success or cleanup claim", () => {
+    const value = sink();
+    publishMaterialResearchPhase("download-source", value.env);
+    publishMaterialResearchPhase("verify-maven", value.env);
+    for (const phase of ["download-source\nCANARY=true", {}, null, "success"])
+      publishMaterialResearchPhase(phase, value.env);
+    expect(readFileSync(value.output, "utf8")).toBe(
+      "material_phase=download-source\nmaterial_phase=verify-maven\n" +
+        "material_phase=unknown\n".repeat(4),
+    );
+    publishMaterialResearchPhase("supplier-build", {
+      ...value.env,
+      GITHUB_OUTPUT: value.root,
+    });
+    publishMaterialResearchPhase("supplier-build", {
+      ...value.env,
+      AGENTSCOPE_MOCKSERVER_RESEARCH: "other",
+    });
+    expect(readFileSync(value.output, "utf8")).not.toContain("supplier-build");
+  });
   it("retains only fixed terminal and failure projections", () => {
     const value = sink();
     publishSupervisorObservation(terminal, value.env);

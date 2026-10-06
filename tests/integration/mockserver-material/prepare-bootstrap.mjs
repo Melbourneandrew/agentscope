@@ -27,6 +27,7 @@ import {
   retirePreparedDockerImage,
 } from "../image-preparation.mjs";
 import { downloadMaterialObject } from "../material-download.mjs";
+import { publishMaterialResearchPhase } from "../controller-file-command.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyBootstrapMetadata } from "./bootstrap-metadata.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
@@ -86,19 +87,23 @@ const acquire = async (signal, deadline) => {
     ["node", bootstrap.node.archive],
   ]) {
     check(signal, deadline);
+    publishMaterialResearchPhase(`download-${kind}`);
     archives[kind] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
     );
   }
+  publishMaterialResearchPhase("download-jdk");
   archives.jdk = await downloadMockServerJdkArchive(signal, deadline);
   check(signal, deadline);
   // These return owned copies, with SHA512 additionally required for Maven.
+  publishMaterialResearchPhase("verify-archives");
   archives.source = verifyMockServerSourceArchive(archives.source);
   archives.maven = verifyMavenArchiveBytes(archives.maven);
   archives.node = verifyBootstrapArchive("node", archives.node);
   archives.jdk = verifyBootstrapArchive("jdk", archives.jdk);
   const metadata = {};
+  publishMaterialResearchPhase("pinned-metadata");
   for (const [name, pin] of Object.entries(bootstrap.metadata)) {
     check(signal, deadline);
     metadata[name] = verifyBootstrapMetadata(
@@ -111,6 +116,7 @@ const acquire = async (signal, deadline) => {
     ["maven-signature", maven.signature],
   ]) {
     check(signal, deadline);
+    publishMaterialResearchPhase(`download-${name}`);
     metadata[name] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
@@ -227,6 +233,7 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
   check(workSignal, workDeadline);
   const context = stageContext(owned, kind, objects, workSignal, workDeadline);
   const tag = `agentscope-bootstrap:${runId}-${kind}`;
+  publishMaterialResearchPhase(`verify-${kind}`);
   const imageId = await buildPreparedDockerImage(dockerClient, {
     buildArguments: { BASE_IMAGE: base },
     buildNetwork: "none",
@@ -243,6 +250,7 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
     tag,
   });
   // Retire a successfully created reference even after late work completion.
+  publishMaterialResearchPhase(`retire-${kind}`);
   await retirePreparedDockerImage(dockerClient, {
     deadline: Math.min(deadline - 1_000, performance.now() + 5_000),
     imageId,
@@ -255,6 +263,7 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
 
 /** Mutable returned archives must be reauthenticated before supplier staging. */
 export const prepareMockServerBootstrap = async (input) => {
+  publishMaterialResearchPhase("bootstrap-preflight");
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserveMilliseconds - performance.now();
   if (
@@ -310,6 +319,7 @@ export const prepareMockServerBootstrap = async (input) => {
         await verifyKind(input, owned, kind, objects, workSignal),
       );
     }
+    publishMaterialResearchPhase("bootstrap-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     rootCreated = false;

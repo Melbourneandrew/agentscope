@@ -147,6 +147,8 @@ describe("actual research workflow shell file commands", () => {
         "${{ steps.research_packet.outputs.controller_pull_trigger }}",
       OBSERVED_RECONCILIATION:
         "${{ steps.research_packet.outputs.controller_reconciliation }}",
+      OBSERVED_MATERIAL_PHASE:
+        "${{ steps.research_packet.outputs.material_phase }}",
     });
     const upload = steps.at(-1)!;
     expect(upload.if).toBe(
@@ -294,6 +296,7 @@ describe("closed always-after projection", () => {
       OBSERVED_CLEANUP: "not-attempted",
       OBSERVED_PULL_TRIGGER: "timeout",
       OBSERVED_RECONCILIATION: "failed",
+      OBSERVED_MATERIAL_PHASE: "verify-maven",
       GITHUB_STEP_SUMMARY: summary,
     });
     expect(result.status).toBe(0);
@@ -304,6 +307,7 @@ describe("closed always-after projection", () => {
       "failure=integration.controller.retire-outer-host stage=prepareImages kind=pull-outcome-unknown cleanup=not-attempted trigger=timeout reconciliation=failed",
     );
     expect(readFileSync(summary, "utf8")).toBe(result.stdout);
+    expect(result.stdout).toContain("material_phase=verify-maven");
   });
   it("rejects injected controller observations and preserves diagnostic-only success", () => {
     const result = shell(projection.run!, {
@@ -312,6 +316,7 @@ describe("closed always-after projection", () => {
       OBSERVED_CONTAINED: "true\nCANARY",
       OBSERVED_FAILURE: "$(exit 8)",
       OBSERVED_STAGE: "CANARY",
+      OBSERVED_MATERIAL_PHASE: "download-source\nCANARY=secret",
       GITHUB_STEP_SUMMARY: root(),
     });
     expect(result.status).toBe(0);
@@ -320,6 +325,7 @@ describe("closed always-after projection", () => {
     );
     expect(result.stdout).not.toContain("CANARY");
     expect(result.stdout).not.toContain("$(exit");
+    expect(result.stdout).toContain("material_phase=unknown");
   });
   it("does not block upload when its real stdout reader is closed", async () => {
     const summary = resolve(root(), "summary");
