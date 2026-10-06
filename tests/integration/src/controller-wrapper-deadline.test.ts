@@ -38,6 +38,7 @@ function observeWrapper(
       import { EventEmitter } from 'node:events';
       import { createContext, SourceTextModule, SyntheticModule } from 'node:vm';
       import { mockServerResearchStopFitsTerminalObservation } from ${JSON.stringify(resolve(directory, "dist/mockserver-research-request.js"))};
+      import { publishSupervisorObservation } from ${JSON.stringify(resolve(directory, "controller-file-command.mjs"))};
       const directory = ${JSON.stringify(directory)};
       const outer = ${JSON.stringify(outer) ?? "undefined"};
       const uptime = ${JSON.stringify(uptime)};
@@ -93,10 +94,19 @@ function observeWrapper(
         if (name === './dist/mockserver-research-request.js') return synthetic({
           mockServerResearchStopFitsTerminalObservation,
         }, wrapperContext);
+        if (name === './controller-file-command.mjs') return synthetic({
+          publishSupervisorObservation: (result) =>
+            publishSupervisorObservation(result, wrapperProcess.env),
+        }, wrapperContext);
         if (name !== './supervisor.mjs') throw new Error('unexpected-wrapper-import');
         return synthetic({ runSupervisedProcess: async (input) => {
           observed.maximum = input.maximumMilliseconds;
-          observed.terminal = await supervisor.namespace.runSupervisedProcess(input);
+          try {
+            observed.terminal = await supervisor.namespace.runSupervisedProcess(input);
+          } catch (error) {
+            observed.error = error.message;
+            throw error;
+          }
           return observed.terminal;
         } }, wrapperContext);
       });
@@ -190,6 +200,7 @@ describe("actual controller wrapper preserves the original deadline", () => {
   it("retains the actual supervisor's fail-closed malformed clock guard", () => {
     expect(observeWrapper("3248010", "invalid")).toMatchObject({
       spawned: 0,
+      exitCode: 1,
       error: "integration.controller.deadline",
     });
   });
