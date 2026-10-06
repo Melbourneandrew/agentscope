@@ -2,24 +2,26 @@
 title: Unconfigure a destination
 description: Remove a named connection while preserving destination-owned data.
 command: agentscope destination unconfigure
-commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
+commandContract: sha256:e4344e6e0b317acf331df5558c099328d3eae02ae5fc14c7b2b065a7d4b4427e
 ---
 
-Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
+Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. By default, stored credentials and the configuration backup are retained. Explicit `--retire-credentials` requests the canonical complete-connection retirement: both configuration reference sets must be proved free before deleting the exact owned stored set. Partial or uncertain proof does not permit deletion.
 
 ## Syntax
 
 ```bash
-agentscope destination unconfigure <name> [--yes] [--output human|json|jsonl]
+agentscope destination unconfigure <name> [--yes] [--retire-credentials] [--output human|json|jsonl]
 ```
 
 ## Output and exits
 
-Without `--yes`, `human`, `json`, and `jsonl` report the plan with `applied: false`. On apply they report the committed generation, `dataPreserved: true`, and the retained selector using `agentscope.cli.destination-unconfigure.v1`.
+For Local SQLite, without `--yes`, `human`, `json`, and `jsonl` report the plan with `applied: false`. On apply they report the committed generation, `dataPreserved: true`, and the retained selector using `agentscope.cli.destination-unconfigure.v1`. Other connections are unconfigured directly. Stored retirement never implies destination data deletion.
 
 ## Automation
 
 This command is safe for local data retention but is not equivalent to data deletion. Use the separate confirmed delete command for an exact owned file.
+
+The original foreground 60-second allowance includes all credential work; cancellation and expiry do not start a fresh cleanup window. A fixed failure may retain committed or uncertain work for reconciliation. `--retire-credentials` is not a rotation operation and is not applicable to Local SQLite.
 
 ## Diagnostics
 

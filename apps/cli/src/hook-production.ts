@@ -1,8 +1,6 @@
 import { randomBytes } from "node:crypto";
 
 import {
-  compileCredentialBackendRegistry,
-  createCiEnvironmentCredentialAdapter,
   createOperationalStateStore,
   DEFAULT_REDACTION_POLICY_REGISTRY,
   runResolvedTraceLifecycle,
@@ -24,6 +22,7 @@ import {
 import { bindLocalSqliteProductionReporterHome } from "@agentscope/destination-local-sqlite";
 
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
+import { createProductCredentialBackendRegistry } from "./product-credential-registry.js";
 import {
   PRODUCT_DESTINATION_REGISTRY,
   requireExactProductDestinationRegistry,
@@ -58,9 +57,8 @@ const runProductCodexHookEvidenceWith = async (
   await runResolvedTraceLifecycle({
     configurationStore: createConfigurationStore(home, registry),
     operationalStateStore: createOperationalStateStore(home, owner),
-    credentialBackendRegistry: compileCredentialBackendRegistry([
-      createCiEnvironmentCredentialAdapter(environment),
-    ]),
+    credentialBackendRegistry:
+      createProductCredentialBackendRegistry(environment),
     transportExecutor,
     policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
     harnessRegistryId: "codex",

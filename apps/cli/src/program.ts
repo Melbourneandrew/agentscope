@@ -10,6 +10,7 @@ import type { CliOutputMode } from "./cli-contract.js";
 import type {
   CliExecutionState,
   RuntimeCliCommandModule,
+  CliCommandBoundary,
 } from "./command-runtime.js";
 import { installCommandRuntime } from "./command-runtime.js";
 import { commandRegistry } from "./command-registry.js";
@@ -29,7 +30,7 @@ const MAXIMUM_ARGUMENT_CODE_UNITS = 8_192;
 const unsafeArgumentCharacter = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 export type CreateProgramInput = Readonly<{
-  createServices?: () => unknown;
+  createServices?: (boundary: CliCommandBoundary) => unknown;
   modules?: readonly RuntimeCliCommandModule[];
   output: CliOutput;
   registry?: readonly CommandRegistration[];
@@ -39,7 +40,7 @@ export type CreateProgramInput = Readonly<{
 }>;
 
 export type RunCliInput = Readonly<{
-  createServices?: () => unknown;
+  createServices?: (boundary: CliCommandBoundary) => unknown;
   modules?: readonly RuntimeCliCommandModule[];
   output?: CliOutput;
   registry?: readonly CommandRegistration[];

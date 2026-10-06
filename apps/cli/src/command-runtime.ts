@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { z } from "zod";
+import type { CredentialResolutionContext } from "@agentscope/core";
 
 import {
   cliDiagnosticSchema,
@@ -54,6 +55,12 @@ export type CliCommandModule<Services, Input, Value> = Readonly<{
 
 export type CliCommandExecutionContext<Value> = Readonly<{
   presentPlan: (value: Value) => Promise<void>;
+  commandBoundary: CliCommandBoundary;
+}>;
+
+export type CliCommandBoundary = Readonly<{
+  credentialContext: CredentialResolutionContext;
+  outputMode: CliOutputMode;
 }>;
 
 export type RuntimeCliCommandModule = Readonly<{
@@ -98,7 +105,7 @@ export type CliExecutionState = {
 };
 
 export type InstallCommandRuntimeInput = Readonly<{
-  createServices?: () => unknown;
+  createServices?: (boundary: CliCommandBoundary) => unknown;
   modules: readonly RuntimeModule[];
   output: CliOutput;
   program: Command;
@@ -197,11 +204,66 @@ function isNativePromise(input: unknown): input is Promise<unknown> {
   return input instanceof Promise;
 }
 
+const commandExpired = (context: CredentialResolutionContext) =>
+  context.signal.aborted ||
+  performance.now() >= context.expiresAtMonotonicMilliseconds!;
+
 async function executeCommand(
   command: Command,
   module: RuntimeModule,
   registration: CommandRegistration,
   input: InstallCommandRuntimeInput,
+): Promise<void> {
+  const enteredAt = performance.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => {
+      controller.abort();
+    },
+    Math.max(0, enteredAt + 60_000 - performance.now()),
+  );
+  const cancel = () => {
+    controller.abort();
+  };
+  process.once("SIGINT", cancel);
+  process.once("SIGTERM", cancel);
+  try {
+    const { createCredentialResolutionContext } =
+      await import("@agentscope/core");
+    const credentialContext = createCredentialResolutionContext(
+      "hook-equivalent",
+      controller.signal,
+      enteredAt + 60_000,
+    );
+    if (commandExpired(credentialContext))
+      throw new Error("cli.command.expired");
+    await executeEnteredCommand(
+      command,
+      module,
+      registration,
+      input,
+      credentialContext,
+    );
+  } catch {
+    input.state.exitCode = await writeCliDiagnostic(
+      input.output,
+      parseMode(command) ?? "human",
+      commandPath(registration),
+      INTERNAL_DIAGNOSTIC,
+    );
+  } finally {
+    clearTimeout(timeout);
+    process.removeListener("SIGINT", cancel);
+    process.removeListener("SIGTERM", cancel);
+  }
+}
+
+async function executeEnteredCommand(
+  command: Command,
+  module: RuntimeModule,
+  registration: CommandRegistration,
+  input: InstallCommandRuntimeInput,
+  credentialContext: CredentialResolutionContext,
 ): Promise<void> {
   const mode = parseMode(command);
   if (mode === undefined || !registration.outputModes.includes(mode)) {
@@ -226,7 +288,12 @@ async function executeCommand(
       return;
     }
     let planPresented = false;
+    const commandBoundary = Object.freeze({
+      credentialContext,
+      outputMode: mode,
+    });
     const context: CliCommandExecutionContext<unknown> = Object.freeze({
+      commandBoundary,
       presentPlan: async (value: unknown): Promise<void> => {
         if (planPresented) throw new Error("cli.runtime.invalid");
         await renderPlan({
@@ -239,7 +306,11 @@ async function executeCommand(
         planPresented = true;
       },
     });
-    const services = input.createServices?.() ?? input.services;
+    if (commandExpired(credentialContext))
+      throw new Error("cli.command.expired");
+    const services = input.createServices?.(commandBoundary) ?? input.services;
+    if (commandExpired(credentialContext))
+      throw new Error("cli.command.expired");
     const execution: unknown = module.execute(
       services,
       parsedInput.data,
@@ -261,6 +332,10 @@ async function executeCommand(
       );
       return;
     }
+    // Preserve a validated failed operation's committed/uncertain facts. A
+    // late success is never published as complete.
+    if (commandExpired(credentialContext))
+      throw new Error("cli.command.expired");
     const diagnostic =
       result.status === "partial"
         ? parseDiagnostic(registration, result.diagnostic)

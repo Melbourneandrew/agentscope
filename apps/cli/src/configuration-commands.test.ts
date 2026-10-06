@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CliConfigurationServices } from "./configuration-commands.js";
+import { CLI_EXIT_CODES } from "./cli-contract.js";
 import { createCapturedOutput } from "./__tests__/cli-fixture.js";
 import { runCli } from "./program.js";
 
@@ -46,6 +47,34 @@ const services = (
   setRouting: () => Promise.resolve(unavailable),
   unconfigureDestination: () => Promise.resolve(unavailable),
   ...overrides,
+});
+
+describe("explicit credential retirement command input", () => {
+  it("defaults to retention and forwards only the explicit retirement flag", async () => {
+    const unconfigureDestination = vi
+      .fn<CliConfigurationServices["unconfigureDestination"]>()
+      .mockResolvedValue(unavailable);
+    for (const flag of [[], ["--retire-credentials"]]) {
+      const captured = createCapturedOutput();
+      expect(
+        await runCli(["destination", "unconfigure", "primary", ...flag], {
+          services: services({ unconfigureDestination }),
+          output: captured.output,
+          version: "1.2.3",
+        }),
+      ).toBe(CLI_EXIT_CODES.unavailable);
+    }
+    expect(
+      unconfigureDestination.mock.calls.map(
+        ([input]) => input.retireCredentials,
+      ),
+    ).toEqual([false, true]);
+    expect(
+      unconfigureDestination.mock.calls.every(
+        ([input]) => input.name === "primary",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("plan-first configuration command modules", () => {

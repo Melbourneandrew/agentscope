@@ -939,9 +939,8 @@ describe("production configuration composition", () => {
         ])
       ).exitCode,
     ).toBe(5);
-    expect((await run(["destination", "unconfigure", "remote"])).exitCode).toBe(
-      4,
-    );
+    const retained = await run(["destination", "unconfigure", "remote"]);
+    expect(retained.exitCode).toBe(0);
   });
 });
 
