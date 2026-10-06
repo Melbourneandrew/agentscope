@@ -24,17 +24,17 @@ jobs:
     outputs:
       header-artifact-id: ${{ steps.headers.outputs.artifact-id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Build exact Linux candidate and retain pinned-image headers
         run: /usr/local/bin/node packages/harnesses/core/native-directory/build-candidate.mjs linux-x64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         id: headers
         with:
           name: directory-native-headers-${{ github.run_id }}
           path: artifacts/directory-native/headers/
           if-no-files-found: error
           retention-days: 7
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: directory-native-linux-x64-${{ github.run_id }}
           path: |
@@ -48,19 +48,19 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22.18.0
           architecture: arm64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.linux-x64.outputs.header-artifact-id }}
           path: artifacts/directory-native/headers/
           merge-multiple: true
       - name: Verify Apple material, then build exact Darwin candidate
         run: node packages/harnesses/core/native-directory/build-candidate.mjs darwin-arm64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: directory-native-darwin-arm64-${{ github.run_id }}
           path: |

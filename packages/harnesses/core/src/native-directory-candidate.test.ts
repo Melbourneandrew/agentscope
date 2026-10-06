@@ -142,6 +142,29 @@ describe("nonpublishing directory native candidate", () => {
 });
 
 describe("candidate material and workflow boundaries", () => {
+  it("pins the all-and-only external action closure to reviewed immutable revisions", () => {
+    const actions = [...workflow.matchAll(/uses: (\S+)/gu)].map(
+      (match) => match[1],
+    );
+    expect(actions).toEqual([
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+      "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]);
+    for (const action of actions) expect(action).toMatch(/@[a-f0-9]{40}$/u);
+    const oldActions = [
+      ...workflow
+        .replaceAll(/@[a-f0-9]{40}/gu, "@v4")
+        .matchAll(/uses: (\S+)/gu),
+    ].map((match) => match[1]);
+    expect(
+      oldActions.every((action) => /@[a-f0-9]{40}$/u.test(action ?? "")),
+    ).toBe(false);
+  });
   it("uses one original candidate deadline and authenticates Apple seal before SDK reads", () => {
     expect(driver.match(/entry \+ 300_000/gu)).toHaveLength(1);
     expect(driver).toContain("deadline - performance.now()");
