@@ -187,138 +187,6 @@ const officialInventoryAt = (
   installedPlugins: [officialPlugin()],
 });
 
-describe("Claude Code plugin overlap", () => {
-  it("detects the reviewed official Langfuse exporter", () => {
-    expect(inspectClaudeCodePluginOverlap(officialInventory())).toEqual({
-      status: "conflict",
-      pluginId: CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
-    });
-  });
-
-  it("honors effective managed precedence", () => {
-    expect(
-      inspectClaudeCodePluginOverlap({
-        ...officialInventory(),
-        settingsLayers: [
-          ...officialInventory().settingsLayers,
-          {
-            scope: "managed",
-            targetPath: targetPathByScope.managed,
-            targetDigest,
-            targetExists: true,
-            enabledPlugins: {
-              [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: false,
-            },
-          },
-        ],
-      }),
-    ).toEqual({ status: "absent" });
-  });
-
-  it.each([
-    {
-      settingsLayers: officialInventory().settingsLayers,
-      installedPlugins: [],
-    },
-    {
-      settingsLayers: officialInventory().settingsLayers,
-      installedPlugins: [officialPlugin({ hookEvents: ["Stop"] })],
-    },
-    {
-      settingsLayers: [
-        ...officialInventory().settingsLayers,
-        ...officialInventory().settingsLayers,
-      ],
-      installedPlugins: [officialPlugin()],
-    },
-    {
-      settingsLayers: officialInventory().settingsLayers,
-      installedPlugins: [
-        officialPlugin(),
-        officialPlugin({ manifestVersion: "1.0.1" }),
-      ],
-    },
-  ])("fails closed for inconsistent official plugin state", (inventory) => {
-    expect(inspectClaudeCodePluginOverlap(inventory)).toEqual({
-      status: "ambiguous",
-    });
-  });
-});
-
-describe("Claude Code exporter reconciliation", () => {
-  it("detects another enabled direct exporter with overlapping hooks", () => {
-    const exporter: ClaudeCodeInstalledPlugin = {
-      pluginId: "other-exporter",
-      installedRegistryId: "other-exporter",
-      cachePluginId: "other-exporter",
-      manifestName: "other-exporter",
-      manifestVersion: "1.0.0",
-      manifestDigest: `sha256-${"a".repeat(64)}`,
-      hooksDigest: `sha256-${"b".repeat(64)}`,
-      hookEvents: ["Stop"],
-      directTraceExporter: true,
-    };
-    const settingsLayers = [
-      {
-        scope: "project" as const,
-        targetPath: targetPathByScope.project,
-        targetDigest,
-        targetExists: true,
-        enabledPlugins: { "other-exporter": true },
-      },
-    ];
-    expect(
-      inspectClaudeCodePluginOverlap({
-        settingsLayers,
-        installedPlugins: [exporter],
-      }),
-    ).toEqual({ status: "conflict", pluginId: "other-exporter" });
-    expect(
-      inspectClaudeCodePluginOverlap({
-        settingsLayers,
-        installedPlugins: [{ ...exporter, cachePluginId: "mismatch" }],
-      }),
-    ).toEqual({ status: "ambiguous" });
-  });
-
-  it("fails closed when enabled and cached identities cannot be reconciled", () => {
-    expect(
-      inspectClaudeCodePluginOverlap({
-        settingsLayers: [
-          {
-            scope: "local",
-            targetPath: targetPathByScope.local,
-            targetDigest,
-            targetExists: true,
-            enabledPlugins: { "unknown-plugin": true },
-          },
-        ],
-        installedPlugins: [],
-      }),
-    ).toEqual({ status: "ambiguous" });
-    expect(
-      inspectClaudeCodePluginOverlap({
-        settingsLayers: [
-          {
-            scope: "local",
-            targetPath: targetPathByScope.local,
-            targetDigest,
-            targetExists: true,
-            enabledPlugins: { "langfuse-alias": false },
-          },
-        ],
-        installedPlugins: [
-          officialPlugin({
-            pluginId: "langfuse-alias",
-            installedRegistryId: "langfuse-alias",
-            cachePluginId: "langfuse-alias",
-          }),
-        ],
-      }),
-    ).toEqual({ status: "ambiguous" });
-  });
-});
-
 describe("Claude Code owned lifecycle", () => {
   it("leaves an absent settings file absent on uninstall", () => {
     expect(
@@ -545,6 +413,58 @@ describe("Claude Code migration and failure behavior", () => {
   });
 });
 
+describe("Claude Code inventory snapshot ownership", () => {
+  it.each(CLAUDE_CODE_LIFECYCLE_EVENTS)(
+    "refuses known and unknown exporters overlapping %s",
+    (event) => {
+      for (const directTraceExporter of [true, null] as const) {
+        const plugin = orphanPlugin("ordinary", {
+          hookEvents: [event],
+          directTraceExporter,
+        });
+        const inventory = {
+          settingsLayers: [
+            {
+              ...emptyInventory().settingsLayers[0]!,
+              enabledPlugins: { ordinary: true },
+            },
+          ],
+          installedPlugins: [plugin],
+        };
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            inventory,
+          )(target("{}")),
+        ).toEqual({ kind: "conflict" });
+      }
+    },
+  );
+
+  it("retains owned multi-layer inventory after caller aliases change", () => {
+    const plugin = orphanPlugin("ordinary", {
+      hooksDigest: null,
+      hookEvents: ["Notification"],
+      directTraceExporter: null,
+    });
+    const project = {
+      scope: "project" as const,
+      targetPath: targetPathByScope.project,
+      targetDigest,
+      targetExists: true,
+      enabledPlugins: { ordinary: true },
+    };
+    const planner = createClaudeCodeInstallationPlanner("install", invocation, {
+      settingsLayers: [...emptyInventory().settingsLayers, project],
+      installedPlugins: [plugin],
+    });
+    (plugin.hookEvents as string[]).push("Stop");
+    project.enabledPlugins.ordinary = false;
+    expect(planner(target("{}"))).toMatchObject({ kind: "replace" });
+  });
+});
+
 describe("Claude Code target-bound absence evidence", () => {
   it("binds explicit absence to the exact inspected settings snapshot", () => {
     const enabledOfficialSettings = JSON.stringify({
@@ -592,7 +512,7 @@ describe("Claude Code target-bound absence evidence", () => {
     ).toMatchObject({ kind: "replace" });
   });
 
-  it("rejects every detached precedence layer with one target inspection", () => {
+  it("uses scoped precedence while binding the exact user target", () => {
     const enabledOfficialSettings = JSON.stringify({
       enabledPlugins: {
         [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
@@ -622,7 +542,9 @@ describe("Claude Code target-bound absence evidence", () => {
           settingsLayers: [authenticatedUser, detachedLayer],
           installedPlugins: [officialPlugin()],
         })(target(enabledOfficialSettings)),
-      ).toEqual({ kind: "conflict" });
+      ).toMatchObject({
+        kind: detachedLayer.scope === "project" ? "replace" : "conflict",
+      });
     }
   });
 
@@ -640,10 +562,6 @@ describe("Claude Code target-bound absence evidence", () => {
         ],
         installedPlugins: [],
       },
-      {
-        settingsLayers: [absentLayer],
-        installedPlugins: [officialPlugin()],
-      },
     ]) {
       expect(
         createClaudeCodeInstallationPlanner(
@@ -653,10 +571,37 @@ describe("Claude Code target-bound absence evidence", () => {
         )(target()),
       ).toEqual({ kind: "conflict" });
     }
+    expect(
+      createClaudeCodeInstallationPlanner("install", invocation, {
+        settingsLayers: [absentLayer],
+        installedPlugins: [officialPlugin()],
+      })(target()),
+    ).toMatchObject({ kind: "replace" });
   });
 });
 
 describe("Claude Code migration authority", () => {
+  it.each(["project", "local", "managed"] as const)(
+    "keeps migration scoped to the user target with an observed %s exporter",
+    (scope) => {
+      const user = emptyInventory().settingsLayers[0]!;
+      const foreign = officialInventoryAt(scope).settingsLayers[0]!;
+      const inventory = {
+        settingsLayers: [user, foreign],
+        installedPlugins: [officialPlugin()],
+      };
+      for (const operation of ["install", "migrate"] as const) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            operation,
+            invocation,
+            inventory,
+          )(target("{}")),
+        ).toEqual({ kind: "conflict" });
+      }
+    },
+  );
+
   it.each(["project", "local", "managed"] as const)(
     "refuses migration when %s owns the effective exporter",
     (scope) => {
