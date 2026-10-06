@@ -1,5 +1,6 @@
 import { isAbsolute, normalize } from "node:path";
 import { isProxy } from "node:util/types";
+import { CLAUDE_CODE_LIFECYCLE_EVENTS } from "./owned-profile.js";
 
 export const CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID =
   "langfuse-observability@claude-plugins-official" as const;
@@ -66,7 +67,8 @@ const scopeOrder: Readonly<Record<ClaudeCodeSettingsScope, number>> = {
   local: 2,
   managed: 3,
 };
-const overlappingEvents = new Set<string>(["Stop", "SessionEnd"]);
+// The current owned four-event profile plus the historical SessionEnd owner.
+const overlappingEvents = new Set<string>(CLAUDE_CODE_LIFECYCLE_EVENTS);
 const encoder = new TextEncoder();
 const digestPattern = /^[a-f0-9]{64}$/u;
 const maximumInventoryArrayLength = 1_024;

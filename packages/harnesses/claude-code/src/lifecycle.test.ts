@@ -414,10 +414,38 @@ describe("Claude Code migration and failure behavior", () => {
 });
 
 describe("Claude Code inventory snapshot ownership", () => {
+  it.each(CLAUDE_CODE_LIFECYCLE_EVENTS)(
+    "refuses known and unknown exporters overlapping %s",
+    (event) => {
+      for (const directTraceExporter of [true, null] as const) {
+        const plugin = orphanPlugin("ordinary", {
+          hookEvents: [event],
+          directTraceExporter,
+        });
+        const inventory = {
+          settingsLayers: [
+            {
+              ...emptyInventory().settingsLayers[0]!,
+              enabledPlugins: { ordinary: true },
+            },
+          ],
+          installedPlugins: [plugin],
+        };
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            inventory,
+          )(target("{}")),
+        ).toEqual({ kind: "conflict" });
+      }
+    },
+  );
+
   it("retains owned multi-layer inventory after caller aliases change", () => {
     const plugin = orphanPlugin("ordinary", {
       hooksDigest: null,
-      hookEvents: ["PreToolUse"],
+      hookEvents: ["Notification"],
       directTraceExporter: null,
     });
     const project = {

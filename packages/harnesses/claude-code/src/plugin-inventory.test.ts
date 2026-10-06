@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CLAUDE_CODE_LIFECYCLE_EVENTS } from "./owned-profile.js";
 import {
   CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
   CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST,
@@ -314,7 +315,7 @@ describe("Claude Code observed plugin metadata", () => {
 });
 
 describe("Claude Code unknown and official exporter evidence", () => {
-  it.each(["Stop", "SessionEnd"])(
+  it.each(CLAUDE_CODE_LIFECYCLE_EVENTS)(
     "rejects unknown exporter classification only on enabled %s overlap",
     (event) => {
       const plugin = orphanPlugin("ordinary", {
@@ -329,7 +330,7 @@ describe("Claude Code unknown and official exporter evidence", () => {
       ).toEqual({ status: "absent" });
       expect(
         inspectClaudeCodePluginOverlap(
-          inventoryFor({ ...plugin, hookEvents: ["PreToolUse"] }),
+          inventoryFor({ ...plugin, hookEvents: ["Notification"] }),
         ),
       ).toEqual({ status: "absent" });
       expect(
@@ -366,7 +367,7 @@ describe("Claude Code bounded scoped plugin observations", () => {
     "preserves nonoverlap for exporter classification %j",
     (directTraceExporter) => {
       const plugin = orphanPlugin("ordinary", {
-        hookEvents: ["PreToolUse"],
+        hookEvents: ["Notification"],
         directTraceExporter,
       });
       expect(inspectClaudeCodePluginOverlap(inventoryFor(plugin))).toEqual({
@@ -427,7 +428,7 @@ describe("Claude Code bounded scoped plugin observations", () => {
       orphanPlugin("ordinary", {
         hooksDigest: null,
         directTraceExporter: null,
-        hookEvents: ["PreToolUse"],
+        hookEvents: ["Notification"],
       }),
     );
     const parsed = parsePluginInventory(inventory)!;
