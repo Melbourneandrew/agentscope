@@ -122,6 +122,7 @@ const deleteReference = async (
   execute: MacosKeychainCommandExecutor,
   reference: ConfigurationCredentialReference,
   signal: AbortSignal,
+  expiresAtMonotonicMilliseconds?: number,
 ): Promise<boolean> => {
   if (!exactStoredReference(reference)) return false;
   const result = await run(
@@ -135,15 +136,65 @@ const deleteReference = async (
         SERVICE,
       ],
       signal,
+      undefined,
+      expiresAtMonotonicMilliseconds,
     ),
   );
   return result?.exitCode === 0 || result?.exitCode === 44;
 };
 
+const resolveReference = async (
+  execute: MacosKeychainCommandExecutor,
+  {
+    reference,
+    context,
+  }: Parameters<StoredCredentialBackendImplementation["resolve"]>[0],
+) => {
+  if (!exactStoredReference(reference))
+    return Object.freeze({ ok: false as const, code: "malformed" as const });
+  const result = await run(
+    execute,
+    keychainCommand(
+      [
+        "find-generic-password",
+        "-a",
+        accountFor(reference.referenceId),
+        "-s",
+        SERVICE,
+        "-w",
+      ],
+      context.signal,
+      undefined,
+      context.expiresAtMonotonicMilliseconds,
+    ),
+  );
+  if (!result)
+    return Object.freeze({ ok: false as const, code: "unavailable" as const });
+  if (result.exitCode !== 0)
+    return Object.freeze({
+      ok: false as const,
+      code: fixedFailure(result.exitCode),
+    });
+  let secret: string;
+  try {
+    secret = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+  } catch {
+    return Object.freeze({ ok: false as const, code: "malformed" as const });
+  }
+  if (secret.endsWith("\n")) secret = secret.slice(0, -1);
+  return Object.freeze({ ok: true as const, secret });
+};
+
 const createImplementation = (
   execute: MacosKeychainCommandExecutor,
 ): StoredCredentialBackendImplementation => ({
-  createPending: async ({ ownership, generationId, secret, signal }) => {
+  createPending: async ({
+    ownership,
+    generationId,
+    secret,
+    signal,
+    expiresAtMonotonicMilliseconds,
+  }) => {
     if (secret.includes("\n") || secret.includes("\r"))
       return Object.freeze({ ok: false as const, code: "malformed" as const });
     const referenceId = deriveStoredCredentialReference(
@@ -168,6 +219,7 @@ const createImplementation = (
         ],
         signal,
         `${secret}\n`,
+        expiresAtMonotonicMilliseconds,
       ),
     );
     return result?.exitCode === 0
@@ -177,45 +229,8 @@ const createImplementation = (
           code: result ? fixedFailure(result.exitCode) : "unavailable",
         });
   },
-  resolve: async ({ reference, context }) => {
-    if (!exactStoredReference(reference))
-      return Object.freeze({ ok: false as const, code: "malformed" as const });
-    const result = await run(
-      execute,
-      keychainCommand(
-        [
-          "find-generic-password",
-          "-a",
-          accountFor(reference.referenceId),
-          "-s",
-          SERVICE,
-          "-w",
-        ],
-        context.signal,
-        undefined,
-        context.expiresAtMonotonicMilliseconds,
-      ),
-    );
-    if (!result)
-      return Object.freeze({
-        ok: false as const,
-        code: "unavailable" as const,
-      });
-    if (result.exitCode !== 0)
-      return Object.freeze({
-        ok: false as const,
-        code: fixedFailure(result.exitCode),
-      });
-    let secret: string;
-    try {
-      secret = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
-    } catch {
-      return Object.freeze({ ok: false as const, code: "malformed" as const });
-    }
-    if (secret.endsWith("\n")) secret = secret.slice(0, -1);
-    return Object.freeze({ ok: true as const, secret });
-  },
-  activate: async ({ reference, signal }) => {
+  resolve: (input) => resolveReference(execute, input),
+  activate: async ({ reference, signal, expiresAtMonotonicMilliseconds }) => {
     if (!exactStoredReference(reference)) return false;
     const result = await run(
       execute,
@@ -228,14 +243,30 @@ const createImplementation = (
           SERVICE,
         ],
         signal,
+        undefined,
+        expiresAtMonotonicMilliseconds,
       ),
     );
     return result?.exitCode === 0;
   },
-  removePending: async ({ reference, signal }) => {
-    return deleteReference(execute, reference, signal);
+  removePending: async ({
+    reference,
+    signal,
+    expiresAtMonotonicMilliseconds,
+  }) => {
+    return deleteReference(
+      execute,
+      reference,
+      signal,
+      expiresAtMonotonicMilliseconds,
+    );
   },
-  removeOwned: async ({ ownership, reference, signal }) => {
+  removeOwned: async ({
+    ownership,
+    reference,
+    signal,
+    expiresAtMonotonicMilliseconds,
+  }) => {
     if (
       !exactStoredReference(reference) ||
       deriveStoredCredentialReference(
@@ -245,7 +276,12 @@ const createImplementation = (
       ).referenceId !== reference.referenceId
     )
       return false;
-    return deleteReference(execute, reference, signal);
+    return deleteReference(
+      execute,
+      reference,
+      signal,
+      expiresAtMonotonicMilliseconds,
+    );
   },
 });
 

@@ -13,7 +13,12 @@ import {
   type CredentialOwnership,
   type CredentialResolutionContext,
   type StoredCredentialBackend,
+  type StoredCredentialBackendImplementation,
 } from "./credential-adapter.js";
+import {
+  credentialResolutionExpired,
+  invokeCredentialMutationForCore,
+} from "./credential-resolution-context.js";
 import type { CredentialSetMutationIntent } from "./credential-intent-record.js";
 import {
   credentialWriteFailureEvidence,
@@ -183,15 +188,11 @@ const failed = (
   });
 
 const compensate = async (
-  registry: CredentialBackendRegistry,
+  implementation: StoredCredentialBackendImplementation,
   input: ConfigureCredentialSetInput,
   intent: CredentialSetMutationIntent,
   code: FailureCode,
 ): Promise<CredentialSetConfigurationResult> => {
-  const implementation = getStoredCredentialImplementation(
-    registry,
-    input.backend,
-  );
   let complete = true;
   for (const entry of intent.entries) {
     try {
@@ -202,10 +203,14 @@ const compensate = async (
           "core.credential.compensation-failed",
         );
       if (
-        !(await implementation.removePending({
-          reference: entry.reference,
-          signal: input.resolutionContext.signal,
-        }))
+        !(await invokeCredentialMutationForCore(
+          input.resolutionContext,
+          (boundary) =>
+            implementation.removePending({
+              reference: entry.reference,
+              ...boundary,
+            }),
+        ))
       )
         complete = false;
     } catch {
@@ -219,7 +224,9 @@ const compensate = async (
       "core.credential.compensation-failed",
     );
   try {
-    await completeCredentialMutationIntent(input.store, intent);
+    await invokeCredentialMutationForCore(input.resolutionContext, () =>
+      completeCredentialMutationIntent(input.store, intent),
+    );
   } catch {
     return failed(
       intent,
@@ -231,28 +238,26 @@ const compensate = async (
 };
 
 const stage = async (
-  registry: CredentialBackendRegistry,
+  implementation: StoredCredentialBackendImplementation,
   input: ConfigureCredentialSetInput,
   intent: CredentialSetMutationIntent,
 ): Promise<FailureCode | undefined> => {
-  const implementation = getStoredCredentialImplementation(
-    registry,
-    input.backend,
-  );
   for (const [index, entry] of intent.entries.entries()) {
-    if (input.resolutionContext.signal.aborted)
-      return "core.credential.create-failed";
     const request = input.requests[index];
     /* v8 ignore next -- the minted entries are derived one-for-one from the frozen input requests. */
     if (!request) return invalid();
     try {
       const created = own(
-        await implementation.createPending({
-          ownership: request.ownership,
-          generationId: entry.reference.generationId,
-          secret: request.secret,
-          signal: input.resolutionContext.signal,
-        }),
+        await invokeCredentialMutationForCore(
+          input.resolutionContext,
+          (boundary) =>
+            implementation.createPending({
+              ownership: request.ownership,
+              generationId: entry.reference.generationId,
+              secret: request.secret,
+              ...boundary,
+            }),
+        ),
         "ok,referenceId",
       );
       if (
@@ -273,15 +278,13 @@ const preflight = async (
   intent: CredentialSetMutationIntent,
 ): Promise<FailureCode | undefined> => {
   for (const [index, entry] of intent.entries.entries()) {
-    if (input.resolutionContext.signal.aborted)
+    if (credentialResolutionExpired(input.resolutionContext))
       return "core.credential.preflight-unavailable";
     const result = await resolveCredentialReference(
       registry,
       entry.reference,
       input.resolutionContext,
     );
-    if (input.resolutionContext.signal.aborted)
-      return "core.credential.preflight-unavailable";
     if (!result.ok) return `core.credential.preflight-${result.code}`;
     if (
       readResolvedCredentialForCore(result.credential) !==
@@ -293,25 +296,23 @@ const preflight = async (
 };
 
 const activateSet = async (
-  registry: CredentialBackendRegistry,
+  implementation: StoredCredentialBackendImplementation,
   input: ConfigureCredentialSetInput,
   record: CredentialSetMutationIntent,
 ): Promise<boolean> => {
-  const implementation = getStoredCredentialImplementation(
-    registry,
-    input.backend,
-  );
   for (const entry of record.entries) {
-    if (input.resolutionContext.signal.aborted) return false;
     try {
       if (
-        !(await implementation.activate({
-          reference: entry.reference,
-          signal: input.resolutionContext.signal,
-        }))
+        !(await invokeCredentialMutationForCore(
+          input.resolutionContext,
+          (boundary) =>
+            implementation.activate({
+              reference: entry.reference,
+              ...boundary,
+            }),
+        ))
       )
         return false;
-      if (input.resolutionContext.signal.aborted) return false;
     } catch {
       return false;
     }
@@ -324,8 +325,11 @@ export const configureCredentialSetForCore = async (
   supplied: ConfigureCredentialSetInput,
 ): Promise<CredentialSetConfigurationResult> => {
   const input = exactInput(supplied);
-  if (input.resolutionContext.signal.aborted) return invalid();
-  getStoredCredentialImplementation(registry, input.backend);
+  if (credentialResolutionExpired(input.resolutionContext)) return invalid();
+  const implementation = getStoredCredentialImplementation(
+    registry,
+    input.backend,
+  );
   const entries = input.requests.map((request) =>
     Object.freeze({
       ownership: request.ownership,
@@ -348,26 +352,26 @@ export const configureCredentialSetForCore = async (
   } catch {
     return failed(planned, "compensated", "core.credential.create-failed");
   }
-  const stageFailure = await stage(registry, input, record);
+  const stageFailure = await stage(implementation, input, record);
   if (stageFailure) return failed(record, "orphan-pending", stageFailure);
   const preflightFailure = await preflight(registry, input, record);
   if (preflightFailure)
-    return compensate(registry, input, record, preflightFailure);
+    return compensate(implementation, input, record, preflightFailure);
   let candidate: AgentscopeConfigurationSnapshot;
   try {
     candidate = input.createCandidate(referencesFrom(record));
     if (!completeCandidate(candidate, record)) throw new Error();
   } catch {
     return compensate(
-      registry,
+      implementation,
       input,
       record,
       "core.credential.candidate-invalid",
     );
   }
-  if (input.resolutionContext.signal.aborted)
+  if (credentialResolutionExpired(input.resolutionContext))
     return compensate(
-      registry,
+      implementation,
       input,
       record,
       "core.credential.preflight-unavailable",
@@ -395,14 +399,16 @@ export const configureCredentialSetForCore = async (
         evidence.every((value) => value === "referenced"),
       );
     return compensate(
-      registry,
+      implementation,
       input,
       record,
       "core.credential.configuration-failed",
     );
   }
   try {
-    await completeCredentialMutationIntent(input.store, record);
+    await invokeCredentialMutationForCore(input.resolutionContext, () =>
+      completeCredentialMutationIntent(input.store, record),
+    );
   } catch {
     return failed(
       record,
@@ -411,7 +417,7 @@ export const configureCredentialSetForCore = async (
       true,
     );
   }
-  if (!(await activateSet(registry, input, record)))
+  if (!(await activateSet(implementation, input, record)))
     return failed(
       record,
       "referenced-pending",
@@ -436,7 +442,7 @@ export const recoverCredentialSetForCore = async (
 > => {
   if (
     !isCredentialResolutionContext(context) ||
-    context.signal.aborted ||
+    credentialResolutionExpired(context) ||
     !(await isCredentialMutationIntentActiveForCore(store, intent))
   )
     return invalid();
@@ -448,7 +454,9 @@ export const recoverCredentialSetForCore = async (
   )
     return invalid();
   if (active && completeCandidate(active, intent)) {
-    await completeCredentialMutationIntent(store, intent);
+    await invokeCredentialMutationForCore(context, () =>
+      completeCredentialMutationIntent(store, intent),
+    );
     return Object.freeze({ ok: true, state: "referenced-intent-cleared" });
   }
   if (
@@ -460,7 +468,7 @@ export const recoverCredentialSetForCore = async (
   )
     return invalid();
   for (const entry of intent.entries) {
-    if (context.signal.aborted) return invalid();
+    if (credentialResolutionExpired(context)) return invalid();
     if (!(await isCredentialMutationIntentActiveForCore(store, intent)))
       return invalid();
     const implementation = getStoredCredentialImplementation(
@@ -468,15 +476,18 @@ export const recoverCredentialSetForCore = async (
       entry.reference.backend,
     );
     if (
-      !(await implementation.removeOwned({
-        ownership: createCredentialOwnership(entry.ownership),
-        reference: entry.reference,
-        signal: context.signal,
-      }))
+      !(await invokeCredentialMutationForCore(context, (boundary) =>
+        implementation.removeOwned({
+          ownership: createCredentialOwnership(entry.ownership),
+          reference: entry.reference,
+          ...boundary,
+        }),
+      ))
     )
       return invalid();
-    if (context.signal.aborted) return invalid();
   }
-  await completeCredentialMutationIntent(store, intent);
+  await invokeCredentialMutationForCore(context, () =>
+    completeCredentialMutationIntent(store, intent),
+  );
   return Object.freeze({ ok: true, state: "orphan-removed" });
 };

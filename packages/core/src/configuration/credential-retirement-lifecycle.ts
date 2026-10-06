@@ -6,6 +6,10 @@ import {
   type CredentialBackendRegistry,
   type CredentialResolutionContext,
 } from "./credential-adapter.js";
+import {
+  credentialResolutionExpired,
+  invokeCredentialMutationForCore,
+} from "./credential-resolution-context.js";
 import type { CredentialRetirementIntent } from "./credential-intent-record.js";
 import {
   exactConnectionRemoval,
@@ -87,7 +91,7 @@ const context = (values: Record<string, unknown>): void => {
     return invalid();
 };
 const notAborted = (value: Context): void => {
-  if (value.resolutionContext.signal.aborted) return invalid();
+  if (credentialResolutionExpired(value.resolutionContext)) return invalid();
 };
 const proof = async (value: Context, intent: CredentialRetirementIntent) => {
   notAborted(value);
@@ -109,6 +113,7 @@ const proof = async (value: Context, intent: CredentialRetirementIntent) => {
       .state !== "clean"
   )
     return invalid();
+  notAborted(value);
   return retirementState(active, backup, intent);
 };
 const removeAll = async (
@@ -127,11 +132,15 @@ const removeAll = async (
     notAborted(value);
     try {
       if (
-        (await implementation.removeOwned({
-          ownership: createCredentialOwnership(entry.ownership),
-          reference: entry.reference,
-          signal: value.resolutionContext.signal,
-        })) !== true
+        (await invokeCredentialMutationForCore(
+          value.resolutionContext,
+          (boundary) =>
+            implementation.removeOwned({
+              ownership: createCredentialOwnership(entry.ownership),
+              reference: entry.reference,
+              ...boundary,
+            }),
+        )) !== true
       )
         return invalid();
     } catch {
@@ -140,7 +149,9 @@ const removeAll = async (
   }
   await recheckOwner?.();
   if ((await proof(value, intent)) !== "final") return invalid();
-  await completeCredentialMutationIntent(value.store, intent);
+  await invokeCredentialMutationForCore(value.resolutionContext, () =>
+    completeCredentialMutationIntent(value.store, intent),
+  );
 };
 
 export const retireCredentialConnectionForCore = async (
@@ -221,7 +232,9 @@ export const reconcileCredentialRetirementForCore = async (
   if (state === "preimage") {
     await recheckOwner();
     if ((await proof(value, intent)) !== "preimage") return invalid();
-    await completeCredentialMutationIntent(value.store, intent);
+    await invokeCredentialMutationForCore(value.resolutionContext, () =>
+      completeCredentialMutationIntent(value.store, intent),
+    );
     return;
   }
   if (state === "removal") {

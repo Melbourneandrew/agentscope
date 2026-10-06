@@ -53,3 +53,34 @@ export const credentialResolutionExpired = (
   context.signal.aborted ||
   (context.expiresAtMonotonicMilliseconds !== undefined &&
     performance.now() >= context.expiresAtMonotonicMilliseconds);
+
+// The original branded lifetime guards mutation entry and observed settlement.
+// It neither creates a timer nor claims that an unjoined operation stopped.
+export const invokeCredentialMutationForCore = async <T>(
+  context: CredentialResolutionContext,
+  invoke: (
+    boundary: Pick<
+      CredentialResolutionContext,
+      "signal" | "expiresAtMonotonicMilliseconds"
+    >,
+  ) => Promise<T>,
+): Promise<T> => {
+  if (
+    !isCredentialResolutionContext(context) ||
+    credentialResolutionExpired(context)
+  )
+    throw new CredentialAdapterError();
+  const result = await invoke(
+    Object.freeze({
+      signal: context.signal,
+      ...(context.expiresAtMonotonicMilliseconds === undefined
+        ? {}
+        : {
+            expiresAtMonotonicMilliseconds:
+              context.expiresAtMonotonicMilliseconds,
+          }),
+    }),
+  );
+  if (credentialResolutionExpired(context)) throw new CredentialAdapterError();
+  return result;
+};

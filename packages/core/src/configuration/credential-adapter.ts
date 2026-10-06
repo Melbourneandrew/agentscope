@@ -55,14 +55,19 @@ export type StoredConfigurationCredentialReference = Extract<
   { backend: StoredCredentialBackend }
 >;
 
+type CredentialMutationBoundary = Pick<
+  CredentialResolutionContext,
+  "signal" | "expiresAtMonotonicMilliseconds"
+>;
+
 export type StoredCredentialBackendImplementation = Readonly<{
   createPending(
     input: Readonly<{
       ownership: CredentialOwnership;
       generationId: string;
       secret: string;
-      signal: AbortSignal;
-    }>,
+    }> &
+      CredentialMutationBoundary,
   ): Promise<
     | Readonly<{ ok: true; referenceId: string }>
     | Readonly<{ ok: false; code: CredentialResolutionFailure }>
@@ -77,23 +82,19 @@ export type StoredCredentialBackendImplementation = Readonly<{
     | Readonly<{ ok: false; code: CredentialResolutionFailure }>
   >;
   activate(
-    input: Readonly<{
-      reference: ConfigurationCredentialReference;
-      signal: AbortSignal;
-    }>,
+    input: Readonly<{ reference: ConfigurationCredentialReference }> &
+      CredentialMutationBoundary,
   ): Promise<boolean>;
   removePending(
-    input: Readonly<{
-      reference: ConfigurationCredentialReference;
-      signal: AbortSignal;
-    }>,
+    input: Readonly<{ reference: ConfigurationCredentialReference }> &
+      CredentialMutationBoundary,
   ): Promise<boolean>;
   removeOwned(
     input: Readonly<{
       ownership: CredentialOwnership;
       reference: ConfigurationCredentialReference;
-      signal: AbortSignal;
-    }>,
+    }> &
+      CredentialMutationBoundary,
   ): Promise<boolean>;
 }>;
 
