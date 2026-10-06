@@ -98,6 +98,14 @@ export const mapClaudeCodeRootHookCapture = (
     ? [
         hookField("tool.name", hook.toolName),
         hookField("tool.id", hook.toolUseId),
+        hookField("input.value", JSON.stringify(hook.toolInput)),
+        hookField("input.mime_type", "application/json"),
+        ...(hook.toolResponsePresent
+          ? [
+              hookField("output.value", JSON.stringify(hook.toolResponse)),
+              hookField("output.mime_type", "application/json"),
+            ]
+          : []),
       ]
     : response && hook.assistantMessage !== null
       ? [hookField("output.value", hook.assistantMessage)]

@@ -19,6 +19,21 @@ const hasDecoded = decoded.has.bind(decoded);
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonRecord;
 type JsonRecord = { [key: string]: JsonValue };
+type NativeJson =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly NativeJson[]
+  | { readonly [key: string]: NativeJson };
+
+const freezeJson = (value: JsonValue): NativeJson => {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezeJson(child);
+    Object.freeze(value);
+  }
+  return value;
+};
 
 const invalid = (): never => {
   throw new Error("claude-code.mapping.invalid");
@@ -138,6 +153,11 @@ export type ClaudeCodeRootHookInput = Readonly<{
   toolUseId: string | null;
   stopHookActive: boolean | null;
   assistantMessage: string | null;
+  model: string | null;
+  toolInput: NativeJson;
+  toolResponse: NativeJson;
+  toolResponsePresent: boolean;
+  durationMilliseconds: number | null;
 }>;
 
 const commonKeys = [
@@ -153,6 +173,25 @@ const commonKeys = [
 ];
 const optionalText = (value: JsonValue | undefined): string | null =>
   value === undefined ? null : text(value, 256);
+
+const nativeMetadata = (input: JsonRecord, event: ClaudeCodeRootHookEvent) => {
+  const duration = input.duration_ms;
+  if (
+    duration !== undefined &&
+    (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0)
+  )
+    return invalid();
+  const tool = event === "PreToolUse" || event === "PostToolUse";
+  return {
+    // Preserve facts without inventing LLM attribution or epoch timing.
+    model: optionalText(input.model),
+    toolInput: tool ? freezeJson(input.tool_input ?? null) : null,
+    toolResponse:
+      event === "PostToolUse" ? freezeJson(input.tool_response ?? null) : null,
+    toolResponsePresent: event === "PostToolUse",
+    durationMilliseconds: typeof duration === "number" ? duration : null,
+  };
+};
 
 export const decodeClaudeCodeRootHookInput = (
   bytes: Uint8Array,
@@ -208,6 +247,7 @@ export const decodeClaudeCodeRootHookInput = (
         eventName === "Stop" ? (input.stop_hook_active as boolean) : null,
       assistantMessage:
         typeof assistantMessage === "string" ? assistantMessage : null,
+      ...nativeMetadata(input, eventName),
     });
     addDecoded(result);
     return result;

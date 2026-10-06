@@ -123,6 +123,114 @@ describe("Claude 2.1.245 root-hook observations", () => {
   });
 });
 
+describe("Claude emitted metadata preservation", () => {
+  it("preserves a session model without inventing an LLM call", () => {
+    const hook = decode({
+      ...common,
+      hook_event_name: "SessionStart",
+      source: "startup",
+      model: "native-model",
+    });
+    expect(hook.model).toBe("native-model");
+    expect(mapClaudeCodeRootHookCapture(hook).operations[0]?.kind).toBe(
+      "AGENT",
+    );
+  });
+  it("maps owned deeply frozen native tool IO and preserves duration", () => {
+    const source = {
+      ...common,
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      tool_use_id: "tool-1",
+      tool_input: { paths: ["original"] },
+      tool_response: { content: [{ text: "native-output" }] },
+      duration_ms: 0.5,
+    };
+    const hook = decode(source);
+    source.tool_input.paths[0] = "changed";
+    expect(hook.durationMilliseconds).toBe(0.5);
+    expect(Object.isFrozen(hook.toolInput)).toBe(true);
+    expect(
+      Object.isFrozen(Reflect.get(hook.toolInput as object, "paths")),
+    ).toBe(true);
+    expect(Object.isFrozen(hook.toolResponse)).toBe(true);
+    const operation = mapClaudeCodeRootHookCapture(hook).operations[0]!;
+    expect(operation.fields).toContainEqual({
+      field: "input.value",
+      value: '{"paths":["original"]}',
+      provenance: { field: "input.value", source: "hook-payload" },
+    });
+    expect(operation.fields).toContainEqual({
+      field: "output.value",
+      value: '{"content":[{"text":"native-output"}]}',
+      provenance: { field: "output.value", source: "hook-payload" },
+    });
+    expect(
+      operation.fields
+        .filter(({ field }) => field.endsWith("mime_type"))
+        .map(({ value }) => value),
+    ).toEqual(["application/json", "application/json"]);
+    expect(
+      isSemanticCandidateUpstreamConstraintValid({
+        kind: operation.kind,
+        spanName: operation.name,
+        presentFields: operation.fields.map(({ field }) => field),
+        unavailable: operation.unavailable,
+      }),
+    ).toBe(true);
+    expect(operation).not.toHaveProperty("timing");
+  });
+  it("distinguishes emitted null response from a pre-tool absent response", () => {
+    const pre = {
+      ...common,
+      hook_event_name: "PreToolUse",
+      tool_name: "Read",
+      tool_use_id: "tool-1",
+      tool_input: {},
+    };
+    expect(decode(pre).toolResponsePresent).toBe(false);
+    const post = decode({
+      ...pre,
+      hook_event_name: "PostToolUse",
+      tool_response: null,
+    });
+    expect(post.toolResponsePresent).toBe(true);
+    expect(
+      mapClaudeCodeRootHookCapture(post).operations[0]?.fields,
+    ).toContainEqual({
+      field: "output.value",
+      value: "null",
+      provenance: { field: "output.value", source: "hook-payload" },
+    });
+  });
+  it.each([null, 1, "", "x".repeat(257)])(
+    "rejects malformed model %#",
+    (model) => {
+      expect(() =>
+        decode({
+          ...common,
+          hook_event_name: "SessionStart",
+          source: "startup",
+          model,
+        }),
+      ).toThrow();
+    },
+  );
+  it.each([null, "1", -1])("rejects malformed duration %#", (duration_ms) => {
+    expect(() =>
+      decode({
+        ...common,
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        tool_use_id: "tool-1",
+        tool_input: {},
+        tool_response: {},
+        duration_ms,
+      }),
+    ).toThrow();
+  });
+});
+
 describe("Claude root-hook framing and resource boundaries", () => {
   it.each([
     "",
