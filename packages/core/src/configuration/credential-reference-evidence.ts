@@ -1,7 +1,14 @@
-import type { CredentialOwnership } from "./credential-adapter.js";
-import type {
-  AgentscopeConfigurationSnapshot,
-  ConfigurationCredentialReference,
+import { types } from "node:util";
+import {
+  createCredentialOwnership,
+  type CredentialOwnership,
+  type CredentialResolutionFailure,
+} from "./credential-adapter.js";
+import type { CredentialSetMutationIntent } from "./credential-intent-record.js";
+import {
+  serializeAgentscopeConfiguration,
+  type AgentscopeConfigurationSnapshot,
+  type ConfigurationCredentialReference,
 } from "./schema.js";
 import {
   ConfigurationStoreError,
@@ -10,6 +17,88 @@ import {
   readConfigurationSnapshot,
   type ConfigurationStore,
 } from "./transaction.js";
+
+export class CredentialLifecycleError extends Error {
+  public readonly code = "core.credential.lifecycle-invalid";
+
+  public constructor() {
+    super("core.credential.lifecycle-invalid");
+    this.name = "CredentialLifecycleError";
+  }
+}
+
+export type CredentialConfigurationResult =
+  | Readonly<{
+      ok: true;
+      state: "active";
+      snapshot: AgentscopeConfigurationSnapshot;
+      reference: ConfigurationCredentialReference;
+    }>
+  | Readonly<{
+      ok: false;
+      state: "compensated" | "orphan-pending" | "referenced-pending";
+      code:
+        | "core.credential.create-failed"
+        | "core.credential.preflight-unavailable"
+        | "core.credential.preflight-locked"
+        | "core.credential.preflight-denied"
+        | "core.credential.preflight-missing"
+        | "core.credential.preflight-malformed"
+        | "core.credential.candidate-invalid"
+        | "core.credential.configuration-failed"
+        | "core.credential.compensation-failed"
+        | "core.credential.intent-finalization-failed"
+        | "core.credential.activation-failed";
+      configurationCommitted: boolean;
+      reference?: ConfigurationCredentialReference;
+    }>;
+
+export const preflightCode = (
+  failure: CredentialResolutionFailure,
+): Extract<CredentialConfigurationResult, { ok: false }>["code"] =>
+  `core.credential.preflight-${failure}`;
+
+export const credentialSetReferences = (
+  intent: CredentialSetMutationIntent,
+): Readonly<Record<string, ConfigurationCredentialReference>> =>
+  Object.freeze(
+    Object.fromEntries(
+      intent.entries.map((entry) => [entry.ownership.slot, entry.reference]),
+    ),
+  );
+
+export const completeCredentialSetCandidate = (
+  snapshot: AgentscopeConfigurationSnapshot,
+  intent: CredentialSetMutationIntent,
+): boolean => {
+  if (types.isPromise(snapshot)) {
+    void Promise.prototype.then.call(
+      snapshot,
+      () => undefined,
+      () => undefined,
+    );
+    return false;
+  }
+  serializeAgentscopeConfiguration(snapshot);
+  const first = intent.entries[0];
+  /* v8 ignore next -- callers hold a minted version-2 record whose codec requires a nonempty set. */
+  if (!first) return false;
+  const connection = snapshot.connections.find(
+    (value) => value.connectionId === first.ownership.connectionId,
+  );
+  return (
+    connection !== undefined &&
+    Object.keys(connection.credentialReferences).sort().join(",") ===
+      intent.entries.map((entry) => entry.ownership.slot).join(",") &&
+    intent.entries.every((entry) =>
+      referencedByCandidate(
+        snapshot,
+        createCredentialOwnership(entry.ownership),
+        entry.reference,
+      ),
+    )
+  );
+};
 
 export const referencedByCandidate = (
   candidate: AgentscopeConfigurationSnapshot,
@@ -45,7 +134,7 @@ export const referenceAt = (
     : undefined;
 };
 
-const snapshotContainsReference = (
+export const snapshotContainsReference = (
   snapshot: AgentscopeConfigurationSnapshot | undefined,
   reference: ConfigurationCredentialReference,
 ): boolean =>
@@ -55,7 +144,7 @@ const snapshotContainsReference = (
     ),
   ) ?? false;
 
-const optionalSnapshot = async (
+export const optionalSnapshot = async (
   read: (store: ConfigurationStore) => Promise<AgentscopeConfigurationSnapshot>,
   store: ConfigurationStore,
 ): Promise<AgentscopeConfigurationSnapshot | undefined> => {
