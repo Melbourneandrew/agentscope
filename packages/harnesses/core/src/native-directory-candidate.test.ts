@@ -46,6 +46,82 @@ const invoke = (name: string, args: readonly unknown[]): unknown => {
   return Reflect.apply(fn, undefined, [...args]) as unknown;
 };
 
+describe("fixed resource-seal read guard evidence", () => {
+  it.each([
+    [false, 1n, "regular=false:nonempty=true:bytes=1:cap=16777216"],
+    [true, 0n, "regular=true:nonempty=false:bytes=0:cap=16777216"],
+    [true, 16777217n, "regular=true:nonempty=true:bytes=16777217:cap=16777216"],
+    [true, 1n, null],
+  ])(
+    "projects only fixed metadata while closing the held fd",
+    (regular, size, expected) => {
+      const start = driver.indexOf("const readExact =");
+      const stop = driver.indexOf("export const candidateProfile =", start);
+      let closed = 0;
+      let reads = 0;
+      const stat = {
+        isFile: () => regular,
+        size,
+        dev: 1n,
+        ino: 2n,
+        mode: 3n,
+        nlink: 1n,
+        mtimeNs: 4n,
+        ctimeNs: 5n,
+      };
+      const read: unknown = new Script(
+        `${driver.slice(start, stop)};readExact`,
+      ).runInNewContext({
+        xcode: "/fixed/Xcode",
+        constants: { O_RDONLY: 1, O_NOFOLLOW: 2, O_NONBLOCK: 4 },
+        openSync: (_path: string, flags: number) => {
+          expect(flags).toBe(7);
+          return 8;
+        },
+        fstatSync: () => stat,
+        lstatSync: () => stat,
+        Buffer,
+        readSync: (
+          _fd: number,
+          _buffer: Buffer,
+          _offset: number,
+          length: number,
+        ) => {
+          reads += 1;
+          return reads === 1 ? length : 0;
+        },
+        closeSync: () => {
+          closed += 1;
+        },
+        fail: () => {
+          throw new Error("harness.directory.candidate-invalid");
+        },
+      });
+      if (typeof read !== "function") throw new Error("actual read missing");
+      const call = () =>
+        Reflect.apply(read, undefined, [
+          "/fixed/Xcode/Contents/_CodeSignature/CodeResources",
+          16777216,
+        ]) as unknown;
+      if (expected === null) expect(call()).toHaveLength(1);
+      else {
+        expect(call).toThrow(
+          `harness.directory.candidate-invalid:resource-seal:${expected}`,
+        );
+        expect(reads).toBe(0);
+        expect(
+          () =>
+            Reflect.apply(read, undefined, [
+              "/secret/path",
+              16777216,
+            ]) as unknown,
+        ).toThrow(/^harness.directory.candidate-invalid$/u);
+      }
+      expect(closed).toBe(expected === null ? 1 : 2);
+    },
+  );
+});
+
 describe("nonpublishing directory native candidate", () => {
   it("uses the existing Linux user baseline and deliberate Node22 Darwin baseline", () => {
     expect(invoke("candidateProfile", ["linux-x64"])).toMatchObject({

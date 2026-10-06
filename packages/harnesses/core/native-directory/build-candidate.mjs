@@ -40,8 +40,13 @@ const readExact = (path, maximum = 1_048_576) => {
   );
   try {
     const before = fstatSync(fd, { bigint: true });
-    if (!before.isFile() || before.size < 1n || before.size > BigInt(maximum))
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(maximum)) {
+      if (path === `${xcode}/Contents/_CodeSignature/CodeResources`)
+        throw new Error(
+          `harness.directory.candidate-invalid:resource-seal:regular=${before.isFile()}:nonempty=${before.size > 0n}:bytes=${before.size}:cap=${maximum}`,
+        );
       fail();
+    }
     const value = Buffer.alloc(Number(before.size));
     let offset = 0;
     while (offset < value.length) {
