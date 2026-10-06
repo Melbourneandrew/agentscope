@@ -330,6 +330,19 @@ const parseInstalledPlugin = (
   });
 };
 
+export const enabledPluginsEqual = (
+  left: Readonly<Record<string, boolean>>,
+  right: Readonly<Record<string, boolean>>,
+): boolean => {
+  const leftEntries = Object.keys(left)
+    .sort()
+    .map((key) => [key, left[key]]);
+  const rightEntries = Object.keys(right)
+    .sort()
+    .map((key) => [key, right[key]]);
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+};
+
 export const parsePluginInventory = (
   value: unknown,
 ): ClaudeCodePluginInventory | undefined => {
@@ -350,17 +363,20 @@ export const parsePluginInventory = (
   const budget: InventoryBudget = { remainingBytes: maximumInventoryUtf8Bytes };
   const settingsLayers: ClaudeCodePluginSettingsLayer[] = [];
   const scopes = new Set<ClaudeCodeSettingsScope>();
-  const paths = new Set<string>();
+  const paths = new Map<string, ClaudeCodePluginSettingsLayer>();
   for (const rawLayer of rawLayers) {
     const layer = parsePluginSettingsLayer(rawLayer, budget);
+    if (layer === undefined || scopes.has(layer.scope)) return undefined;
+    const previous = paths.get(layer.targetPath);
     if (
-      layer === undefined ||
-      scopes.has(layer.scope) ||
-      paths.has(layer.targetPath)
+      previous !== undefined &&
+      (previous.targetExists !== layer.targetExists ||
+        previous.targetDigest !== layer.targetDigest ||
+        !enabledPluginsEqual(previous.enabledPlugins, layer.enabledPlugins))
     )
       return undefined;
     scopes.add(layer.scope);
-    paths.add(layer.targetPath);
+    paths.set(layer.targetPath, layer);
     settingsLayers.push(layer);
   }
   const installedPlugins: ClaudeCodeInstalledPlugin[] = [];

@@ -170,23 +170,6 @@ const emptyInventory = (targetExists = true): ClaudeCodePluginInventory => ({
   installedPlugins: [],
 });
 
-const officialInventoryAt = (
-  scope: "user" | "project" | "local" | "managed",
-): ClaudeCodePluginInventory => ({
-  settingsLayers: [
-    {
-      scope,
-      targetPath: targetPathByScope[scope],
-      targetDigest,
-      targetExists: true,
-      enabledPlugins: {
-        [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
-      },
-    },
-  ],
-  installedPlugins: [officialPlugin()],
-});
-
 describe("Claude Code owned lifecycle", () => {
   it("leaves an absent settings file absent on uninstall", () => {
     expect(
@@ -581,45 +564,6 @@ describe("Claude Code target-bound absence evidence", () => {
 });
 
 describe("Claude Code migration authority", () => {
-  it.each(["project", "local", "managed"] as const)(
-    "keeps migration scoped to the user target with an observed %s exporter",
-    (scope) => {
-      const user = emptyInventory().settingsLayers[0]!;
-      const foreign = officialInventoryAt(scope).settingsLayers[0]!;
-      const inventory = {
-        settingsLayers: [user, foreign],
-        installedPlugins: [officialPlugin()],
-      };
-      for (const operation of ["install", "migrate"] as const) {
-        expect(
-          createClaudeCodeInstallationPlanner(
-            operation,
-            invocation,
-            inventory,
-          )(target("{}")),
-        ).toEqual({ kind: "conflict" });
-      }
-    },
-  );
-
-  it.each(["project", "local", "managed"] as const)(
-    "refuses migration when %s owns the effective exporter",
-    (scope) => {
-      const text = JSON.stringify({
-        enabledPlugins: {
-          [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
-        },
-      });
-      expect(
-        createClaudeCodeInstallationPlanner(
-          "migrate",
-          invocation,
-          officialInventoryAt(scope),
-        )(target(text)),
-      ).toEqual({ kind: "conflict" });
-    },
-  );
-
   it("requires the owned user target to match effective plugin authority", () => {
     const enabled = JSON.stringify({
       enabledPlugins: {

@@ -397,12 +397,12 @@ describe("Claude Code bounded scoped plugin observations", () => {
     });
   });
 
-  it("rejects duplicate scopes and duplicate consulted paths", () => {
+  it("rejects duplicate scopes and contradictory consulted paths", () => {
     const layer = emptyInventory().settingsLayers[0]!;
     for (const duplicate of [
       layer,
       { ...layer, targetPath: targetPathByScope.project },
-      { ...layer, scope: "project" as const },
+      { ...layer, scope: "project" as const, targetDigest: "1".repeat(64) },
     ]) {
       const inventory = {
         ...emptyInventory(),
