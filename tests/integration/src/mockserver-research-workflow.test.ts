@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -67,6 +67,41 @@ function run(
   };
 }
 
+async function closedReader(script: string, env: NodeJS.ProcessEnv) {
+  const child = spawn(
+    "/bin/bash",
+    ["--noprofile", "--norc", "-e", "-c", `IFS= read -r ready\n${script}`],
+    { env, stdio: ["pipe", "pipe", "ignore"] },
+  );
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    child.kill("SIGKILL");
+  }, 2_000);
+  try {
+    const terminal = new Promise<{
+      code: number | null;
+      signal: string | null;
+    }>((resolveTerminal, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        resolveTerminal({ code, signal });
+      });
+    });
+    // Close the real child stdout reader before releasing its first write.
+    await new Promise<void>((resolveClosed) => {
+      child.stdout.once("close", resolveClosed);
+      child.stdout.destroy();
+    });
+    child.stdin.end("ready\n");
+    const result = await terminal;
+    expect(expired).toBe(false);
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 describe("actual research workflow shell file commands", () => {
   it("keeps diagnostics separate from the unchanged verifier and upload predicate", () => {
     const script = execution.run!;
@@ -124,6 +159,9 @@ describe("actual research workflow shell file commands", () => {
       expect(result.stdout.includes("verifier-complete")).toBe(verifier === 0);
     },
   );
+});
+
+describe("best-effort shell diagnostic failures", () => {
   it("retains file commands when stdout is lost", () => {
     const { result, output } = run(3, 0, "exec 1>/dev/null");
     expect(result.status).toBe(0);
@@ -156,6 +194,19 @@ describe("actual research workflow shell file commands", () => {
       "shell_entered=true\ncommand_status=3\nshell_status=0\n",
     );
   });
+  it("preserves verified research result and trap outputs with a closed real stdout reader", async () => {
+    const directory = root();
+    const output = resolve(directory, "output");
+    expect(
+      await closedReader(
+        `pnpm() { return 3; }\nnode() { return 0; }\n${execution.run!}`,
+        { GITHUB_OUTPUT: output },
+      ),
+    ).toEqual({ code: 0, signal: null });
+    expect(readFileSync(output, "utf8")).toBe(
+      "shell_entered=true\ncommand_status=3\nshell_status=0\n",
+    );
+  });
   it("preserves verifier failure when only the EXIT trap destination fails", () => {
     const directory = root();
     const output = resolve(directory, "output");
@@ -181,7 +232,46 @@ describe("actual research workflow shell file commands", () => {
   });
 });
 
+describe("closed-reader causal seed", () => {
+  it.each(["execution", "projection"])(
+    "rejects the old uncontained stdout writes in %s",
+    async (kind) => {
+      const script = (kind === "execution" ? execution.run! : projection.run!)
+        .replaceAll("( printf ", "printf ")
+        .replaceAll(" ) || :", " || :");
+      const directory = root();
+      const result = await closedReader(
+        `pnpm() { return 3; }\nnode() { return 0; }\n${script}`,
+        {
+          GITHUB_OUTPUT: resolve(directory, "output"),
+          GITHUB_STEP_SUMMARY: resolve(directory, "summary"),
+          OBSERVED_OUTCOME: "success",
+          OBSERVED_ENTERED: "true",
+          OBSERVED_COMMAND_STATUS: "3",
+          OBSERVED_SHELL_STATUS: "0",
+        },
+      );
+      expect(result).toEqual({ code: null, signal: "SIGPIPE" });
+    },
+  );
+});
+
 describe("closed always-after projection", () => {
+  it("does not block upload when its real stdout reader is closed", async () => {
+    const summary = resolve(root(), "summary");
+    expect(
+      await closedReader(projection.run!, {
+        OBSERVED_OUTCOME: "success",
+        OBSERVED_ENTERED: "true",
+        OBSERVED_COMMAND_STATUS: "3",
+        OBSERVED_SHELL_STATUS: "0",
+        GITHUB_STEP_SUMMARY: summary,
+      }),
+    ).toEqual({ code: 0, signal: null });
+    expect(readFileSync(summary, "utf8")).toBe(
+      "integration.mockserver-research.shell-observation outcome=success shell_entered=true command_status=3 shell_status=0\n",
+    );
+  });
   function project(values: NodeJS.ProcessEnv, summaryFailure = false) {
     const directory = root();
     const summary = summaryFailure ? directory : resolve(directory, "summary");

@@ -373,11 +373,11 @@ jobs:
             diagnostic_output command_status "$status"
           fi
           set -e
-          printf 'integration.mockserver-research.command-status=%s\n' "$status" || :
+          ( printf 'integration.mockserver-research.command-status=%s\n' "$status" ) || :
           test "$status" -eq 3
-          printf 'integration.mockserver-research.verifier-enter\n' || :
+          ( printf 'integration.mockserver-research.verifier-enter\n' ) || :
           node tests/integration/verify-mockserver-research.mjs
-          printf 'integration.mockserver-research.verifier-complete\n' || :
+          ( printf 'integration.mockserver-research.verifier-complete\n' ) || :
       - name: Project closed research shell observations
         if: always()
         env:
@@ -395,7 +395,7 @@ jobs:
           if [[ "$OBSERVED_COMMAND_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_COMMAND_STATUS <= 255 )); then command_status="$OBSERVED_COMMAND_STATUS"; fi
           if [[ "$OBSERVED_SHELL_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SHELL_STATUS <= 255 )); then shell_status="$OBSERVED_SHELL_STATUS"; fi
           observation="integration.mockserver-research.shell-observation outcome=$outcome shell_entered=$entered command_status=$command_status shell_status=$shell_status"
-          printf '%s\n' "$observation" || :
+          ( printf '%s\n' "$observation" ) || :
           { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
       - name: Upload bounded research observations only
         if: success() && steps.research_packet.outcome == 'success'
