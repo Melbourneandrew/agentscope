@@ -23,6 +23,7 @@ export { CLAUDE_CODE_LIFECYCLE_EVENTS } from "./owned-profile.js";
 
 import {
   CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
+  enabledPluginsEqual,
   exactArrayValues,
   exactRecordValues,
   isRecord,
@@ -977,19 +978,6 @@ const disableMigratedPlugin = (
   settings.enabledPlugins = { ...enabledPlugins, [pluginId]: false };
 };
 
-const enabledPluginsEqual = (
-  left: Readonly<Record<string, boolean>>,
-  right: Readonly<Record<string, boolean>>,
-): boolean => {
-  const leftEntries = Object.keys(left)
-    .sort()
-    .map((key) => [key, left[key]]);
-  const rightEntries = Object.keys(right)
-    .sort()
-    .map((key) => [key, right[key]]);
-  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
-};
-
 const targetLayerAgrees = (
   inventory: ClaudeCodePluginInventory,
   target: Readonly<{
@@ -1069,11 +1057,14 @@ export const createClaudeCodeInstallationPlanner = (
     }
     if (operation === "install" && overlap.status !== "absent")
       return { kind: "conflict" };
+    // A project-effective alias is eligible only at the already-bound user
+    // target; parsing required both scoped observations to agree exactly.
     if (
       operation === "migrate" &&
       (overlap.status !== "conflict" ||
         overlap.pluginId !== CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID ||
-        overlap.effectiveScope !== "user" ||
+        (overlap.effectiveScope !== "user" &&
+          overlap.effectiveScope !== "project") ||
         overlap.targetPath !== targetPath ||
         overlap.targetDigest !== digest)
     )
