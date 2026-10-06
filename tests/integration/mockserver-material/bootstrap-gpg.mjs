@@ -182,11 +182,24 @@ export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
     "TRUST_ULTIMATE",
     "PLAINTEXT",
     "PLAINTEXT_LENGTH",
+    "VERIFICATION_COMPLIANCE_MODE",
   ]);
   if (records.some((line) => !permitted.has(line.split(" ")[1]))) fail();
   const valid = records.filter((line) => line.startsWith("[GNUPG:] VALIDSIG "));
   const good = records.filter((line) => line.startsWith("[GNUPG:] GOODSIG "));
   if (valid.length !== 1 || good.length !== 1) fail();
+  // GnuPG emits this optional informational record after a valid signature.
+  // It is not signer or cryptographic authority; the checks below still apply.
+  const compliance = records.filter(
+    (line) => line.split(" ")[1] === "VERIFICATION_COMPLIANCE_MODE",
+  );
+  if (
+    compliance.length > 1 ||
+    (compliance.length === 1 &&
+      (compliance[0] !== "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 23" ||
+        records.indexOf(compliance[0]) < records.indexOf(valid[0])))
+  )
+    fail();
   const fields = valid[0].split(" ").slice(2);
   if (
     (fields.length !== 9 && fields.length !== 10) ||

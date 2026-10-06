@@ -121,6 +121,40 @@ describe("actual bootstrap run body observations (no GPG execution)", () => {
   });
 });
 
+describe("optional stock-GPG verification compliance information", () => {
+  const compliance = "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 23\n";
+
+  it.each(policies)(
+    "accepts optional exact mode information without changing %s authority",
+    (kind, fingerprint, hash, signatureClass) => {
+      const valid = status(fingerprint, hash, signatureClass);
+      expect(verifyBootstrapGpgStatus(kind, valid + compliance, now)).toEqual(
+        verifyBootstrapGpgStatus(kind, valid, now),
+      );
+    },
+  );
+
+  it("rejects malformed, duplicate, substituted, early or detached information", () => {
+    const [, fingerprint, hash, signatureClass] = policies[0];
+    const valid = status(fingerprint, hash, signatureClass);
+    for (const input of [
+      compliance,
+      compliance + valid,
+      valid + compliance + compliance,
+      valid + compliance.replace("23", "8"),
+      valid + compliance.replace("23", "023"),
+      valid + compliance.replace("23", "23 extra"),
+      valid + compliance.replace(" 23", ""),
+      valid.replace(fingerprint, "A".repeat(40)) + compliance,
+      valid.replace(" 1 10 00 ", " 1 8 00 ") + compliance,
+      valid + compliance + "[GNUPG:] BADSIG canary\n",
+    ])
+      expect(() => verifyBootstrapGpgStatus("maven", input, now)).toThrow(
+        "integration.mockserver-material.bootstrap-gpg",
+      );
+  });
+});
+
 describe("bootstrap input type rejection before blocking I/O", () => {
   it("rejects an unwritten FIFO through the actual file authenticator", () => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-bootstrap-fifo-"));
