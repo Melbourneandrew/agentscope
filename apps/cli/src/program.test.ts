@@ -214,6 +214,31 @@ describe("original foreground command authority", () => {
 });
 
 describe("foreground terminal result precedence", () => {
+  it("refuses input and services when lazy import consumes the entry allowance", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const output = createCapturedOutput();
+    const readInput = vi.fn(fixtureModule.readInput);
+    const createServices = vi.fn(() => ({ run: () => success }));
+    const signals = [process.listeners("SIGINT"), process.listeners("SIGTERM")];
+    const pending = runCli(["sample", "list", "--name", "one"], {
+      modules: [{ ...fixtureModule, readInput }],
+      registry: fixtureRegistry,
+      output: output.output,
+      version: "1.2.3",
+      createServices,
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(60_000);
+    expect(await pending).toBe(70);
+    expect(readInput).not.toHaveBeenCalled();
+    expect(createServices).not.toHaveBeenCalled();
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr.join("")).toContain("cli.internal");
+    expect(process.listeners("SIGINT")).toEqual(signals[0]);
+    expect(process.listeners("SIGTERM")).toEqual(signals[1]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("refuses late success without resetting the allowance", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
     const output = createCapturedOutput();

@@ -1,9 +1,6 @@
 import type { Command } from "commander";
 import { z } from "zod";
-import {
-  createCredentialResolutionContext,
-  type CredentialResolutionContext,
-} from "@agentscope/core";
+import type { CredentialResolutionContext } from "@agentscope/core";
 
 import {
   cliDiagnosticSchema,
@@ -219,11 +216,6 @@ async function executeCommand(
 ): Promise<void> {
   const enteredAt = performance.now();
   const controller = new AbortController();
-  const credentialContext = createCredentialResolutionContext(
-    "hook-equivalent",
-    controller.signal,
-    enteredAt + 60_000,
-  );
   const timeout = setTimeout(
     () => {
       controller.abort();
@@ -236,12 +228,28 @@ async function executeCommand(
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
+    const { createCredentialResolutionContext } =
+      await import("@agentscope/core");
+    const credentialContext = createCredentialResolutionContext(
+      "hook-equivalent",
+      controller.signal,
+      enteredAt + 60_000,
+    );
+    if (commandExpired(credentialContext))
+      throw new Error("cli.command.expired");
     await executeEnteredCommand(
       command,
       module,
       registration,
       input,
       credentialContext,
+    );
+  } catch {
+    input.state.exitCode = await writeCliDiagnostic(
+      input.output,
+      parseMode(command) ?? "human",
+      commandPath(registration),
+      INTERNAL_DIAGNOSTIC,
     );
   } finally {
     clearTimeout(timeout);
