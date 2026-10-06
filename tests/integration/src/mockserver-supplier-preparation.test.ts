@@ -19,6 +19,11 @@ const state = vi.hoisted(() => ({
   marked: false,
   afterBuild: () => {},
   waitBootstrap: () => Promise.resolve(),
+  primary: new Error("build"),
+  diagnostic: (): unknown => undefined,
+  observations: [] as unknown[],
+  diagnosticFailure: false,
+  sinkFailure: false,
 }));
 vi.mock("../mockserver-material/prepare-bootstrap.mjs", () => ({
   prepareMockServerBootstrap: (input: Record<string, unknown>) => {
@@ -54,11 +59,22 @@ vi.mock("../image-preparation.mjs", () => ({
   ) => {
     state.builds.push(input);
     state.afterBuild();
-    if (state.failure === "build") throw Error("build");
+    if (state.failure === "build") return Promise.reject(state.primary);
     return Promise.resolve(Buffer.from("synthetic-research"));
   },
   markPreparedDockerClientForOuterHostRetirement: () => {
     state.marked = true;
+  },
+  preparedDockerClientDiagnostic: () => {
+    if (state.diagnosticFailure) throw Error("diagnostic");
+    return state.diagnostic();
+  },
+}));
+vi.mock("../controller-file-command.mjs", () => ({
+  publishMaterialResearchPhase: () => {},
+  publishBootstrapGpgObservation: (diagnostic: unknown) => {
+    state.observations.push(diagnostic);
+    if (state.sinkFailure) throw Error("sink");
   },
 }));
 import { researchMockServerSupplier } from "../mockserver-material/prepare-supplier.mjs";
@@ -87,6 +103,11 @@ beforeEach(() => {
   state.marked = false;
   state.afterBuild = () => {};
   state.waitBootstrap = () => Promise.resolve();
+  state.primary = new Error("build");
+  state.diagnostic = () => undefined;
+  state.observations = [];
+  state.diagnosticFailure = false;
+  state.sinkFailure = false;
 });
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -190,6 +211,47 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         ),
       ),
     ).toBe(true);
+  });
+});
+describe("supplier failure observations preserve the original outcome", () => {
+  it.each(["failed-settled", "retired-failure"])(
+    "projects the existing %s diagnostic without substituting its primary",
+    async (outcome) => {
+      const input = fixture();
+      state.failure = "build";
+      const diagnostic = Object.freeze({
+        operation: "image-build",
+        outcome,
+        process: Object.freeze({ exited: true, joined: true }),
+      });
+      state.diagnostic = () => diagnostic;
+      await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+        state.primary,
+      );
+      expect(state.observations).toEqual([diagnostic]);
+      expect(state.observations[0]).toBe(diagnostic);
+      expect(readdirSync(input.privateRoot)).toEqual([]);
+    },
+  );
+  it.each(["absent", "reader-failure", "sink-failure"])(
+    "keeps exact primary and known-file cleanup with %s observation",
+    async (kind) => {
+      const input = fixture();
+      state.failure = "build";
+      state.diagnosticFailure = kind === "reader-failure";
+      state.sinkFailure = kind === "sink-failure";
+      await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+        state.primary,
+      );
+      expect(state.observations).toEqual(
+        kind === "reader-failure" ? [] : [undefined],
+      );
+      expect(readdirSync(input.privateRoot)).toEqual([]);
+    },
+  );
+  it("publishes nothing on successful supplier completion", async () => {
+    await researchMockServerSupplier(fixture() as never);
+    expect(state.observations).toEqual([]);
   });
 });
 describe("supplier deadline and cancellation boundary", () => {

@@ -21,12 +21,16 @@ import {
 import {
   buildPreparedDockerImage,
   markPreparedDockerClientForOuterHostRetirement,
+  preparedDockerClientDiagnostic,
 } from "../image-preparation.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { prepareMockServerBootstrap } from "./prepare-bootstrap.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
-import { publishMaterialResearchPhase } from "../controller-file-command.mjs";
+import {
+  publishBootstrapGpgObservation,
+  publishMaterialResearchPhase,
+} from "../controller-file-command.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const modules = Object.freeze(
@@ -190,6 +194,15 @@ export const researchMockServerSupplier = async (input) => {
       maximumMilliseconds: Math.floor(deadline - reserve - performance.now()),
       retirementRequired: false,
       signal: workSignal,
+    }).catch((error) => {
+      try {
+        publishBootstrapGpgObservation(
+          preparedDockerClientDiagnostic(dockerClient),
+        );
+      } catch {
+        // Optional observation cannot replace the supplier's original failure.
+      }
+      throw error;
     });
     check(workSignal, deadline - reserve);
     publishMaterialResearchPhase("supplier-inventory");
