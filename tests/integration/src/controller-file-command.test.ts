@@ -9,9 +9,11 @@ const {
   publishControllerFailureObservation,
   publishSupervisorObservation,
   publishMaterialResearchPhase,
+  publishBootstrapGpgObservation,
 } = fileCommands as unknown as Record<
   | "publishControllerFailureObservation"
   | "publishSupervisorObservation"
+  | "publishBootstrapGpgObservation"
   | "publishMaterialResearchPhase",
   (value: unknown, environment: NodeJS.ProcessEnv) => void
 >;
@@ -140,6 +142,106 @@ describe("optional closed controller file commands", () => {
     );
     expect(accesses).toBe(0);
     expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
+  });
+});
+
+describe("existing builder diagnostic projection", () => {
+  it("distinguishes a recorded markerless failure from absent diagnostics", () => {
+    const value = sink();
+    publishBootstrapGpgObservation(
+      {
+        operationKind: "image-build",
+        outcome: "failed-settled",
+        process: {
+          observed: true,
+          exited: true,
+          signaled: false,
+          timedOut: false,
+          joined: true,
+          stderrClass: "build-failed",
+        },
+      },
+      value.env,
+    );
+    const text = readFileSync(value.output, "utf8");
+    expect(text).toBe(
+      "untrusted_builder_operation=image-build\nuntrusted_builder_outcome=failed-settled\n" +
+        "untrusted_builder_observed=true\nuntrusted_builder_exited=true\nuntrusted_builder_signaled=false\n" +
+        "untrusted_builder_timed_out=false\nuntrusted_builder_joined=true\nuntrusted_builder_stderr_class=build-failed\n" +
+        "untrusted_bootstrap_stage=unknown\nuntrusted_bootstrap_failure_family=unknown\n",
+    );
+    writeFileSync(value.output, "");
+    publishBootstrapGpgObservation(undefined, value.env);
+    expect(
+      readFileSync(value.output, "utf8").split("\n").filter(Boolean),
+    ).toHaveLength(10);
+    expect(readFileSync(value.output, "utf8")).not.toMatch(/=(?!unknown\n)/u);
+  });
+  it.each(["preflight", "builder-create", "builder-bootstrap", "image-build"])(
+    "projects closed operation %s without changing authority",
+    (operationKind) => {
+      const value = sink();
+      publishBootstrapGpgObservation(
+        {
+          operationKind,
+          outcome: "retired-failure",
+          process: {
+            observed: false,
+            exited: false,
+            signaled: true,
+            timedOut: true,
+            joined: false,
+            stderrClass: "permission-denied",
+            untrustedBootstrapStage: "import-key",
+            untrustedBootstrapFailureFamily: "gpg-execution",
+          },
+        },
+        value.env,
+      );
+      expect(readFileSync(value.output, "utf8")).toContain(
+        `untrusted_builder_operation=${operationKind}\n`,
+      );
+      expect(readFileSync(value.output, "utf8")).toContain(
+        "untrusted_builder_outcome=retired-failure\n",
+      );
+      expect(readFileSync(value.output, "utf8")).toContain(
+        "untrusted_bootstrap_stage=import-key\n",
+      );
+    },
+  );
+  it("does not read proxies/accessors or coerce malformed fields", () => {
+    const value = sink();
+    const getter = vi.fn(() => {
+      throw new Error("CANARY");
+    });
+    const proxy = new Proxy({}, { getOwnPropertyDescriptor: getter });
+    for (const diagnostic of [
+      proxy,
+      { process: proxy },
+      Object.defineProperty({}, "process", { get: getter }),
+      {
+        operationKind: "image-build\nCANARY",
+        outcome: {},
+        process: {
+          observed: "true",
+          exited: 1,
+          signaled: [],
+          timedOut: null,
+          joined: "false",
+          stderrClass: "$(CANARY)",
+        },
+      },
+    ])
+      publishBootstrapGpgObservation(diagnostic, value.env);
+    expect(getter).not.toHaveBeenCalled();
+    expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
+    expect(readFileSync(value.output, "utf8")).not.toMatch(/=(?!unknown\n)/u);
+    expect(() => {
+      publishBootstrapGpgObservation(
+        {},
+        { ...value.env, GITHUB_OUTPUT: value.root },
+      );
+    }).not.toThrow();
   });
 });
 

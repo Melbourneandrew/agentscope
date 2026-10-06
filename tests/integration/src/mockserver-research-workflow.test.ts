@@ -153,6 +153,21 @@ describe("actual research workflow shell file commands", () => {
         "${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}",
       OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY:
         "${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}",
+      ...Object.fromEntries(
+        [
+          "operation",
+          "outcome",
+          "observed",
+          "exited",
+          "signaled",
+          "timed_out",
+          "joined",
+          "stderr_class",
+        ].map((key) => [
+          `OBSERVED_UNTRUSTED_BUILDER_${key.toUpperCase()}`,
+          `\u0024{{ steps.research_packet.outputs.untrusted_builder_${key} }}`,
+        ]),
+      ),
     });
     const upload = steps.at(-1)!;
     expect(upload.if).toBe(
@@ -282,6 +297,66 @@ describe("closed-reader causal seed", () => {
         },
       );
       expect(result).toEqual({ code: null, signal: "SIGPIPE" });
+    },
+  );
+});
+
+describe("untrusted existing builder observations", () => {
+  it("projects a markerless recorded failure without implying cleanup success", () => {
+    const result = shell(projection.run!, {
+      OBSERVED_UNTRUSTED_BUILDER_OPERATION: "image-build",
+      OBSERVED_UNTRUSTED_BUILDER_OUTCOME: "failed-settled",
+      OBSERVED_UNTRUSTED_BUILDER_OBSERVED: "true",
+      OBSERVED_UNTRUSTED_BUILDER_EXITED: "true",
+      OBSERVED_UNTRUSTED_BUILDER_SIGNALED: "false",
+      OBSERVED_UNTRUSTED_BUILDER_TIMED_OUT: "false",
+      OBSERVED_UNTRUSTED_BUILDER_JOINED: "true",
+      OBSERVED_UNTRUSTED_BUILDER_STDERR_CLASS: "build-failed",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "untrusted_builder_operation=image-build untrusted_builder_outcome=failed-settled untrusted_builder_observed=true untrusted_builder_exited=true untrusted_builder_signaled=false untrusted_builder_timed_out=false untrusted_builder_joined=true untrusted_builder_stderr_class=build-failed",
+    );
+    expect(result.stdout).toContain("cleanup=unknown");
+    expect(result.stdout).toContain("untrusted_bootstrap_stage=unknown");
+  });
+  it.each(["preflight", "builder-create", "builder-bootstrap", "image-build"])(
+    "permits only closed operation %s",
+    (operation) => {
+      const result = shell(projection.run!, {
+        OBSERVED_UNTRUSTED_BUILDER_OPERATION: operation,
+        OBSERVED_UNTRUSTED_BUILDER_OUTCOME: "retired-failure",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        `untrusted_builder_operation=${operation} untrusted_builder_outcome=retired-failure`,
+      );
+    },
+  );
+  it.each(["CANARY\nsecret", "$(exit 8)", "true ", "1"])(
+    "sanitizes every builder field %s",
+    (value) => {
+      const environment = Object.fromEntries(
+        [
+          "OPERATION",
+          "OUTCOME",
+          "OBSERVED",
+          "EXITED",
+          "SIGNALED",
+          "TIMED_OUT",
+          "JOINED",
+          "STDERR_CLASS",
+        ].map((key) => [`OBSERVED_UNTRUSTED_BUILDER_${key}`, value]),
+      );
+      const result = shell(projection.run!, {
+        ...environment,
+        OBSERVED_MATERIAL_PHASE: "verify-maven",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain(value);
+      expect(result.stdout).toContain(
+        "untrusted_builder_operation=unknown untrusted_builder_outcome=unknown untrusted_builder_observed=unknown untrusted_builder_exited=unknown untrusted_builder_signaled=unknown untrusted_builder_timed_out=unknown untrusted_builder_joined=unknown untrusted_builder_stderr_class=unknown",
+      );
     },
   );
 });

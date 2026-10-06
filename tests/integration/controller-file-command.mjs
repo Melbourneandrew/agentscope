@@ -230,6 +230,35 @@ export const publishBootstrapGpgObservation = (
   append(
     [
       [
+        "untrusted_builder_operation",
+        selected(own(diagnostic, "operationKind"), [
+          "preflight",
+          "builder-create",
+          "builder-bootstrap",
+          "image-build",
+        ]),
+      ],
+      [
+        "untrusted_builder_outcome",
+        selected(own(diagnostic, "outcome"), [
+          "retired-failure",
+          "failed-settled",
+        ]),
+      ],
+      ...["observed", "exited", "signaled", "timedOut", "joined"].map((key) => [
+        `untrusted_builder_${key === "timedOut" ? "timed_out" : key}`,
+        boolean(own(processObservation, key)),
+      ]),
+      [
+        "untrusted_builder_stderr_class",
+        selected(own(processObservation, "stderrClass"), [
+          "resource-conflict",
+          "build-failed",
+          "bootstrap-failed",
+          "permission-denied",
+        ]),
+      ],
+      [
         "untrusted_bootstrap_stage",
         selected(
           own(processObservation, "untrustedBootstrapStage"),
