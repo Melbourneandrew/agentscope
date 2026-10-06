@@ -220,7 +220,7 @@ describe("supplier failure observations preserve the original outcome", () => {
       const input = fixture();
       state.failure = "build";
       const diagnostic = Object.freeze({
-        operation: "image-build",
+        operationKind: "image-build",
         outcome,
         process: Object.freeze({ exited: true, joined: true }),
       });
