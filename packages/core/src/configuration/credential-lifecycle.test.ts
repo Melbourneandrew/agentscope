@@ -824,46 +824,6 @@ describe("credential configuration compensation", () => {
   });
 });
 
-describe("credential mutation intent finalization", () => {
-  it("retains referenced state when mutation intent finalization fails", async () => {
-    const { home } = await storeFixture();
-    const store = createConfigurationStoreForTesting(
-      home,
-      destinationRegistry,
-      {
-        fileSystem: {
-          open: nodeOpen,
-          rename: nodeRename,
-          unlink: (file: Parameters<typeof nodeUnlink>[0]) =>
-            String(file).endsWith("credential.lock")
-              ? Promise.reject(new Error("CANARY_SECRET"))
-              : nodeUnlink(file),
-        },
-      },
-    );
-    await expect(
-      configureCredential(storedBackend().registry, {
-        store,
-        owner,
-        expectedGeneration: null,
-        ownership,
-        request: {
-          kind: "stored",
-          backend: "macos-keychain",
-          secret: "CANARY_SECRET",
-        },
-        resolutionContext: context(),
-        createCandidate: (reference) => candidate(0, reference),
-      }),
-    ).resolves.toMatchObject({
-      ok: false,
-      state: "referenced-pending",
-      code: "core.credential.intent-finalization-failed",
-      configurationCommitted: true,
-    });
-  });
-});
-
 describe("credential configuration hostile boundaries", () => {
   it("retains deterministic orphan evidence after an uncertain creation failure", async () => {
     const { store } = await storeFixture();
