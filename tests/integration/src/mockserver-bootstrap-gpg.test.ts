@@ -319,6 +319,13 @@ describe("non-authoritative GPG notation and policy metadata", () => {
       expect(
         verifyBootstrapGpgStatus(
           kind,
+          withInfo + "[GNUPG:] NOTATION_NAME empty\n[GNUPG:] NOTATION_DATA \n",
+          now,
+        ),
+      ).toEqual(verifyBootstrapGpgStatus(kind, valid, now));
+      expect(
+        verifyBootstrapGpgStatus(
+          kind,
           withInfo + "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 23\n",
           now,
         ),
@@ -336,6 +343,7 @@ describe("non-authoritative GPG notation and policy metadata", () => {
       valid + "[GNUPG:] NOTATION_FLAGS 0 1\n",
       valid + "[GNUPG:] NOTATION_DATA data\n",
       valid + "[GNUPG:] NOTATION_NAME name\n",
+      valid + "[GNUPG:] NOTATION_NAME name\n[GNUPG:] NOTATION_DATA\n",
       valid + info.replace("0 1", "2 1"),
       valid + info.replace("%0A", "%xx"),
       valid + info.replace("%0A", "\r"),

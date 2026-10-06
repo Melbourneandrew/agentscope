@@ -211,6 +211,8 @@ const discardStatusInformation = (records, enter, permitted) => {
       retained.push(line);
       continue;
     }
+    if (!line.startsWith(`[GNUPG:] ${token} `))
+      rejectStatusRecord(token, enter);
     const payload = line.slice(10 + token.length);
     const escaped =
       token === "POLICY_URL"
