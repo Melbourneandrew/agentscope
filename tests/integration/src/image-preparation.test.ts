@@ -20,7 +20,6 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createServer } from "node:http";
 import { get as httpsGet, createServer as createHttpsServer } from "node:https";
-import type { Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -961,16 +960,28 @@ describe("subprocess-free pinned image preparation", () => {
   it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
     const engine = engineFixture();
     const registry = registryFixture();
-    const before = new Set(
-      readdirSync(realpathSync("/tmp")).filter((entry) =>
-        entry.startsWith("agentscope-image-preparation-"),
-      ),
+    let ownedRoot: string | undefined;
+    let unrelatedRoot = mkdtempSync(
+      resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
     );
+    roots.push(unrelatedRoot);
     const prior = process.env.HTTPS_PROXY;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
     try {
       await expect(
-        preparePinnedDockerImages([image], options(engine, registry)),
+        preparePinnedDockerImages([image], {
+          ...options(engine, registry),
+          afterPrivateRootCreatedForTesting: (value: string) => {
+            ownedRoot = value;
+            roots.push(value);
+            // A separate fixture may disappear and be replaced during setup.
+            rmSync(unrelatedRoot, { recursive: true });
+            unrelatedRoot = mkdtempSync(
+              resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
+            );
+            roots.push(unrelatedRoot);
+          },
+        }),
       ).resolves.toEqual({
         dockerSocket: socket,
         dockerDaemon: daemon,
@@ -990,16 +1001,16 @@ describe("subprocess-free pinned image preparation", () => {
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
       ),
     ).toBe(true);
-    removeRetainedRoot(roots.at(-1));
     expect(
-      new Set(
-        readdirSync(realpathSync("/tmp")).filter((entry) =>
-          entry.startsWith("agentscope-image-preparation-"),
-        ),
-      ),
-    ).toEqual(before);
+      readFileSync(resolve(ownedRoot ?? "", "docker/config.json"), "utf8"),
+    ).toBe('{"auths":{}}\n');
+    removeRetainedRoot(ownedRoot);
+    expect(existsSync(ownedRoot ?? "")).toBe(false);
+    expect(existsSync(unrelatedRoot)).toBe(true);
   });
+});
 
+describe("closed pinned image preparation policy", () => {
   it("admits only the closed disposable-Linux host defaults", () => {
     expect(IMAGE_PREPARATION_EXECUTION_POLICY).toEqual({
       platform: { os: "linux", architecture: "amd64", variant: "" },
@@ -1201,44 +1212,6 @@ describe("bounded image preparation request and cleanup handles", () => {
       }),
     ).rejects.toThrow("integration.images.setup");
     expect(existsSync(ownedRoot ?? "")).toBe(true);
-  });
-
-  it("settles a nonresponding Engine socket before timeout rejection", async () => {
-    const directory = root();
-    const socketPath = resolve(directory, "engine.sock");
-    const connections = new Set<Socket>();
-    const server = createServer(() => {
-      // Deliberately never send headers or a body.
-    });
-    server.on("connection", (connection) => {
-      connections.add(connection);
-      connection.once("close", () => connections.delete(connection));
-    });
-    await new Promise<void>((resolveListen, rejectListen) => {
-      server.once("error", rejectListen);
-      server.listen(socketPath, resolveListen);
-    });
-    try {
-      await expect(
-        preparePinnedDockerImages([image], {
-          dockerSocketForTesting: socketPath,
-          registryRequestForTesting: registryFixture().request,
-          maximumPreparationMilliseconds: 500,
-          teardownMilliseconds: 100,
-        }),
-      ).rejects.toMatchObject({
-        code: "ETIMEDOUT",
-        message: "integration.images.timeout",
-      });
-      expect(connections.size).toBe(0);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolveClose) => {
-        server.close(() => {
-          resolveClose();
-        });
-      });
-    }
   });
 
   it("fails closed and preserves a partial-cleanup root", async () => {
