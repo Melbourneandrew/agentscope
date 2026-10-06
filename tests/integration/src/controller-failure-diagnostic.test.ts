@@ -23,14 +23,16 @@ const storage = {
   cleanupFails: false,
   cleanups: 0,
   created: 0,
+  cleanupDeadlines: [] as number[],
 };
 const storageDependencies = {
   createPrivateClientRoot: () => {
     storage.created += 1;
     return { root: "/synthetic-private-root" };
   },
-  cleanupPrivateClient: () => {
+  cleanupPrivateClient: (_owned: unknown, deadline: number) => {
     storage.cleanups += 1;
+    storage.cleanupDeadlines.push(deadline);
     if (storage.cleanupFails) throw new Error("SYNTHETIC-PRIVATE-CONTENT");
   },
 };
@@ -38,6 +40,7 @@ beforeEach(() => {
   storage.cleanupFails = false;
   storage.cleanups = 0;
   storage.created = 0;
+  storage.cleanupDeadlines = [];
 });
 
 const image = `registry.invalid/example@sha256:${"a".repeat(64)}`;
@@ -208,6 +211,8 @@ describe("content-free image preparation diagnostics", () => {
         cleanup: "private-cleanup-failed",
       });
       expect(storage).toMatchObject({ created: 1, cleanups: 1 });
+      expect(storage.cleanupDeadlines).toHaveLength(1);
+      expect(Number.isFinite(storage.cleanupDeadlines[0])).toBe(true);
       expect(state.admitPreparedSet).not.toHaveBeenCalled();
     },
   );

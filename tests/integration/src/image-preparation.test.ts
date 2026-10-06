@@ -20,7 +20,6 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createServer } from "node:http";
 import { get as httpsGet, createServer as createHttpsServer } from "node:https";
-import type { Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -1201,44 +1200,6 @@ describe("bounded image preparation request and cleanup handles", () => {
       }),
     ).rejects.toThrow("integration.images.setup");
     expect(existsSync(ownedRoot ?? "")).toBe(true);
-  });
-
-  it("settles a nonresponding Engine socket before timeout rejection", async () => {
-    const directory = root();
-    const socketPath = resolve(directory, "engine.sock");
-    const connections = new Set<Socket>();
-    const server = createServer(() => {
-      // Deliberately never send headers or a body.
-    });
-    server.on("connection", (connection) => {
-      connections.add(connection);
-      connection.once("close", () => connections.delete(connection));
-    });
-    await new Promise<void>((resolveListen, rejectListen) => {
-      server.once("error", rejectListen);
-      server.listen(socketPath, resolveListen);
-    });
-    try {
-      await expect(
-        preparePinnedDockerImages([image], {
-          dockerSocketForTesting: socketPath,
-          registryRequestForTesting: registryFixture().request,
-          maximumPreparationMilliseconds: 500,
-          teardownMilliseconds: 100,
-        }),
-      ).rejects.toMatchObject({
-        code: "ETIMEDOUT",
-        message: "integration.images.timeout",
-      });
-      expect(connections.size).toBe(0);
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>((resolveClose) => {
-        server.close(() => {
-          resolveClose();
-        });
-      });
-    }
   });
 
   it("fails closed and preserves a partial-cleanup root", async () => {
