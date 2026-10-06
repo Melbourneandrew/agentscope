@@ -113,6 +113,29 @@ const fixture = async () => {
   };
 };
 
+describe("management credential registry binding", () => {
+  it("rejects a structural registry clone while the four-argument factory remains usable", async () => {
+    const value = await fixture();
+    const owner = createConfigurationProcessIdentity(
+      process.pid,
+      `process-start-v1-${"b".repeat(64)}`,
+    );
+    expect(() =>
+      createConfigurationManagementRuntime(
+        registry,
+        value.store,
+        owner,
+        undefined,
+        {
+          credentialBackendRegistry: "agentscope-core",
+        },
+      ),
+    ).toThrow(ConfigurationManagementError);
+    await initializeAgentscopeConfiguration(value.runtime);
+    expect((await readConfigurationSnapshot(value.store)).generation).toBe(0);
+  });
+});
+
 const environmentReference = {
   backend: "ci-environment" as const,
   environmentVariable: "EXAMPLE_API_KEY",
