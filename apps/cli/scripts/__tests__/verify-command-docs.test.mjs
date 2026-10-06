@@ -10,7 +10,7 @@ import {
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { commandRegistry } from "../../src/command-registry.ts";
 import {
@@ -42,6 +42,7 @@ function verify(root) {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
   }
@@ -51,6 +52,8 @@ describe("CLI command lazy-import failure boundaries", () => {
   it.each(["deadline", "abort", "import-error"])(
     "refuses input/services after a %s during the actual lazy Core import",
     (failure) => {
+      vi.stubEnv("FORCE_COLOR", "1");
+      vi.stubEnv("NO_COLOR", "1");
       const result = spawnSync(
         process.execPath,
         [
@@ -96,6 +99,7 @@ describe("CLI command lazy-import failure boundaries", () => {
         ],
         {
           cwd: repositoryRoot,
+          env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: undefined },
           encoding: "utf8",
           timeout: 5_000,
           killSignal: "SIGKILL",
@@ -120,9 +124,17 @@ describe("CLI command lazy-import failure boundaries", () => {
 });
 
 describe("CLI command source-only documentation graph", () => {
-  it.each([false, true])(
-    "keeps the actual source docs graph cold (legacy edge: %s)",
-    (legacyEdge) => {
+  it.each([
+    [false, false],
+    [false, true],
+    [true, true],
+  ])(
+    "keeps the source docs graph cold (legacy edge: %s, caller color conflict: %s)",
+    (legacyEdge, colorConflict) => {
+      if (colorConflict) {
+        vi.stubEnv("FORCE_COLOR", "1");
+        vi.stubEnv("NO_COLOR", "1");
+      }
       const result = spawnSync(
         process.execPath,
         [
@@ -151,6 +163,7 @@ describe("CLI command source-only documentation graph", () => {
         ],
         {
           cwd: repositoryRoot,
+          env: { ...process.env, FORCE_COLOR: undefined, NO_COLOR: undefined },
           encoding: "utf8",
           timeout: 5_000,
           killSignal: "SIGKILL",
