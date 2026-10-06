@@ -5,6 +5,13 @@ import { performance } from "node:perf_hooks";
 import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
+  inspectionFailureStages,
+  inspectionFailure,
+  inspectionStage,
+  lifecycleFailure,
+} from "./workspace-policy-diagnostics.mjs";
+export { inspectionFailureStages };
+import {
   processAuthorityFiles,
   purePolicyFiles,
   requiredPolicyFiles,
@@ -37,46 +44,6 @@ export const childLifecycleBounds = Object.freeze({
   signalGraceMilliseconds: 100,
   teardownMilliseconds: 5_000,
 });
-export const inspectionFailureStages = Object.freeze([
-  "birth-probe-exit",
-  "birth-probe-parse",
-  "deadline-after",
-  "deadline-before",
-  "group-existence",
-  "leader-existence",
-  "observation-shape",
-  "unknown",
-]);
-
-function inspectionFailure(stage) {
-  const error = new Error("process inspection failed");
-  Object.defineProperty(error, "inspectionStage", { value: stage });
-  return error;
-}
-
-function inspectionStage(error) {
-  try {
-    if (
-      (typeof error !== "object" && typeof error !== "function") ||
-      error === null
-    )
-      return "unknown";
-    const descriptor = Object.getOwnPropertyDescriptor(
-      error,
-      "inspectionStage",
-    );
-    if (
-      descriptor === undefined ||
-      !("value" in descriptor) ||
-      !inspectionFailureStages.includes(descriptor.value)
-    )
-      return "unknown";
-    return descriptor.value;
-  } catch {
-    return "unknown";
-  }
-}
-
 function fail(message) {
   throw new Error(`workspace-policy scheduling rejected: ${message}`);
 }
@@ -459,10 +426,6 @@ export function inspectProcessAuthorityForTesting(
   return defaultLifecycle.inspect(authority, platform, hardDeadline);
 }
 
-function lifecycleFailure(reason) {
-  return new Error(`workspace-policy child containment failed: ${reason}`);
-}
-
 class ChildLifecycleController {
   constructor(resolveExecution, rejectExecution, signalHost, lifecycle) {
     this.resolveExecution = resolveExecution;
@@ -688,7 +651,9 @@ class ChildLifecycleController {
     } catch {
       // The terminal is deliberately content-free for every revocation failure.
     }
-    this.rejectExecution(lifecycleFailure("terminal containment uncertainty"));
+    this.rejectExecution(
+      this.failure ?? lifecycleFailure("terminal containment uncertainty"),
+    );
   };
 
   installHandlers() {
