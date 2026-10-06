@@ -1,0 +1,63 @@
+name: Nonpublishing release rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate-run-id:
+        description: Protected-main candidate artifact run (records are independently verified)
+        required: true
+        type: string
+      candidate-artifact-name:
+        required: true
+        type: string
+      candidate-manifest-path:
+        required: true
+        type: string
+      candidate-certification-path:
+        required: true
+        type: string
+      candidate-tarball-path:
+        required: true
+        type: string
+      rehearsal-records-path:
+        required: true
+        type: string
+      trusted-candidate-manifest-digest:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  retain-inputs:
+    if: github.repository == 'Melbourneandrew/agentscope' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.candidate-artifact-name }}
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+          path: artifacts/release-candidate
+      # Transfer inert records only. This job never executes candidate contents.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.candidate-artifact-name }}
+          path: artifacts/release-candidate
+          if-no-files-found: error
+          retention-days: 7
+  rehearse:
+    needs: retain-inputs
+    uses: ./.github/workflows/release-candidate-rehearsal.yml
+    with:
+      candidate-artifact-name: ${{ inputs.candidate-artifact-name }}
+      candidate-manifest-path: ${{ inputs.candidate-manifest-path }}
+      candidate-certification-path: ${{ inputs.candidate-certification-path }}
+      candidate-tarball-path: ${{ inputs.candidate-tarball-path }}
+      rehearsal-records-path: ${{ inputs.rehearsal-records-path }}
+      trusted-candidate-manifest-digest: ${{ inputs.trusted-candidate-manifest-digest }}

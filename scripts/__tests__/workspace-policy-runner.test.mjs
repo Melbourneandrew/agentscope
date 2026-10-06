@@ -261,7 +261,7 @@ test("the checked-in inventory is classified exactly once", () => {
     new Set([...plan.pure, ...plan.authority]).size,
     inventory.length,
   );
-  assert.ok(plan.pure.includes("workspace-policy-runner.test.mjs"));
+  assert.ok(plan.pure.includes("release-candidate-admission.test.mjs"));
   assert.deepEqual(plan.pure, purePolicyFiles);
   for (const name of processAuthorityFiles) {
     if (inventory.includes(name)) {
