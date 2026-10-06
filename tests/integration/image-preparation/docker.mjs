@@ -32,6 +32,7 @@ import {
   readImageProcessDiagnostic,
 } from "./boundary.mjs";
 import { readBuildArtifactTar } from "./build-artifact.mjs";
+import { withBuildBase } from "./build-base.mjs";
 import {
   buildArgumentsFor,
   buildPhaseFailure,
@@ -840,9 +841,11 @@ export const createDockerOperations = (state) => {
       true,
     );
     authority.currentOperationKind = "image-build";
+    options.baseInput?.validate();
     const output = await run(
       buildArgumentsFor({
         ...options,
+        baseContext: options.baseInput?.context,
         buildNetwork: authority.buildNetwork,
         buildOutput: authority.buildOutput,
         builder,
@@ -1143,50 +1146,21 @@ export const createDockerOperations = (state) => {
     }
   };
 
-  const buildPreparedDockerImage = async (
+  const executePreparedBuild = async (
     client,
-    {
+    options,
+    policy,
+    archive,
+    baseInput,
+  ) => {
+    const {
       buildArguments,
-      buildNetwork,
-      buildOutput,
-      afterBuildContextEntryForTesting,
-      context,
       dockerfile,
       labels,
-      maximumMilliseconds,
-      maximumBuildContextBytes,
-      retirementRequired = false,
+      retirementRequired,
       signal,
       tag,
-    },
-  ) => {
-    const selectedNetwork = selectBuildNetwork(buildNetwork);
-    const selectedOutput = selectBuildOutput(buildOutput);
-    if (
-      !state.clientIsUsable(client) ||
-      !validBuildInput({
-        context,
-        dockerfile,
-        tag,
-        buildArguments,
-        labels,
-        retirementRequired,
-        buildOutput: selectedOutput,
-      }) ||
-      state.pendingCount(client) !== 0
-    )
-      throw fixedError("integration.images.build.input");
-    state.clearDiagnostic(client);
-    const policy = imageBuildPolicy(
-      client.evidence.images[0].image,
-      maximumMilliseconds,
-    );
-    const archive = createBuildArchive(context, {
-      afterEntryForTesting: afterBuildContextEntryForTesting,
-      deadline: policy.workDeadline,
-      maximumBytes: maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
-      signal,
-    });
+    } = options;
     let authority;
     try {
       authority = await createBuildAuthority(
@@ -1194,7 +1168,10 @@ export const createDockerOperations = (state) => {
         policy,
         signal,
         labels["com.agentscope.integration.run"],
-        { buildNetwork: selectedNetwork, buildOutput: selectedOutput },
+        {
+          buildNetwork: options.buildNetwork,
+          buildOutput: options.buildOutput,
+        },
       );
     } catch (error) {
       throw buildPhaseFailure(error, "authority", [
@@ -1208,7 +1185,7 @@ export const createDockerOperations = (state) => {
     try {
       built = await executeBuilderBuild(
         authority,
-        { buildArguments, dockerfile, labels, tag },
+        { buildArguments, dockerfile, labels, tag, baseInput },
         archive,
       );
     } catch (error) {
@@ -1250,6 +1227,78 @@ export const createDockerOperations = (state) => {
       tag,
       labels,
     });
+  };
+
+  const buildPreparedDockerImage = async (
+    client,
+    {
+      baseImage,
+      buildArguments,
+      buildNetwork,
+      buildOutput,
+      afterBuildContextEntryForTesting,
+      context,
+      dockerfile,
+      labels,
+      maximumMilliseconds,
+      maximumBuildContextBytes,
+      retirementRequired = false,
+      signal,
+      tag,
+    },
+  ) => {
+    const options = {
+      baseImage,
+      buildArguments,
+      buildNetwork: selectBuildNetwork(buildNetwork),
+      buildOutput: selectBuildOutput(buildOutput),
+      afterBuildContextEntryForTesting,
+      context,
+      dockerfile,
+      labels,
+      maximumMilliseconds,
+      maximumBuildContextBytes,
+      retirementRequired,
+      signal,
+      tag,
+    };
+    if (
+      !state.clientIsUsable(client) ||
+      !validBuildInput(options) ||
+      state.pendingCount(client) !== 0 ||
+      (options.baseImage !== undefined &&
+        (options.baseImage !==
+          "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2" ||
+          options.buildNetwork !== "none"))
+    )
+      throw fixedError("integration.images.build.input");
+    state.clearDiagnostic(client);
+    const policy = imageBuildPolicy(
+      client.evidence.images[0].image,
+      options.maximumMilliseconds,
+    );
+    const archive = createBuildArchive(options.context, {
+      afterEntryForTesting: options.afterBuildContextEntryForTesting,
+      deadline: policy.workDeadline,
+      maximumBytes:
+        options.maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
+      signal: options.signal,
+    });
+    if (options.baseImage === undefined)
+      return executePreparedBuild(client, options, policy, archive, undefined);
+    return withBuildBase(
+      {
+        client,
+        context: options.context,
+        policy,
+        signal: options.signal,
+        baseImage: options.baseImage,
+      },
+      (baseInput) =>
+        executePreparedBuild(client, options, policy, archive, baseInput),
+      () => state.markUncertain(client),
+      () => state.clientIsUsable(client),
+    );
   };
 
   return Object.freeze({

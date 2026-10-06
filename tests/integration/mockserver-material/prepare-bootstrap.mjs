@@ -160,8 +160,7 @@ const contextFiles = (kind, objects) => ({
       : objects.archives[kind],
   "Verifier.Dockerfile": Buffer.from(
     [
-      "ARG BASE_IMAGE",
-      "FROM ${BASE_IMAGE}",
+      "FROM agentscope_base",
       "WORKDIR /verify",
       "COPY --chmod=0600 . /verify/",
       `RUN --network=none ${JSON.stringify(["/usr/local/bin/node", "/verify/material-command.mjs", "bootstrap-gpg", "/verify"])}`,
@@ -239,7 +238,8 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
   const tag = `agentscope-bootstrap:${runId}-${kind}`;
   publishMaterialResearchPhase(`verify-${kind}`);
   const imageId = await buildPreparedDockerImage(dockerClient, {
-    buildArguments: { BASE_IMAGE: base },
+    buildArguments: {},
+    baseImage: base,
     buildNetwork: "none",
     context,
     dockerfile: "Verifier.Dockerfile",

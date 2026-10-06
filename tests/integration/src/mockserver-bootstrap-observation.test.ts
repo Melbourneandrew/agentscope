@@ -189,7 +189,7 @@ const builderReplay = (settings: {
     source.indexOf("  const captureFirstBuildFailure ="),
     source.indexOf("  const finalizeBuildResult ="),
   );
-  const start = source.indexOf("  const buildPreparedDockerImage = async (");
+  const start = source.indexOf("  const executePreparedBuild = async (");
   const build = source.slice(
     start,
     source.indexOf("\n  return Object.freeze({", start),

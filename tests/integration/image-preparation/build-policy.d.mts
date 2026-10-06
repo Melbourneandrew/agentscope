@@ -31,6 +31,7 @@ export declare const buildArgumentsFor: (
     buildArguments: Readonly<Record<string, string>>;
     buildNetwork: BuildNetwork;
     buildOutput?: BuildOutput;
+    baseContext?: string;
     builder: string;
     dockerfile: string;
     labels: Readonly<Record<string, string>>;

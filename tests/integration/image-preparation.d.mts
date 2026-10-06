@@ -242,6 +242,7 @@ export declare const buildPreparedDockerImage: <
     buildArguments: Readonly<Record<string, string>>;
     buildNetwork?: "default" | "none";
     buildOutput?: Output;
+    baseImage?: "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
     afterBuildContextEntryForTesting?: (entryCount: number) => void;
     context: string;
     dockerfile: string;

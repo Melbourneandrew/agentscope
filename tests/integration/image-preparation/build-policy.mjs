@@ -115,6 +115,7 @@ export const buildArgumentsFor = ({
   buildArguments,
   buildNetwork,
   buildOutput,
+  baseContext,
   builder,
   dockerfile,
   labels,
@@ -142,6 +143,8 @@ export const buildArgumentsFor = ({
   ];
   // Re-running RUN steps is necessary, but not sufficient, for offline proof.
   if (network === "none") result.push("--no-cache");
+  if (baseContext !== undefined)
+    result.push("--build-context", `agentscope_base=${baseContext}`);
   for (const [name, value] of Object.entries(buildArguments).sort())
     result.push("--build-arg", `${name}=${value}`);
   for (const [name, value] of Object.entries(labels).sort())

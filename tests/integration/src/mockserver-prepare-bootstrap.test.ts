@@ -271,6 +271,9 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
     for (const build of state.built) {
       expect(build.maximumBuildContextBytes).toBe(384 * 1024 * 1024);
       expect(build.buildNetwork).toBe("none");
+      expect(build.baseImage).toBe(state.client.evidence.images[0]!.image);
+      expect(build.buildArguments).toEqual({});
+      expect(build.dockerfileText).toMatch(/^FROM agentscope_base\n/u);
       expect(build.dockerfileText).toContain("COPY --chmod=0600");
       expect(build.dockerfileText).toContain("RUN --network=none");
       expect(build.files).toEqual([
