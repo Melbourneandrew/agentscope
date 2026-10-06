@@ -385,6 +385,19 @@ jobs:
           OBSERVED_ENTERED: ${{ steps.research_packet.outputs.shell_entered }}
           OBSERVED_COMMAND_STATUS: ${{ steps.research_packet.outputs.command_status }}
           OBSERVED_SHELL_STATUS: ${{ steps.research_packet.outputs.shell_status }}
+          OBSERVED_SUPERVISOR: ${{ steps.research_packet.outputs.supervisor_observation }}
+          OBSERVED_SUPERVISOR_CODE: ${{ steps.research_packet.outputs.supervisor_code }}
+          OBSERVED_SUPERVISOR_SIGNAL: ${{ steps.research_packet.outputs.supervisor_signal }}
+          OBSERVED_CONTAINED: ${{ steps.research_packet.outputs.supervisor_contained }}
+          OBSERVED_RESIDUAL: ${{ steps.research_packet.outputs.supervisor_residual }}
+          OBSERVED_TERMINATION: ${{ steps.research_packet.outputs.supervisor_termination }}
+          OBSERVED_WITHIN_DEADLINE: ${{ steps.research_packet.outputs.supervisor_within_deadline }}
+          OBSERVED_FAILURE: ${{ steps.research_packet.outputs.controller_failure }}
+          OBSERVED_STAGE: ${{ steps.research_packet.outputs.controller_stage }}
+          OBSERVED_KIND: ${{ steps.research_packet.outputs.controller_kind }}
+          OBSERVED_CLEANUP: ${{ steps.research_packet.outputs.controller_cleanup }}
+          OBSERVED_PULL_TRIGGER: ${{ steps.research_packet.outputs.controller_pull_trigger }}
+          OBSERVED_RECONCILIATION: ${{ steps.research_packet.outputs.controller_reconciliation }}
         run: |
           outcome=unknown
           case "$OBSERVED_OUTCOME" in success|failure|cancelled|skipped) outcome="$OBSERVED_OUTCOME" ;; esac
@@ -397,6 +410,26 @@ jobs:
           observation="integration.mockserver-research.shell-observation outcome=$outcome shell_entered=$entered command_status=$command_status shell_status=$shell_status"
           ( printf '%s\n' "$observation" ) || :
           { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
+          supervisor=unknown; supervisor_code=unknown; supervisor_signal=unknown; contained=unknown; residual=unknown; termination=unknown; within_deadline=unknown
+          failure=unknown; stage=unknown; kind=unknown; cleanup=unknown; trigger=unknown; reconciliation=unknown
+          case "$OBSERVED_SUPERVISOR" in terminal|rejected) supervisor="$OBSERVED_SUPERVISOR" ;; esac
+          if [[ "$OBSERVED_SUPERVISOR_CODE" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SUPERVISOR_CODE <= 255 )); then supervisor_code="$OBSERVED_SUPERVISOR_CODE"; fi
+          case "$OBSERVED_SUPERVISOR_SIGNAL" in none|SIGTERM|SIGKILL|SIGINT|SIGABRT|SIGSEGV|SIGBUS|SIGILL|SIGFPE|SIGHUP|SIGQUIT|SIGPIPE) supervisor_signal="$OBSERVED_SUPERVISOR_SIGNAL" ;; esac
+          case "$OBSERVED_CONTAINED" in true|false) contained="$OBSERVED_CONTAINED" ;; esac
+          case "$OBSERVED_RESIDUAL" in true|false) residual="$OBSERVED_RESIDUAL" ;; esac
+          case "$OBSERVED_TERMINATION" in true|false) termination="$OBSERVED_TERMINATION" ;; esac
+          case "$OBSERVED_WITHIN_DEADLINE" in true|false) within_deadline="$OBSERVED_WITHIN_DEADLINE" ;; esac
+          case "$OBSERVED_FAILURE" in integration.controller.failed|integration.controller.retire-outer-host) failure="$OBSERVED_FAILURE" ;; esac
+          case "$OBSERVED_STAGE" in clean|maintainArtifacts|prepareCandidate|prepareImages|prepareModelRoutes|runScenarios|select) stage="$OBSERVED_STAGE" ;; esac
+          case "$OBSERVED_KIND" in operation-grace-unsettled|pull-outcome-unknown|preparation-failed) kind="$OBSERVED_KIND" ;; esac
+          case "$OBSERVED_CLEANUP" in none|failed|not-attempted) cleanup="$OBSERVED_CLEANUP" ;; esac
+          case "$OBSERVED_PULL_TRIGGER" in abort|timeout|transport|unexpected-status|empty-events|malformed-event|daemon-error-event) trigger="$OBSERVED_PULL_TRIGGER" ;; esac
+          case "$OBSERVED_RECONCILIATION" in completed|failed|not-attempted) reconciliation="$OBSERVED_RECONCILIATION" ;; esac
+          if [[ "$supervisor" != unknown || "$failure" != unknown ]]; then
+            observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation"
+            ( printf '%s\n' "$observation" ) || :
+            { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
+          fi
       - name: Upload bounded research observations only
         if: success() && steps.research_packet.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

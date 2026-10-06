@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { runSupervisedProcess } from "./supervisor.mjs";
+import { publishSupervisorObservation } from "./controller-file-command.mjs";
 import { mockServerResearchStopFitsTerminalObservation } from "./dist/mockserver-research-request.js";
 
 const defaultMaximumControllerMilliseconds = 24 * 60 * 1000;
@@ -23,59 +24,75 @@ if (suppliedOuterDeadline !== undefined) {
 if (maximumControllerMilliseconds < 2 * 60 * 1000)
   throw new Error("integration.controller.outer-deadline");
 
-const result = await runSupervisedProcess({
-  environment: process.env,
-  executable: process.execPath,
-  arguments_: [resolve(import.meta.dirname, "controller-process.mjs")],
-  maximumMilliseconds: maximumControllerMilliseconds,
-});
-if (mockServerResearchStopFitsTerminalObservation(result)) {
-  process.exitCode = 3;
-} else if (
-  result.code !== 0 ||
-  !result.contained ||
-  result.residualWorkObserved
-) {
-  process.stderr.write(
-    `${result.contained && !result.residualWorkObserved ? "integration.controller.failed" : "integration.controller.containment"}\n`,
-  );
-  process.exitCode =
-    result.code === 0 || result.code === 3 ? 1 : (result.code ?? 1);
-}
-// Optional content-free diagnostics cannot replace the settled outcome.
+let result;
 try {
-  process.stdout.once("error", () => undefined);
-  process.stdout.write(
-    `${JSON.stringify({
-      kind: "integration.controller.supervised-terminal",
-      code:
-        Number.isInteger(result.code) && result.code >= 0 && result.code <= 255
-          ? result.code
-          : null,
-      signal: [
-        "SIGTERM",
-        "SIGKILL",
-        "SIGINT",
-        "SIGABRT",
-        "SIGSEGV",
-        "SIGBUS",
-        "SIGILL",
-        "SIGFPE",
-        "SIGHUP",
-        "SIGQUIT",
-        "SIGPIPE",
-      ].includes(result.signal)
-        ? result.signal
-        : result.signal === null
-          ? null
-          : "unknown",
-      contained: result.contained === true,
-      residualWorkObserved: result.residualWorkObserved === true,
-      terminationInitiated: result.terminationInitiated === true,
-      completedWithinDeadline: result.completedWithinDeadline === true,
-    })}\n`,
-    () => undefined,
-  );
+  result = await runSupervisedProcess({
+    environment: process.env,
+    executable: process.execPath,
+    arguments_: [resolve(import.meta.dirname, "controller-process.mjs")],
+    maximumMilliseconds: maximumControllerMilliseconds,
+  });
 } catch {
-  // Missing diagnostics remain unknown, never successful-retirement evidence.
+  publishSupervisorObservation(undefined);
+  process.exitCode = 1;
+}
+if (result !== undefined) {
+  publishSupervisorObservation(result);
+  if (mockServerResearchStopFitsTerminalObservation(result)) {
+    process.exitCode = 3;
+  } else if (
+    result.code !== 0 ||
+    !result.contained ||
+    result.residualWorkObserved
+  ) {
+    try {
+      process.stderr.once("error", () => undefined);
+      process.stderr.write(
+        `${result.contained && !result.residualWorkObserved ? "integration.controller.failed" : "integration.controller.containment"}\n`,
+      );
+    } catch {
+      /* Optional output cannot change the settled result. */
+    }
+    process.exitCode =
+      result.code === 0 || result.code === 3 ? 1 : (result.code ?? 1);
+  }
+  // Optional content-free diagnostics cannot replace the settled outcome.
+  try {
+    process.stdout.once("error", () => undefined);
+    process.stdout.write(
+      `${JSON.stringify({
+        kind: "integration.controller.supervised-terminal",
+        code:
+          Number.isInteger(result.code) &&
+          result.code >= 0 &&
+          result.code <= 255
+            ? result.code
+            : null,
+        signal: [
+          "SIGTERM",
+          "SIGKILL",
+          "SIGINT",
+          "SIGABRT",
+          "SIGSEGV",
+          "SIGBUS",
+          "SIGILL",
+          "SIGFPE",
+          "SIGHUP",
+          "SIGQUIT",
+          "SIGPIPE",
+        ].includes(result.signal)
+          ? result.signal
+          : result.signal === null
+            ? null
+            : "unknown",
+        contained: result.contained === true,
+        residualWorkObserved: result.residualWorkObserved === true,
+        terminationInitiated: result.terminationInitiated === true,
+        completedWithinDeadline: result.completedWithinDeadline === true,
+      })}\n`,
+      () => undefined,
+    );
+  } catch {
+    // Missing diagnostics remain unknown, never successful-retirement evidence.
+  }
 }

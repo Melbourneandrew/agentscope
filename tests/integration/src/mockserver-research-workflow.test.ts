@@ -123,6 +123,30 @@ describe("actual research workflow shell file commands", () => {
         "${{ steps.research_packet.outputs.command_status }}",
       OBSERVED_SHELL_STATUS:
         "${{ steps.research_packet.outputs.shell_status }}",
+      OBSERVED_SUPERVISOR:
+        "${{ steps.research_packet.outputs.supervisor_observation }}",
+      OBSERVED_SUPERVISOR_CODE:
+        "${{ steps.research_packet.outputs.supervisor_code }}",
+      OBSERVED_SUPERVISOR_SIGNAL:
+        "${{ steps.research_packet.outputs.supervisor_signal }}",
+      OBSERVED_CONTAINED:
+        "${{ steps.research_packet.outputs.supervisor_contained }}",
+      OBSERVED_RESIDUAL:
+        "${{ steps.research_packet.outputs.supervisor_residual }}",
+      OBSERVED_TERMINATION:
+        "${{ steps.research_packet.outputs.supervisor_termination }}",
+      OBSERVED_WITHIN_DEADLINE:
+        "${{ steps.research_packet.outputs.supervisor_within_deadline }}",
+      OBSERVED_FAILURE:
+        "${{ steps.research_packet.outputs.controller_failure }}",
+      OBSERVED_STAGE: "${{ steps.research_packet.outputs.controller_stage }}",
+      OBSERVED_KIND: "${{ steps.research_packet.outputs.controller_kind }}",
+      OBSERVED_CLEANUP:
+        "${{ steps.research_packet.outputs.controller_cleanup }}",
+      OBSERVED_PULL_TRIGGER:
+        "${{ steps.research_packet.outputs.controller_pull_trigger }}",
+      OBSERVED_RECONCILIATION:
+        "${{ steps.research_packet.outputs.controller_reconciliation }}",
     });
     const upload = steps.at(-1)!;
     expect(upload.if).toBe(
@@ -257,6 +281,46 @@ describe("closed-reader causal seed", () => {
 });
 
 describe("closed always-after projection", () => {
+  it("projects file-command controller observations despite prior unavailable stdout", () => {
+    const summary = resolve(root(), "summary");
+    const result = shell(projection.run!, {
+      OBSERVED_SUPERVISOR: "terminal",
+      OBSERVED_SUPERVISOR_CODE: "1",
+      OBSERVED_CONTAINED: "true",
+      OBSERVED_RESIDUAL: "false",
+      OBSERVED_FAILURE: "integration.controller.retire-outer-host",
+      OBSERVED_STAGE: "prepareImages",
+      OBSERVED_KIND: "pull-outcome-unknown",
+      OBSERVED_CLEANUP: "not-attempted",
+      OBSERVED_PULL_TRIGGER: "timeout",
+      OBSERVED_RECONCILIATION: "failed",
+      GITHUB_STEP_SUMMARY: summary,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "supervisor=terminal code=1 signal=unknown contained=true residual=false",
+    );
+    expect(result.stdout).toContain(
+      "failure=integration.controller.retire-outer-host stage=prepareImages kind=pull-outcome-unknown cleanup=not-attempted trigger=timeout reconciliation=failed",
+    );
+    expect(readFileSync(summary, "utf8")).toBe(result.stdout);
+  });
+  it("rejects injected controller observations and preserves diagnostic-only success", () => {
+    const result = shell(projection.run!, {
+      OBSERVED_SUPERVISOR: "rejected",
+      OBSERVED_SUPERVISOR_CODE: "03",
+      OBSERVED_CONTAINED: "true\nCANARY",
+      OBSERVED_FAILURE: "$(exit 8)",
+      OBSERVED_STAGE: "CANARY",
+      GITHUB_STEP_SUMMARY: root(),
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "supervisor=rejected code=unknown signal=unknown contained=unknown",
+    );
+    expect(result.stdout).not.toContain("CANARY");
+    expect(result.stdout).not.toContain("$(exit");
+  });
   it("does not block upload when its real stdout reader is closed", async () => {
     const summary = resolve(root(), "summary");
     expect(

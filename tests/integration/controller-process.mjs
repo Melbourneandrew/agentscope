@@ -1,10 +1,20 @@
 import { executeIntegrationController } from "./dist/controller.js";
-import { formatControllerFailureDiagnostic } from "./dist/controller-failure-diagnostic.js";
+import {
+  formatControllerFailureDiagnostic,
+  readControllerFailureDiagnostic,
+} from "./dist/controller-failure-diagnostic.js";
+import { publishControllerFailureObservation } from "./controller-file-command.mjs";
 
 try {
   const disposition = await executeIntegrationController();
   if (disposition === "mockserver-research-complete") process.exitCode = 3;
 } catch (error) {
-  process.stderr.write(formatControllerFailureDiagnostic(error));
+  publishControllerFailureObservation(readControllerFailureDiagnostic(error));
+  try {
+    process.stderr.once("error", () => undefined);
+    process.stderr.write(formatControllerFailureDiagnostic(error));
+  } catch {
+    /* Optional diagnostics never replace failure status. */
+  }
   process.exit(1);
 }
