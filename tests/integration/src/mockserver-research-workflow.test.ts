@@ -390,7 +390,7 @@ describe("closed always-after projection", () => {
       OBSERVED_PULL_TRIGGER: "timeout",
       OBSERVED_RECONCILIATION: "failed",
       OBSERVED_MATERIAL_PHASE: "verify-maven",
-      OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: "signature-time",
+      OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: "signature-recordset-information",
       OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: "signature-policy",
       GITHUB_STEP_SUMMARY: summary,
     });
@@ -403,7 +403,9 @@ describe("closed always-after projection", () => {
     );
     expect(readFileSync(summary, "utf8")).toBe(result.stdout);
     expect(result.stdout).toContain("material_phase=verify-maven");
-    expect(result.stdout).toContain("untrusted_bootstrap_stage=signature-time");
+    expect(result.stdout).toContain(
+      "untrusted_bootstrap_stage=signature-recordset-information",
+    );
   });
   it("rejects injected controller observations and preserves diagnostic-only success", () => {
     const result = shell(projection.run!, {

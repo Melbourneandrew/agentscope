@@ -150,6 +150,9 @@ describe("optional closed controller file commands", () => {
 describe("signature-policy substage projection", () => {
   it.each([
     "recordset",
+    "recordset-information",
+    "recordset-rejection",
+    "recordset-unknown",
     "count",
     "compliance",
     "signer",

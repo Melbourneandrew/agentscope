@@ -156,7 +156,53 @@ describe("actual bootstrap run body observations (no GPG execution)", () => {
 describe("fixed signature-policy substages (untrusted observations only)", () => {
   const valid = status(policies[0][1], "10", "00");
   it.each([
-    ["recordset", valid + "[GNUPG:] BADSIG CANARY\n"],
+    [
+      "information",
+      ["NOTATION_NAME", "NOTATION_FLAGS", "NOTATION_DATA", "POLICY_URL"],
+    ],
+    [
+      "rejection",
+      [
+        "BADSIG",
+        "ERRSIG",
+        "EXPSIG",
+        "EXPKEYSIG",
+        "REVKEYSIG",
+        "NO_PUBKEY",
+        "KEYEXPIRED",
+        "KEYREVOKED",
+        "SIGEXPIRED",
+      ],
+    ],
+    ["unknown", ["UNKNOWN_CANARY", "", "NOTATION_NAME_CANARY"]],
+  ] as const)(
+    "still rejects every %s record without disclosing its payload",
+    (category, tokens) => {
+      for (const token of tokens) {
+        const entered: string[] = [];
+        const text =
+          valid +
+          `[GNUPG:] ${token} SECRET_CANARY\n[GNUPG:] BADSIG SECOND_CANARY\n`;
+        for (const sinkThrows of [false, true]) {
+          expect(() =>
+            statusVerifier()("maven", text, now, (stage) => {
+              entered.push(stage);
+              if (stage === `signature-recordset-${category}` && sinkThrows)
+                throw new Error("optional-sink-canary");
+            }),
+          ).toThrow("integration.mockserver-material.bootstrap-gpg");
+        }
+        expect(entered.at(-1)).toBe(`signature-recordset-${category}`);
+        expect(entered.join(" ")).not.toContain("CANARY");
+        for (const kind of ["maven", "node", "jdk"] as const)
+          expect(() => verifyBootstrapGpgStatus(kind, text, now)).toThrow(
+            "integration.mockserver-material.bootstrap-gpg",
+          );
+      }
+    },
+  );
+  it.each([
+    ["recordset-rejection", valid + "[GNUPG:] BADSIG CANARY\n"],
     ["count", valid.replace("[GNUPG:] GOODSIG", "ignored GOODSIG")],
     ["compliance", valid + "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 8\n"],
     ["signer", valid.replace(policies[0][1], "A".repeat(40))],

@@ -11,6 +11,9 @@ const observe = (chunks: readonly string[]) => {
 const absent = { stderrClass: "unknown" };
 const signatureStages = [
   "recordset",
+  "recordset-information",
+  "recordset-rejection",
+  "recordset-unknown",
   "count",
   "compliance",
   "signer",

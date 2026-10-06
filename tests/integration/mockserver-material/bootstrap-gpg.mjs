@@ -159,6 +159,32 @@ const seconds = (value) => {
   return number;
 };
 
+// GnuPG doc/DETAILS at 7eea4e5ff901f45830910fc3ccde009298ae5175.
+// Category is diagnostic only; even informational records remain rejected.
+const rejectedStatusCategory = (token) => {
+  if (
+    ["NOTATION_NAME", "NOTATION_FLAGS", "NOTATION_DATA", "POLICY_URL"].includes(
+      token,
+    )
+  )
+    return "information";
+  if (
+    [
+      "BADSIG",
+      "ERRSIG",
+      "EXPSIG",
+      "EXPKEYSIG",
+      "REVKEYSIG",
+      "NO_PUBKEY",
+      "KEYEXPIRED",
+      "KEYREVOKED",
+      "SIGEXPIRED",
+    ].includes(token)
+  )
+    return "rejection";
+  return "unknown";
+};
+
 const verifyStatus = (kind, output, nowSeconds, enter) => {
   const policy = policyFor(kind);
   if (
@@ -185,7 +211,16 @@ const verifyStatus = (kind, output, nowSeconds, enter) => {
     "PLAINTEXT_LENGTH",
     "VERIFICATION_COMPLIANCE_MODE",
   ]);
-  if (records.some((line) => !permitted.has(line.split(" ")[1]))) fail();
+  const rejected = records.find((line) => !permitted.has(line.split(" ")[1]));
+  if (rejected !== undefined) {
+    const category = rejectedStatusCategory(rejected.split(" ")[1]);
+    try {
+      enter(`signature-recordset-${category}`, "signature-policy");
+    } catch {
+      // Optional diagnostic failure cannot replace the original refusal.
+    }
+    fail();
+  }
   enter("signature-count", "signature-policy");
   const valid = records.filter((line) => line.startsWith("[GNUPG:] VALIDSIG "));
   const good = records.filter((line) => line.startsWith("[GNUPG:] GOODSIG "));
