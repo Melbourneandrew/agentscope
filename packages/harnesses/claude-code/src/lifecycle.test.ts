@@ -366,17 +366,21 @@ describe("Claude Code owned lifecycle", () => {
     expect(parseRecord(uninstalledText).theme).toBe("dark");
   });
 
-  it("installs every governed lifecycle event with zero external arguments", () => {
+  it("installs the four owned events with zero external arguments", () => {
     const decision = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
       emptyInventory(false),
     )(target());
     const text = decisionText(decision);
-    for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
+    for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS.filter(
+      (event) => event !== "SessionEnd",
+    )) {
       expect(text).toContain(`"${event}"`);
     }
     expect(text).toContain('"args": []');
+    expect(text).not.toContain('"SessionEnd"');
+    expect(text).toContain('"timeout": 4');
     expect(installedHookCommand(text)).toBe(invocation.launcherPath);
   });
 
@@ -2173,56 +2177,36 @@ describe("Claude Code hook mutation reconstruction", () => {
 
 describe("Claude Code hostile hook ownership state", () => {
   it("rejects partial, tampered, and duplicate ownership", () => {
-    expect(
-      createClaudeCodeInstallationPlanner(
-        "install",
-        invocation,
-        emptyInventory(),
-      )(
-        target(
-          JSON.stringify({
-            hooks: {
-              SessionStart: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: invocation.launcherPath,
-                      args: [],
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
+    const install = createClaudeCodeInstallationPlanner(
+      "install",
+      invocation,
+      emptyInventory(),
+    );
+    for (const [event, args] of [
+      ["SessionStart", []],
+      ["Stop", ["tampered"]],
+    ] as const)
+      expect(
+        install(
+          target(
+            JSON.stringify({
+              hooks: {
+                [event]: [
+                  {
+                    hooks: [
+                      {
+                        type: "command",
+                        command: invocation.launcherPath,
+                        args,
+                      },
+                    ],
+                  },
+                ],
+              },
+            }),
+          ),
         ),
-      ),
-    ).toEqual({ kind: "conflict" });
-    expect(
-      createClaudeCodeInstallationPlanner(
-        "install",
-        invocation,
-        emptyInventory(),
-      )(
-        target(
-          JSON.stringify({
-            hooks: {
-              Stop: [
-                {
-                  hooks: [
-                    {
-                      type: "command",
-                      command: invocation.launcherPath,
-                      args: ["tampered"],
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        ),
-      ),
-    ).toEqual({ kind: "conflict" });
+      ).toEqual({ kind: "conflict" });
     expect(
       createClaudeCodeInstallationPlanner(
         "migrate",
@@ -2258,7 +2242,7 @@ describe("Claude Code hostile hook ownership state", () => {
 
     const partialSettings = parseRecord(installed);
     const partialHooks = parseRecord(JSON.stringify(partialSettings.hooks));
-    delete partialHooks.SessionEnd;
+    delete partialHooks.Stop;
     partialSettings.hooks = partialHooks;
     expect(
       createClaudeCodeInstallationPlanner(
