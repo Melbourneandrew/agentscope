@@ -19,6 +19,10 @@ import {
   decodeCodexRootHookInput,
   mapCodexRootHookCapture,
 } from "@agentscope/harness-codex";
+import {
+  decodeClaudeCodeRootHookInput,
+  mapClaudeCodeRootHookCapture,
+} from "@agentscope/harness-claude-code";
 import { bindLocalSqliteProductionReporterHome } from "@agentscope/destination-local-sqlite";
 
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
@@ -34,15 +38,39 @@ type ProductHookInput = {
   launcher: Readonly<{ harnessType: string; homeRoot: string }>;
 };
 
-const runProductCodexHookEvidenceWith = async (
+const projectHookEvidence = (input: ProductHookInput) => {
+  if (input.launcher.harnessType === "@agentscope/harness-codex") {
+    const hook = decodeCodexRootHookInput(input.evidence);
+    return hook.eventName === "Stop"
+      ? {
+          harnessRegistryId: "codex" as const,
+          operationIdScope: "session-global" as const,
+          workspacePath: hook.workspacePath,
+          capture: () => mapCodexRootHookCapture(hook),
+        }
+      : undefined;
+  }
+  if (input.launcher.harnessType === "@agentscope/harness-claude-code") {
+    const hook = decodeClaudeCodeRootHookInput(input.evidence);
+    // Recognition of a historical payload is not installation eligibility.
+    if (hook.eventName === "SessionEnd") throw new Error("cli.hook.invalid");
+    return {
+      harnessRegistryId: "claude-code" as const,
+      operationIdScope: "parent-scoped" as const,
+      workspacePath: hook.workspacePath,
+      capture: () => mapClaudeCodeRootHookCapture(hook),
+    };
+  }
+  throw new Error("cli.hook.invalid");
+};
+
+const runProductHookEvidenceWith = async (
   input: ProductHookInput,
   environment: Readonly<Record<string, string | undefined>>,
   transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"],
 ): Promise<void> => {
-  if (input.launcher.harnessType !== "@agentscope/harness-codex")
-    throw new Error("cli.hook.invalid");
-  const hook = decodeCodexRootHookInput(input.evidence);
-  if (hook.eventName !== "Stop") return;
+  const hook = projectHookEvidence(input);
+  if (hook === undefined) return;
   const home = resolveOwnedHookHomeForCli(input.hookEntryAuthority);
   if (home.root !== input.launcher.homeRoot)
     throw new Error("cli.hook.invalid");
@@ -61,14 +89,14 @@ const runProductCodexHookEvidenceWith = async (
       createProductCredentialBackendRegistry(environment),
     transportExecutor,
     policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
-    harnessRegistryId: "codex",
+    harnessRegistryId: hook.harnessRegistryId,
     harnessVersion: {
       state: "unavailable",
       reason: "not-emitted",
       source: "process",
     },
     hookObservedUnixNano: String(BigInt(Date.now()) * 1_000_000n),
-    operationIdScope: "session-global",
+    operationIdScope: hook.operationIdScope,
     workspaceCandidates: Object.freeze([
       Object.freeze({ path: hook.workspacePath, source: "hook-payload" }),
     ]),
@@ -77,27 +105,27 @@ const runProductCodexHookEvidenceWith = async (
         ? "C:\\Program Files\\Git\\cmd\\git.exe"
         : "/usr/bin/git",
     hookEntryAuthority: input.hookEntryAuthority,
-    capture: (factory) => factory.capture(mapCodexRootHookCapture(hook)),
+    capture: (factory) => factory.capture(hook.capture()),
   });
 };
 
-export const runProductCodexHookEvidence = (
+export const runProductHookEvidence = (
   input: ProductHookInput,
 ): Promise<void> =>
-  runProductCodexHookEvidenceWith(
+  runProductHookEvidenceWith(
     input,
     process.env,
     productionDestinationTransportExecutor,
   );
 
-export const runProductCodexHookEvidenceForTesting = (
+export const runProductHookEvidenceForTesting = (
   input: ProductHookInput,
   options: Readonly<{
     environment: Readonly<Record<string, string | undefined>>;
     transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
   }>,
 ): Promise<void> =>
-  runProductCodexHookEvidenceWith(
+  runProductHookEvidenceWith(
     input,
     options.environment,
     options.transportExecutor,
