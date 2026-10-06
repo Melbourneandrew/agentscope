@@ -19,16 +19,64 @@ export function createWorkspaceCleanupFixture(repositoryRoot) {
   const identity = lstatSync(root);
   const workspaceDirectory = join(root, "packages/protocol");
   const cleaner = join(root, "scripts/clean-workspace.mjs");
-  mkdirSync(workspaceDirectory, { recursive: true });
-  mkdirSync(join(root, "scripts"));
-  writeFileSync(
-    cleaner,
-    readFileSync(join(repositoryRoot, "scripts/clean-workspace.mjs")),
-  );
-  writeFileSync(
-    join(root, "scripts/workspace-packages.mjs"),
-    'export const expectedWorkspacePackages = new Map([["packages/protocol", "@agentscope/protocol"]]);\n',
-  );
+  function cleanup() {
+    const current = lstatSync(root);
+    assert.ok(
+      current.isDirectory() &&
+        current.dev === identity.dev &&
+        current.ino === identity.ino &&
+        current.mode === identity.mode,
+      "cleanup fixture root identity changed",
+    );
+    let count = 0;
+    let bytes = 0;
+    function inspect(directory) {
+      for (const name of readdirSync(directory)) {
+        assert.ok(++count <= 32, "cleanup fixture member bound");
+        const path = join(directory, name);
+        const stat = lstatSync(path);
+        if (stat.isDirectory()) inspect(path);
+        else {
+          assert.ok(
+            stat.isFile() || stat.isSymbolicLink(),
+            "cleanup fixture member type",
+          );
+          bytes += stat.size;
+          assert.ok(bytes <= 64 * 1024, "cleanup fixture byte bound");
+        }
+      }
+    }
+    inspect(root);
+    rmSync(root, { recursive: true });
+  }
+  try {
+    mkdirSync(workspaceDirectory, { recursive: true });
+    mkdirSync(join(root, "scripts"));
+    writeFileSync(
+      cleaner,
+      readFileSync(join(repositoryRoot, "scripts/clean-workspace.mjs")),
+    );
+    writeFileSync(
+      join(root, "scripts/workspace-packages.mjs"),
+      'export const expectedWorkspacePackages = new Map([["packages/protocol", "@agentscope/protocol"]]);\n',
+    );
+  } catch (primary) {
+    let rollbackFailed = false;
+    let rollbackFailure;
+    try {
+      cleanup();
+    } catch (settlement) {
+      rollbackFailed = true;
+      rollbackFailure = settlement;
+    }
+    if (rollbackFailed)
+      throw new AggregateError(
+        [primary, rollbackFailure],
+        "cleanup fixture setup rollback failed",
+        { cause: primary },
+      );
+    throw primary;
+  }
   return {
     root,
     workspaceDirectory,
@@ -67,35 +115,6 @@ syncBuiltinESMExports();
         killSignal: "SIGKILL",
       };
     },
-    cleanup() {
-      const current = lstatSync(root);
-      assert.ok(
-        current.isDirectory() &&
-          current.dev === identity.dev &&
-          current.ino === identity.ino &&
-          current.mode === identity.mode,
-        "cleanup fixture root identity changed",
-      );
-      let count = 0;
-      let bytes = 0;
-      function inspect(directory) {
-        for (const name of readdirSync(directory)) {
-          assert.ok(++count <= 32, "cleanup fixture member bound");
-          const path = join(directory, name);
-          const stat = lstatSync(path);
-          if (stat.isDirectory()) inspect(path);
-          else {
-            assert.ok(
-              stat.isFile() || stat.isSymbolicLink(),
-              "cleanup fixture member type",
-            );
-            bytes += stat.size;
-            assert.ok(bytes <= 64 * 1024, "cleanup fixture byte bound");
-          }
-        }
-      }
-      inspect(root);
-      rmSync(root, { recursive: true });
-    },
+    cleanup,
   };
 }

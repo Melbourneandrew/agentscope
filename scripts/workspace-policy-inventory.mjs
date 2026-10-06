@@ -14,6 +14,7 @@ export const purePolicyFiles = Object.freeze([
   "native-ci-policy.test.mjs",
   "release-lane-substrate.test.mjs",
   "restricted-import-policy.test.mjs",
+  "workspace-cleanup-fixture.test.mjs",
   "workspace-dependency-policy.test.mjs",
   "workspace-policy-runner.test.mjs",
 ]);

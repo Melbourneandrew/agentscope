@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -30,6 +31,8 @@ const validator = join(
   ".agents/skills/review-agentscope/scripts/validate_review_skill.py",
 );
 const fixtures = [];
+const inputFlags =
+  constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const skillDirectory = ".agents/skills/review-agentscope";
 const inputFiles = [
   "AGENTS.md",
@@ -116,18 +119,32 @@ function createFixture() {
   for (const directory of directories) mkdirSync(join(root, directory));
   let bytes = 0;
   for (const file of inputFiles) {
-    const fd = openSync(
-      join(repositoryRoot, file),
-      constants.O_RDONLY | constants.O_NOFOLLOW,
-    );
+    const sourcePath = join(repositoryRoot, file);
+    const fd = openSync(sourcePath, inputFlags);
     try {
       const stat = fstatSync(fd);
       assert.ok(stat.isFile() && stat.size <= 128 * 1024);
       bytes += stat.size;
       assert.ok(bytes <= 256 * 1024);
-      const contents = readFileSync(fd);
+      const contents = readBoundedInput(fd);
       assert.equal(contents.length, stat.size);
-      assert.equal(fstatSync(fd).mtimeMs, stat.mtimeMs);
+      for (const current of [fstatSync(fd), lstatSync(sourcePath)]) {
+        assert.ok(current.isFile());
+        for (const key of [
+          "dev",
+          "ino",
+          "mode",
+          "uid",
+          "size",
+          "mtimeMs",
+          "ctimeMs",
+        ])
+          assert.equal(
+            current[key],
+            stat[key],
+            "review input identity changed",
+          );
+      }
       writeFileSync(join(root, file), contents, { flag: "wx", mode: 0o600 });
     } finally {
       closeSync(fd);
@@ -135,6 +152,18 @@ function createFixture() {
   }
   inspectFixture(fixture);
   return fixture;
+}
+
+function readBoundedInput(fd) {
+  const buffer = Buffer.alloc(128 * 1024 + 1);
+  let count = 0;
+  while (count < buffer.length) {
+    const read = readSync(fd, buffer, count, buffer.length - count, null);
+    if (read === 0) break;
+    count += read;
+  }
+  assert.ok(count <= 128 * 1024, "review input byte bound");
+  return buffer.subarray(0, count);
 }
 
 function validate(fixture) {
@@ -158,6 +187,35 @@ test("validates the committed review skill contract", () => {
   const result = validate(createFixture());
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /Validated review-agentscope/);
+});
+
+test("bounded input reads reject growth without reading beyond the fixed ceiling", () => {
+  assert.equal(inputFlags & constants.O_NONBLOCK, constants.O_NONBLOCK);
+  assert.equal(inputFlags & constants.O_NOFOLLOW, constants.O_NOFOLLOW);
+  let consumed = 0;
+  const source = readFileSync(new URL(import.meta.url), "utf8");
+  const body = source.slice(
+    source.indexOf("function readBoundedInput("),
+    source.indexOf("\nfunction validate("),
+  );
+  const read = Function(
+    "readSync",
+    "Buffer",
+    "assert",
+    `${body}; return readBoundedInput;`,
+  )(
+    (_fd, buffer, offset, length) => {
+      assert.ok(consumed + length <= 128 * 1024 + 1);
+      const count = Math.min(length, 97);
+      buffer.fill(65, offset, offset + count);
+      consumed += count;
+      return count;
+    },
+    Buffer,
+    assert,
+  );
+  assert.throws(() => read(1), /review input byte bound/);
+  assert.equal(consumed, 128 * 1024 + 1);
 });
 
 test("retains cleanup ownership on removal failure or root substitution", () => {
