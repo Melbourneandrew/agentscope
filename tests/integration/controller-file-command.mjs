@@ -77,6 +77,10 @@ const bootstrapStages = [
   "signature-key-time",
   "checksum-policy",
   "completed",
+  "supplier-entry",
+  "supplier-extract",
+  "supplier-package",
+  "supplier-inventory",
 ];
 const bootstrapFamilies = [
   "none",
@@ -239,6 +243,16 @@ export const publishBootstrapGpgObservation = (
   environment = process.env,
 ) => {
   const processObservation = own(diagnostic, "process");
+  const observedStage = selected(
+    own(processObservation, "untrustedBootstrapStage"),
+    bootstrapStages,
+  );
+  const observedFamily = selected(
+    own(processObservation, "untrustedBootstrapFailureFamily"),
+    bootstrapFamilies,
+  );
+  const invalidSupplierFamily =
+    observedStage.startsWith("supplier-") && observedFamily !== "none";
   append(
     [
       [
@@ -272,17 +286,11 @@ export const publishBootstrapGpgObservation = (
       ],
       [
         "untrusted_bootstrap_stage",
-        selected(
-          own(processObservation, "untrustedBootstrapStage"),
-          bootstrapStages,
-        ),
+        invalidSupplierFamily ? "unknown" : observedStage,
       ],
       [
         "untrusted_bootstrap_failure_family",
-        selected(
-          own(processObservation, "untrustedBootstrapFailureFamily"),
-          bootstrapFamilies,
-        ),
+        invalidSupplierFamily ? "unknown" : observedFamily,
       ],
     ],
     environment,

@@ -1,5 +1,11 @@
 /** Pure output representation only; no subprocess or lifecycle authority. */
 const maximumHeaderBytes = 16_384;
+const supplierStages = [
+  "supplier-entry",
+  "supplier-extract",
+  "supplier-package",
+  "supplier-inventory",
+];
 const bootstrapStages = [
   "authenticate-inputs",
   "keyrings",
@@ -25,6 +31,7 @@ const bootstrapStages = [
   "signature-key-time",
   "checksum-policy",
   "completed",
+  ...supplierStages,
 ];
 const bootstrapFamilies = [
   "none",
@@ -78,6 +85,7 @@ export const createBuildStderrObservation = () => {
       !match ||
       !bootstrapStages.includes(match[3]) ||
       !bootstrapFamilies.includes(match[4]) ||
+      (supplierStages.includes(match[3]) && match[4] !== "none") ||
       (match[4] !== "none" && match[4] !== familyFor(match[3]))
     ) {
       ambiguous = true;

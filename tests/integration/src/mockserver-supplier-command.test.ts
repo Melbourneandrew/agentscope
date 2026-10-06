@@ -6,6 +6,10 @@ const state = vi.hoisted(() => ({
   writes: [] as [string, unknown][],
   directories: [] as string[],
   rejects: "",
+  markers: [] as string[],
+  sinkFailure: false,
+  primary: undefined as Error | undefined,
+  inventoryFailure: false,
 }));
 function expectedSize() {
   if (state.wrongLength) return 8;
@@ -45,10 +49,16 @@ vi.mock("node:fs", async (original) => ({
   writeFileSync: (path: string, bytes: unknown) =>
     state.writes.push([path, bytes]),
   copyFileSync: () => {},
+  writeSync: (fd: number, value: string) => {
+    expect(fd).toBe(2);
+    state.markers.push(value);
+    if (state.sinkFailure) throw Error("SINK_CANARY");
+    return value.length;
+  },
 }));
 vi.mock("../mockserver-material/source-archive.mjs", () => ({
   verifyMockServerSourceArchive: (value: Buffer) => {
-    if (state.rejects === "source") throw Error("source");
+    if (state.rejects === "source") throw state.primary ?? Error("source");
     return value;
   },
 }));
@@ -68,7 +78,10 @@ vi.mock("../mockserver-material/callback-patch.mjs", () => ({
   patchCallbackSource: () => "synthetic-patched",
 }));
 vi.mock("../mockserver-material/supplier-inventory.mjs", () => ({
-  inventoryMockServerSupplier: () => Buffer.from("synthetic-inventory"),
+  inventoryMockServerSupplier: () => {
+    if (state.inventoryFailure) throw state.primary ?? new Error("inventory");
+    return Buffer.from("synthetic-inventory");
+  },
 }));
 import { runMockServerSupplierResearch } from "../mockserver-material/supplier-command.mjs";
 
@@ -79,6 +92,74 @@ beforeEach(() => {
   state.directories = [];
   state.rejects = "";
   state.wrongLength = false;
+  state.markers = [];
+  state.sinkFailure = false;
+  state.primary = undefined;
+  state.inventoryFailure = false;
+});
+
+describe("fixed last-entered supplier phases without outcome authority", () => {
+  const phases = [
+    "supplier-entry",
+    "supplier-extract",
+    "supplier-package",
+    "supplier-inventory",
+  ];
+  it.each([false, true])(
+    "preserves ordinary operations with sink failure %s",
+    async (failed) => {
+      state.sinkFailure = failed;
+      const execute = vi.fn(() => Promise.resolve());
+      await runMockServerSupplierResearch(execute);
+      expect(state.markers).toEqual(
+        phases.map(
+          (stage) => `[agentscope-material:v1 stage=${stage} family=none]\n`,
+        ),
+      );
+      expect(execute).toHaveBeenCalledTimes(6);
+      expect(state.writes.at(-1)?.[0]).toBe("/out/material.json");
+    },
+  );
+  it.each(phases)(
+    "marks %s before its actual original operation",
+    async (phase) => {
+      for (const failed of [false, true]) {
+        state.markers = [];
+        state.writes = [];
+        const primary = new Error("SECRET_CANARY");
+        state.primary = primary;
+        state.sinkFailure = failed;
+        state.rejects = phase === "supplier-entry" ? "source" : "";
+        state.inventoryFailure = phase === "supplier-inventory";
+        const execute = vi.fn((file: string) => {
+          if (
+            phase === "supplier-extract" ||
+            (phase === "supplier-package" && file.endsWith("/mvn"))
+          )
+            return Promise.reject(primary);
+          return Promise.resolve();
+        });
+        await expect(runMockServerSupplierResearch(execute)).rejects.toBe(
+          state.primary,
+        );
+        expect(state.markers).toEqual(
+          phases
+            .slice(0, phases.indexOf(phase) + 1)
+            .map(
+              (stage) =>
+                `[agentscope-material:v1 stage=${stage} family=none]\n`,
+            ),
+        );
+        expect(state.markers.join("")).not.toContain("CANARY");
+        expect(
+          state.writes.some(([path]) => path === "/out/material.json"),
+        ).toBe(false);
+        expect(execute).toHaveBeenCalledTimes(
+          phase === "supplier-entry" ? 0 : phase === "supplier-extract" ? 1 : 6,
+        );
+      }
+    },
+  );
 });
 afterEach(() => vi.restoreAllMocks());
 describe("supplier command extraction/input boundary", () => {

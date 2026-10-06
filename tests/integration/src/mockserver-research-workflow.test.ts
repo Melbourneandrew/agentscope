@@ -376,6 +376,40 @@ describe("partial material-step observation", () => {
 });
 
 describe("closed always-after projection", () => {
+  it.each([
+    "supplier-entry",
+    "supplier-extract",
+    "supplier-package",
+    "supplier-inventory",
+  ])(
+    "projects supplier last-entered %s without a success or failure-family claim",
+    (stage) => {
+      for (const family of [
+        "none",
+        "input",
+        "filesystem",
+        "gpg-execution",
+        "listing-policy",
+        "signature-policy",
+        "checksum-policy",
+        "CANARY",
+      ]) {
+        const result = shell(projection.run!, {
+          OBSERVED_UNTRUSTED_BUILDER_OPERATION: "image-build",
+          OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: stage,
+          OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: family,
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(
+          `untrusted_bootstrap_stage=${family === "none" ? stage : "unknown"}`,
+        );
+        expect(result.stdout).toContain(
+          `untrusted_bootstrap_failure_family=${family === "none" ? "none" : "unknown"}`,
+        );
+        expect(result.stdout).not.toContain("CANARY");
+      }
+    },
+  );
   it("projects file-command controller observations despite prior unavailable stdout", () => {
     const summary = resolve(root(), "summary");
     const result = shell(projection.run!, {

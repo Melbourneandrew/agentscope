@@ -9,6 +9,12 @@ const observe = (chunks: readonly string[]) => {
   return observation.snapshot();
 };
 const absent = { stderrClass: "unknown" };
+const supplierStages = [
+  "supplier-entry",
+  "supplier-extract",
+  "supplier-package",
+  "supplier-inventory",
+];
 const signatureStages = [
   "recordset",
   "recordset-information",
@@ -103,4 +109,51 @@ describe("exact bounded BuildKit failed-RUN replay", () => {
     ).toBe(observe([text]).stderrClass);
     expect(observe(["ordinary canary\n"])).toEqual(absent);
   });
+});
+
+describe("closed supplier last-entered observations", () => {
+  it.each(supplierStages)(
+    "keeps only entered %s through splits, late bytes and exact replay",
+    (stage) => {
+      const entered = supplierStages.slice(
+        0,
+        supplierStages.indexOf(stage) + 1,
+      );
+      const original = entered
+        .map((value, index) => `#7 0.19${index} ${marker(value)}`)
+        .join("");
+      const replay = entered
+        .map((value, index) => `0.19${index} ${marker(value)}`)
+        .join("");
+      const text = original + replay + "failed to solve\n";
+      for (let split = 0; split <= text.length; split++)
+        expect(observe([text.slice(0, split), text.slice(split)])).toEqual({
+          stderrClass: "build-failed",
+          untrustedBootstrapStage: stage,
+          untrustedBootstrapFailureFamily: "none",
+        });
+      expect(observe(["X".repeat(20_000) + "\n", original, replay])).toEqual({
+        ...absent,
+        untrustedBootstrapStage: stage,
+        untrustedBootstrapFailureFamily: "none",
+      });
+      for (const family of [
+        "input",
+        "filesystem",
+        "gpg-execution",
+        "listing-policy",
+        "signature-policy",
+        "checksum-policy",
+        "CANARY",
+      ])
+        expect(observe([marker(stage, family)])).toEqual(absent);
+      for (const value of [
+        replay,
+        original + replay + replay,
+        marker(stage) + marker("supplier-entry"),
+        marker(stage).replace("family=none", "family=none CANARY"),
+      ])
+        expect(observe([value])).toEqual(absent);
+    },
+  );
 });

@@ -9,6 +9,7 @@ import {
   openSync,
   readSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -35,6 +36,13 @@ const options = {
   cwd: "/supplier",
   env: environment,
   maxBuffer: maximumOutputBytes,
+};
+const enter = (stage) => {
+  try {
+    writeSync(2, `[agentscope-material:v1 stage=${stage} family=none]\n`);
+  } catch {
+    // Optional last-entered observation, never the operation's outcome.
+  }
 };
 const readFixed = (path, size, mode = 0o600) => {
   const fd = openSync(
@@ -83,6 +91,7 @@ const readFixed = (path, size, mode = 0o600) => {
 };
 
 export const runMockServerSupplierResearch = async (run) => {
+  enter("supplier-entry");
   // Only exact previously authenticated archives are admitted. Host staging also
   // authenticates them; this rejects mutation at the actual extraction boundary.
   verifyMockServerSourceArchive(
@@ -97,6 +106,7 @@ export const runMockServerSupplierResearch = async (run) => {
     "jdk",
     readFixed("/supplier/inputs/jdk.tar.gz", 193_252_603),
   );
+  enter("supplier-extract");
   for (const name of [
     "home",
     "source",
@@ -179,11 +189,13 @@ export const runMockServerSupplierResearch = async (run) => {
     options,
   );
   const plan = mockServerSupplierBuildPlan("dependency-research");
+  enter("supplier-package");
   await run(plan.executable, [...plan.arguments], {
     cwd: plan.cwd,
     env: plan.environment,
     maxBuffer: maximumOutputBytes,
   });
+  enter("supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier");
   mkdirSync("/out", { mode: 0o700 });
   writeFileSync("/out/material.json", inventory, { flag: "wx", mode: 0o644 });

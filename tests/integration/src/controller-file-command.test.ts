@@ -221,6 +221,45 @@ describe("signature-policy substage projection", () => {
   });
 });
 
+describe("fixed supplier phase projection", () => {
+  it.each([
+    "supplier-entry",
+    "supplier-extract",
+    "supplier-package",
+    "supplier-inventory",
+  ])("projects last-entered %s only with none family", (stage) => {
+    for (const family of [
+      "none",
+      "input",
+      "filesystem",
+      "gpg-execution",
+      "listing-policy",
+      "signature-policy",
+      "checksum-policy",
+      "CANARY",
+    ]) {
+      const value = sink();
+      publishBootstrapGpgObservation(
+        {
+          process: {
+            untrustedBootstrapStage: stage,
+            untrustedBootstrapFailureFamily: family,
+          },
+        },
+        value.env,
+      );
+      const text = readFileSync(value.output, "utf8");
+      expect(text).toContain(
+        `untrusted_bootstrap_stage=${family === "none" ? stage : "unknown"}\n`,
+      );
+      expect(text).toContain(
+        `untrusted_bootstrap_failure_family=${family === "none" ? "none" : "unknown"}\n`,
+      );
+      expect(text).not.toContain("CANARY");
+    }
+  });
+});
+
 describe("existing builder diagnostic projection", () => {
   it("distinguishes a recorded markerless failure from absent diagnostics", () => {
     const value = sink();
