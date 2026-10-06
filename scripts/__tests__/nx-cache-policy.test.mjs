@@ -14,7 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { EventEmitter } from "node:events";
-import { test } from "vitest";
+import { onTestFailed, test } from "vitest";
+import { createNxCacheDiagnostic } from "../fixtures/nx-cache-diagnostics.mjs";
 import {
   assertNxCacheWorkBudget,
   bindNxCacheFixture,
@@ -38,6 +39,30 @@ import {
 } from "../workspace-policy-runner.mjs";
 
 const suite = "nx-cache-policy.test.mjs";
+
+test.each([
+  ["entry", "none", 0, 0, false],
+  ["build-2", "birth-inspection", 93_242, 93_242, false],
+  ["cleanup", "join-inspection", 300_001, 300_000, true],
+  ["secret-path", "secret-argv", NaN, null, false],
+  ["change", "terminal-inspection", -1, null, false],
+])(
+  "Nx diagnostic preserves only closed phases and original elapsed %s/%s",
+  (phase, command, now, elapsed, capped) => {
+    const diagnostic = createNxCacheDiagnostic(10, () => 10 + now);
+    diagnostic.phase(phase);
+    diagnostic.command(command);
+    const snapshot = diagnostic.snapshot();
+    assert.deepEqual(snapshot, {
+      phase: phase === "secret-path" ? "unknown" : phase,
+      commandPhase: command === "secret-argv" ? "unknown" : command,
+      originalElapsedMilliseconds: elapsed,
+      elapsedCapped: capped,
+    });
+    assert.equal(JSON.stringify(snapshot).includes("secret"), false);
+    assert.equal(Object.isFrozen(snapshot), true);
+  },
+);
 
 test("Nx cache suite is mandatory and serialized exactly once", async () => {
   const inventory = discoverWorkspacePolicyInventory();
@@ -108,30 +133,62 @@ test("Nx cache terminal publication precedes later suite admission", async () =>
 
 async function withNxCacheFixture(check, duration = 30_000) {
   // Each independent cache proposition owns one deadline before setup.
-  const deadline = performance.now() + duration;
+  const started = performance.now();
+  const deadline = started + duration;
+  const diagnostic = createNxCacheDiagnostic(started, () => performance.now());
+  let failedDiagnostic;
+  onTestFailed(() => {
+    try {
+      console.error("nx-cache.fixture.diagnostic", {
+        firstFailure: failedDiagnostic ?? null,
+        current: diagnostic.snapshot(),
+      });
+    } catch {
+      /* Optional diagnostics cannot replace the original failure. */
+    }
+  });
   const root = mkdtempSync(join(tmpdir(), "agentscope-nx-cache-"));
   const identity = lstatSync(root);
   let authority;
-  const run = (arguments_, runtime = "runtime-one") =>
-    runNxCacheCommand(authority, arguments_, localNxEnvironment(runtime));
-  const build = (runtime) => run(["run", "@fixture/consumer:build"], runtime);
+  let ordinal = 0;
+  const run = (arguments_, runtime = "runtime-one") => {
+    diagnostic.phase("command");
+    return runNxCacheCommand(
+      authority,
+      arguments_,
+      localNxEnvironment(runtime),
+    );
+  };
+  const build = (runtime = "runtime-one") => {
+    diagnostic.phase(`build-${++ordinal}`);
+    return runNxCacheCommand(
+      authority,
+      ["run", "@fixture/consumer:build"],
+      localNxEnvironment(runtime),
+    );
+  };
   let primary;
   try {
+    diagnostic.phase("setup");
     authority = bindNxCacheFixture(root, deadline);
+    authority.diagnostic = diagnostic;
     createNxCacheFixture(root);
-    await check({ root, authority, run, build });
+    await check({ root, authority, run, build, diagnostic });
   } catch (error) {
+    failedDiagnostic = diagnostic.snapshot();
     primary = { error };
   }
   // Unsettled/substituted authority retains its private fixture, never a
   // prefix sweep or cleanup claim based only on the Nx leader's exit.
   try {
+    diagnostic.phase("cleanup");
     if (authority === undefined)
       throw new Error("Nx fixture setup root quarantined", {
         cause: { path: root, dev: identity.dev, ino: identity.ino },
       });
     cleanupNxCacheFixture(authority);
   } catch (error) {
+    failedDiagnostic ??= diagnostic.snapshot();
     if (primary !== undefined)
       throw new AggregateError(
         [primary.error, error],
@@ -141,6 +198,7 @@ async function withNxCacheFixture(check, duration = 30_000) {
     throw error;
   }
   if (primary !== undefined) throw primary.error;
+  diagnostic.phase("complete");
 }
 
 test("standard Nx cache restores only declared outputs", async () => {
@@ -237,10 +295,11 @@ const cacheInputCases = [
 test.each(cacheInputCases)(
   "standard Nx cache invalidates $name",
   async (entry) => {
-    await withNxCacheFixture(async ({ root, build }) => {
+    await withNxCacheFixture(async ({ root, build, diagnostic }) => {
       await build();
       assert.equal(executionCount(root, "dependency"), 1);
       assert.equal(executionCount(root, "consumer"), 1);
+      diagnostic.phase("change");
       entry.change(root);
       await build(entry.runtime);
       assert.equal(
@@ -342,6 +401,9 @@ function messageFixture() {
     cutoff: performance.now() + 5_000,
     deadline: performance.now() + 8_000,
     progress: { phase: "wrapper-startup" },
+    diagnostic: createNxCacheDiagnostic(performance.now(), () =>
+      performance.now(),
+    ),
   };
   bindNxCacheMessagesForTesting(
     child,
@@ -361,6 +423,7 @@ test("Nx fixture rejects late ready before starting a command", () => {
   state.child.emit("message", { nonce: state.command.nonce, kind: "ready" });
   assert.equal(state.sent.length, 0);
   assert.match(state.errors[0].message, /fixture.deadline/u);
+  assert.equal(state.command.diagnostic.snapshot().commandPhase, "none");
 });
 
 test("Nx fixture rejects late terminal before success inspection", () => {
@@ -378,6 +441,7 @@ test("Nx fixture rejects late terminal before success inspection", () => {
   assert.equal(state.sent.length, 1);
   assert.match(state.errors[0].message, /fixture.deadline/u);
   assert.equal(state.command.progress.phase, "nx-command");
+  assert.equal(state.command.diagnostic.snapshot().commandPhase, "nx-command");
 });
 
 test.each(["substituted", "duplicate"])(

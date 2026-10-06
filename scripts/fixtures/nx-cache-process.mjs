@@ -156,9 +156,11 @@ export function bindNxCacheMessagesForTesting(
     } else if (message.kind === "ready" && !admitted && command.leader) {
       admitted = true;
       command.progress.phase = "nx-command";
+      command.diagnostic?.command("nx-command");
       child.send({ nonce: command.nonce, arguments: command.arguments });
     } else if (message.kind === "terminal" && admitted) {
       command.progress.phase = "terminal-inspection";
+      command.diagnostic?.command("terminal-inspection");
       try {
         if (
           message.error !== false ||
@@ -244,6 +246,28 @@ function admitCommand(authority, arguments_, environment) {
 
 // Test-only: a persistent wrapper owns each real Nx command's process group.
 // It stays alive after direct-child close until the parent retires that group.
+function signalOwnedGroup(leader, deadline, name) {
+  const observation = inspectProcessAuthorityForTesting(
+    leader,
+    process.platform,
+    deadline,
+  );
+  if (observation.groupAbsent) return false;
+  if (observation.leader !== "same") throw failure("identity-loss");
+  process.kill(-leader.pid, name);
+  return name === "SIGKILL";
+}
+
+function captureOwnedLeader(child, authority) {
+  try {
+    return captureLeader(child.pid, authority.deadline);
+  } catch {
+    authority.quarantined = true;
+    if (child.connected) child.disconnect();
+    return undefined;
+  }
+}
+
 export function runNxCacheCommand(authority, arguments_, environment) {
   const cutoff = admitCommand(authority, arguments_, environment);
   return new Promise((resolveCommand, rejectCommand) => {
@@ -257,6 +281,8 @@ export function runNxCacheCommand(authority, arguments_, environment) {
     let graceTimer;
     let pollTimer;
     const progress = { phase: "wrapper-startup" };
+    const diagnostic = authority.diagnostic;
+    diagnostic?.command("wrapper-startup");
     const result = {};
     const child = spawnWrapper(authority, nonce, environment);
     const finish = (error) => {
@@ -264,6 +290,7 @@ export function runNxCacheCommand(authority, arguments_, environment) {
       settled = true;
       [executionTimer, hardTimer, graceTimer, pollTimer].forEach(clearTimeout);
       authority.active = false;
+      if (error === undefined) diagnostic?.command("complete");
       if (error === undefined) resolveCommand(result.output);
       else rejectCommand(error);
     };
@@ -274,14 +301,11 @@ export function runNxCacheCommand(authority, arguments_, environment) {
         authority.deadline,
       );
     const signal = (name) => {
-      const observation = inspect();
-      if (observation.groupAbsent) return;
-      if (observation.leader !== "same") throw failure("identity-loss");
-      process.kill(-leader.pid, name);
-      if (name === "SIGKILL") killed = true;
+      if (signalOwnedGroup(leader, authority.deadline, name)) killed = true;
     };
     const poll = () => {
       if (settled) return;
+      diagnostic?.command("join-inspection");
       try {
         if (inspectGroupExistenceForTesting(-leader.pid, authority.deadline)) {
           if (!killed && inspect().leader !== "same")
@@ -299,6 +323,7 @@ export function runNxCacheCommand(authority, arguments_, environment) {
     const stop = () => {
       if (stopping || settled) return;
       stopping = true;
+      diagnostic?.command("stop-inspection");
       try {
         signal("SIGTERM");
         graceTimer = setTimeout(() => {
@@ -326,13 +351,9 @@ export function runNxCacheCommand(authority, arguments_, environment) {
       () => settleUncertain(child, authority, problem, finish),
       Math.max(0, authority.deadline - performance.now()),
     );
-    try {
-      leader = captureLeader(child.pid, authority.deadline);
-    } catch {
-      authority.quarantined = true;
-      problem = failure("birth");
-      if (child.connected) child.disconnect();
-    }
+    diagnostic?.command("birth-inspection");
+    leader = captureOwnedLeader(child, authority);
+    if (leader === undefined) problem = failure("birth");
     child.once("error", () => {
       problem ??= failure("spawn");
       stop();
@@ -353,6 +374,7 @@ export function runNxCacheCommand(authority, arguments_, environment) {
         deadline: authority.deadline,
         cutoff,
         progress,
+        diagnostic,
         runtime: environment.CACHE_RUNTIME,
         result,
       },
