@@ -498,9 +498,6 @@ export const buildCandidate = (row) => {
     canonical(record),
     { flag: "wx", mode: 0o600 },
   );
-  process.stdout.write(
-    "directory-native-candidate: unadmitted artifact produced\n",
-  );
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

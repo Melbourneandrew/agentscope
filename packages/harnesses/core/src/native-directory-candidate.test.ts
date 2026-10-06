@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { isAbsolute, resolve } from "node:path";
+import ts from "typescript";
 
 const driver = readFileSync(
   new URL("../native-directory/build-candidate.mjs", import.meta.url),
@@ -142,6 +143,45 @@ describe("nonpublishing directory native candidate", () => {
 });
 
 describe("candidate material and workflow boundaries", () => {
+  it("conforms to the actual terminal-stream policy and rejects the prior optional write", () => {
+    const policy = readFileSync(
+      new URL(
+        "../../../../scripts/restricted-import-policy.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const constants = policy.slice(
+      policy.indexOf("const restrictedSpecifiers ="),
+      policy.indexOf("const sourceFiles ="),
+    );
+    const body = policy.slice(
+      policy.indexOf("const assertNoIntegrationStreams ="),
+      policy.indexOf("export const auditCoreFinalizationImports"),
+    );
+    const literal = policy.slice(
+      policy.indexOf("const isLiteralModuleSpecifier ="),
+      policy.indexOf("const assertLiteralSpecifierAllowed ="),
+    );
+    const check = new Script(
+      `${constants}\n${literal}\n${body}\nassertNoIntegrationStreams;`,
+    ).runInNewContext({ ts }) as (
+      source: string,
+      file: string,
+      name: string,
+    ) => void;
+    const path = "packages/harnesses/core/native-directory/build-candidate.mjs";
+    expect(() => {
+      check(driver, path, "@agentscope/harnesses-core");
+    }).not.toThrow();
+    expect(() => {
+      check(
+        `${driver}\nprocess.stdout.write("synthetic");`,
+        path,
+        "@agentscope/harnesses-core",
+      );
+    }).toThrow("terminal streams are CLI-owned");
+  });
   it("pins the all-and-only external action closure to reviewed immutable revisions", () => {
     const actions = [...workflow.matchAll(/uses: (\S+)/gu)].map(
       (match) => match[1],
