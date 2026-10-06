@@ -132,14 +132,39 @@ export const mapClaudeCodeRootHookCapture = (
       unavailable: Object.freeze([]),
     }),
     operations: Object.freeze([
+      ...(tool || response
+        ? [
+            Object.freeze({
+              logicalKey: "claude-invocation",
+              locator: Object.freeze({
+                kind: "source-ordinal" as const,
+                ordinal: 0,
+              }),
+              kind: "AGENT" as const,
+              name: "claude.hook-invocation",
+              nameProvenance: createNativeFieldProvenance(
+                "span.name",
+                "hook-payload",
+              ),
+              fields: Object.freeze([]),
+              unavailable: Object.freeze([]),
+              events: Object.freeze([]),
+              links: Object.freeze([]),
+            }),
+          ]
+        : []),
       Object.freeze({
         logicalKey: "claude-observation",
+        ...(tool || response ? { parentLogicalKey: "claude-invocation" } : {}),
         locator: tool
           ? Object.freeze({
               kind: "native-operation" as const,
               nativeId: `claude-tool:${hook.toolUseId}`,
             })
-          : Object.freeze({ kind: "source-ordinal" as const, ordinal: 0 }),
+          : Object.freeze({
+              kind: "source-ordinal" as const,
+              ordinal: response ? 1 : 0,
+            }),
         kind: tool
           ? ("TOOL" as const)
           : response

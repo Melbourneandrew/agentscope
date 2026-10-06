@@ -49,7 +49,39 @@ describe("Claude 2.1.245 root-hook observations", () => {
       expect(candidate.captureBoundary.session).toEqual({
         kind: "attempt-scoped",
       });
-      const operation = candidate.operations[0]!;
+      const operation = candidate.operations.at(-1)!;
+      const roots = candidate.operations.filter(
+        (entry) => !("parentLogicalKey" in entry),
+      );
+      expect(roots).toHaveLength(1);
+      expect(roots[0]?.kind).toBe("AGENT");
+      expect(
+        new Set(candidate.operations.map(({ logicalKey }) => logicalKey)).size,
+      ).toBe(candidate.operations.length);
+      if (operation !== roots[0]) {
+        expect(operation).toHaveProperty(
+          "parentLogicalKey",
+          roots[0]?.logicalKey,
+        );
+        expect(roots[0]?.name).toBe("claude.hook-invocation");
+        expect(roots[0]?.locator).toEqual({
+          kind: "source-ordinal",
+          ordinal: 0,
+        });
+        expect(roots[0]).not.toHaveProperty("timing");
+        expect(roots[0]?.fields).toEqual([]);
+      }
+      expect(
+        new Set(
+          candidate.operations
+            .filter(({ locator }) => locator.kind === "source-ordinal")
+            .map(({ locator }) => JSON.stringify(locator)),
+        ).size,
+      ).toBe(
+        candidate.operations.filter(
+          ({ locator }) => locator.kind === "source-ordinal",
+        ).length,
+      );
       expect(
         isSemanticCandidateUpstreamConstraintValid({
           kind: operation.kind,
@@ -72,21 +104,25 @@ describe("Claude 2.1.245 root-hook observations", () => {
         last_assistant_message: "synthetic-output",
       }),
     );
-    expect(candidate.operations[0]?.locator).toEqual({
+    expect(candidate.operations.at(-1)?.locator).toEqual({
       kind: "source-ordinal",
-      ordinal: 0,
+      ordinal: 1,
     });
-    expect(candidate.operations[0]?.unavailable).toContainEqual({
+    expect(candidate.operations.at(-1)?.unavailable).toContainEqual({
       field: "llm.model_name",
       source: "hook-payload",
       state: "unavailable",
       reason: "not-emitted",
     });
-    expect(candidate.operations[0]?.fields[0]?.value).toBe("synthetic-output");
+    expect(candidate.operations.at(-1)?.fields[0]?.value).toBe(
+      "synthetic-output",
+    );
     expect(JSON.stringify(candidate)).not.toContain("not-read.jsonl");
     expect(JSON.stringify(candidate)).not.toContain("prompt-1");
   });
+});
 
+describe("Claude malformed native input", () => {
   it.each([
     {},
     { ...stop, session_id: "" },
@@ -132,7 +168,7 @@ describe("Claude emitted metadata preservation", () => {
       model: "native-model",
     });
     expect(hook.model).toBe("native-model");
-    expect(mapClaudeCodeRootHookCapture(hook).operations[0]?.kind).toBe(
+    expect(mapClaudeCodeRootHookCapture(hook).operations.at(-1)?.kind).toBe(
       "AGENT",
     );
   });
@@ -154,7 +190,7 @@ describe("Claude emitted metadata preservation", () => {
       Object.isFrozen(Reflect.get(hook.toolInput as object, "paths")),
     ).toBe(true);
     expect(Object.isFrozen(hook.toolResponse)).toBe(true);
-    const operation = mapClaudeCodeRootHookCapture(hook).operations[0]!;
+    const operation = mapClaudeCodeRootHookCapture(hook).operations.at(-1)!;
     expect(operation.fields).toContainEqual({
       field: "input.value",
       value: '{"paths":["original"]}',
@@ -196,7 +232,7 @@ describe("Claude emitted metadata preservation", () => {
     });
     expect(post.toolResponsePresent).toBe(true);
     expect(
-      mapClaudeCodeRootHookCapture(post).operations[0]?.fields,
+      mapClaudeCodeRootHookCapture(post).operations.at(-1)?.fields,
     ).toContainEqual({
       field: "output.value",
       value: "null",
