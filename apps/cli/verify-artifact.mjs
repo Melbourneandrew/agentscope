@@ -21,6 +21,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
+import {
+  runTraceSearchUntilAvailable,
+  traceGetFailureSummary,
+} from "./scripts/artifact-retrieval.mjs";
 
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
@@ -63,45 +67,6 @@ function run(command, arguments_, options = {}) {
     `${command} ${arguments_.join(" ")} failed:\n${result.stdout}${result.stderr}`,
   );
   return result;
-}
-
-function traceSearchUnavailable(result) {
-  if (result.status !== 5 || result.stdout !== "") return false;
-  try {
-    const diagnostic = JSON.parse(result.stderr);
-    return (
-      Object.keys(diagnostic).sort().join(",") ===
-        "category,code,command,schema" &&
-      diagnostic.category === "unavailable" &&
-      diagnostic.code === "traces.unavailable" &&
-      diagnostic.command === "agentscope traces search" &&
-      diagnostic.schema === "agentscope.cli.diagnostic.v1"
-    );
-  } catch {
-    return false;
-  }
-}
-
-function runTraceSearchUntilAvailable(command, arguments_, options = {}) {
-  const deadline = performance.now() + 5_000;
-  while (true) {
-    const remainingBeforeAttempt = deadline - performance.now();
-    assert.ok(remainingBeforeAttempt > 0);
-    const result = runRaw(command, arguments_, {
-      ...options,
-      timeout: Math.max(1, Math.ceil(remainingBeforeAttempt)),
-    });
-    const remainingMilliseconds = deadline - performance.now();
-    if (result.status === 0 || !traceSearchUnavailable(result))
-      return { result, timely: remainingMilliseconds > 0 };
-    if (remainingMilliseconds <= 0) return { result, timely: false };
-    Atomics.wait(
-      new Int32Array(new SharedArrayBuffer(4)),
-      0,
-      0,
-      Math.min(25, remainingMilliseconds),
-    );
-  }
 }
 
 function regularFiles(root) {
@@ -901,6 +866,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
     const searchedLocalObservation = runTraceSearchUntilAvailable(
+      runRaw,
       executable,
       [
         "traces",
@@ -926,7 +892,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.equal(searchedLocalDocument.records[0].summaries.length, 1);
     const packedTraceLocator =
       searchedLocalDocument.records[0].summaries[0].locator;
-    const retrievedLocal = run(
+    const retrievedLocal = runRaw(
       executable,
       [
         "traces",
@@ -939,6 +905,11 @@ setTimeout(() => process.exit(3), 10_000).unref();
         "json",
       ],
       { ...executableOptions, env: localEnvironment },
+    );
+    assert.equal(
+      retrievedLocal.status,
+      0,
+      traceGetFailureSummary(retrievedLocal),
     );
     const retrievedLocalDocument = JSON.parse(retrievedLocal.stdout);
     assert.equal(retrievedLocal.stderr, "");

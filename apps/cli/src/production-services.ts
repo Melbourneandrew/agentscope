@@ -37,7 +37,6 @@ import {
   prepareConfiguredDestinationReachability,
   prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
-  type CoreRetrievalFailure,
   type PrepareCoreRetrievalRuntimeInput,
 } from "@agentscope/core/retrieval-orchestration";
 import {
@@ -54,7 +53,6 @@ import {
   localSqliteDestinationDescriptor,
 } from "@agentscope/destination-local-sqlite";
 
-import type { CliDiagnostic } from "./cli-contract.js";
 import type {
   CliConfigurationServices,
   CliInitializationValue,
@@ -73,6 +71,10 @@ import {
 } from "@agentscope/destinations-core";
 import type { CliTraceServices } from "./trace-commands.js";
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
+import {
+  retrievalDiagnostic,
+  retrievalPreparationDiagnostic,
+} from "./retrieval-diagnostics.js";
 import { createProductHarnesses } from "./product-harnesses.js";
 import { createProductCredentialBackendRegistry } from "./product-credential-registry.js";
 import {
@@ -83,7 +85,6 @@ import {
   success,
   mapError,
   unavailable,
-  missingConfiguration,
   lifecyclePlanValue,
 } from "./credential-configuration-service.js";
 import type { CliCommandBoundary } from "./command-runtime.js";
@@ -383,36 +384,6 @@ const createRotateService =
     );
   };
 
-const retrievalDiagnostic = (
-  failureValue: CoreRetrievalFailure,
-): CliDiagnostic => {
-  const [category, code] = RETRIEVAL_DIAGNOSTICS[failureValue.code];
-  const facts =
-    failureValue.retryAfterMilliseconds === undefined
-      ? undefined
-      : { retryAfterMilliseconds: failureValue.retryAfterMilliseconds };
-  return diagnostic(category, code, facts);
-};
-
-const RETRIEVAL_DIAGNOSTICS = Object.freeze({
-  "deadline-exceeded": ["unavailable", "traces.deadline-exceeded"],
-  forbidden: ["permission-denied", "traces.forbidden"],
-  "incompatible-trace": ["unavailable", "traces.incompatible-trace"],
-  "invalid-query": ["usage", "traces.invalid-query"],
-  "malformed-response": ["unavailable", "traces.malformed-response"],
-  "not-found": ["not-found", "traces.not-found"],
-  "rate-limited": ["unavailable", "traces.rate-limited"],
-  "retrieval-unsupported": ["unavailable", "traces.retrieval-unsupported"],
-  unauthorized: ["permission-denied", "traces.unauthorized"],
-  unavailable: ["unavailable", "traces.unavailable"],
-  "unknown-connection": ["not-found", "traces.destination-unknown"],
-} as const satisfies Readonly<
-  Record<
-    CoreRetrievalFailure["code"],
-    readonly [CliDiagnostic["category"], string]
-  >
->);
-
 const retrievalRuntime = (state: ProductionState) =>
   prepareCoreRetrievalRuntime({
     signal: state.commandBoundary.credentialContext.signal,
@@ -421,18 +392,6 @@ const retrievalRuntime = (state: ProductionState) =>
     policyRegistry: state.policyRegistry,
     transportExecutor: state.transportExecutor,
   });
-
-const RETRIEVAL_PREPARATION_DIAGNOSTICS = Object.freeze({
-  "core.configuration.invalid": unavailable,
-  "core.configuration.missing": missingConfiguration,
-  "core.configuration.unavailable": unavailable,
-  "core.configuration.unsupported": unavailable,
-  "deadline-exceeded": diagnostic("unavailable", "traces.deadline-exceeded"),
-});
-
-const retrievalPreparationDiagnostic = (
-  code: keyof typeof RETRIEVAL_PREPARATION_DIAGNOSTICS,
-): CliDiagnostic => RETRIEVAL_PREPARATION_DIAGNOSTICS[code];
 
 const createTraceServices = (state: ProductionState): CliTraceServices => ({
   searchTraces: async (input) => {

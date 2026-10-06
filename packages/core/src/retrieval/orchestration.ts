@@ -7,7 +7,6 @@ import {
   type JsonObject,
   type ReporterDeadline,
   type Retriever,
-  type RetrieverFailureCode,
   type TraceSearchCursor,
   type TraceSearchInput,
   type TraceSearchOrdering,
@@ -55,17 +54,16 @@ import {
   type GovernedTraceSummary,
 } from "./governance.js";
 import { resolveCredentialsWithinDeadline } from "./credential-setup.js";
+import { failure, type CoreRetrievalFailure } from "./retrieval-failure.js";
+
+export type {
+  CoreRetrievalFailure,
+  CoreRetrievalFailureCode,
+} from "./retrieval-failure.js";
 
 export const RETRIEVAL_MAXIMUM_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS = 8;
 export const RETRIEVAL_OPERATION_DEADLINE_MILLISECONDS = 2_000;
-
-export type CoreRetrievalFailureCode = RetrieverFailureCode;
-export type CoreRetrievalFailure = Readonly<{
-  ok: false;
-  code: CoreRetrievalFailureCode;
-  retryAfterMilliseconds?: number;
-}>;
 
 export type CoreTraceSearchPage = Readonly<{
   schemaVersion: 1;
@@ -155,16 +153,6 @@ export type CoreDestinationReachabilityPreparation =
       ok: false;
       code: "deadline-exceeded" | "unknown-connection" | "unavailable";
     }>;
-
-const failure = (
-  code: CoreRetrievalFailureCode,
-  retryAfterMilliseconds?: number,
-): CoreRetrievalFailure =>
-  Object.freeze({
-    ok: false,
-    code,
-    ...(retryAfterMilliseconds === undefined ? {} : { retryAfterMilliseconds }),
-  });
 
 const findConnection = (
   configuration: AgentscopeConfigurationSnapshot,
@@ -778,7 +766,12 @@ export const getConfiguredTrace = async (
       });
     },
   );
-  if (!prepared.ok) return prepared;
+  if (!prepared.ok)
+    return failure(
+      prepared.code,
+      prepared.retryAfterMilliseconds,
+      "prepare-retriever",
+    );
   try {
     /* v8 ignore next -- successful preparation executes its synchronous preflight. */
     if (!locator) return failure("invalid-query");
@@ -791,7 +784,8 @@ export const getConfiguredTrace = async (
       request,
       context(boundedRuntime, prepared.controller.signal),
     );
-    if (!result.ok) return failure(result.code, result.retryAfterMilliseconds);
+    if (!result.ok)
+      return failure(result.code, result.retryAfterMilliseconds, "invoke-get");
     const graph = governRetrievedTrace(result.value, prepared.policy);
     return Object.freeze({
       ok: true,
