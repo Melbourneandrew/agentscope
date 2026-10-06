@@ -390,6 +390,8 @@ describe("closed always-after projection", () => {
       OBSERVED_PULL_TRIGGER: "timeout",
       OBSERVED_RECONCILIATION: "failed",
       OBSERVED_MATERIAL_PHASE: "verify-maven",
+      OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: "signature-time",
+      OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: "signature-policy",
       GITHUB_STEP_SUMMARY: summary,
     });
     expect(result.status).toBe(0);
@@ -401,6 +403,7 @@ describe("closed always-after projection", () => {
     );
     expect(readFileSync(summary, "utf8")).toBe(result.stdout);
     expect(result.stdout).toContain("material_phase=verify-maven");
+    expect(result.stdout).toContain("untrusted_bootstrap_stage=signature-time");
   });
   it("rejects injected controller observations and preserves diagnostic-only success", () => {
     const result = shell(projection.run!, {
@@ -435,6 +438,9 @@ describe("closed always-after projection", () => {
       "integration.mockserver-research.shell-observation outcome=success shell_entered=true command_status=3 shell_status=0\n",
     );
   });
+});
+
+describe("closed shell-status projection", () => {
   function project(values: NodeJS.ProcessEnv, summaryFailure = false) {
     const directory = root();
     const summary = summaryFailure ? directory : resolve(directory, "summary");

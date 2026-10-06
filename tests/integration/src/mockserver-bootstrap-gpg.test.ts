@@ -26,12 +26,45 @@ type Execute = (
   ...values: unknown[]
 ) => Promise<{ stdout: string | Buffer; stderr?: string }>;
 type Verification = (kind: string, execute: Execute) => Promise<void>;
+type Enter = (stage: string, family: string) => void;
+const statusVerifier = () => {
+  const source = readFileSync(
+    new URL("../mockserver-material/bootstrap-gpg.mjs", import.meta.url),
+    "utf8",
+  );
+  return runInNewContext(
+    source
+      .slice(
+        source.indexOf("const seconds ="),
+        source.indexOf("export const verifyBootstrapGpgListing"),
+      )
+      .replaceAll("export const", "const") + "\nverifyStatus;",
+    {
+      Buffer,
+      Date,
+      policyFor: () => ({
+        primary: policies[0][1],
+        hash: "10",
+        signatureClass: "00",
+      }),
+      fail: () => {
+        throw new Error("integration.mockserver-material.bootstrap-gpg");
+      },
+    },
+    { timeout: 1_000 },
+  ) as (
+    kind: string,
+    output: string,
+    now: number,
+    enter: Enter,
+  ) => { created: number; expiry: number };
+};
 function observedVerification(options: {
   authentication?: () => void;
   mkdir?: () => void;
   write?: (text: string) => void;
   listing?: () => { created: number; expiry: number };
-  signature?: () => { created: number; expiry: number };
+  signature?: ReturnType<typeof statusVerifier>;
   manifest?: () => Buffer;
 }) {
   const source = readFileSync(
@@ -53,8 +86,7 @@ function observedVerification(options: {
       writeSync: (_fd: number, text: string) => options.write?.(text),
       verifyBootstrapGpgListing:
         options.listing ?? (() => ({ created: 1, expiry: 0 })),
-      verifyBootstrapGpgStatus:
-        options.signature ?? (() => ({ created: 2, expiry: 0 })),
+      verifyStatus: options.signature ?? (() => ({ created: 2, expiry: 0 })),
       readFileSync: options.manifest ?? (() => Buffer.alloc(3777)),
       argumentsFor: () => [],
       fail: () => {
@@ -117,6 +149,75 @@ describe("actual bootstrap run body observations (no GPG execution)", () => {
     ).resolves.toBeUndefined();
     expect(markers.at(-1)).toBe(
       "[agentscope-material:v1 stage=completed family=none]\n",
+    );
+  });
+});
+
+describe("fixed signature-policy substages (untrusted observations only)", () => {
+  const valid = status(policies[0][1], "10", "00");
+  it.each([
+    ["recordset", valid + "[GNUPG:] BADSIG CANARY\n"],
+    ["count", valid.replace("[GNUPG:] GOODSIG", "ignored GOODSIG")],
+    ["compliance", valid + "[GNUPG:] VERIFICATION_COMPLIANCE_MODE 8\n"],
+    ["signer", valid.replace(policies[0][1], "A".repeat(40))],
+    ["algorithm", valid.replace(" 4 0 1 10 ", " 4 0 17 10 ")],
+    ["hash", valid.replace(" 1 10 00 ", " 1 8 00 ")],
+    ["class", valid.replace(" 10 00 ", " 10 01 ")],
+    ["time", valid.replace(String(created), String(now + 1))],
+  ])("retains %s rejection without exposing the record", (substage, output) => {
+    const entered: string[] = [];
+    expect(() =>
+      statusVerifier()("maven", output, now, (stage, family) => {
+        entered.push(stage);
+        expect(family).toBe("signature-policy");
+      }),
+    ).toThrow("integration.mockserver-material.bootstrap-gpg");
+    expect(entered.at(-1)).toBe(`signature-${substage}`);
+    expect(() => verifyBootstrapGpgStatus("maven", output, now)).toThrow(
+      "integration.mockserver-material.bootstrap-gpg",
+    );
+    expect(entered.join(" ")).not.toContain("CANARY");
+  });
+  it("keeps actual success and failure when all optional writes fail", async () => {
+    for (const output of [valid, valid.replace(" 1 10 00 ", " 1 8 00 ")]) {
+      const markers: string[] = [];
+      let calls = 0;
+      const run = observedVerification({
+        signature: statusVerifier(),
+        write: (text) => {
+          markers.push(text);
+          throw new Error("optional-write");
+        },
+      });
+      const result = run("maven", () =>
+        Promise.resolve({
+          stdout: ++calls === 5 ? output : Buffer.from("selected"),
+        }),
+      );
+      if (output === valid) {
+        await expect(result).resolves.toBeUndefined();
+        expect(markers.at(-1)).toContain("stage=completed family=none");
+      } else {
+        await expect(result).rejects.toThrow(
+          "integration.mockserver-material.bootstrap-gpg",
+        );
+        expect(markers.at(-1)).toContain(
+          "stage=signature-hash family=signature-policy",
+        );
+      }
+    }
+  });
+  it("retains the original signature/key validity rejection", async () => {
+    const markers: string[] = [];
+    const run = observedVerification({
+      listing: () => ({ created: 3, expiry: 0 }),
+      write: (text) => markers.push(text),
+    });
+    await expect(
+      run("maven", () => Promise.resolve({ stdout: Buffer.from("selected") })),
+    ).rejects.toThrow("integration.mockserver-material.bootstrap-gpg");
+    expect(markers.at(-1)).toContain(
+      "stage=signature-key-time family=signature-policy",
     );
   });
 });

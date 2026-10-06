@@ -11,6 +11,15 @@ const bootstrapStages = [
   "listing-policy",
   "verify-signature",
   "signature-policy",
+  "signature-recordset",
+  "signature-count",
+  "signature-compliance",
+  "signature-signer",
+  "signature-algorithm",
+  "signature-hash",
+  "signature-class",
+  "signature-time",
+  "signature-key-time",
   "checksum-policy",
   "completed",
 ];
@@ -30,13 +39,15 @@ const familyFor = (stage) =>
     ? "input"
     : ["keyrings", "selected-key-file"].includes(stage)
       ? "filesystem"
-      : ["listing-policy", "signature-policy", "checksum-policy"].includes(
-            stage,
-          )
-        ? stage
-        : stage === "completed"
-          ? "none"
-          : "gpg-execution";
+      : stage.startsWith("signature-")
+        ? "signature-policy"
+        : ["listing-policy", "signature-policy", "checksum-policy"].includes(
+              stage,
+            )
+          ? stage
+          : stage === "completed"
+            ? "none"
+            : "gpg-execution";
 
 /** Untrusted text observation only; neither markers nor absence grant authority. */
 export const createBuildStderrObservation = () => {

@@ -9,6 +9,48 @@ const observe = (chunks: readonly string[]) => {
   return observation.snapshot();
 };
 const absent = { stderrClass: "unknown" };
+const signatureStages = [
+  "recordset",
+  "count",
+  "compliance",
+  "signer",
+  "algorithm",
+  "hash",
+  "class",
+  "time",
+  "key-time",
+].map((value) => `signature-${value}`);
+
+describe("closed signature-policy substage observations", () => {
+  it.each(signatureStages)(
+    "preserves %s across splits and exact replay",
+    (stage) => {
+      const original = `#7 0.193 ${marker(stage)}#7 0.194 ${marker(stage, "signature-policy")}`;
+      const replay = `0.193 ${marker(stage)}0.194 ${marker(stage, "signature-policy")}`;
+      const text = original + replay + "failed to solve\n";
+      for (let split = 0; split <= text.length; split++)
+        expect(observe([text.slice(0, split), text.slice(split)])).toEqual({
+          stderrClass: "build-failed",
+          untrustedBootstrapStage: stage,
+          untrustedBootstrapFailureFamily: "signature-policy",
+        });
+      expect(observe(["X".repeat(20_000) + "\n", original, replay])).toEqual({
+        ...absent,
+        untrustedBootstrapStage: stage,
+        untrustedBootstrapFailureFamily: "signature-policy",
+      });
+      for (const text of [
+        marker(stage, "gpg-execution"),
+        original + replay + replay,
+        marker(stage) + marker("verify-signature"),
+      ])
+        expect(observe([text])).toEqual(absent);
+      expect(observe([original, "permission denied\n"]).stderrClass).toBe(
+        "permission-denied",
+      );
+    },
+  );
+});
 
 describe("exact bounded BuildKit failed-RUN replay", () => {
   it("retains the complete matching replay sequence across every byte split", () => {

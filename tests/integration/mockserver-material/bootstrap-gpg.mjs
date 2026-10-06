@@ -159,7 +159,7 @@ const seconds = (value) => {
   return number;
 };
 
-export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
+const verifyStatus = (kind, output, nowSeconds, enter) => {
   const policy = policyFor(kind);
   if (
     typeof output !== "string" ||
@@ -168,6 +168,7 @@ export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
     nowSeconds < 1
   )
     fail();
+  enter("signature-recordset", "signature-policy");
   const records = output
     .split("\n")
     .filter((line) => line.startsWith("[GNUPG:] "));
@@ -185,9 +186,11 @@ export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
     "VERIFICATION_COMPLIANCE_MODE",
   ]);
   if (records.some((line) => !permitted.has(line.split(" ")[1]))) fail();
+  enter("signature-count", "signature-policy");
   const valid = records.filter((line) => line.startsWith("[GNUPG:] VALIDSIG "));
   const good = records.filter((line) => line.startsWith("[GNUPG:] GOODSIG "));
   if (valid.length !== 1 || good.length !== 1) fail();
+  enter("signature-compliance", "signature-policy");
   // GnuPG emits this optional informational record after a valid signature.
   // It is not signer or cryptographic authority; the checks below still apply.
   const compliance = records.filter(
@@ -200,19 +203,22 @@ export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
         records.indexOf(compliance[0]) < records.indexOf(valid[0])))
   )
     fail();
+  enter("signature-signer", "signature-policy");
   const fields = valid[0].split(" ").slice(2);
   if (
     (fields.length !== 9 && fields.length !== 10) ||
     fields[0] !== policy.primary ||
     (fields[9] ?? fields[0]) !== policy.primary ||
-    fields[4] !== "4" ||
-    fields[5] !== "0" ||
-    fields[6] !== "1" ||
-    fields[7] !== policy.hash ||
-    fields[8] !== policy.signatureClass ||
     good[0].split(" ")[2] !== policy.primary.slice(-16)
   )
     fail();
+  enter("signature-algorithm", "signature-policy");
+  if (fields[4] !== "4" || fields[5] !== "0" || fields[6] !== "1") fail();
+  enter("signature-hash", "signature-policy");
+  if (fields[7] !== policy.hash) fail();
+  enter("signature-class", "signature-policy");
+  if (fields[8] !== policy.signatureClass) fail();
+  enter("signature-time", "signature-policy");
   const created = seconds(fields[2]);
   const expiry = seconds(fields[3]);
   if (
@@ -224,6 +230,10 @@ export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) => {
     fail();
   return Object.freeze({ primaryFingerprint: policy.primary, created, expiry });
 };
+
+// The public pure reader has no diagnostic sink or caller callback authority.
+export const verifyBootstrapGpgStatus = (kind, output, nowSeconds) =>
+  verifyStatus(kind, output, nowSeconds, () => undefined);
 
 export const verifyBootstrapGpgListing = (kind, listing, nowSeconds) => {
   const policy = policyFor(kind);
@@ -344,11 +354,13 @@ const runVerification = async (kind, execute, enter) => {
         ],
   );
   enter("signature-policy", "signature-policy");
-  const signature = verifyBootstrapGpgStatus(
+  const signature = verifyStatus(
     kind,
     cleartext ? result.stderr : result.stdout,
     nowSeconds,
+    enter,
   );
+  enter("signature-key-time", "signature-policy");
   if (
     signature.created < key.created ||
     (key.expiry !== 0 && signature.created >= key.expiry)

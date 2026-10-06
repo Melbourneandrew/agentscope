@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { parse as parseYaml } from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error Private executable diagnostics have no public type API.
 import * as fileCommands from "../controller-file-command.mjs";
@@ -142,6 +144,77 @@ describe("optional closed controller file commands", () => {
     );
     expect(accesses).toBe(0);
     expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
+  });
+});
+
+describe("signature-policy substage projection", () => {
+  it.each([
+    "recordset",
+    "count",
+    "compliance",
+    "signer",
+    "algorithm",
+    "hash",
+    "class",
+    "time",
+    "key-time",
+  ])("projects only the fixed signature-%s substage", (substage) => {
+    const workflow = parseYaml(
+      readFileSync(
+        new URL("../../../.github/workflows/integration.yml", import.meta.url),
+        "utf8",
+      ),
+    ) as { jobs: Record<string, { steps: { name?: string; run?: string }[] }> };
+    const projection = workflow.jobs[
+      "mockserver-supplier-research"
+    ]!.steps.find(
+      ({ name }) => name === "Project closed research shell observations",
+    )!;
+    const projected = spawnSync(
+      "/bin/bash",
+      ["--noprofile", "--norc", "-e", "-c", projection.run!],
+      {
+        env: {
+          OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: `signature-${substage}`,
+          OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: "signature-policy",
+        },
+        encoding: "utf8",
+        timeout: 2_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 4_096,
+      },
+    );
+    expect(projected.error).toBeUndefined();
+    expect(projected.status).toBe(0);
+    expect(projected.stdout).toContain(
+      `untrusted_bootstrap_stage=signature-${substage} untrusted_bootstrap_failure_family=signature-policy`,
+    );
+    const value = sink();
+    publishBootstrapGpgObservation(
+      {
+        process: {
+          untrustedBootstrapStage: `signature-${substage}`,
+          untrustedBootstrapFailureFamily: "signature-policy",
+        },
+      },
+      value.env,
+    );
+    expect(readFileSync(value.output, "utf8")).toContain(
+      `untrusted_bootstrap_stage=signature-${substage}\nuntrusted_bootstrap_failure_family=signature-policy\n`,
+    );
+    writeFileSync(value.output, "");
+    publishBootstrapGpgObservation(
+      {
+        process: {
+          untrustedBootstrapStage: `signature-${substage}\nCANARY`,
+        },
+      },
+      value.env,
+    );
+    expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
+    expect(readFileSync(value.output, "utf8")).toContain(
+      "untrusted_bootstrap_stage=unknown\n",
+    );
   });
 });
 
