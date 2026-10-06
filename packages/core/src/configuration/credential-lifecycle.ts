@@ -4,7 +4,13 @@ import {
   referencedByCandidate,
   sameReference,
   referenceAt,
+  CredentialLifecycleError,
+  preflightCode,
+  type CredentialConfigurationResult,
 } from "./credential-reference-evidence.js";
+export { CredentialLifecycleError } from "./credential-reference-evidence.js";
+export type { CredentialConfigurationResult } from "./credential-reference-evidence.js";
+import { recoverCredentialSetForCore } from "./credential-set-lifecycle.js";
 
 import type {
   DestinationConnectionId,
@@ -24,7 +30,6 @@ import {
   type CredentialBackendRegistry,
   type CredentialOwnership,
   type CredentialResolutionContext,
-  type CredentialResolutionFailure,
   type StoredCredentialBackend,
 } from "./credential-adapter.js";
 import type {
@@ -57,32 +62,6 @@ export type CredentialConfigurationRequest =
   | Readonly<{
       kind: "ci-environment";
       environmentVariable: string;
-    }>;
-
-export type CredentialConfigurationResult =
-  | Readonly<{
-      ok: true;
-      state: "active";
-      snapshot: AgentscopeConfigurationSnapshot;
-      reference: ConfigurationCredentialReference;
-    }>
-  | Readonly<{
-      ok: false;
-      state: "compensated" | "orphan-pending" | "referenced-pending";
-      code:
-        | "core.credential.create-failed"
-        | "core.credential.preflight-unavailable"
-        | "core.credential.preflight-locked"
-        | "core.credential.preflight-denied"
-        | "core.credential.preflight-missing"
-        | "core.credential.preflight-malformed"
-        | "core.credential.candidate-invalid"
-        | "core.credential.configuration-failed"
-        | "core.credential.compensation-failed"
-        | "core.credential.intent-finalization-failed"
-        | "core.credential.activation-failed";
-      configurationCommitted: boolean;
-      reference?: ConfigurationCredentialReference;
     }>;
 
 export type ConfigureCredentialInput = Readonly<{
@@ -134,15 +113,6 @@ export type CredentialMutationRecoveryResult = Readonly<{
 const generationPattern = /^credential-generation-v1-[0-9a-f]{64}$/u;
 const referencePattern = /^credential-reference-v1-[0-9a-f]{64}$/u;
 
-export class CredentialLifecycleError extends Error {
-  public readonly code = "core.credential.lifecycle-invalid";
-
-  public constructor() {
-    super("core.credential.lifecycle-invalid");
-    this.name = "CredentialLifecycleError";
-  }
-}
-
 const invalid = (): never => {
   throw new CredentialLifecycleError();
 };
@@ -163,11 +133,6 @@ const fixedFailure = (
     configurationCommitted,
     ...(reference ? { reference } : {}),
   });
-
-const preflightCode = (
-  failure: CredentialResolutionFailure,
-): Extract<CredentialConfigurationResult, { ok: false }>["code"] =>
-  `core.credential.preflight-${failure}`;
 
 const randomIdentity = (prefix: string): string =>
   `${prefix}${randomBytes(32).toString("hex")}`;
@@ -761,6 +726,13 @@ export const recoverCredentialMutation = async (
     input.store,
     input.ownerState,
   );
+  if (intent.recordVersion === 2)
+    return recoverCredentialSetForCore(
+      registry,
+      input.store,
+      intent,
+      input.resolutionContext,
+    );
   const ownership = createCredentialOwnership(intent.ownership);
   const removal = await purgeUnreferencedCredential(registry, {
     store: input.store,

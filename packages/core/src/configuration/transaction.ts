@@ -8,6 +8,7 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { types } from "node:util";
 
 import {
   getDestinationDescriptor,
@@ -20,13 +21,17 @@ import {
   isAgentscopeHome,
   type AgentscopeHome,
 } from "./home.js";
-import { cloneConfigurationDocument } from "./plain-data.js";
+import {
+  canonicalCredentialIntent,
+  parseCredentialIntentRecord,
+  MAXIMUM_CREDENTIAL_INTENT_BYTES,
+  type CredentialMutationIntent,
+} from "./credential-intent-record.js";
+export type { CredentialMutationIntent } from "./credential-intent-record.js";
 import {
   parseAgentscopeConfiguration,
-  parseConfigurationCredentialReference,
   serializeAgentscopeConfiguration,
   type AgentscopeConfigurationSnapshot,
-  type ConfigurationCredentialReference,
 } from "./schema.js";
 
 export const MAXIMUM_CONFIGURATION_FILE_BYTES = 1_572_864;
@@ -38,7 +43,6 @@ const CREDENTIAL_RECOVERY_CLAIM_FILE_NAME = "credential.recovery.lock";
 const LOCAL_RESOURCE_INTENT_FILE_NAME = "local-resource.lock";
 const LOCAL_RESOURCE_RECOVERY_CLAIM_FILE_NAME = "local-resource.recovery.lock";
 const LOCAL_RESOURCE_COMPLETION_FILE_NAME = "local-resource.completion.lock";
-const MAXIMUM_CREDENTIAL_INTENT_BYTES = 4_096;
 /* v8 ignore next -- every supported Node platform exposes O_NOFOLLOW. */
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const readFlags = constants.O_RDONLY | noFollow;
@@ -106,18 +110,6 @@ export type ConfigurationTransactionInspection =
       generation: number | null;
     }>
   | Readonly<{ state: "conflict" | "invalid" | "unavailable" }>;
-
-export type CredentialMutationIntent = Readonly<{
-  recordVersion: 1;
-  operation: "create" | "retire";
-  owner: ConfigurationProcessIdentity;
-  ownership: Readonly<{
-    destinationType: string;
-    connectionId: string;
-    slot: string;
-  }>;
-  reference: ConfigurationCredentialReference;
-}>;
 
 export type CredentialMutationInspection = Readonly<{
   state:
@@ -263,20 +255,6 @@ const lockRecordSchema = z.strictObject({
   backupStageFileName: z.string().regex(/^\.config\.[0-9a-f]{64}\.backup$/u),
 });
 
-const credentialIntentSchema = z.strictObject({
-  recordVersion: z.literal(1),
-  operation: z.enum(["create", "retire"]),
-  owner: lockRecordSchema.shape.owner,
-  ownership: z.strictObject({
-    destinationType: z
-      .string()
-      .regex(/^@agentscope\/destination-[a-z0-9-]{1,64}$/u),
-    connectionId: z.string().regex(/^destination-connection-v1-[0-9a-f]{64}$/u),
-    slot: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
-  }),
-  reference: z.unknown(),
-});
-
 const localResourceIntentCommonSchema = {
   operationId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
   owner: lockRecordSchema.shape.owner,
@@ -355,23 +333,8 @@ const linkForState = (
 ): Promise<void> => (state.fileSystem.link ?? nodeLink)(source, destination);
 
 const parseCredentialIntent = (value: string): CredentialMutationIntent => {
-  if (Buffer.byteLength(value, "utf8") > MAXIMUM_CREDENTIAL_INTENT_BYTES)
-    return invalid("core.configuration.invalid");
   try {
-    const parsed = credentialIntentSchema.safeParse(
-      JSON.parse(value) as unknown,
-    );
-    if (!parsed.success) return invalid("core.configuration.invalid");
-    const record = Object.freeze({
-      recordVersion: 1 as const,
-      operation: parsed.data.operation,
-      owner: Object.freeze(parsed.data.owner),
-      ownership: Object.freeze(parsed.data.ownership),
-      reference: parseConfigurationCredentialReference(parsed.data.reference),
-    });
-    if (`${JSON.stringify(record)}\n` !== value)
-      return invalid("core.configuration.invalid");
-    return record;
+    return parseCredentialIntentRecord(value);
   } catch (error) {
     if (error instanceof ConfigurationStoreError) throw error;
     return invalid("core.configuration.invalid");
@@ -1686,12 +1649,14 @@ export const readRecoverableLocalResourceMutationIntent = async (
   return claimed;
 };
 
-export const createCredentialMutationIntent = async (
+export const createCredentialMutationIntent = async <
+  Intent extends CredentialMutationIntent,
+>(
   store: ConfigurationStore,
-  input: CredentialMutationIntent,
-): Promise<CredentialMutationIntent> => {
+  input: Intent,
+): Promise<Intent> => {
   const state = stored(store);
-  if (typeof input !== "object" || input === null) {
+  if (typeof input !== "object" || input === null || types.isProxy(input)) {
     return invalid("core.configuration.invalid");
   }
   let descriptors: PropertyDescriptorMap;
@@ -1701,48 +1666,18 @@ export const createCredentialMutationIntent = async (
     return invalid("core.configuration.invalid");
   }
   if (
-    Object.keys(descriptors).sort().join(",") !==
-      "operation,owner,ownership,recordVersion,reference" ||
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
     Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
-    descriptors.recordVersion?.value !== 1 ||
     !isConfigurationProcessIdentity(descriptors.owner?.value)
   )
     return invalid("core.configuration.invalid");
-  const ownership = cloneConfigurationDocument(
-    descriptors.ownership?.value,
-  ) as Record<string, unknown>;
-  const reference = cloneConfigurationDocument(
-    descriptors.reference?.value,
-  ) as Record<string, unknown>;
-  const operation = (descriptors.operation as unknown as { value: unknown })
-    .value;
-  const record = parseCredentialIntent(
-    `${JSON.stringify({
-      recordVersion: 1,
-      operation,
-      owner: descriptors.owner.value,
-      ownership: {
-        destinationType: ownership.destinationType,
-        connectionId: ownership.connectionId,
-        slot: ownership.slot,
-      },
-      reference:
-        reference.backend === "ci-environment"
-          ? {
-              referenceVersion: reference.referenceVersion,
-              backend: reference.backend,
-              environmentVariable: reference.environmentVariable,
-              generationId: reference.generationId,
-            }
-          : {
-              referenceVersion: reference.referenceVersion,
-              backend: reference.backend,
-              referenceId: reference.referenceId,
-              generationId: reference.generationId,
-            },
-    })}\n`,
-  );
+  let record: CredentialMutationIntent;
+  try {
+    record = canonicalCredentialIntent(input);
+    record = parseCredentialIntent(`${JSON.stringify(record)}\n`);
+  } catch {
+    return invalid("core.configuration.invalid");
+  }
   try {
     await ensureAgentscopeHomeLayout(state.home);
     if (
@@ -1777,7 +1712,7 @@ export const createCredentialMutationIntent = async (
       return invalid("core.configuration.contention");
     }
     credentialMutationIntentRegistry.add(record);
-    return record;
+    return record as Intent;
   } catch (error) {
     if (nodeErrorCode(error) === "EEXIST")
       return invalid("core.configuration.contention");
