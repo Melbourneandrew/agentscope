@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { sameConfigurationExceptGeneration } from "./credential-retirement-evidence.js";
 import {
   credentialWriteFailureEvidence,
   referencedByCandidate,
@@ -10,6 +11,10 @@ import {
 } from "./credential-reference-evidence.js";
 export { CredentialLifecycleError } from "./credential-reference-evidence.js";
 export type { CredentialConfigurationResult } from "./credential-reference-evidence.js";
+export {
+  retireCredentialConnectionForCore,
+  reconcileCredentialRetirementForCore,
+} from "./credential-retirement-lifecycle.js";
 import { recoverCredentialSetForCore } from "./credential-set-lifecycle.js";
 
 import type {
@@ -789,29 +794,6 @@ export const recoverCredentialMutation = async (
       ? ("orphan-removed" as const)
       : ("referenced-intent-cleared" as const),
   });
-};
-
-const sameConfigurationExceptGeneration = (
-  current: AgentscopeConfigurationSnapshot,
-  candidate: AgentscopeConfigurationSnapshot,
-): boolean => {
-  try {
-    const currentDocument = JSON.parse(
-      JSON.stringify(current.document),
-    ) as Record<string, unknown>;
-    const candidateDocument = JSON.parse(
-      JSON.stringify(candidate.document),
-    ) as Record<string, unknown>;
-    currentDocument.generation = 0;
-    candidateDocument.generation = 0;
-    return (
-      JSON.stringify(currentDocument) === JSON.stringify(candidateDocument)
-    );
-  } catch {
-    /* v8 ignore next -- both snapshots are branded, frozen, JSON-safe plain
-       documents; serialization cannot throw after exact input validation. */
-    return false;
-  }
 };
 
 export const retireCredentialReference = async (
