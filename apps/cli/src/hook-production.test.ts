@@ -7,18 +7,18 @@ import {
   createHookEntryAuthority,
   createOwnedHookEntryAuthorityForCli,
 } from "@agentscope/core/hook-orchestration";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import {
-  runProductCodexHookEvidence,
-  runProductCodexHookEvidenceForTesting,
+  runProductHookEvidence,
+  runProductHookEvidenceForTesting,
 } from "./hook-production.js";
 import { createProductionCliServices } from "./production-services.js";
 
 const roots: string[] = [];
 const presentPlan = (): Promise<void> => Promise.resolve();
 
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
   );
@@ -59,10 +59,53 @@ const hook = (event: "SessionStart" | "Stop" | "SessionEnd") =>
     ),
   );
 
+const configureHookHome = async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentscope-claude-hook-"));
+  roots.push(root);
+  const environment = {
+    LANGFUSE_PUBLIC_KEY: "public-canary",
+    LANGFUSE_SECRET_KEY: "secret-canary",
+  };
+  const services = createProductionCliServices({
+    environment,
+    homeResolver: createAgentscopeHomeResolver({
+      environment: { AGENTSCOPE_HOME: root },
+      environmentOverrideAuthority: "test",
+      platform: process.platform,
+    }),
+    workspace: root,
+  });
+  await services.init({ apply: true, presentPlan });
+  expect(
+    (
+      await services.configureDestination({
+        credentialEnvironment: [
+          "public-key=LANGFUSE_PUBLIC_KEY",
+          "secret-key=LANGFUSE_SECRET_KEY",
+        ],
+        name: "langfuse",
+        settingsJson: JSON.stringify({
+          allowInsecureLoopback: true,
+          endpoint: "http://127.0.0.1:4318",
+        }),
+        type: "langfuse",
+      })
+    ).status,
+  ).toBe("success");
+  expect((await services.setRouting({ names: ["langfuse"] })).status).toBe(
+    "success",
+  );
+  return { root, environment };
+};
+
+// One production process owns one home authority; event cases reuse that home.
+let configuredHome: ReturnType<typeof configureHookHome> | undefined;
+const configuredHookHome = () => (configuredHome ??= configureHookHome());
+
 describe("production Codex hook composition", () => {
   it("keeps the production entrypoint inert for non-Stop lifecycle hooks", async () => {
     await expect(
-      runProductCodexHookEvidence({
+      runProductHookEvidence({
         evidence: hook("SessionStart"),
         hookEntryAuthority: createHookEntryAuthority({
           durationMilliseconds: 2_000,
@@ -77,39 +120,7 @@ describe("production Codex hook composition", () => {
   });
 
   it("routes one untouched Stop hook through Core and the selected Reporter", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agentscope-hook-production-"));
-    roots.push(root);
-    const environment = {
-      LANGFUSE_PUBLIC_KEY: "public-canary",
-      LANGFUSE_SECRET_KEY: "secret-canary",
-    };
-    const homeResolver = createAgentscopeHomeResolver({
-      environment: { AGENTSCOPE_HOME: root },
-      environmentOverrideAuthority: "test",
-      platform: process.platform,
-    });
-    const services = createProductionCliServices({
-      environment,
-      homeResolver,
-      workspace: root,
-    });
-    await services.init({ apply: true, presentPlan });
-    const configured = await services.configureDestination({
-      credentialEnvironment: [
-        "public-key=LANGFUSE_PUBLIC_KEY",
-        "secret-key=LANGFUSE_SECRET_KEY",
-      ],
-      name: "langfuse",
-      settingsJson: JSON.stringify({
-        allowInsecureLoopback: true,
-        endpoint: "http://127.0.0.1:4318",
-      }),
-      type: "langfuse",
-    });
-    expect(configured.status).toBe("success");
-    expect((await services.setRouting({ names: ["langfuse"] })).status).toBe(
-      "success",
-    );
+    const { root, environment } = await configuredHookHome();
     const requests: Array<Readonly<{ body?: Uint8Array; method: string }>> = [];
     const authority = createOwnedHookEntryAuthorityForCli({
       durationMilliseconds: 5_000,
@@ -117,7 +128,7 @@ describe("production Codex hook composition", () => {
       platform: process.platform,
       startedAt: performance.now(),
     });
-    await runProductCodexHookEvidenceForTesting(
+    await runProductHookEvidenceForTesting(
       {
         evidence: hook("Stop"),
         hookEntryAuthority: authority,
@@ -150,7 +161,7 @@ describe("production Codex hook composition", () => {
     "validates %s without fabricating a trace",
     async (event) => {
       let requests = 0;
-      await runProductCodexHookEvidenceForTesting(
+      await runProductHookEvidenceForTesting(
         {
           evidence: hook(event),
           hookEntryAuthority: createHookEntryAuthority({
@@ -179,7 +190,7 @@ describe("production Codex hook home authority", () => {
   it("rejects a launcher root substituted after the owned-home transfer", async () => {
     let requests = 0;
     await expect(
-      runProductCodexHookEvidenceForTesting(
+      runProductHookEvidenceForTesting(
         {
           evidence: hook("Stop"),
           hookEntryAuthority: createOwnedHookEntryAuthorityForCli({
@@ -204,4 +215,112 @@ describe("production Codex hook home authority", () => {
     ).rejects.toThrow("cli.hook.invalid");
     expect(requests).toBe(0);
   });
+});
+
+describe("production Claude hook composition", () => {
+  it.each(["SessionStart", "PreToolUse", "PostToolUse", "Stop"])(
+    "routes the governed %s observation through the existing Core lifecycle",
+    async (event) => {
+      const { root, environment } = await configuredHookHome();
+      const evidence = new TextEncoder().encode(
+        JSON.stringify({
+          cwd: root,
+          hook_event_name: event,
+          session_id: "claude-session",
+          transcript_path: "/never-read.jsonl",
+          ...(event === "SessionStart"
+            ? { source: "startup", model: "unattributed-native-model" }
+            : event === "Stop"
+              ? { stop_hook_active: false, last_assistant_message: "canary" }
+              : {
+                  tool_name: "Read",
+                  tool_use_id: "tool-1",
+                  tool_input: { path: "input-canary" },
+                  ...(event === "PostToolUse"
+                    ? { tool_response: { content: "output-canary" } }
+                    : {}),
+                }),
+        }),
+      );
+      const bodies: Uint8Array[] = [];
+      await runProductHookEvidenceForTesting(
+        {
+          evidence,
+          hookEntryAuthority: createOwnedHookEntryAuthorityForCli({
+            durationMilliseconds: 5_000,
+            homeRoot: root,
+            platform: process.platform,
+            startedAt: performance.now(),
+          }),
+          launcher: {
+            harnessType: "@agentscope/harness-claude-code",
+            homeRoot: root,
+          },
+        },
+        {
+          environment,
+          transportExecutor: (request) => {
+            if (request.body) bodies.push(request.body);
+            return Promise.resolve({
+              status: 200,
+              headers: {},
+              body: new Uint8Array(),
+            });
+          },
+        },
+      );
+      expect(bodies).toHaveLength(1);
+      const wire = new TextDecoder().decode(bodies[0]);
+      expect(wire).toContain("claude-code");
+      if (event === "SessionStart") {
+        expect(wire).toContain("claude.SessionStart");
+      } else {
+        expect(wire).toContain("claude.hook-invocation");
+        if (event === "Stop") expect(wire).toContain("claude.Stop");
+        else {
+          expect(wire).toContain("tool.name");
+          expect(wire).toContain("Read");
+          expect(wire).toContain("tool.id");
+          expect(wire).toContain("tool-1");
+        }
+      }
+      expect(wire).not.toContain("unattributed-native-model");
+      expect(wire).not.toContain("never-read.jsonl");
+    },
+  );
+
+  it.each(["@agentscope/harness-unknown", "@agentscope/harness-claude-code"])(
+    "rejects an unknown identity or unowned SessionEnd before Core work (%s)",
+    async (harnessType) => {
+      let requests = 0;
+      await expect(
+        runProductHookEvidenceForTesting(
+          {
+            evidence: new TextEncoder().encode(
+              JSON.stringify({
+                cwd: "/workspace",
+                hook_event_name: "SessionEnd",
+                session_id: "session",
+                transcript_path: "/unused",
+                reason: "other",
+              }),
+            ),
+            hookEntryAuthority: createHookEntryAuthority({
+              durationMilliseconds: 2_000,
+              startedAt: performance.now(),
+            }),
+            launcher: { harnessType, homeRoot: "/must-not-open" },
+          },
+          {
+            environment: {},
+            transportExecutor: () => {
+              requests += 1;
+              return Promise.reject(new Error("must-not-run"));
+            },
+          },
+        ),
+      ).rejects.toThrow("cli.hook.invalid");
+      expect(requests).toBe(0);
+    },
+  );
 });

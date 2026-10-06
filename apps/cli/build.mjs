@@ -137,6 +137,7 @@ await build({
     __AGENTSCOPE_CLI_VERSION__: JSON.stringify(manifest.version),
     __AGENTSCOPE_HOOK_HARNESS_TYPES__: JSON.stringify([
       "@agentscope/harness-codex",
+      "@agentscope/harness-claude-code",
     ]),
     __AGENTSCOPE_HOOK_VERIFIER_PROGRAM__: JSON.stringify(hookVerifierProgram),
     __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
