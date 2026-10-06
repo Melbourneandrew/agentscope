@@ -46,6 +46,56 @@ const invoke = (name: string, args: readonly unknown[]): unknown => {
   return Reflect.apply(fn, undefined, [...args]) as unknown;
 };
 
+const appleTimestampFields = (source: string): readonly string[] => {
+  const expression = source.match(
+    /#ifdef __APPLE__\s+return ([\s\S]*?);\s+#else/u,
+  )?.[1];
+  const comparisons = [
+    ...(expression ?? "").matchAll(/a->(\w+) == b->(\w+)/gu),
+  ];
+  const fields = comparisons.map((match) => match[1]!);
+  if (
+    comparisons.some((match) => match[1] !== match[2]) ||
+    expression?.replace(/\s+/gu, " ") !==
+      fields.map((field) => `a->${field} == b->${field}`).join(" && ") ||
+    JSON.stringify(fields) !==
+      JSON.stringify(["st_mtime", "st_mtimensec", "st_ctime", "st_ctimensec"])
+  )
+    throw new Error("selected strict POSIX stat fields unavailable");
+  return fields;
+};
+
+describe("Darwin strict POSIX timestamp identity", () => {
+  it("selects the existing namespace without enabling Darwin extensions", () => {
+    expect(primitive).toMatch(/^#define _POSIX_C_SOURCE 200809L\n/u);
+    expect(primitive).not.toContain("_DARWIN_C_SOURCE");
+    expect(appleTimestampFields(primitive)).toHaveLength(4);
+    const prior = primitive
+      .replaceAll("a->st_mtimensec", "a->st_mtimespec.tv_nsec")
+      .replaceAll("b->st_mtimensec", "b->st_mtimespec.tv_nsec")
+      .replaceAll("a->st_mtime ", "a->st_mtimespec.tv_sec ")
+      .replaceAll("b->st_mtime ", "b->st_mtimespec.tv_sec ");
+    expect(() => appleTimestampFields(prior)).toThrow("strict POSIX");
+  });
+  it.each([null, "st_mtime", "st_mtimensec", "st_ctime", "st_ctimensec"])(
+    "retains each actual seconds/nanoseconds comparison: %s",
+    (changed) => {
+      const fields = appleTimestampFields(primitive);
+      const before: Record<string, bigint> = {
+        st_mtime: 1n,
+        st_mtimensec: 2n,
+        st_ctime: 3n,
+        st_ctimensec: 4n,
+      };
+      const after = { ...before };
+      if (changed !== null) after[changed] = after[changed]! + 1n;
+      expect(fields.every((field) => before[field] === after[field])).toBe(
+        changed === null,
+      );
+    },
+  );
+});
+
 describe("fixed resource-seal read guard evidence", () => {
   it.each([
     [false, 1n, "regular=false:nonempty=true:bytes=1:cap=16777216"],

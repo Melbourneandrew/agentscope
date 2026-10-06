@@ -30,10 +30,10 @@ static int same_stat(const struct stat *a, const struct stat *b) {
   if (a->st_dev != b->st_dev || a->st_ino != b->st_ino ||
       a->st_mode != b->st_mode || a->st_nlink != b->st_nlink) return 0;
 #ifdef __APPLE__
-  return a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec &&
-         a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec &&
-         a->st_ctimespec.tv_sec == b->st_ctimespec.tv_sec &&
-         a->st_ctimespec.tv_nsec == b->st_ctimespec.tv_nsec;
+  return a->st_mtime == b->st_mtime &&
+         a->st_mtimensec == b->st_mtimensec &&
+         a->st_ctime == b->st_ctime &&
+         a->st_ctimensec == b->st_ctimensec;
 #else
   return a->st_mtim.tv_sec == b->st_mtim.tv_sec &&
          a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
