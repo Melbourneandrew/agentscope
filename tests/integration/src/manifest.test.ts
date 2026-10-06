@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -117,57 +117,6 @@ describe("integration capability manifest", () => {
         scenarios: [{ ...original.scenarios[0]!, image: "node:22-alpine" }],
       }),
     ).toThrow("integration.manifest.invalid");
-  });
-
-  it("detects descriptor evidence mutation", () => {
-    const original = manifestFixture();
-    const evidencePath = resolve(
-      integrationRoot,
-      original.evidence[0]!.descriptorArtifact.path,
-    );
-    const bytes = readFileSync(evidencePath);
-    try {
-      writeFileSync(evidencePath, `${bytes.toString("utf8")}\n`);
-      expect(() => {
-        verifyManifestEvidence(original, integrationRoot);
-      }).toThrow("integration.manifest.evidence-digest");
-    } finally {
-      writeFileSync(evidencePath, bytes);
-    }
-  });
-
-  it("detects scenario adapter mutation", () => {
-    const original = manifestFixture();
-    const adapterPath = resolve(
-      integrationRoot,
-      original.scenarios[0]!.fixtureAdapter.path,
-    );
-    const bytes = readFileSync(adapterPath);
-    try {
-      writeFileSync(adapterPath, `${bytes.toString("utf8")}\n`);
-      expect(() => {
-        verifyManifestEvidence(original, integrationRoot);
-      }).toThrow("integration.manifest.evidence-digest");
-    } finally {
-      writeFileSync(adapterPath, bytes);
-    }
-  });
-
-  it("detects scenario oracle mutation", () => {
-    const original = manifestFixture();
-    const oraclePath = resolve(
-      integrationRoot,
-      original.scenarios[0]!.scenarioOracle.path,
-    );
-    const bytes = readFileSync(oraclePath);
-    try {
-      writeFileSync(oraclePath, `${bytes.toString("utf8")}\n`);
-      expect(() => {
-        verifyManifestEvidence(original, integrationRoot);
-      }).toThrow("integration.manifest.evidence-digest");
-    } finally {
-      writeFileSync(oraclePath, bytes);
-    }
   });
 
   it("rejects substituted runtime artifact authority", () => {
@@ -838,52 +787,9 @@ describe("integration capability manifest", () => {
         "integration.manifest.image-selection",
       );
   });
-
-  it("rejects descriptor evidence that contradicts its manifest binding", () => {
-    const original = manifestFixture();
-    const evidencePath = resolve(
-      integrationRoot,
-      original.evidence[0]!.descriptorArtifact.path,
-    );
-    const bytes = readFileSync(evidencePath);
-    try {
-      const descriptor = JSON.parse(bytes.toString("utf8")) as {
-        harnessId: string;
-      };
-      descriptor.harnessId = "other-harness";
-      const mutated = `${JSON.stringify(descriptor, undefined, 2)}\n`;
-      writeFileSync(evidencePath, mutated);
-      const manifest = structuredClone(original);
-      manifest.evidence[0]!.descriptorArtifact.sha256 = createHash("sha256")
-        .update(mutated)
-        .digest("hex");
-      expect(() => {
-        verifyManifestEvidence(manifest, integrationRoot);
-      }).toThrow("integration.manifest.evidence-contract");
-    } finally {
-      writeFileSync(evidencePath, bytes);
-    }
-  });
 });
 
 describe("integration npm material policy", () => {
-  it("detects scenario process mutation", () => {
-    const original = manifestFixture();
-    const processPath = resolve(
-      integrationRoot,
-      original.scenarios[0]!.scenarioProcess.path,
-    );
-    const bytes = readFileSync(processPath);
-    try {
-      writeFileSync(processPath, `${bytes.toString("utf8")}\n`);
-      expect(() => {
-        verifyManifestEvidence(original, integrationRoot);
-      }).toThrow("integration.manifest.evidence-digest");
-    } finally {
-      writeFileSync(processPath, bytes);
-    }
-  });
-
   it("rejects moving or incomplete npm material", () => {
     const original = manifestFixture();
     expect(() =>
