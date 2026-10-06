@@ -48,6 +48,7 @@ import {
   compileCredentialBackendRegistry,
   createCiEnvironmentCredentialAdapter,
   createCredentialResolutionContext,
+  isCredentialBackendRegistry,
   resolveCredentialReference,
   type CredentialBackendRegistry,
   type CredentialResolutionContext,
@@ -83,6 +84,17 @@ import {
   type LocalResourceMutationRecord,
 } from "./transaction.js";
 import { cloneConfigurationDocument } from "./plain-data.js";
+import {
+  configureStoredDestinationForCore,
+  unconfigureManagedDestinationForCore,
+  type ConfigureStoredDestinationInput,
+  type UnconfigureManagedDestinationInput,
+} from "./credential-management.js";
+export type {
+  ConfigureStoredDestinationInput,
+  UnconfigureManagedDestinationInput,
+  ManagedCredentialResult,
+} from "./credential-management.js";
 
 const connectionNameSchema = z
   .string()
@@ -103,6 +115,7 @@ const configurationManagementRuntimes = new WeakMap<
     registry: DestinationRegistry;
     store: ConfigurationStore;
     lifecycleHandlers?: LocalResourceLifecycleHandlerRegistry;
+    credentialRegistry?: CredentialBackendRegistry;
   }>
 >();
 const configurationCredentialPreflights = new WeakMap<
@@ -303,11 +316,14 @@ export const createConfigurationManagementRuntime = (
   store: ConfigurationStore,
   owner: ConfigurationProcessIdentity,
   lifecycleHandlers?: LocalResourceLifecycleHandlerRegistry,
+  credentialRegistry?: CredentialBackendRegistry,
 ): ConfigurationManagementRuntime => {
   if (
     !isConfigurationStore(store) ||
     !configurationStoreUsesRegistry(store, registry) ||
     !isConfigurationProcessIdentity(owner) ||
+    (credentialRegistry !== undefined &&
+      !isCredentialBackendRegistry(credentialRegistry)) ||
     (lifecycleHandlers !== undefined &&
       (!isLocalResourceLifecycleHandlerRegistry(lifecycleHandlers) ||
         !localResourceLifecycleHandlerRegistryUsesDestinationRegistry(
@@ -324,9 +340,20 @@ export const createConfigurationManagementRuntime = (
     registry,
     store,
     ...(lifecycleHandlers === undefined ? {} : { lifecycleHandlers }),
+    ...(credentialRegistry === undefined ? {} : { credentialRegistry }),
   });
   return runtime;
 };
+
+export const configureStoredDestinationConnection = async (
+  runtime: ConfigurationManagementRuntime,
+  input: ConfigureStoredDestinationInput,
+) => await configureStoredDestinationForCore(stored(runtime), input);
+
+export const unconfigureManagedDestinationConnection = async (
+  runtime: ConfigurationManagementRuntime,
+  input: UnconfigureManagedDestinationInput,
+) => await unconfigureManagedDestinationForCore(stored(runtime), input);
 
 const mapStoreError = (error: unknown): never => {
   /* v8 ignore next -- the branded store exposes only fixed ConfigurationStoreError failures. */
@@ -707,40 +734,23 @@ export const configureDestinationConnection = async (
     )
   )
     return invalid("core.destination.connection-exists");
-  const document = documentOf(current);
-  const destinations = destinationDocument(document);
-  const existing = destinations[descriptor.destinationType] as
-    | Readonly<{
-        connections?: unknown[];
-        namespaceVersion?: number;
-        settingsVersion?: number;
-      }>
-    | undefined;
-  /* v8 ignore next 7 -- current parsing already proves the registered namespace shape and version. */
-  if (
-    existing !== undefined &&
-    (existing.namespaceVersion !== 1 ||
-      existing.settingsVersion !== descriptor.settingsVersion ||
-      !Array.isArray(existing.connections))
-  )
-    return invalid();
   const connectionId = createDestinationConnectionId(
     `destination-connection-v1-${randomBytes(32).toString("hex")}`,
   );
-  destinations[descriptor.destinationType] = {
-    connections: [
-      ...(existing?.connections ?? []),
-      {
-        connectionId,
-        credentialReferences,
-        name: candidateInput.name,
-        settings,
-      },
-    ],
-    namespaceVersion: 1,
-    settingsVersion: descriptor.settingsVersion,
-  };
-  const written = await writeCandidate(runtime, current, document);
+  const appended = appendConfiguredConnection({
+    current,
+    registry: state.registry,
+    descriptor,
+    input: candidateInput,
+    connectionId,
+    settings,
+    credentialReferences,
+  });
+  const written = await writeCandidate(
+    runtime,
+    current,
+    documentOf(appended.candidate),
+  );
   const connection = written.connections.find(
     (candidate) => candidate.connectionId === connectionId,
   );
@@ -1913,20 +1923,7 @@ export const unconfigureDestinationConnection = async (
     return invalid("core.destination.lifecycle-unavailable");
   if (Object.keys(connection.credentialReferences).length > 0)
     return invalid("core.destination.credential-removal-required");
-  const document = documentOf(current);
-  const destinations = destinationDocument(document);
-  const namespace = destinations[connection.destinationType] as {
-    connections: Array<{ connectionId: string }>;
-  };
-  namespace.connections = namespace.connections.filter(
-    (candidate) => candidate.connectionId !== connection.connectionId,
-  );
-  if (namespace.connections.length === 0)
-    delete destinations[connection.destinationType];
-  const routing = document.routing as Record<string, unknown>;
-  routing.selectedConnectionIds = current.selectedConnectionIds.filter(
-    (connectionId) => connectionId !== connection.connectionId,
-  );
-  const written = await writeCandidate(runtime, current, document);
+  const candidate = removalCandidate(current, connection, state.registry);
+  const written = await writeCandidate(runtime, current, documentOf(candidate));
   return Object.freeze({ generation: written.generation, name });
 };

@@ -7,6 +7,8 @@ export {
   ConfigurationManagementError,
   applyAgentscopeConfigurationInitialization,
   configureDestinationConnection,
+  configureStoredDestinationConnection,
+  unconfigureManagedDestinationConnection,
   createCiEnvironmentCredentialPreflight,
   createConfigurationManagementRuntime,
   initializeAgentscopeConfiguration,
@@ -30,6 +32,9 @@ export {
   type ConfigureDestinationConnectionInput,
   type DestinationConfigurationResult,
   type DestinationConnectionSummary,
+  type ConfigureStoredDestinationInput,
+  type UnconfigureManagedDestinationInput,
+  type ManagedCredentialResult,
 } from "./management.js";
 export {
   AGENTSCOPE_HOME_DIRECTORY_NAME,
