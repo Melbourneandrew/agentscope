@@ -12,6 +12,7 @@ import {
   inspectPluginOverlap,
   parsePluginInventory,
   type ClaudeCodeInstalledPlugin,
+  type ClaudeCodePluginSettingsLayer,
 } from "./plugin-inventory.js";
 import { parsePluginLoadSelections } from "./plugin-loading-selection.js";
 
@@ -31,7 +32,9 @@ const plugin = (pluginId = canonicalId): ClaudeCodeInstalledPlugin => ({
   directTraceExporter: true,
 });
 const inventory = (
-  enabledPlugins: Readonly<Record<string, boolean>> = { [oldId]: true },
+  enabledPlugins: ClaudeCodePluginSettingsLayer["enabledPlugins"] = {
+    [oldId]: true,
+  },
   loadSelections: unknown = { [oldId]: canonicalId },
   installedPlugins = [plugin()],
 ) => ({
@@ -110,6 +113,30 @@ describe("Claude plugin loading projection", () => {
       ).toBeUndefined();
     },
   );
+});
+
+describe("Claude raw-state loading projection", () => {
+  it.each([{ state: [] }, { state: ["constraint"] }])(
+    "allows array entry renames without hook enablement (%j)",
+    ({ state }) => {
+      for (const selected of [canonicalId, null]) {
+        const value = inventory({ [oldId]: state }, { [oldId]: selected });
+        expect(parsePluginInventory(value)).toBeDefined();
+        expect(inspectPluginOverlap(value)).toEqual({ status: "absent" });
+      }
+    },
+  );
+
+  it("excludes undefined keys from the finite loading projection", () => {
+    expect(
+      parsePluginInventory(inventory({ [oldId]: undefined }, {}, [])),
+    ).toBeDefined();
+    expect(
+      parsePluginInventory(
+        inventory({ [oldId]: undefined }, { [oldId]: oldId }, []),
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("Claude loading projection consistency", () => {

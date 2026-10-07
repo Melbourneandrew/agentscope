@@ -88,13 +88,69 @@ export const consumeInventoryString = (
   return true;
 };
 
+export type PluginSettingState = boolean | readonly string[] | undefined;
+
+const consumeStateString = (
+  value: unknown,
+  budget: InventoryBudget,
+): boolean => {
+  if (value !== "") return consumeInventoryString(value, 512, budget);
+  // Empty strings are native-valid. Charge one structural byte to the SAME
+  // inventory budget so zero-payload arrays cannot bypass its total bound.
+  if (budget.remainingBytes < 1) return false;
+  budget.remainingBytes -= 1;
+  return true;
+};
+
+// The pinned native schema is boolean|string[]|undefined. Its undefined
+// constructor is not an extended {on: ...} object parser. Raw states remain
+// separate from entry selection and the stricter state===true hook predicate.
+export const parseEnabledPlugins = (
+  value: unknown,
+  budget: InventoryBudget,
+): Readonly<Record<string, PluginSettingState>> | undefined => {
+  if (
+    isProxy(value) ||
+    !isRecord(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (
+    Object.keys(descriptors).length > 256 ||
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")
+  )
+    return undefined;
+  const entries: [string, PluginSettingState][] = [];
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!consumeInventoryString(key, 512, budget) || !("value" in descriptor))
+      return undefined;
+    const state: unknown = descriptor.value;
+    if (typeof state === "boolean" || state === undefined) {
+      entries.push([key, state]);
+      continue;
+    }
+    const values = exactArrayValues(state);
+    if (
+      values === undefined ||
+      values.some((entry) => !consumeStateString(entry, budget))
+    )
+      return undefined;
+    entries.push([key, Object.freeze(values as string[])]);
+  }
+  return Object.freeze(Object.fromEntries(entries));
+};
+
 export type PluginLoadSelections = Readonly<Record<string, string | null>>;
 const nativeId = /^[A-Za-z0-9][-A-Za-z0-9._]*@[A-Za-z0-9][-A-Za-z0-9._]*$/u;
 
 // This projection describes loaded selections; it never replaces raw settings.
 export const parsePluginLoadSelections = (
   value: unknown,
-  effective: ReadonlyMap<string, Readonly<{ enabled: boolean }>>,
+  effective: ReadonlyMap<
+    string,
+    Readonly<{ enabled: boolean; entrySelected?: boolean }>
+  >,
   budget: InventoryBudget,
 ): PluginLoadSelections | undefined => {
   if (
@@ -123,7 +179,8 @@ export const parsePluginLoadSelections = (
     const selected: unknown = descriptor.value;
     if (selected !== null && !consumeInventoryString(selected, 512, budget))
       return undefined;
-    if (!state.enabled && selected !== originalId) return undefined;
+    if (!(state.entrySelected ?? state.enabled) && selected !== originalId)
+      return undefined;
     if (selected !== null) {
       if (
         selected !== originalId &&

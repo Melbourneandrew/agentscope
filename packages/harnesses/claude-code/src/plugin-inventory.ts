@@ -1,11 +1,12 @@
 import { isAbsolute, normalize } from "node:path";
-import { isProxy } from "node:util/types";
 import {
   consumeInventoryString,
   exactArrayValues,
   exactRecordValues,
   isRecord,
   parsePluginLoadSelections,
+  parseEnabledPlugins,
+  type PluginSettingState,
   type InventoryBudget,
   type PluginLoadSelections,
 } from "./plugin-loading-selection.js";
@@ -13,6 +14,7 @@ export {
   exactArrayValues,
   exactRecordValues,
   isRecord,
+  parseEnabledPlugins,
 } from "./plugin-loading-selection.js";
 import { CLAUDE_CODE_LIFECYCLE_EVENTS } from "./owned-profile.js";
 
@@ -26,6 +28,7 @@ export const CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST =
 type ClaudeCodeSettingsScope = "user" | "project" | "local" | "managed";
 type EffectivePluginState = Readonly<{
   enabled: boolean;
+  entrySelected: boolean;
   scope: ClaudeCodeSettingsScope;
   targetPath: string;
   targetDigest: string;
@@ -46,7 +49,7 @@ export type ClaudeCodePluginSettingsLayer = Readonly<{
   targetPath: string;
   targetDigest: string;
   targetExists: boolean;
-  enabledPlugins: Readonly<Record<string, boolean>>;
+  enabledPlugins: Readonly<Record<string, PluginSettingState>>;
 }>;
 
 export type ClaudeCodeInstalledPlugin = Readonly<{
@@ -85,46 +88,15 @@ const scopeOrder: Readonly<Record<ClaudeCodeSettingsScope, number>> = {
 // The current owned four-event profile plus the historical SessionEnd owner.
 const overlappingEvents = new Set<string>(CLAUDE_CODE_LIFECYCLE_EVENTS);
 const digestPattern = /^[a-f0-9]{64}$/u;
-const maximumSettingsLayerCount = 4;
+// Existing Core plan has sixteen total targets and three owned mutations.
+// These are bounded raw consulted rows, never virtual aggregate preimages.
+const maximumSettingsLayerCount = 13;
 const maximumInstalledPluginCount = 128;
-const maximumEnabledPluginCount = 256;
 const maximumHookEventCount = 64;
 const maximumTargetPathBytes = 4_096;
 const maximumPluginFieldBytes = 512;
 export const maximumHookEventBytes = 128;
 export const maximumInventoryUtf8Bytes = 96 * 1_024;
-
-export const parseEnabledPlugins = (
-  value: unknown,
-  budget: InventoryBudget,
-): Readonly<Record<string, boolean>> | undefined => {
-  if (
-    isProxy(value) ||
-    !isRecord(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (
-    Object.keys(descriptors).length > maximumEnabledPluginCount ||
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.entries(descriptors).some(
-      ([key, descriptor]) =>
-        !consumeInventoryString(key, maximumPluginFieldBytes, budget) ||
-        !("value" in descriptor) ||
-        typeof descriptor.value !== "boolean",
-    )
-  )
-    return undefined;
-  return Object.freeze(
-    Object.fromEntries(
-      Object.entries(descriptors).map(([key, descriptor]) => [
-        key,
-        descriptor.value as boolean,
-      ]),
-    ),
-  );
-};
 
 const parsePluginSettingsLayer = (
   value: unknown,
@@ -259,8 +231,8 @@ const parseInstalledPlugin = (
 };
 
 export const enabledPluginsEqual = (
-  left: Readonly<Record<string, boolean>>,
-  right: Readonly<Record<string, boolean>>,
+  left: Readonly<Record<string, PluginSettingState>>,
+  right: Readonly<Record<string, PluginSettingState>>,
 ): boolean => {
   const leftEntries = Object.keys(left)
     .sort()
@@ -292,11 +264,13 @@ export const parsePluginInventory = (
     return undefined;
   const budget: InventoryBudget = { remainingBytes: maximumInventoryUtf8Bytes };
   const settingsLayers: ClaudeCodePluginSettingsLayer[] = [];
-  const scopes = new Set<ClaudeCodeSettingsScope>();
+  const scopedPaths = new Set<string>();
   const paths = new Map<string, ClaudeCodePluginSettingsLayer>();
   for (const rawLayer of rawLayers) {
     const layer = parsePluginSettingsLayer(rawLayer, budget);
-    if (layer === undefined || scopes.has(layer.scope)) return undefined;
+    if (layer === undefined) return undefined;
+    const scopedPath = `${layer.scope}\0${layer.targetPath}`;
+    if (scopedPaths.has(scopedPath)) return undefined;
     const previous = paths.get(layer.targetPath);
     if (
       previous !== undefined &&
@@ -305,7 +279,7 @@ export const parsePluginInventory = (
         !enabledPluginsEqual(previous.enabledPlugins, layer.enabledPlugins))
     )
       return undefined;
-    scopes.add(layer.scope);
+    scopedPaths.add(scopedPath);
     paths.set(layer.targetPath, layer);
     settingsLayers.push(layer);
   }
@@ -317,6 +291,7 @@ export const parsePluginInventory = (
     installedPlugins.push(plugin);
   }
   const effective = effectiveEnabledPlugins(settingsLayers);
+  if (effective === undefined) return undefined;
   const hasSelections = Object.hasOwn(record, "loadSelections");
   const loadSelections =
     hasSelections && effective !== undefined
@@ -333,26 +308,32 @@ export const parsePluginInventory = (
 const effectiveEnabledPlugins = (
   layers: readonly ClaudeCodePluginSettingsLayer[],
 ): ReadonlyMap<string, EffectivePluginState> | undefined => {
-  const seen = new Set<ClaudeCodeSettingsScope>();
+  const seen = new Set<string>();
   const ordered = [...layers].sort(
     (left, right) => scopeOrder[left.scope] - scopeOrder[right.scope],
   );
   const enabled = new Map<string, EffectivePluginState>();
   for (const layer of ordered) {
-    if (seen.has(layer.scope) || !isRecord(layer.enabledPlugins))
-      return undefined;
-    seen.add(layer.scope);
+    if (!isRecord(layer.enabledPlugins)) return undefined;
+    const key = `${layer.scope}\0${layer.targetPath}`;
+    if (seen.has(key)) return undefined;
+    seen.add(key);
     if (!layer.targetExists) continue;
     for (const [pluginId, state] of Object.entries(layer.enabledPlugins)) {
+      // Native merge does not overwrite an earlier defined state with
+      // undefined. Such keys alone do not enter the selected entry roster.
+      if (state === undefined) continue;
       enabled.set(
         pluginId,
         Object.freeze({
-          enabled: state,
+          enabled: state === true,
+          entrySelected: state === true || Array.isArray(state),
           scope: layer.scope,
           targetPath: layer.targetPath,
           targetDigest: layer.targetDigest,
         }),
       );
+      if (enabled.size > 1_024) return undefined;
     }
   }
   return enabled;
