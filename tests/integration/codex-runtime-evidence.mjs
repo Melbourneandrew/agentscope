@@ -95,111 +95,14 @@ export const classifyCodexTraceFailureHint = ({
   return `${stage}-${kind}`;
 };
 
-export const codexTraceSearchChildFailureCategory = ({
-  code,
-  deadlineExpired,
-  signal,
-  stderrBytes,
-  stdoutBytes,
-  maximumBytes,
-}) => {
-  if (
-    !Number.isSafeInteger(stderrBytes) ||
-    stderrBytes < 0 ||
-    !Number.isSafeInteger(stdoutBytes) ||
-    stdoutBytes < 0 ||
-    !Number.isSafeInteger(maximumBytes) ||
-    maximumBytes < 1 ||
-    typeof deadlineExpired !== "boolean"
-  )
-    throw new Error("integration.codex.trace-search-child-observation");
-  if (stdoutBytes > maximumBytes || stderrBytes > maximumBytes)
-    return "output-limit";
-  if (deadlineExpired) return "deadline";
-  if (signal !== null) return "signal";
-  if (code === 5) return "exit-5";
-  if (code !== 0) return "exit-other";
-  throw new Error("integration.codex.trace-search-child-observation");
-};
-
-// Closed, content-free diagnosis only. These categories never satisfy trace
-// acceptance, retry a child, or grant another observation window.
-const traceGetFailureKinds = new Map([
-  ["integration.codex.trace-get-locator-input", "locator-input"],
-  ["integration.codex.child-spawn", "child-spawn"],
-  ["integration.codex.child-deadline", "child-deadline"],
-  ["integration.codex.trace-get-child-deadline", "child-deadline"],
-  ["integration.codex.trace-get-child-signal", "child-signal"],
-  ["integration.codex.trace-get-child-exit", "child-exit"],
-  ["integration.codex.trace-get-child-output-limit", "child-output-limit"],
-  ["integration.codex.trace-deadline", "terminal-deadline"],
-  ["integration.codex.deadline", "terminal-deadline"],
-  ["integration.codex.cli-output", "machine-output"],
-  ["integration.codex.trace-get-record-count", "record-count"],
-  ["integration.codex.trace-get-locator-result", "locator-result"],
-]);
-
-export const classifyCodexTraceGetFailure = (message) =>
-  typeof message === "string"
-    ? (traceGetFailureKinds.get(message) ?? "unclassified")
-    : "unclassified";
-
-export const codexTraceGetChildFailureCategory = (observation) => {
-  const category = codexTraceSearchChildFailureCategory(observation);
-  return category === "exit-5" || category === "exit-other" ? "exit" : category;
-};
-
-export const codexTraceSearchUnavailable = ({
-  code,
-  signal,
-  stderr,
-  stdout,
-}) => {
-  if (
-    code !== 5 ||
-    signal !== null ||
-    !Buffer.isBuffer(stdout) ||
-    stdout.length !== 0 ||
-    !Buffer.isBuffer(stderr) ||
-    stderr.length < 1 ||
-    stderr.length > 4_096
-  )
-    return false;
-  return stderr.equals(
-    Buffer.from(
-      '{"category":"unavailable","code":"traces.unavailable","command":"agentscope traces search","schema":"agentscope.cli.diagnostic.v1"}\n',
-    ),
-  );
-};
-
-export const codexTraceSearchTimedOut = ({
-  code,
-  deadlineExpired,
-  signal,
-  stderr,
-  stdout,
-}) =>
-  deadlineExpired === true &&
-  code === null &&
-  signal === "SIGKILL" &&
-  stdout.length === 0 &&
-  stderr.length === 0;
-
-export const codexTraceSearchAttemptDeadlines = ({
-  now,
-  observationDeadline,
-}) => {
-  if (observationDeadline - now <= 2_500) return null;
-  const attemptDeadline = observationDeadline - 500;
-  const childDeadline = attemptDeadline - 250;
-  if (childDeadline <= now)
-    throw new Error("integration.codex.trace-search-deadline");
-  return Object.freeze({
-    attemptDeadline,
-    childDeadline,
-    observationDeadline,
-  });
-};
+export {
+  codexTraceSearchChildFailureCategory,
+  classifyCodexTraceGetFailure,
+  codexTraceGetChildFailureCategory,
+  codexTraceSearchUnavailable,
+  codexTraceSearchTimedOut,
+  codexTraceSearchAttemptDeadlines,
+} from "./codex-trace-child-diagnostics.mjs";
 
 const readCodexHookLog = ({
   afterRead,

@@ -447,27 +447,23 @@ const run = (executable, arguments_, options = {}) => {
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
         ) {
+          const failureObservation = {
+            code,
+            deadlineExpired,
+            signal,
+            stderrBytes: stderr.length,
+            stdoutBytes: stdout.length,
+            maximumBytes: maximumOutput,
+            stderr,
+            stdout,
+          };
           const traceFailureKind =
             options.acceptTraceSearchUnavailable === true
-              ? codexTraceSearchChildFailureCategory({
-                  code,
-                  deadlineExpired,
-                  signal,
-                  stderrBytes: stderr.length,
-                  stdoutBytes: stdout.length,
-                  maximumBytes: maximumOutput,
-                })
+              ? codexTraceSearchChildFailureCategory(failureObservation)
               : undefined;
           const traceGetFailureKind =
             options.traceGetDiagnostic === true
-              ? codexTraceGetChildFailureCategory({
-                  code,
-                  deadlineExpired,
-                  signal,
-                  stderrBytes: stderr.length,
-                  stdoutBytes: stdout.length,
-                  maximumBytes: maximumOutput,
-                })
+              ? codexTraceGetChildFailureCategory(failureObservation)
               : undefined;
           return reject(
             new Error(

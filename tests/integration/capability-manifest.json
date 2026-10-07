@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-a62720800973e9536763cfe7b1fa01538e5fcf0c94aa7d634f65f79ab5d7398e",
+  "manifestIdentity": "sha256-c90845d6112225c3d8d0210c74164295e8b3ea808f64a3ee895cd524b675dcdf",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "456abbab9e39d955c8e85e1bcca482d710d7cfaa99636c2e5397f21727106574"
+        "sha256": "a871f77f8a8cd0b4d244089062a92fe97491503668b4f54306b36cec31f05d94"
       },
       "runtimeArtifacts": [
         {
@@ -190,7 +190,15 @@
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "160d048700f954aeb2ff673e36a56c5015b39d54cfa3f57beda64f4e0a043bdc"
+          "sha256": "9cf29df9daf40920d177b56999aa30c48ff5c616c9f6952ae4d099e048017b2a"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "codex-trace-child-diagnostics.mjs"
+          },
+          "destination": "codex-trace-child-diagnostics.mjs",
+          "sha256": "c6163577cbcbd4c9363d413848d7fb0158d173a5770eed0b54c976c7ad13bad4"
         },
         {
           "source": {

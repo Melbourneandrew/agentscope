@@ -227,6 +227,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-trace-get-record-count",
   "integration.fixture.codex-verify-trace-get-locator-result",
   "integration.fixture.codex-verify-trace-get-unclassified",
+  "integration.fixture.codex-verify-trace-get-child-prepare-retriever",
+  "integration.fixture.codex-verify-trace-get-child-invoke-get",
 ]);
 
 export const selectInteractiveFailureDiagnostic = (
