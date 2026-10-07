@@ -126,6 +126,15 @@ export async function captureNativeCiClosure(phase, seed = "real") {
   assertNativeCiSeed(seed);
   if (phase === "tracked" && seed !== "real")
     throw new Error("native-ci.fixture.seed");
+  const report = (kind, projection) => {
+    const message = `native-ci.fixture.${kind} ${projection}`;
+    try {
+      process.stderr.write(`${message}\n`);
+    } catch {
+      // Diagnostic delivery never changes the original failure or retirement.
+    }
+    return message;
+  };
   const entered = performance.now();
   const deadline = entered + 5_000;
   let root;
@@ -133,13 +142,16 @@ export async function captureNativeCiClosure(phase, seed = "real") {
     root = mkdtempSync(join(tmpdir(), "agentscope-native-closure-"));
   } catch (primary) {
     throw new Error(
-      `native-ci.fixture.failure ${projectNativeCiClosureFailure({
-        operation: phase,
-        stage: "setup",
-        entered,
-        now: performance.now(),
-        primary,
-      })}`,
+      report(
+        "failure",
+        projectNativeCiClosureFailure({
+          operation: phase,
+          stage: "setup",
+          entered,
+          now: performance.now(),
+          primary,
+        }),
+      ),
       { cause: primary },
     );
   }
@@ -206,12 +218,12 @@ export async function captureNativeCiClosure(phase, seed = "real") {
     if (primary === undefined) stage = "settlement";
     throw new AggregateError(
       primary === undefined ? [error] : [primary, error],
-      `native-ci.fixture.quarantined ${diagnostic(error)}`,
+      report("quarantined", diagnostic(error)),
       { cause: error },
     );
   }
   if (primary !== undefined)
-    throw new Error(`native-ci.fixture.failure ${diagnostic(undefined)}`, {
+    throw new Error(report("failure", diagnostic(undefined)), {
       cause: primary,
     });
   return result;
