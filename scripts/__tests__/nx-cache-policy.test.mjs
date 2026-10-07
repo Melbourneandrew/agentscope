@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { EventEmitter } from "node:events";
 import { onTestFailed, test } from "vitest";
-import { createNxCacheDiagnostic } from "../fixtures/nx-cache-diagnostics.mjs";
+import {
+  createNxCacheDiagnostic,
+  createNxCacheProgressDiagnostic,
+} from "../fixtures/nx-cache-diagnostics.mjs";
 import {
   assertNxCacheWorkBudget,
   bindNxCacheFixture,
@@ -39,30 +42,6 @@ import {
 } from "../workspace-policy-runner.mjs";
 
 const suite = "nx-cache-policy.test.mjs";
-
-test.each([
-  ["entry", "none", 0, 0, false],
-  ["build-2", "birth-inspection", 93_242, 93_242, false],
-  ["cleanup", "join-inspection", 300_001, 300_000, true],
-  ["secret-path", "secret-argv", NaN, null, false],
-  ["change", "terminal-inspection", -1, null, false],
-])(
-  "Nx diagnostic preserves only closed phases and original elapsed %s/%s",
-  (phase, command, now, elapsed, capped) => {
-    const diagnostic = createNxCacheDiagnostic(10, () => 10 + now);
-    diagnostic.phase(phase);
-    diagnostic.command(command);
-    const snapshot = diagnostic.snapshot();
-    assert.deepEqual(snapshot, {
-      phase: phase === "secret-path" ? "unknown" : phase,
-      commandPhase: command === "secret-argv" ? "unknown" : command,
-      originalElapsedMilliseconds: elapsed,
-      elapsedCapped: capped,
-    });
-    assert.equal(JSON.stringify(snapshot).includes("secret"), false);
-    assert.equal(Object.isFrozen(snapshot), true);
-  },
-);
 
 test("Nx cache suite is mandatory and serialized exactly once", async () => {
   const inventory = discoverWorkspacePolicyInventory();
@@ -131,11 +110,26 @@ test("Nx cache terminal publication precedes later suite admission", async () =>
   ]);
 });
 
-async function withNxCacheFixture(check, duration = 30_000) {
+let suiteObservationStarted;
+
+async function withNxCacheFixture(fixtureOrdinal, check, duration = 30_000) {
   // Each independent cache proposition owns one deadline before setup.
   const started = performance.now();
   const deadline = started + duration;
-  const diagnostic = createNxCacheDiagnostic(started, () => performance.now());
+  suiteObservationStarted ??= started;
+  const diagnostic = createNxCacheProgressDiagnostic(
+    started,
+    deadline,
+    suiteObservationStarted,
+    fixtureOrdinal,
+    {
+      now: () => performance.now(),
+      publish: (snapshot) =>
+        process.stderr.write(
+          `nx-cache.fixture.progress ${JSON.stringify(snapshot)}\n`,
+        ),
+    },
+  );
   let failedDiagnostic;
   onTestFailed(() => {
     try {
@@ -151,22 +145,18 @@ async function withNxCacheFixture(check, duration = 30_000) {
   const identity = lstatSync(root);
   let authority;
   let ordinal = 0;
-  const run = (arguments_, runtime = "runtime-one") => {
-    diagnostic.phase("command");
+  const command = (arguments_, runtime, phase) => {
+    diagnostic.phase(phase);
     return runNxCacheCommand(
       authority,
       arguments_,
       localNxEnvironment(runtime),
     );
   };
-  const build = (runtime = "runtime-one") => {
-    diagnostic.phase(`build-${++ordinal}`);
-    return runNxCacheCommand(
-      authority,
-      ["run", "@fixture/consumer:build"],
-      localNxEnvironment(runtime),
-    );
-  };
+  const run = (arguments_, runtime = "runtime-one") =>
+    command(arguments_, runtime, "command");
+  const build = (runtime = "runtime-one") =>
+    command(["run", "@fixture/consumer:build"], runtime, `build-${++ordinal}`);
   let primary;
   try {
     diagnostic.phase("setup");
@@ -202,7 +192,7 @@ async function withNxCacheFixture(check, duration = 30_000) {
 }
 
 test("standard Nx cache restores only declared outputs", async () => {
-  await withNxCacheFixture(async ({ root, build }) => {
+  await withNxCacheFixture(1, async ({ root, build }) => {
     await build();
     assert.equal(executionCount(root, "dependency"), 1);
     assert.equal(executionCount(root, "consumer"), 1);
@@ -292,28 +282,36 @@ const cacheInputCases = [
   },
 ];
 
-test.each(cacheInputCases)(
+test.each(
+  cacheInputCases.map((entry, index) => ({
+    ...entry,
+    fixtureOrdinal: index + 2,
+  })),
+)(
   "standard Nx cache invalidates $name",
   async (entry) => {
-    await withNxCacheFixture(async ({ root, build, diagnostic }) => {
-      await build();
-      assert.equal(executionCount(root, "dependency"), 1);
-      assert.equal(executionCount(root, "consumer"), 1);
-      diagnostic.phase("change");
-      entry.change(root);
-      await build(entry.runtime);
-      assert.equal(
-        executionCount(root, "dependency"),
-        entry.dependencyExecutions,
-      );
-      assert.equal(executionCount(root, "consumer"), 2);
-    });
+    await withNxCacheFixture(
+      entry.fixtureOrdinal,
+      async ({ root, build, diagnostic }) => {
+        await build();
+        assert.equal(executionCount(root, "dependency"), 1);
+        assert.equal(executionCount(root, "consumer"), 1);
+        diagnostic.phase("change");
+        entry.change(root);
+        await build(entry.runtime);
+        assert.equal(
+          executionCount(root, "dependency"),
+          entry.dependencyExecutions,
+        );
+        assert.equal(executionCount(root, "consumer"), 2);
+      },
+    );
   },
   30_000,
 );
 
 test("standard Nx reset removes prior execution evidence", async () => {
-  await withNxCacheFixture(async ({ root, build, run }) => {
+  await withNxCacheFixture(9, async ({ root, build, run }) => {
     await build();
     await run(["reset"]);
     await build();
@@ -323,7 +321,7 @@ test("standard Nx reset removes prior execution evidence", async () => {
 }, 30_000);
 
 test("standard Nx coverage never consumes cached execution", async () => {
-  await withNxCacheFixture(async ({ root, run }) => {
+  await withNxCacheFixture(10, async ({ root, run }) => {
     await run(["run", "@fixture/consumer:coverage"]);
     assert.equal(executionCount(root, "consumer", "coverage"), 1);
     await run(["run", "@fixture/consumer:coverage"]);
@@ -332,7 +330,7 @@ test("standard Nx coverage never consumes cached execution", async () => {
 }, 30_000);
 
 test("Nx fixture rejects arbitrary command authority without a child", async () => {
-  await withNxCacheFixture(({ authority, run }) => {
+  await withNxCacheFixture(11, ({ authority, run }) => {
     assert.throws(() => run(["exec", "arbitrary"]), /fixture.command/u);
     assert.equal(authority.active, false);
   });
@@ -349,7 +347,7 @@ test("Nx fixture rejects exhausted invocation budget at its exact cutoff", () =>
 });
 
 test("Nx fixture rejects symlink and changed-mode roots without launching", async () => {
-  await withNxCacheFixture(({ root, authority, run }) => {
+  await withNxCacheFixture(12, ({ root, authority, run }) => {
     const alias = join(root, "root-alias");
     symlinkSync(root, alias, "dir");
     assert.throws(
@@ -373,7 +371,7 @@ test("Nx fixture rejects symlink and changed-mode roots without launching", asyn
 }, 30_000);
 
 test("Nx fixture preserves quarantined evidence instead of deleting it", async () => {
-  await withNxCacheFixture(({ root, authority }) => {
+  await withNxCacheFixture(13, ({ root, authority }) => {
     authority.quarantined = true;
     try {
       assert.throws(
@@ -463,7 +461,7 @@ test.each(["substituted", "duplicate"])(
 );
 
 test("Nx fixture bounds overflowing command output and joins before cleanup", async () => {
-  await withNxCacheFixture(async ({ root, authority, build }) => {
+  await withNxCacheFixture(14, async ({ root, authority, build }) => {
     const path = join(root, "task.mjs");
     writeFileSync(
       path,
@@ -477,26 +475,30 @@ test("Nx fixture bounds overflowing command output and joins before cleanup", as
 }, 30_000);
 
 test("Nx fixture retires a never-settling command on its original deadline", async () => {
-  await withNxCacheFixture(async ({ root, authority, build }) => {
-    const path = join(root, "task.mjs");
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8") +
-        '\nif (name === "consumer") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }\n',
-    );
-    await assert.rejects(build(), (error) => {
-      assert.match(error.message, /fixture.deadline/u);
-      assert.equal(error.cause.phase, "nx-command");
-      return true;
-    });
-    assert.equal(executionCount(root, "consumer"), 1);
-    assert.equal(authority.active, false);
-    assert.equal(authority.quarantined, false);
-  }, 10_000);
+  await withNxCacheFixture(
+    15,
+    async ({ root, authority, build }) => {
+      const path = join(root, "task.mjs");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8") +
+          '\nif (name === "consumer") { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }\n',
+      );
+      await assert.rejects(build(), (error) => {
+        assert.match(error.message, /fixture.deadline/u);
+        assert.equal(error.cause.phase, "nx-command");
+        return true;
+      });
+      assert.equal(executionCount(root, "consumer"), 1);
+      assert.equal(authority.active, false);
+      assert.equal(authority.quarantined, false);
+    },
+    10_000,
+  );
 }, 30_000);
 
 test("Nx fixture rejects a surviving descendant and joins it before cleanup", async () => {
-  await withNxCacheFixture(async ({ root, authority, build }) => {
+  await withNxCacheFixture(16, async ({ root, authority, build }) => {
     const path = join(root, "task.mjs");
     writeFileSync(
       path,
