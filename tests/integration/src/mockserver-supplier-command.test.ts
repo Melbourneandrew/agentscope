@@ -1,6 +1,7 @@
 import type * as FileSystem from "node:fs";
 import * as fs from "node:fs";
 import { runInNewContext } from "node:vm";
+import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   path: "",
@@ -150,6 +151,7 @@ const privateWorker = runInNewContext(
 ) as (
   run: (...args: unknown[]) => Promise<unknown>,
   phase: string,
+  observe?: boolean,
 ) => Promise<void>;
 
 // Run the actual command body with synthetic fixed-input I/O. Neither archive
@@ -167,6 +169,72 @@ beforeEach(() => {
   state.cacheIssue = "";
   state.opened = state.closed = 0;
   state.timestamp = 0;
+});
+
+const phases = Object.freeze([
+  "supplier-entry",
+  "supplier-extract",
+  "supplier-package",
+  "supplier-inventory",
+]);
+describe("composite build has one final-phase diagnostic sequence", () => {
+  it.each(phases)(
+    "retains %s from the actual collector after the connected build",
+    async (phase) => {
+      const observation = createBuildStderrObservation();
+      await privateWorker(
+        vi.fn(() => Promise.resolve()),
+        "dependency-research",
+        false,
+      );
+      expect(state.markers).toEqual([]);
+      const primary = new Error("PRIVATE_CANARY");
+      state.primary = primary;
+      state.rejects = phase === "supplier-entry" ? "source" : "";
+      state.inventoryFailure = phase === "supplier-inventory";
+      const execute = vi.fn((file) =>
+        phase === "supplier-extract" ||
+        (phase === "supplier-package" && String(file).endsWith("/mvn"))
+          ? Promise.reject(primary)
+          : Promise.resolve(),
+      );
+      await expect(privateWorker(execute, "offline-build", true)).rejects.toBe(
+        primary,
+      );
+      for (const [index, marker] of state.markers.entries())
+        observation.consume(Buffer.from(`#20 ${index}.100 ${marker}`));
+      expect(observation.snapshot()).toMatchObject({
+        untrustedBootstrapStage: phase,
+        untrustedBootstrapFailureFamily: "none",
+      });
+      expect(state.markers.join("")).not.toContain("CANARY");
+      const prior = createBuildStderrObservation();
+      for (const [index, stage] of phases.entries())
+        prior.consume(
+          Buffer.from(
+            `#10 ${index}.100 [agentscope-material:v1 stage=${stage} family=none]\n`,
+          ),
+        );
+      prior.consume(
+        Buffer.from(
+          "#20 4.100 [agentscope-material:v1 stage=supplier-entry family=none]\n",
+        ),
+      );
+      expect(prior.snapshot().untrustedBootstrapStage).toBeUndefined();
+    },
+  );
+  it("keeps a connected-stage failure unclassified by the actual collector", async () => {
+    state.rejects = "source";
+    const observation = createBuildStderrObservation();
+    await expect(
+      privateWorker(vi.fn(), "dependency-research", false),
+    ).rejects.toThrow("source");
+    expect(state.markers).toEqual([]);
+    expect(observation.snapshot().untrustedBootstrapStage).toBeUndefined();
+    expect(
+      observation.snapshot().untrustedBootstrapFailureFamily,
+    ).toBeUndefined();
+  });
 });
 
 describe("fresh offline worker adopts only conventional cache roots", () => {
@@ -245,8 +313,8 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
     expect(state.opened).toBe(0);
     expect(state.directories).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
-    expect(workerSource).toContain(
-      "await runSupplier(execute, process.argv[2])",
+    expect(workerSource).toMatch(
+      /await runSupplier\(\s*execute,\s*process\.argv\[2\],\s*process\.argv\[2\] === "offline-build",?\s*\)/u,
     );
     expect(workerSource).toContain(
       '["dependency-research", "offline-build"].includes(process.argv[2])',
@@ -281,12 +349,6 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
 });
 
 describe("fixed last-entered supplier phases without outcome authority", () => {
-  const phases = [
-    "supplier-entry",
-    "supplier-extract",
-    "supplier-package",
-    "supplier-inventory",
-  ];
   it.each([false, true])(
     "preserves ordinary operations with sink failure %s",
     async (failed) => {

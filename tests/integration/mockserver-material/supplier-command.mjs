@@ -45,6 +45,11 @@ const enter = (stage) => {
     // Optional last-entered observation, never the operation's outcome.
   }
 };
+const enterSupplier = (observe, stage) => {
+  // Composite CLI observes only its final build. The standalone research
+  // export retains its original sequence; connected CLI failures stay unknown.
+  if (observe) enter(stage);
+};
 const readFixed = (path, size, mode = 0o600) => {
   const fd = openSync(
     path,
@@ -133,14 +138,14 @@ const adoptCache = (path, expected) => {
   }
 };
 
-const runSupplier = async (run, phase) => {
+const runSupplier = async (run, phase, observe = true) => {
   const plan = mockServerSupplierBuildPlan(phase);
   const caches = ["maven-repository", "npm-cache"];
   const adopted =
     phase === "offline-build"
       ? caches.map((name) => adoptCache(`/supplier/${name}`))
       : [];
-  enter("supplier-entry");
+  enterSupplier(observe, "supplier-entry");
   // Only exact previously authenticated archives are admitted. Host staging also
   // authenticates them; this rejects mutation at the actual extraction boundary.
   verifyMockServerSourceArchive(
@@ -155,7 +160,7 @@ const runSupplier = async (run, phase) => {
     "jdk",
     readFixed("/supplier/inputs/jdk.tar.gz", 193_252_603),
   );
-  enter("supplier-extract");
+  enterSupplier(observe, "supplier-extract");
   for (const name of [
     "home",
     "source",
@@ -237,7 +242,7 @@ const runSupplier = async (run, phase) => {
     ],
     options,
   );
-  enter("supplier-package");
+  enterSupplier(observe, "supplier-package");
   await run(plan.executable, [...plan.arguments], {
     cwd: plan.cwd,
     env: plan.environment,
@@ -245,7 +250,7 @@ const runSupplier = async (run, phase) => {
   });
   for (const [index, before] of adopted.entries())
     adoptCache(`/supplier/${caches[index]}`, before);
-  enter("supplier-inventory");
+  enterSupplier(observe, "supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier");
   mkdirSync("/out", { mode: 0o700 });
   writeFileSync("/out/material.json", inventory, { flag: "wx", mode: 0o644 });
@@ -261,7 +266,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   )
     throw new Error("integration.mockserver-material.supplier-command");
   try {
-    await runSupplier(execute, process.argv[2]);
+    await runSupplier(
+      execute,
+      process.argv[2],
+      process.argv[2] === "offline-build",
+    );
   } catch {
     process.exitCode = 1;
   }
