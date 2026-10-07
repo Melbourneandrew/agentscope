@@ -1,8 +1,44 @@
-import type {
-  HarnessInstallationPlanInput,
-  HarnessInstallationPlanner,
-} from "./installation.js";
 import { types } from "node:util";
+
+export type HarnessTargetInspection = Readonly<{
+  targetPath: string;
+  exists: boolean;
+  bytes: Uint8Array | null;
+  digest: string;
+  mode: number | null;
+}>;
+
+export type HarnessTargetDecision =
+  | Readonly<{ kind: "unchanged" }>
+  | Readonly<{ kind: "replace"; bytes: Uint8Array; mode?: 0o600 | 0o700 }>
+  | Readonly<{
+      kind: "replace-overlap";
+      bytes: Uint8Array;
+      mode?: 0o600 | 0o700;
+    }>
+  | Readonly<{ kind: "remove" }>
+  | Readonly<{ kind: "conflict" }>
+  | Readonly<{ kind: "unsupported" }>;
+
+export type HarnessInstallationPlanner = (
+  target: HarnessTargetInspection,
+  directories?: readonly HarnessDirectoryInspection[],
+) => HarnessTargetDecision;
+
+export type HarnessDirectoryInspection = Readonly<{
+  directoryPath: string;
+  exists: boolean;
+  entries: readonly string[];
+  mode: number | null;
+}>;
+
+export type HarnessInstallationPlanInput = Readonly<{
+  manifestPath: string;
+  operation: "install" | "migrate" | "uninstall";
+  targetPaths: readonly string[];
+  directoryPaths?: readonly string[];
+  planner: HarnessInstallationPlanner;
+}>;
 
 const dataArray = (
   value: unknown,

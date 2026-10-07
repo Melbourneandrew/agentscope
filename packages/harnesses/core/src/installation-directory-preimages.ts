@@ -3,7 +3,8 @@ import { constants, type BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
 import { types } from "node:util";
-import type { HarnessDirectoryInspection } from "./installation.js";
+import type { HarnessDirectoryInspection } from "./installation-input.js";
+import type {} from "./directory-runtime/loader/owned-loader.d.mts";
 
 declare const __AGENTSCOPE_DIRECTORY_MANIFEST_SHA256__: string;
 

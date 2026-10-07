@@ -9,7 +9,19 @@ import {
   unlink,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { inspectInstallationInput } from "./installation-input.js";
+import {
+  inspectInstallationInput,
+  type HarnessInstallationPlanInput,
+  type HarnessInstallationPlanner,
+  type HarnessTargetDecision,
+} from "./installation-input.js";
+export type {
+  HarnessDirectoryInspection,
+  HarnessInstallationPlanInput,
+  HarnessInstallationPlanner,
+  HarnessTargetDecision,
+  HarnessTargetInspection,
+} from "./installation-input.js";
 import {
   inspectDirectoryPreimage,
   directoryPreimageMatches,
@@ -42,46 +54,6 @@ const typedArrayByteLength: unknown = Reflect.get(
   "get",
 );
 const typedArraySlice: unknown = Reflect.get(Uint8Array.prototype, "slice");
-
-export type HarnessTargetInspection = Readonly<{
-  targetPath: string;
-  exists: boolean;
-  bytes: Uint8Array | null;
-  digest: string;
-  mode: number | null;
-}>;
-
-export type HarnessTargetDecision =
-  | Readonly<{ kind: "unchanged" }>
-  | Readonly<{ kind: "replace"; bytes: Uint8Array; mode?: 0o600 | 0o700 }>
-  | Readonly<{
-      kind: "replace-overlap";
-      bytes: Uint8Array;
-      mode?: 0o600 | 0o700;
-    }>
-  | Readonly<{ kind: "remove" }>
-  | Readonly<{ kind: "conflict" }>
-  | Readonly<{ kind: "unsupported" }>;
-
-export type HarnessInstallationPlanner = (
-  target: HarnessTargetInspection,
-  directories?: readonly HarnessDirectoryInspection[],
-) => HarnessTargetDecision;
-
-export type HarnessDirectoryInspection = Readonly<{
-  directoryPath: string;
-  exists: boolean;
-  entries: readonly string[];
-  mode: number | null;
-}>;
-
-export type HarnessInstallationPlanInput = Readonly<{
-  manifestPath: string;
-  operation: "install" | "migrate" | "uninstall";
-  targetPaths: readonly string[];
-  directoryPaths?: readonly string[];
-  planner: HarnessInstallationPlanner;
-}>;
 
 export type HarnessInstallationDisposition =
   | "ready"
