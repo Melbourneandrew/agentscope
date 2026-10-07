@@ -1031,6 +1031,39 @@ describe("scenario isolation outcomes", () => {
 
 // eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
+  it("retains the observed work phase when rejection has no value", async () => {
+    const fixture = driver();
+    fixture.inspectExecutionPolicy.mockRejectedValueOnce(undefined);
+    const cleanupCause = new Error("private-cleanup-cause");
+    const cleanupFailure = new Error(
+      "integration.isolation.cleanup-network-remove",
+      { cause: cleanupCause },
+    );
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      cleanupFailure,
+    );
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.cleanup-network-remove",
+        cause: cleanupCause,
+      });
+      expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe("failed");
+      expect(String(diagnostic.mock.calls[0]?.[0])).toContain(
+        '"originalWorkPhase":"inspect-policy"',
+      );
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
   it("bounds the full fixed removal vector and never retains error contents", async () => {
     const fixture = driver();
     fixture.removeContainer.mockRejectedValue(new Error("private-container"));
