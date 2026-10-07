@@ -4,6 +4,11 @@ const supplierStages = [
   "supplier-connected-entry",
   "supplier-connected-extract",
   "supplier-connected-package",
+  "supplier-connected-package-compilation",
+  "supplier-connected-package-resolution",
+  "supplier-connected-package-frontend",
+  "supplier-connected-package-other",
+  "supplier-connected-service-finalization",
   "supplier-connected-inventory",
   "supplier-connected-inventory-read",
   "supplier-connected-inventory-guard",
@@ -13,6 +18,11 @@ const supplierStages = [
   "supplier-entry",
   "supplier-extract",
   "supplier-package",
+  "supplier-package-compilation",
+  "supplier-package-resolution",
+  "supplier-package-frontend",
+  "supplier-package-other",
+  "supplier-service-finalization",
   "supplier-inventory",
   "supplier-inventory-read",
   "supplier-inventory-guard",
@@ -21,7 +31,7 @@ const supplierStages = [
   "supplier-output-write",
 ];
 const supplierFailureStages = supplierStages.filter((stage) =>
-  /-(?:inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
+  /-(?:package-compilation|package-resolution|package-frontend|package-other|service-finalization|inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
     stage,
   ),
 );

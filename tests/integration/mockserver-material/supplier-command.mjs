@@ -13,7 +13,7 @@ import {
   writeSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import {
   mockServerSupplierBuildPlan,
@@ -53,6 +53,54 @@ const enterSupplier = (observe, stage) => {
   // Connected CLI uses an earlier fixed sequence; standalone exports retain
   // their original stages. These observations never describe an outcome.
   enter(observe ? stage : stage.replace("supplier-", "supplier-connected-"));
+};
+const packageFailureStage = (error) => {
+  try {
+    if (types.isProxy(error) || !types.isNativeError(error))
+      return "supplier-package-other";
+    const output = ["stdout", "stderr"].map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(error, key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    });
+    if (
+      output.some(
+        (value) =>
+          typeof value !== "string" || value.length > maximumOutputBytes,
+      ) ||
+      output.reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) >
+        maximumOutputBytes
+    )
+      return "supplier-package-other";
+    const text = output.join("\n");
+    const classes = [
+      ["compilation", /^\[ERROR\] COMPILATION ERROR :\s*$/mu],
+      [
+        "resolution",
+        /^\[ERROR\] Failed to execute goal on project [A-Za-z0-9_.-]+: Could not resolve dependencies\b/mu,
+      ],
+      [
+        "frontend",
+        /^\[ERROR\] Failed to execute goal com\.github\.eirslett:frontend-maven-plugin:[0-9.]+:(?:install-node-and-npm|npm) /mu,
+      ],
+    ].filter(([, pattern]) => pattern.test(text));
+    return classes.length === 1
+      ? `supplier-package-${classes[0][0]}`
+      : "supplier-package-other";
+  } catch {
+    return "supplier-package-other";
+  }
+};
+const runPackage = async (run, plan, observe) => {
+  try {
+    await run(plan.executable, [...plan.arguments], {
+      cwd: plan.cwd,
+      env: plan.environment,
+      maxBuffer: maximumOutputBytes,
+    });
+  } catch (error) {
+    enterSupplier(observe, packageFailureStage(error));
+    throw error;
+  }
 };
 const writeInventory = (inventory, observe) => {
   try {
@@ -322,16 +370,17 @@ const runSupplier = async (run, phase, observe = true) => {
     options,
   );
   enterSupplier(observe, "supplier-package");
-  await run(plan.executable, [...plan.arguments], {
-    cwd: plan.cwd,
-    env: plan.environment,
-    maxBuffer: maximumOutputBytes,
-  });
-  for (const [index, before] of adopted.entries())
-    adoptCache(`/supplier/${caches[index]}`, before);
-  if (service) {
-    finishServiceArtifact(offline, caches);
-    return;
+  await runPackage(run, plan, observe);
+  try {
+    for (const [index, before] of adopted.entries())
+      adoptCache(`/supplier/${caches[index]}`, before);
+    if (service) {
+      finishServiceArtifact(offline, caches);
+      return;
+    }
+  } catch (error) {
+    enterSupplier(observe, "supplier-service-finalization");
+    throw error;
   }
   enterSupplier(observe, "supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier", (category) => {

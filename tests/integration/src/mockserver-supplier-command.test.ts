@@ -14,6 +14,68 @@ const phases = Object.freeze([
 ]);
 const supplierMarker = (stage: string, connected = false) =>
   `[agentscope-material:v1 stage=${connected ? stage.replace("supplier-", "supplier-connected-") : stage} family=none]\n`;
+describe("actual package rejection has only bounded fixed observations", () => {
+  it.each([
+    ["compilation", "[ERROR] COMPILATION ERROR :"],
+    [
+      "resolution",
+      "[ERROR] Failed to execute goal on project mockserver-core: Could not resolve dependencies",
+    ],
+    [
+      "frontend",
+      "[ERROR] Failed to execute goal com.github.eirslett:frontend-maven-plugin:1.15.1:npm (npm build) on project mockserver-netty:",
+    ],
+    ["other", "PRIVATE_CANARY"],
+    ["other", "prefix [ERROR] COMPILATION ERROR :"],
+    [
+      "other",
+      "[ERROR] COMPILATION ERROR :\n[ERROR] Failed to execute goal com.github.eirslett:frontend-maven-plugin:1.15.1:npm ",
+    ],
+    ["other", "accessor"],
+    ["other", "proxy"],
+    ["other", "oversized"],
+  ])("preserves primary identity for %s/%s", async (category, output) => {
+    let reads = 0;
+    const native = Object.assign(new Error("PRIVATE_CANARY"), {
+      stdout: "",
+      stderr: output === "oversized" ? "X".repeat(8 * 1024 * 1024 + 1) : output,
+    });
+    if (output === "accessor")
+      Object.defineProperty(native, "stdout", {
+        get() {
+          reads++;
+          throw Error("PRIVATE_CANARY");
+        },
+      });
+    const primary =
+      output === "proxy"
+        ? new Proxy(native, {
+            getOwnPropertyDescriptor() {
+              reads++;
+              throw Error("PRIVATE_CANARY");
+            },
+          })
+        : native;
+    const run = vi.fn((file: string) =>
+      file.endsWith("/mvn") ? Promise.reject(primary) : Promise.resolve(),
+    );
+    await expect(runMockServerSupplierResearch(run)).rejects.toBe(primary);
+    expect(state.markers.at(-1)).toBe(
+      supplierMarker(`supplier-package-${category}`),
+    );
+    await expect(privateWorker(run, "cache-seeding", false)).rejects.toBe(
+      primary,
+    );
+    expect(state.markers.at(-1)).toBe(
+      supplierMarker(`supplier-package-${category}`, true),
+    );
+    expect(reads).toBe(0);
+    expect(state.markers.join("")).not.toContain("CANARY");
+    expect(state.closed).toBe(state.opened);
+    state.sinkFailure = true;
+    await expect(runMockServerSupplierResearch(run)).rejects.toBe(primary);
+  });
+});
 describe("composite build has monotonic connected and offline diagnostics", () => {
   it.each(phases)(
     "retains %s from the actual collector after the connected build",
@@ -43,7 +105,8 @@ describe("composite build has monotonic connected and offline diagnostics", () =
       for (const [index, marker] of state.markers.entries())
         observation.consume(Buffer.from(`#20 ${index}.100 ${marker}`));
       expect(observation.snapshot()).toMatchObject({
-        untrustedBootstrapStage: phase,
+        untrustedBootstrapStage:
+          phase === "supplier-package" ? "supplier-package-other" : phase,
         untrustedBootstrapFailureFamily: "none",
       });
       expect(state.markers.join("")).not.toContain("CANARY");
@@ -211,6 +274,9 @@ describe("physical cache adoption refusal", () => {
       false,
     );
     expect(state.closed).toBe(state.opened);
+    expect(state.markers.at(-1)).toBe(
+      supplierMarker("supplier-service-finalization"),
+    );
   });
   it("rejects an unknown mode before any filesystem operation", async () => {
     const execute = vi.fn(() => Promise.resolve());
@@ -302,6 +368,9 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
         expect(state.markers).toEqual(
           phases
             .slice(0, phases.indexOf(phase) + 1)
+            .concat(
+              phase === "supplier-package" ? ["supplier-package-other"] : [],
+            )
             .map((stage) => supplierMarker(stage, connected)),
         );
         expect(state.markers.join("")).not.toContain("CANARY");

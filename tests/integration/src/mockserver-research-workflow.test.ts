@@ -382,6 +382,10 @@ describe("closed always-after projection", () => {
         "entry",
         "extract",
         "package",
+        ...["compilation", "resolution", "frontend", "other"].map(
+          (kind) => `package-${kind}`,
+        ),
+        "service-finalization",
         "inventory",
         ...["read", "guard", "internal"].map((kind) => `inventory-${kind}`),
         "output-create",
