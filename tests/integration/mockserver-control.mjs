@@ -239,81 +239,82 @@ export const openMockServerControl = ({
     );
   }
   const observations = [];
-  const send = (
-    method,
-    path,
-    value,
-    authentication = "controller",
-    upgrade = false,
-  ) => {
-    if (
-      ![
-        "/mockserver/expectation",
-        "/mockserver/retrieve?type=REQUESTS",
-        "/mockserver/configuration",
-        "/mockserver/stop",
-        "/mockserver/dashboard",
-        "/_mockserver_callback_websocket",
-      ].includes(path) ||
-      !["GET", "PUT"].includes(method) ||
-      !["controller", "absent", "invalid"].includes(authentication)
-    )
-      failure();
-    const remaining = Math.floor(deadline - now());
-    if (!Number.isFinite(remaining) || remaining < 1) failure();
-    if (observations.length >= 16) failure();
-    const bytes =
-      value === undefined
-        ? Buffer.alloc(0)
-        : Buffer.from(JSON.stringify(value));
-    if (bytes.length > maximumBytes) failure();
-    const headers = {
-      connection: "close",
-      "content-length": String(bytes.length),
-      "content-type": "application/json",
-    };
-    if (authentication !== "absent")
-      headers.authorization = `Bearer ${authentication === "invalid" ? "invalid" : token(privateKey, runId, remaining)}`;
-    if (upgrade)
-      Object.assign(headers, {
-        connection: "Upgrade",
-        upgrade: "websocket",
-        "sec-websocket-version": "13",
-        "sec-websocket-key": "YWdlbnRzY29wZS1wcm9iZQ==",
+  const sendAt =
+    (requestDeadline) =>
+    (method, path, value, authentication = "controller", upgrade = false) => {
+      if (
+        ![
+          "/mockserver/expectation",
+          "/mockserver/retrieve?type=REQUESTS",
+          "/mockserver/configuration",
+          "/mockserver/stop",
+          "/mockserver/dashboard",
+          "/_mockserver_callback_websocket",
+        ].includes(path) ||
+        !["GET", "PUT"].includes(method) ||
+        !["controller", "absent", "invalid"].includes(authentication)
+      )
+        failure();
+      const remaining = Math.floor(requestDeadline - now());
+      if (!Number.isFinite(remaining) || remaining < 1) failure();
+      if (observations.length >= 16) failure();
+      const bytes =
+        value === undefined
+          ? Buffer.alloc(0)
+          : Buffer.from(JSON.stringify(value));
+      if (bytes.length > maximumBytes) failure();
+      const headers = {
+        connection: "close",
+        "content-length": String(bytes.length),
+        "content-type": "application/json",
+      };
+      if (authentication !== "absent")
+        headers.authorization = `Bearer ${authentication === "invalid" ? "invalid" : token(privateKey, runId, remaining)}`;
+      if (upgrade)
+        Object.assign(headers, {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          "sec-websocket-version": "13",
+          "sec-websocket-key": "YWdlbnRzY29wZS1wcm9iZQ==",
+        });
+      return exchangeControlRequest({
+        host,
+        method,
+        path,
+        headers,
+        bytes,
+        remaining,
+        deadline: requestDeadline,
+        now,
+        upgrade,
+      }).then((result) => {
+        observations.push(
+          Object.freeze({
+            method,
+            path: path.split("?")[0],
+            role:
+              authentication === "controller"
+                ? "allowed"
+                : result.status === 403
+                  ? "forbidden"
+                  : "unauthenticated",
+            status: result.status,
+            bodyBytes: bytes.length,
+            bodySha256: createHash("sha256").update(bytes).digest("hex"),
+          }),
+        );
+        return result;
       });
-    return exchangeControlRequest({
-      host,
-      method,
-      path,
-      headers,
-      bytes,
-      remaining,
-      deadline,
-      now,
-      upgrade,
-    }).then((result) => {
-      observations.push(
-        Object.freeze({
-          method,
-          path: path.split("?")[0],
-          role:
-            authentication === "controller"
-              ? "allowed"
-              : result.status === 403
-                ? "forbidden"
-                : "unauthenticated",
-          status: result.status,
-          bodyBytes: bytes.length,
-          bodySha256: createHash("sha256").update(bytes).digest("hex"),
-        }),
-      );
-      return result;
-    });
-  };
+    };
+  const send = sendAt(deadline);
   return Object.freeze({
     send,
-    configure: (expectations) =>
-      send("PUT", "/mockserver/expectation", expectations),
+    configure: (expectations, cutoff = deadline) =>
+      sendAt(Math.min(deadline, cutoff))(
+        "PUT",
+        "/mockserver/expectation",
+        expectations,
+      ),
     requests: () => send("PUT", "/mockserver/retrieve?type=REQUESTS", {}),
     stop: () => send("PUT", "/mockserver/stop", {}),
     snapshot: () =>

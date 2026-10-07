@@ -96,6 +96,99 @@ describe("fresh authenticated session baseline", () => {
 });
 const hash = (bytes: string | Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
+describe("persistent upstream control uses the original observation cutoff", () => {
+  it("keeps postlaunch retrieval within the original trace cutoff, not the setup reserve", async () => {
+    const scenario = readIntegration("codex-pty-scenario.mjs");
+    const setup = scenario.slice(
+      scenario.indexOf("const configureModelGate ="),
+      scenario.indexOf("const recordModelBaseline ="),
+    );
+    expect(setup).toContain("deadline: traceDeadline,");
+    expect(setup).toContain("bootNow() >= preparationCutoff");
+    expect(setup).toContain("monotonicDeadline: preparationCutoff");
+    expect(scenario).toContain(
+      "await configureModelGate(preparationCutoff, traceDeadline);",
+    );
+    expect(
+      scenario.match(/const traceDeadline = deadline - 3_000;/gu),
+    ).toHaveLength(1);
+    expect(scenario).not.toContain("modelAdmissionCutoff");
+    const source = readIntegration("mockserver-control.mjs");
+    const start = source.indexOf("export const openMockServerControl =");
+    const end = source.indexOf(
+      "export const verifyMockServerControlBoundary",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    let clock = 0;
+    const exchange = vi.fn(() =>
+      Promise.resolve({
+        status: 200,
+        bytes: Buffer.from("[]"),
+      }),
+    );
+    const bindings = {
+      Buffer,
+      createHash,
+      maximumBytes: 524_288,
+      runPattern: /^[a-f0-9]{16}$/u,
+      ownedKeys: new WeakMap(),
+      failure: () => {
+        throw new Error("integration.mockserver.control");
+      },
+      lstatSync: () => ({
+        isDirectory: () => true,
+        isSymbolicLink: () => false,
+        uid: 0,
+        mode: 0o700,
+      }),
+      createPrivateKey: () => Object.freeze({}),
+      readPrivateFile: () => Buffer.alloc(0),
+      token: () => "synthetic-not-a-credential",
+      exchangeControlRequest: exchange,
+    };
+    const factory = runInThisContext(
+      `({Buffer, createHash, maximumBytes, runPattern, ownedKeys, failure, lstatSync, createPrivateKey, readPrivateFile, token, exchangeControlRequest}) => { ${source.slice(start, end).replace("export const", "const")} return openMockServerControl; }`,
+    ) as (input: typeof bindings) => (input: {
+      runId: string;
+      host: string;
+      deadline: number;
+      now: () => number;
+    }) => {
+      configure: (
+        value: unknown,
+        cutoff?: number,
+      ) => Promise<{ status: number }>;
+      requests: () => Promise<{ status: number }>;
+    };
+    const open = factory(bindings);
+    const control = (deadline: number) =>
+      open({ runId, host: "mockserver", deadline, now: () => clock });
+    const old = control(5_000);
+    const current = control(7_000);
+    await current.configure({}, 5_000);
+    expect(exchange).toHaveBeenCalledWith(
+      expect.objectContaining({ deadline: 5_000, remaining: 5_000 }),
+    );
+    exchange.mockClear();
+    clock = 5_001;
+    expect(() => old.requests()).toThrow("integration.mockserver.control");
+    expect(() => current.configure({}, 5_000)).toThrow(
+      "integration.mockserver.control",
+    );
+    expect(exchange).not.toHaveBeenCalled();
+    await expect(current.requests()).resolves.toMatchObject({ status: 200 });
+    expect(exchange).toHaveBeenCalledWith(
+      expect.objectContaining({ deadline: 7_000, remaining: 1_999 }),
+    );
+    for (clock of [7_000, 7_001])
+      expect(() => current.requests()).toThrow(
+        "integration.mockserver.control",
+      );
+    expect(exchange).toHaveBeenCalledTimes(1);
+  });
+});
 describe("ordinary upstream control and complete ledger (no service execution)", () => {
   it("keeps a per-run asymmetric private key separate from the public trust anchor", () => {
     const first = createMockServerControlMaterial(runId);

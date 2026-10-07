@@ -662,7 +662,7 @@ describe("integration capability manifest", () => {
     expect(codexJoin).toBeGreaterThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     const configureUpstream = source.indexOf(
-      "  await configureModelGate(modelAdmissionCutoff);\n",
+      "  await configureModelGate(preparationCutoff, traceDeadline);\n",
     );
     expect(configureUpstream).toBeGreaterThan(-1);
     expect(configureUpstream).toBeLessThan(codexLaunch);
