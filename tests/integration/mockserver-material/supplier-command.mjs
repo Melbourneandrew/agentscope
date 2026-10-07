@@ -5,6 +5,7 @@ import {
   copyFileSync,
   constants,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readSync,
@@ -90,7 +91,55 @@ const readFixed = (path, size, mode = 0o600) => {
   }
 };
 
-export const runMockServerSupplierResearch = async (run) => {
+const cacheFields = ["dev", "ino", "mode", "uid", "gid"];
+const adoptCache = (path, expected) => {
+  const parent = lstatSync("/supplier");
+  const named = lstatSync(path);
+  const fd = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const held = fstatSync(fd);
+    const after = fstatSync(fd);
+    const current = lstatSync(path);
+    const currentParent = lstatSync("/supplier");
+    if (
+      !parent.isDirectory() ||
+      parent.isSymbolicLink() ||
+      parent.uid !== 0 ||
+      parent.gid !== 0 ||
+      ![0o700, 0o755].includes(parent.mode & 0o7777) ||
+      !named.isDirectory() ||
+      named.isSymbolicLink() ||
+      !held.isDirectory() ||
+      held.uid !== 0 ||
+      held.gid !== 0 ||
+      held.dev !== parent.dev ||
+      (held.mode & 0o7777) !== 0o700 ||
+      cacheFields.some(
+        (key) =>
+          named[key] !== held[key] ||
+          held[key] !== after[key] ||
+          held[key] !== current[key] ||
+          parent[key] !== currentParent[key] ||
+          (expected !== undefined && held[key] !== expected[key]),
+      )
+    )
+      throw new Error("integration.mockserver-material.supplier-command");
+    return held;
+  } finally {
+    closeSync(fd);
+  }
+};
+
+const runSupplier = async (run, phase) => {
+  const plan = mockServerSupplierBuildPlan(phase);
+  const caches = ["maven-repository", "npm-cache"];
+  const adopted =
+    phase === "offline-build"
+      ? caches.map((name) => adoptCache(`/supplier/${name}`))
+      : [];
   enter("supplier-entry");
   // Only exact previously authenticated archives are admitted. Host staging also
   // authenticates them; this rejects mutation at the actual extraction boundary.
@@ -113,11 +162,11 @@ export const runMockServerSupplierResearch = async (run) => {
     "tools",
     "tools/node",
     "tools/jdk-17.0.20.1+1",
-    "maven-repository",
-    "npm-cache",
     "maven-home",
   ])
     mkdirSync(`/supplier/${name}`, { mode: 0o700 });
+  if (phase === "dependency-research")
+    for (const name of caches) mkdirSync(`/supplier/${name}`, { mode: 0o700 });
   for (const [archive, destination] of [
     ["source", "/supplier/source"],
     ["node", "/supplier/tools/node"],
@@ -188,24 +237,31 @@ export const runMockServerSupplierResearch = async (run) => {
     ],
     options,
   );
-  const plan = mockServerSupplierBuildPlan("dependency-research");
   enter("supplier-package");
   await run(plan.executable, [...plan.arguments], {
     cwd: plan.cwd,
     env: plan.environment,
     maxBuffer: maximumOutputBytes,
   });
+  for (const [index, before] of adopted.entries())
+    adoptCache(`/supplier/${caches[index]}`, before);
   enter("supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier");
   mkdirSync("/out", { mode: 0o700 });
   writeFileSync("/out/material.json", inventory, { flag: "wx", mode: 0o644 });
 };
 
+export const runMockServerSupplierResearch = async (run) =>
+  runSupplier(run, "dependency-research");
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 3 || process.argv[2] !== "dependency-research")
+  if (
+    process.argv.length !== 3 ||
+    !["dependency-research", "offline-build"].includes(process.argv[2])
+  )
     throw new Error("integration.mockserver-material.supplier-command");
   try {
-    await runMockServerSupplierResearch(execute);
+    await runSupplier(execute, process.argv[2]);
   } catch {
     process.exitCode = 1;
   }

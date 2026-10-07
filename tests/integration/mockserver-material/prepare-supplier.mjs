@@ -1,5 +1,5 @@
 /* eslint import-x/no-cycle: "off" -- existing private material/controller facade */
-/** Connected supplier research, not offline build or service admission. */
+/** Connected cache preparation and fresh offline build, never service admission. */
 import { createHash } from "node:crypto";
 import {
   lstatSync,
@@ -56,8 +56,15 @@ const dockerfile = Buffer.from(
     "COPY --chmod=0600 *.mjs /supplier/command/",
     "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
     'RUN --network=default ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "dependency-research"]',
+    "FROM ${BASE_IMAGE} AS offline",
+    "WORKDIR /supplier",
+    "COPY --chmod=0600 *.mjs /supplier/command/",
+    "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+    "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
+    "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
+    'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',
     "FROM scratch",
-    "COPY --from=supplier --chmod=0644 /out/material.json /material.json",
+    "COPY --from=offline --chmod=0644 /out/material.json /material.json",
     "",
   ].join("\n"),
 );

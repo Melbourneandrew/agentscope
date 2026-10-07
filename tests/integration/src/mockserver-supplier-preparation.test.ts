@@ -147,6 +147,23 @@ describe("connected supplier research under inherited lifecycle (synthetic build
       expect(dockerfile).toContain("RUN --network=default");
       expect(dockerfile).toContain("FROM scratch");
       expect(dockerfile).toContain("/out/material.json /material.json");
+      expect(dockerfile.trim().split("\n")).toEqual([
+        "ARG BASE_IMAGE",
+        "FROM ${BASE_IMAGE} AS supplier",
+        "WORKDIR /supplier",
+        "COPY --chmod=0600 *.mjs /supplier/command/",
+        "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+        'RUN --network=default ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "dependency-research"]',
+        "FROM ${BASE_IMAGE} AS offline",
+        "WORKDIR /supplier",
+        "COPY --chmod=0600 *.mjs /supplier/command/",
+        "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+        "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
+        "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
+        'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',
+        "FROM scratch",
+        "COPY --from=offline --chmod=0644 /out/material.json /material.json",
+      ]);
       expect(
         createHash("sha256")
           .update(readFileSync(resolve(path, "callback-patch.mjs")))
