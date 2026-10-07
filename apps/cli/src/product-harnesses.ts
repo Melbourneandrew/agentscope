@@ -1,13 +1,26 @@
-import { constants, createReadStream } from "node:fs";
-import { access, lstat, mkdir, open, realpath } from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import {
+  authenticateExactFile,
+  canonicalFutureDirectory,
+  canonicalPrivateDirectory,
+  canonicalConfigurationDirectory,
+  durablyPublishPrivateDirectory,
+  exactAbsolutePath,
+  exactEnvironmentValue,
+  executableCandidates,
+  nodeErrorCode,
+  revalidateAuthenticatedFile,
+  unavailable,
+  type AuthenticatedFile,
+  type ExactFileIdentity,
+} from "./product-harness-probe-files.js";
+import { lstat, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   defineHarnessRegistry,
+  discoverHarness,
   type HarnessDiscoveryProbe,
   type HarnessRegistry,
 } from "@agentscope/harnesses-core";
@@ -15,17 +28,33 @@ import {
   CODEX_HOOK_CONFIGURATION_PATH,
   codexHarnessDescriptor,
 } from "@agentscope/harness-codex";
+import {
+  claudeCodeDescriptor,
+  createClaudeCodeDialectAuthority,
+} from "@agentscope/harness-claude-code";
+import {
+  createClaudeDiscoveryProbe,
+  captureClaudeEnvironment,
+  claudeUserConfiguration,
+  type ClaudeDiscoveryPolicy,
+} from "./claude-discovery.js";
+import {
+  readClaudePluginContextObservation,
+  discoverClaudeCanonicalSettingsRoot,
+  mergeClaudePluginReadGuards,
+} from "./claude-plugin-context.js";
+import { mergeClaudeSettingsDirectorySelections } from "./claude-managed-settings.js";
 
 import type { AgentscopeHome } from "@agentscope/core/configuration-management";
-import type { CreateHarnessCliServicesInput } from "./harness-services.js";
+import type {
+  CliHarnessAdapter,
+  CreateHarnessCliServicesInput,
+} from "./harness-services.js";
 import type {
   createProductHarnessInstallationInput,
   ProductHarnessInstallationInput,
 } from "./product-harness-installation.js";
 
-const MAXIMUM_PATH_CODE_UNITS = 4_096;
-const MAXIMUM_PATH_ENTRIES = 64;
-type ExactFileIdentity = Readonly<{ bytes: number; sha256: string }>;
 type CodexPlatformIdentity = Readonly<{
   dependency: string;
   executable: ExactFileIdentity;
@@ -86,6 +115,7 @@ const CODEX_DISCOVERY_POLICY: CodexDiscoveryPolicy = Object.freeze({
 export type CreateProductHarnessesInput = Readonly<{
   architecture?: NodeJS.Architecture;
   codexDiscoveryPolicy?: CodexDiscoveryPolicy;
+  claudeDiscoveryPolicy?: ClaudeDiscoveryPolicy;
   environment?: Readonly<Record<string, string | undefined>>;
   home: AgentscopeHome;
   homeDirectory?: string;
@@ -93,270 +123,15 @@ export type CreateProductHarnessesInput = Readonly<{
   machineEntryPath?: string;
   nodeExecutable?: string;
   platform?: NodeJS.Platform;
+  projectDirectory?: string;
   readHookDeadlineMilliseconds: () => Promise<number>;
   releaseIdentity: string;
 }>;
 
 export const PRODUCT_HARNESS_REGISTRY: HarnessRegistry = defineHarnessRegistry([
   codexHarnessDescriptor,
+  claudeCodeDescriptor,
 ]);
-
-const unavailable = (): Readonly<{ kind: "unavailable" }> =>
-  Object.freeze({ kind: "unavailable" as const });
-
-const exactEnvironmentValue = (
-  environment: Readonly<Record<string, string | undefined>>,
-  key: string,
-): string | undefined => {
-  const descriptor = Object.getOwnPropertyDescriptor(environment, key);
-  if (descriptor === undefined) return undefined;
-  if (!("value" in descriptor) || descriptor.value === undefined)
-    throw new Error("cli.harness.probe-unavailable");
-  if (typeof descriptor.value !== "string")
-    throw new Error("cli.harness.probe-unavailable");
-  return descriptor.value;
-};
-
-const exactAbsolutePath = (value: string): string => {
-  if (
-    value.length === 0 ||
-    value.length > MAXIMUM_PATH_CODE_UNITS ||
-    value.includes("\0") ||
-    !isAbsolute(value) ||
-    resolve(value) !== value
-  )
-    throw new Error("cli.harness.probe-unavailable");
-  return value;
-};
-
-const nodeErrorCode = (error: unknown): string | undefined =>
-  typeof error === "object" && error !== null && "code" in error
-    ? String(error.code)
-    : undefined;
-
-const canonicalFutureDirectory = async (path: string): Promise<string> => {
-  let current = exactAbsolutePath(path);
-  const suffix: string[] = [];
-  for (;;) {
-    try {
-      return exactAbsolutePath(join(await realpath(current), ...suffix));
-    } catch (error) {
-      if (
-        typeof error !== "object" ||
-        error === null ||
-        !("code" in error) ||
-        !["ENOENT", "ENOTDIR"].includes(String(error.code))
-      )
-        throw error;
-      const parent = dirname(current);
-      if (parent === current)
-        throw new Error("cli.harness.probe-unavailable", { cause: error });
-      suffix.unshift(basename(current));
-      current = parent;
-    }
-  }
-};
-
-const canonicalPrivateDirectory = async (path: string): Promise<string> => {
-  const canonical = exactAbsolutePath(await realpath(path));
-  const state = await lstat(canonical);
-  if (
-    canonical !== path ||
-    !state.isDirectory() ||
-    state.isSymbolicLink() ||
-    (process.platform !== "win32" && (state.mode & 0o777) !== 0o700)
-  )
-    throw new Error("cli.harness.configuration-directory-unavailable");
-  return canonical;
-};
-
-const sameDirectoryIdentity = (
-  left: Awaited<ReturnType<FileHandle["stat"]>>,
-  right: Awaited<ReturnType<FileHandle["stat"]>>,
-): boolean =>
-  left.isDirectory() &&
-  right.isDirectory() &&
-  left.dev === right.dev &&
-  left.ino === right.ino;
-
-const durablyPublishPrivateDirectory = async (path: string): Promise<void> => {
-  const parent = dirname(path);
-  if (exactAbsolutePath(await realpath(parent)) !== parent)
-    throw new Error("cli.harness.configuration-directory-unavailable");
-  const parentHandle = await open(
-    parent,
-    constants.O_RDONLY |
-      constants.O_DIRECTORY |
-      constants.O_NOFOLLOW |
-      constants.O_NONBLOCK,
-  );
-  try {
-    const before = await parentHandle.stat();
-    const pathBefore = await lstat(parent);
-    if (
-      !sameDirectoryIdentity(before, pathBefore) ||
-      pathBefore.isSymbolicLink()
-    )
-      throw new Error("cli.harness.configuration-directory-unavailable");
-    try {
-      await mkdir(path, { mode: 0o700 });
-    } catch (error) {
-      if (nodeErrorCode(error) !== "EEXIST") throw error;
-    }
-    await canonicalPrivateDirectory(path);
-    await parentHandle.sync();
-    const after = await parentHandle.stat();
-    const pathAfter = await lstat(parent);
-    if (
-      !sameDirectoryIdentity(before, after) ||
-      !sameDirectoryIdentity(after, pathAfter) ||
-      pathAfter.isSymbolicLink() ||
-      exactAbsolutePath(await realpath(parent)) !== parent
-    )
-      throw new Error("cli.harness.configuration-directory-unavailable");
-    await canonicalPrivateDirectory(path);
-  } finally {
-    await parentHandle.close();
-  }
-};
-
-const pathDirectories = (
-  environment: Readonly<Record<string, string | undefined>>,
-): readonly string[] => {
-  const path = exactEnvironmentValue(environment, "PATH");
-  if (path === undefined || path.length > 65_536)
-    throw new Error("cli.harness.probe-unavailable");
-  const entries = path.split(":");
-  if (
-    entries.length === 0 ||
-    entries.length > MAXIMUM_PATH_ENTRIES ||
-    entries.some(
-      (entry) =>
-        entry.length === 0 ||
-        entry.length > MAXIMUM_PATH_CODE_UNITS ||
-        !isAbsolute(entry) ||
-        resolve(entry) !== entry,
-    )
-  )
-    throw new Error("cli.harness.probe-unavailable");
-  return Object.freeze([...entries]);
-};
-
-const executableCandidates = async (
-  names: readonly string[],
-  environment: Readonly<Record<string, string | undefined>>,
-): Promise<
-  | Readonly<{
-      kind: "found";
-      candidates: readonly Readonly<{ path: string }>[];
-    }>
-  | Readonly<{ kind: "absent" }>
-  | Readonly<{ kind: "unavailable" }>
-> => {
-  try {
-    if (
-      names.length !== 1 ||
-      names[0] !== "codex" ||
-      Object.getPrototypeOf(names) !== Array.prototype
-    )
-      return unavailable();
-    const candidates = new Map<string, Readonly<{ path: string }>>();
-    for (const directory of pathDirectories(environment)) {
-      const candidate = join(directory, "codex");
-      try {
-        const canonical = exactAbsolutePath(await realpath(candidate));
-        const state = await lstat(canonical);
-        if (!state.isFile() || state.isSymbolicLink()) continue;
-        await access(canonical, constants.X_OK);
-        candidates.set(canonical, Object.freeze({ path: canonical }));
-      } catch (error) {
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          ["EACCES", "ENOENT", "ENOTDIR"].includes(String(error.code))
-        )
-          continue;
-        return unavailable();
-      }
-    }
-    return candidates.size === 0
-      ? Object.freeze({ kind: "absent" as const })
-      : Object.freeze({
-          candidates: Object.freeze([...candidates.values()]),
-          kind: "found" as const,
-        });
-  } catch {
-    return unavailable();
-  }
-};
-
-type AuthenticatedFile = Readonly<{
-  before: Awaited<ReturnType<FileHandle["stat"]>>;
-  handle: FileHandle;
-  path: string;
-}>;
-
-const authenticateExactFile = async (
-  path: string,
-  identity: ExactFileIdentity,
-  mode: number,
-): Promise<AuthenticatedFile> => {
-  if (exactAbsolutePath(await realpath(path)) !== path)
-    throw new Error("cli.harness.probe-unavailable");
-  const handle = await open(
-    path,
-    constants.O_RDONLY |
-      (constants.O_NOFOLLOW ?? 0) |
-      (constants.O_NONBLOCK ?? 0),
-  );
-  try {
-    const before = await handle.stat();
-    if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.size !== identity.bytes ||
-      (process.platform !== "win32" && (before.mode & 0o777) !== mode)
-    )
-      throw new Error("cli.harness.probe-unavailable");
-    const hash = createHash("sha256");
-    let bytes = 0;
-    const stream = createReadStream(path, {
-      autoClose: false,
-      fd: handle.fd,
-      start: 0,
-    }) as AsyncIterable<Buffer>;
-    for await (const chunk of stream) {
-      bytes += chunk.byteLength;
-      if (bytes > identity.bytes)
-        throw new Error("cli.harness.probe-unavailable");
-      hash.update(chunk);
-    }
-    if (bytes !== identity.bytes || hash.digest("hex") !== identity.sha256)
-      throw new Error("cli.harness.probe-unavailable");
-    return Object.freeze({ before, handle, path });
-  } catch (error) {
-    await handle.close();
-    throw error;
-  }
-};
-
-const revalidateAuthenticatedFile = async (
-  authenticated: AuthenticatedFile,
-): Promise<void> => {
-  const after = await authenticated.handle.stat();
-  const pathAfter = await lstat(authenticated.path);
-  for (const value of [after, pathAfter])
-    if (
-      value.dev !== authenticated.before.dev ||
-      value.ino !== authenticated.before.ino ||
-      value.size !== authenticated.before.size ||
-      value.mode !== authenticated.before.mode ||
-      value.mtimeMs !== authenticated.before.mtimeMs ||
-      value.ctimeMs !== authenticated.before.ctimeMs
-    )
-      throw new Error("cli.harness.probe-unavailable");
-};
 
 const readBoundedInstalledPackageVersion = async (
   executablePath: string,
@@ -500,134 +275,313 @@ const productProbe = (
       ),
   });
 
-export const createProductHarnesses =
-  // eslint-disable-next-line max-lines-per-function -- one closed composition binds discovery, planning, and apply-only parent preparation.
-  (input: CreateProductHarnessesInput): CreateHarnessCliServicesInput => {
-    const environment = input.environment ?? process.env;
-    const homeValue =
-      input.homeDirectory ?? exactEnvironmentValue(environment, "HOME");
-    const homeDirectory =
-      homeValue === undefined ? undefined : exactAbsolutePath(homeValue);
-    const platform = input.platform ?? process.platform;
-    const architecture = input.architecture ?? process.arch;
-    const codexDiscoveryPolicy =
-      input.codexDiscoveryPolicy ?? CODEX_DISCOVERY_POLICY;
-    const machineEntryPath = exactAbsolutePath(
-      input.machineEntryPath ??
-        fileURLToPath(
-          new URL("../internal/agentscope-hook-machine.js", import.meta.url),
-        ),
-    );
-    const nodeExecutable = exactAbsolutePath(
-      input.nodeExecutable ?? process.execPath,
-    );
-    const requestedHookConfigurationPath =
-      homeDirectory === undefined
-        ? undefined
-        : exactAbsolutePath(
-            join(homeDirectory, ...CODEX_HOOK_CONFIGURATION_PATH),
-          );
-    const adapter = Object.freeze({
-      commandName: "codex",
-      createInstallationInput: async (
-        operation: "install" | "migrate" | "uninstall",
-      ) => {
-        if (
-          platform === "win32" ||
-          requestedHookConfigurationPath === undefined
-        )
-          throw new Error("cli.launcher.unsupported");
-        const nodePath = exactAbsolutePath(await realpath(nodeExecutable));
-        const nodeState = await lstat(nodePath);
-        if (!nodeState.isFile() || nodeState.isSymbolicLink())
-          throw new Error("cli.launcher.unsupported");
-        const agentscopeHome = exactAbsolutePath(
-          await realpath(input.home.root),
+const loadInstallationFactory = async (
+  input: CreateProductHarnessesInput,
+): Promise<typeof createProductHarnessInstallationInput> => {
+  /* v8 ignore start -- the packed-artifact verifier executes the literal
+   release-only module edge; source tests inject the same typed factory. */
+  const installationModule: unknown = input.installationFactory
+    ? undefined
+    : await import("../internal/agentscope-product-harness-installation.js");
+  const loadedFactory: unknown =
+    typeof installationModule === "object" && installationModule !== null
+      ? Reflect.get(installationModule, "createProductHarnessInstallationInput")
+      : undefined;
+  const installationFactory = input.installationFactory ?? loadedFactory;
+  /* v8 ignore stop */
+  if (typeof installationFactory !== "function")
+    throw new Error("cli.launcher.unsupported");
+  return installationFactory as typeof createProductHarnessInstallationInput;
+};
+
+const installationCommonInput = async (
+  input: CreateProductHarnessesInput,
+  operation: "install" | "migrate" | "uninstall",
+  paths: Readonly<{
+    requestedHookConfigurationPath: string;
+    nodeExecutable: string;
+    machineEntryPath: string;
+    existingVendorDirectory?: boolean;
+  }>,
+): Promise<ProductHarnessInstallationInput> => {
+  const nodePath = exactAbsolutePath(await realpath(paths.nodeExecutable));
+  const nodeState = await lstat(nodePath);
+  if (!nodeState.isFile() || nodeState.isSymbolicLink())
+    throw new Error("cli.launcher.unsupported");
+  const agentscopeHome = exactAbsolutePath(await realpath(input.home.root));
+  const requestedConfigurationDirectory = dirname(
+    paths.requestedHookConfigurationPath,
+  );
+  let configurationDirectory: string;
+  try {
+    configurationDirectory = await (
+      paths.existingVendorDirectory
+        ? canonicalConfigurationDirectory
+        : canonicalPrivateDirectory
+    )(requestedConfigurationDirectory);
+  } catch (error) {
+    if (
+      nodeErrorCode(error) !== "ENOENT" ||
+      (await canonicalFutureDirectory(requestedConfigurationDirectory)) !==
+        requestedConfigurationDirectory
+    )
+      throw error;
+    configurationDirectory = requestedConfigurationDirectory;
+  }
+  const hookConfigurationPath = join(
+    configurationDirectory,
+    basename(paths.requestedHookConfigurationPath),
+  );
+  const machinePath = exactAbsolutePath(await realpath(paths.machineEntryPath));
+  const machineState = await lstat(machinePath);
+  if (!machineState.isFile() || machineState.isSymbolicLink())
+    throw new Error("cli.launcher.unsupported");
+  const hookDeadlineMilliseconds = await input.readHookDeadlineMilliseconds();
+  return Object.freeze({
+    agentscopeHome,
+    hookConfigurationPath,
+    hookDeadlineMilliseconds,
+    machineEntryPath: machinePath,
+    mutationDirectory: input.home.mutationDirectory,
+    nodeExecutable: nodePath,
+    operation,
+    releaseIdentity: input.releaseIdentity,
+  });
+};
+
+export const createProductHarnesses = (
+  input: CreateProductHarnessesInput,
+): CreateHarnessCliServicesInput => {
+  const environment = input.environment ?? process.env;
+  const homeValue =
+    input.homeDirectory ?? exactEnvironmentValue(environment, "HOME");
+  const homeDirectory =
+    homeValue === undefined ? undefined : exactAbsolutePath(homeValue);
+  const platform = input.platform ?? process.platform;
+  const architecture = input.architecture ?? process.arch;
+  const codexDiscoveryPolicy =
+    input.codexDiscoveryPolicy ?? CODEX_DISCOVERY_POLICY;
+  const machineEntryPath = exactAbsolutePath(
+    input.machineEntryPath ??
+      fileURLToPath(
+        new URL("../internal/agentscope-hook-machine.js", import.meta.url),
+      ),
+  );
+  const nodeExecutable = exactAbsolutePath(
+    input.nodeExecutable ?? process.execPath,
+  );
+  const projectDirectory = exactAbsolutePath(
+    input.projectDirectory ?? process.cwd(),
+  );
+  const requestedHookConfigurationPath =
+    homeDirectory === undefined
+      ? undefined
+      : exactAbsolutePath(
+          join(homeDirectory, ...CODEX_HOOK_CONFIGURATION_PATH),
         );
-        const requestedConfigurationDirectory = dirname(
+  const adapter = Object.freeze({
+    commandName: "codex",
+    createInstallationInput: async (
+      operation: "install" | "migrate" | "uninstall",
+    ) => {
+      if (platform === "win32" || requestedHookConfigurationPath === undefined)
+        throw new Error("cli.launcher.unsupported");
+      const installationInput = await installationCommonInput(
+        input,
+        operation,
+        {
           requestedHookConfigurationPath,
-        );
-        let configurationDirectory: string;
-        try {
-          configurationDirectory = await canonicalPrivateDirectory(
-            requestedConfigurationDirectory,
-          );
-        } catch (error) {
-          if (
-            nodeErrorCode(error) !== "ENOENT" ||
-            (await canonicalFutureDirectory(
-              requestedConfigurationDirectory,
-            )) !== requestedConfigurationDirectory
-          )
-            throw error;
-          configurationDirectory = requestedConfigurationDirectory;
-        }
-        const hookConfigurationPath = join(
-          configurationDirectory,
-          CODEX_HOOK_CONFIGURATION_PATH[1],
-        );
-        const machinePath = exactAbsolutePath(await realpath(machineEntryPath));
-        const machineState = await lstat(machinePath);
-        if (!machineState.isFile() || machineState.isSymbolicLink())
-          throw new Error("cli.launcher.unsupported");
-        /* v8 ignore start -- the packed-artifact verifier executes the literal
-         release-only module edge; source tests inject the same typed factory. */
-        const installationModule: unknown = input.installationFactory
-          ? undefined
-          : await import("../internal/agentscope-product-harness-installation.js");
-        const loadedFactory: unknown =
-          typeof installationModule === "object" && installationModule !== null
-            ? Reflect.get(
-                installationModule,
-                "createProductHarnessInstallationInput",
-              )
-            : undefined;
-        const installationFactory = input.installationFactory ?? loadedFactory;
-        /* v8 ignore stop */
-        if (typeof installationFactory !== "function")
-          throw new Error("cli.launcher.unsupported");
-        const createInstallation =
-          installationFactory as typeof createProductHarnessInstallationInput;
-        const hookDeadlineMilliseconds =
-          await input.readHookDeadlineMilliseconds();
-        const installationInput: ProductHarnessInstallationInput =
-          Object.freeze({
-            agentscopeHome,
-            hookConfigurationPath,
-            hookDeadlineMilliseconds,
-            machineEntryPath: machinePath,
-            mutationDirectory: input.home.mutationDirectory,
-            nodeExecutable: nodePath,
-            operation,
-            releaseIdentity: input.releaseIdentity,
-          });
-        return createInstallation(installationInput);
-      },
-      harnessType: codexHarnessDescriptor.harnessType,
-      prepareApplication: async (
-        operation: "install" | "migrate" | "uninstall",
-      ) => {
-        if (
-          operation === "uninstall" ||
-          requestedHookConfigurationPath === undefined
-        )
-          return;
-        const directory = dirname(requestedHookConfigurationPath);
-        await durablyPublishPrivateDirectory(directory);
-      },
-      probe: productProbe(
+          machineEntryPath,
+          nodeExecutable,
+        },
+      );
+      const createInstallation = await loadInstallationFactory(input);
+      return createInstallation(installationInput);
+    },
+    harnessType: codexHarnessDescriptor.harnessType,
+    prepareApplication: async (
+      operation: "install" | "migrate" | "uninstall",
+    ) => {
+      if (
+        operation === "uninstall" ||
+        requestedHookConfigurationPath === undefined
+      )
+        return;
+      const directory = dirname(requestedHookConfigurationPath);
+      await durablyPublishPrivateDirectory(directory);
+    },
+    probe: productProbe(
+      environment,
+      homeDirectory,
+      architecture,
+      platform,
+      codexDiscoveryPolicy,
+    ),
+  });
+  return Object.freeze({
+    adapters: Object.freeze([
+      adapter,
+      createClaudeProductAdapter(input, {
         environment,
         homeDirectory,
-        architecture,
         platform,
-        codexDiscoveryPolicy,
-      ),
-    });
-    return Object.freeze({
-      adapters: Object.freeze([adapter]),
-      registry: PRODUCT_HARNESS_REGISTRY,
-    });
+        architecture,
+        machineEntryPath,
+        nodeExecutable,
+        projectDirectory,
+      }),
+    ]),
+    registry: PRODUCT_HARNESS_REGISTRY,
+  });
+};
+
+const readClaudeInstallationContext = async (
+  homeDirectory: string,
+  projectDirectory: string,
+  platform: NodeJS.Platform,
+  environment: Readonly<Record<string, string | undefined>>,
+) => {
+  const realHome = await realpath(homeDirectory).catch(() => null);
+  const routes = await discoverClaudeCanonicalSettingsRoot(
+    projectDirectory,
+    realHome,
+  );
+  const plugins = await readClaudePluginContextObservation({
+    homeDirectory,
+    projectDirectory,
+    platform,
+    environment,
+  });
+  const canonical =
+    routes.candidate !== null &&
+    routes.candidate !== projectDirectory &&
+    realHome !== null &&
+    routes.candidate !== realHome
+      ? await readClaudePluginContextObservation({
+          homeDirectory,
+          projectDirectory,
+          platform,
+          environment,
+          localSettingsRoot: routes.candidate,
+        })
+      : undefined;
+  return {
+    ...plugins,
+    readGuards: mergeClaudePluginReadGuards([
+      plugins.readGuards,
+      routes.readGuards,
+      canonical?.readGuards ?? [],
+    ]),
+    settingsDirectorySelections: mergeClaudeSettingsDirectorySelections([
+      plugins.settingsDirectorySelections,
+      routes.settingsDirectorySelections,
+      canonical?.settingsDirectorySelections ?? [],
+    ]),
+    ...(canonical === undefined
+      ? {}
+      : {
+          localSettingsElection: {
+            cwd: projectDirectory,
+            candidate: routes.candidate!,
+            realHome,
+            canonical,
+          },
+        }),
   };
+};
+
+const createClaudeProductAdapter = (
+  input: CreateProductHarnessesInput,
+  context: Readonly<{
+    environment: Readonly<Record<string, string | undefined>>;
+    homeDirectory: string | undefined;
+    platform: NodeJS.Platform;
+    architecture: NodeJS.Architecture;
+    machineEntryPath: string;
+    nodeExecutable: string;
+    projectDirectory: string;
+  }>,
+): CliHarnessAdapter => {
+  const { homeDirectory, platform, architecture } = context;
+  const environment = captureClaudeEnvironment(context.environment);
+  const selectedHookConfigurationPath = () =>
+    homeDirectory === undefined
+      ? undefined
+      : claudeUserConfiguration(
+          homeDirectory,
+          context.projectDirectory,
+          environment,
+        ).settingsPath;
+  const probe = createClaudeDiscoveryProbe({
+    environment,
+    projectDirectory: context.projectDirectory,
+    ...(homeDirectory === undefined ? {} : { homeDirectory }),
+    platform,
+    architecture,
+    ...(input.claudeDiscoveryPolicy === undefined
+      ? {}
+      : { policy: input.claudeDiscoveryPolicy }),
+  });
+  return Object.freeze({
+    commandName: "claude-code",
+    harnessType: claudeCodeDescriptor.harnessType,
+    probe,
+    createInstallationInput: async (operation) => {
+      const requestedHookConfigurationPath = selectedHookConfigurationPath();
+      if (
+        homeDirectory === undefined ||
+        requestedHookConfigurationPath === undefined ||
+        (platform !== "darwin" && platform !== "linux")
+      )
+        throw new Error("cli.launcher.unsupported");
+      const common = await installationCommonInput(input, operation, {
+        requestedHookConfigurationPath,
+        nodeExecutable: context.nodeExecutable,
+        machineEntryPath: context.machineEntryPath,
+        existingVendorDirectory: true,
+      });
+      const observed = await discoverHarness(
+        PRODUCT_HARNESS_REGISTRY,
+        claudeCodeDescriptor.harnessType,
+        probe,
+      );
+      const dialectAuthority = createClaudeCodeDialectAuthority(
+        observed,
+        "posix",
+      );
+      if (dialectAuthority === undefined)
+        throw new Error("cli.launcher.unsupported");
+      const plugins = await readClaudeInstallationContext(
+        homeDirectory,
+        context.projectDirectory,
+        platform,
+        environment,
+      );
+      const createInstallation = await loadInstallationFactory(input);
+      return createInstallation({
+        ...common,
+        harness: "claude-code",
+        dialectAuthority,
+        ...plugins,
+      });
+    },
+    prepareApplication: async (operation) => {
+      const requestedHookConfigurationPath = selectedHookConfigurationPath();
+      if (
+        operation === "uninstall" ||
+        requestedHookConfigurationPath === undefined
+      )
+        return;
+      const directory = dirname(requestedHookConfigurationPath);
+      try {
+        await canonicalConfigurationDirectory(directory);
+      } catch (error) {
+        if (nodeErrorCode(error) !== "ENOENT") throw error;
+        await durablyPublishPrivateDirectory(directory);
+      }
+    },
+  });
+};
 
 export const productHarnessParentDirectoryForTesting = (
   homeDirectory: string,

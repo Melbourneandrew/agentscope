@@ -2,7 +2,6 @@ import {
   chmod,
   lstat,
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
   realpath,
@@ -10,151 +9,74 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  cleanupProductHarnessFixtures,
+  fixture,
+  testDiscoveryPolicy,
+} from "./__tests__/product-harness-fixture.js";
 import { createHarnessCliServices } from "./harness-services.js";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
-import {
-  type CodexDiscoveryPolicy,
-  createProductHarnesses,
-  productHarnessParentDirectoryForTesting,
-} from "./product-harnesses.js";
+import { createProductHarnesses } from "./product-harnesses.js";
 
-const wrapperBytes = Buffer.from(
-  "#!/usr/bin/env node\n// synthetic wrapper fixture\n",
-);
-const wrapperManifestBytes = Buffer.from(
-  '{"name":"@openai/codex","version":"0.149.1"}\n',
-);
-const platformManifestBytes = Buffer.from(
-  '{"name":"@openai/codex","version":"0.149.1-test-platform"}\n',
-);
-const nativeBytes = Buffer.from("synthetic native Codex fixture\n");
-const fileIdentity = (bytes: Uint8Array) =>
-  Object.freeze({
-    bytes: bytes.byteLength,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-  });
-const testDiscoveryPolicy: CodexDiscoveryPolicy = Object.freeze({
-  platforms: Object.freeze({
-    "darwin-arm64": Object.freeze({
-      dependency: "@openai/codex-test-platform",
-      executable: fileIdentity(nativeBytes),
-      manifest: fileIdentity(platformManifestBytes),
-      packageVersion: "0.149.1-test-platform",
-      triple: "test-triple",
-    }),
-  }),
-  version: "0.149.1",
-  wrapper: fileIdentity(wrapperBytes),
-  wrapperManifest: fileIdentity(wrapperManifestBytes),
+afterEach(cleanupProductHarnessFixtures);
+
+const absentClaude = Object.freeze({
+  harness: "claude-code",
+  reason: "not-found",
+  state: "absent",
+  version: null,
 });
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
-  );
-});
-
-const fixture = async (pathEntries = 1, releaseIdentity = "0.1.0") => {
-  const root = await realpath(
-    await mkdtemp(join(tmpdir(), "agentscope-product-harness-")),
-  );
-  roots.push(root);
-  const vendorHome = join(root, "vendor-home");
-  const agentscopeRoot = join(root, "agentscope-home");
-  const home = createAgentscopeHomeResolver({
-    environment: { AGENTSCOPE_HOME: agentscopeRoot },
-    environmentOverrideAuthority: "test",
-    platform: process.platform,
-  })();
-  await mkdir(home.launcherDirectory, { mode: 0o700, recursive: true });
-  await mkdir(home.mutationDirectory, { mode: 0o700, recursive: true });
-  await mkdir(productHarnessParentDirectoryForTesting(vendorHome), {
-    mode: 0o700,
-    recursive: true,
-  });
-  const directories: string[] = [];
-  const codexManifests: string[] = [];
-  const codexNativeExecutables: string[] = [];
-  const codexPlatformManifests: string[] = [];
-  for (let index = 0; index < pathEntries; index += 1) {
-    const directory = join(root, `bin-${index}`);
-    const scopeRoot = join(
-      root,
-      `packages-${index}`,
-      "node_modules",
-      "@openai",
-    );
-    const packageRoot = join(scopeRoot, "codex");
-    const packageBin = join(packageRoot, "bin");
-    const platformPackage = join(scopeRoot, "codex-test-platform");
-    const platformBin = join(platformPackage, "vendor", "test-triple", "bin");
-    await mkdir(directory, { mode: 0o700 });
-    await mkdir(packageBin, { mode: 0o700, recursive: true });
-    await mkdir(platformBin, { mode: 0o700, recursive: true });
-    const executable = join(packageBin, "codex.js");
-    await writeFile(executable, wrapperBytes);
-    await chmod(executable, 0o755);
-    const manifest = join(packageRoot, "package.json");
-    await writeFile(manifest, wrapperManifestBytes);
-    await chmod(manifest, 0o644);
-    const platformManifest = join(platformPackage, "package.json");
-    await writeFile(platformManifest, platformManifestBytes, { mode: 0o644 });
-    const nativeExecutable = join(platformBin, "codex");
-    await writeFile(nativeExecutable, nativeBytes, { mode: 0o755 });
-    await symlink(executable, join(directory, "codex"));
-    directories.push(directory);
-    codexManifests.push(manifest);
-    codexNativeExecutables.push(nativeExecutable);
-    codexPlatformManifests.push(platformManifest);
-  }
-  const machineEntryPath = join(root, "agentscope-hook-machine.js");
-  await writeFile(machineEntryPath, "export {};\n", { mode: 0o600 });
-  const input = createProductHarnesses({
-    architecture: "arm64",
-    codexDiscoveryPolicy: testDiscoveryPolicy,
-    environment: { PATH: directories.join(":") },
-    home,
-    homeDirectory: vendorHome,
-    installationFactory: createProductHarnessInstallationInput,
-    machineEntryPath,
-    nodeExecutable: process.execPath,
-    platform: "darwin",
-    readHookDeadlineMilliseconds: () => Promise.resolve(2_000),
-    releaseIdentity,
-  });
-  return {
-    agentscopeRoot,
-    codexExecutables: directories.map((directory) => join(directory, "codex")),
-    codexManifests,
-    codexNativeExecutables,
-    codexPlatformManifests,
-    home,
-    input,
-    machineEntryPath,
-    services: createHarnessCliServices(input),
-    vendorHome,
-  };
-};
 
 // eslint-disable-next-line max-lines-per-function -- one lifecycle suite proves the closed product adapter from discovery through removal.
 describe("packed CLI Codex product composition", () => {
+  it.each(["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_COWORK_PLUGINS"])(
+    "does not let a Claude-only accessor prevent Codex discovery: %s",
+    async (key) => {
+      const value = await fixture();
+      let reads = 0;
+      const environment = Object.defineProperty(
+        { PATH: dirname(value.codexExecutables[0]!) },
+        key,
+        {
+          get: () => {
+            reads++;
+            return "untrusted";
+          },
+        },
+      );
+      const input = createProductHarnesses({
+        architecture: "arm64",
+        codexDiscoveryPolicy: testDiscoveryPolicy,
+        environment,
+        home: value.home,
+        homeDirectory: value.vendorHome,
+        machineEntryPath: value.machineEntryPath,
+        platform: "darwin",
+        readHookDeadlineMilliseconds: () => Promise.resolve(2_000),
+        releaseIdentity: "0.1.0",
+      });
+      await expect(
+        createHarnessCliServices(input).listHarnesses(),
+      ).resolves.toMatchObject({
+        value: { harnesses: [{ reason: "compatible" }, absentClaude] },
+      });
+      expect(reads).toBe(0);
+    },
+  );
   it("discovers exactly one compatible Codex executable and known configuration", async () => {
     const value = await fixture();
     await writeFile(join(value.vendorHome, ".codex", "config.toml"), "");
     await expect(value.services.listHarnesses()).resolves.toMatchObject({
       status: "success",
-      value: { harnesses: [{ reason: "compatible", version: "0.149.1" }] },
+      value: {
+        harnesses: [{ reason: "compatible", version: "0.149.1" }, absentClaude],
+      },
     });
     const executionMarker = join(value.vendorHome, "version-probe-executed");
     await writeFile(
@@ -165,7 +87,10 @@ describe("packed CLI Codex product composition", () => {
     await expect(value.services.listHarnesses()).resolves.toMatchObject({
       status: "success",
       value: {
-        harnesses: [{ reason: "version-unavailable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "version-unavailable", state: "indeterminate" },
+          absentClaude,
+        ],
       },
     });
     await expect(lstat(executionMarker)).rejects.toMatchObject({
@@ -178,7 +103,10 @@ describe("packed CLI Codex product composition", () => {
     await expect(ambiguous.services.listHarnesses()).resolves.toMatchObject({
       status: "success",
       value: {
-        harnesses: [{ reason: "ambiguous-executable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "ambiguous-executable", state: "indeterminate" },
+          absentClaude,
+        ],
       },
     });
     const invalid = await fixture();
@@ -202,7 +130,14 @@ describe("packed CLI Codex product composition", () => {
     ).resolves.toMatchObject({
       status: "success",
       value: {
-        harnesses: [{ reason: "probe-unavailable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "probe-unavailable", state: "indeterminate" },
+          {
+            harness: "claude-code",
+            reason: "probe-unavailable",
+            state: "indeterminate",
+          },
+        ],
       },
     });
   });
@@ -215,6 +150,7 @@ describe("packed CLI Codex product composition", () => {
       releaseIdentity: "0.1.0",
     });
     expect(defaulted.registry?.harnessTypes).toEqual([
+      "@agentscope/harness-claude-code",
       "@agentscope/harness-codex",
     ]);
     for (const homeDirectory of [
@@ -274,7 +210,10 @@ describe("packed CLI Codex product composition", () => {
     await writeFile(value.codexManifests[0]!, '{"name":"substituted"}\n');
     await expect(value.services.listHarnesses()).resolves.toMatchObject({
       value: {
-        harnesses: [{ reason: "version-unavailable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "version-unavailable", state: "indeterminate" },
+          absentClaude,
+        ],
       },
     });
     const aliasedConfiguration = join(value.vendorHome, ".codex", "hooks.json");
@@ -306,7 +245,10 @@ describe("packed CLI Codex product composition", () => {
     );
     await expect(value.services.listHarnesses()).resolves.toMatchObject({
       value: {
-        harnesses: [{ reason: "version-unavailable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "version-unavailable", state: "indeterminate" },
+          absentClaude,
+        ],
       },
     });
   });
@@ -326,7 +268,10 @@ describe("packed CLI Codex product composition", () => {
     await symlink(replacement, value.codexManifests[0]!);
     await expect(value.services.listHarnesses()).resolves.toMatchObject({
       value: {
-        harnesses: [{ reason: "version-unavailable", state: "indeterminate" }],
+        harnesses: [
+          { reason: "version-unavailable", state: "indeterminate" },
+          absentClaude,
+        ],
       },
     });
   });
@@ -344,6 +289,7 @@ describe("packed CLI Codex product composition", () => {
         value: {
           harnesses: [
             { reason: "version-unavailable", state: "indeterminate" },
+            absentClaude,
           ],
         },
       });
@@ -366,6 +312,7 @@ describe("packed CLI Codex product composition", () => {
             {
               state: target === "wrapper" ? "absent" : "indeterminate",
             },
+            absentClaude,
           ],
         },
       });

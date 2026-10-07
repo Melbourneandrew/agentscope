@@ -1,0 +1,497 @@
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+import type { HarnessDirectoryInspection } from "@agentscope/harnesses-core";
+
+import {
+  readClaudeInstalledPluginRegistry,
+  readClaudePluginManifest,
+  readClaudePluginSettingsLayer,
+  selectClaudePluginCacheRecord,
+  selectClaudePluginLoadingPath,
+} from "./claude-plugin-inventory.js";
+
+describe("native ordered cache-record election from Core inspections", () => {
+  const inspection = (
+    directoryPath: string,
+    entries: readonly string[],
+    exists = true,
+  ): HarnessDirectoryInspection =>
+    Object.freeze({
+      directoryPath,
+      entries,
+      exists,
+      mode: exists ? 0o755 : null,
+    });
+  const paths = ["/cache/first", "/cache/second", "/cache/third"];
+
+  it("keeps empty and singleton applicability independent of nonempty election", () => {
+    expect(selectClaudePluginCacheRecord([], [])).toBeUndefined();
+    expect(selectClaudePluginCacheRecord([paths[0]!], [])).toBe(0);
+  });
+
+  it("ignores exactly the vendor marker set, not ordinary hidden content", () => {
+    const markers = [
+      "node_modules",
+      ".orphaned_at",
+      ".in_use",
+      ".links_materialized",
+    ];
+    expect(
+      selectClaudePluginCacheRecord(paths, [
+        inspection(paths[0]!, markers),
+        inspection(paths[1]!, [".ordinary"]),
+        inspection(paths[2]!, ["hooks"]),
+      ]),
+    ).toBe(1);
+  });
+
+  it("uses registry order rather than inspection order and retains first fallback", () => {
+    expect(
+      selectClaudePluginCacheRecord(paths, [
+        inspection(paths[2]!, ["skills"]),
+        inspection(paths[1]!, ["commands"]),
+        inspection(paths[0]!, [], false),
+      ]),
+    ).toBe(1);
+    expect(
+      selectClaudePluginCacheRecord(
+        paths,
+        paths.map((path) => inspection(path, [])),
+      ),
+    ).toBe(0);
+  });
+
+  it("rejects incomplete, duplicate, or non-directory election observations", () => {
+    const first = inspection(paths[0]!, ["node_modules"]);
+    expect(() => selectClaudePluginCacheRecord(paths, [first])).toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+    expect(() => selectClaudePluginCacheRecord(paths, [first, first])).toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+    expect(() =>
+      selectClaudePluginCacheRecord([paths[0]!, "/cache/packed.zip"], [first]),
+    ).toThrow("cli.harness.plugin-inventory-unavailable");
+  });
+  it("does not inspect records after the first nonempty cache", () => {
+    expect(
+      selectClaudePluginCacheRecord(paths, [inspection(paths[0]!, ["skills"])]),
+    ).toBe(0);
+  });
+  it("re-elects cache-before-seed loading from fresh Core observations", () => {
+    const cache = "/cache/recorded",
+      first = "/seed/first",
+      second = "/seed/second";
+    const observed = [
+      inspection(cache, ["node_modules"]),
+      inspection(first, [], false),
+      inspection(second, ["hooks"]),
+    ];
+    expect(
+      selectClaudePluginLoadingPath([cache, first, second], observed),
+    ).toBe(second);
+    expect(() =>
+      selectClaudePluginLoadingPath(
+        [cache, first, second],
+        observed.slice(0, 1),
+      ),
+    ).toThrow("plugin-inventory-unavailable");
+    expect(
+      selectClaudePluginLoadingPath(
+        [cache, first, second],
+        [inspection(cache, ["new-content"])],
+      ),
+    ).toBe(cache);
+    expect(
+      selectClaudePluginLoadingPath([cache], [inspection(cache, [])]),
+    ).toBeUndefined();
+    expect(() =>
+      selectClaudePluginLoadingPath([cache], [observed[0]!, observed[0]!]),
+    ).toThrow("plugin-inventory-unavailable");
+  });
+});
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true })),
+  );
+});
+
+describe("plugin manifest metadata stays observed rather than fabricated", () => {
+  it("keeps missing manifest and missing version distinct from metadata", async () => {
+    const value = await fixture();
+    const absent = await readClaudePluginManifest(value.root);
+    expect(absent).toMatchObject({
+      guard: { exists: false },
+      manifestName: null,
+      manifestVersion: null,
+      hasDeclaredHooks: false,
+      hooksDeclarationJson: null,
+    });
+    await mkdir(join(value.root, ".claude-plugin"));
+    await writeFile(
+      join(value.root, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "ordinary", unrelated: "SECRET-CANARY" }),
+    );
+    const present = await readClaudePluginManifest(value.root);
+    expect(present).toMatchObject({
+      guard: { exists: true },
+      manifestName: "ordinary",
+      manifestVersion: null,
+      hasDeclaredHooks: false,
+      hooksDeclarationJson: null,
+    });
+    expect(JSON.stringify(present)).not.toContain("SECRET-CANARY");
+    expect(Object.isFrozen(present)).toBe(true);
+  });
+
+  it("does not mistake a custom or inline hooks declaration for no hooks", async () => {
+    const value = await fixture();
+    await mkdir(join(value.root, ".claude-plugin"));
+    const path = join(value.root, ".claude-plugin", "plugin.json");
+    for (const hooks of ["./custom.json", { hooks: {} }, [], null]) {
+      await writeFile(
+        path,
+        JSON.stringify({ name: "ordinary", version: "1.0.0", hooks }),
+      );
+      expect(await readClaudePluginManifest(value.root)).toMatchObject({
+        manifestName: "ordinary",
+        manifestVersion: "1.0.0",
+        hasDeclaredHooks: true,
+        hooksDeclarationJson: JSON.stringify(hooks),
+      });
+    }
+  });
+
+  it("preserves an observed empty version and the exact ASCII-space name rule", async () => {
+    const value = await fixture();
+    await mkdir(join(value.root, ".claude-plugin"));
+    const path = join(value.root, ".claude-plugin", "plugin.json");
+    await writeFile(path, JSON.stringify({ name: "tab\tname", version: "" }));
+    expect(await readClaudePluginManifest(value.root)).toMatchObject({
+      manifestName: "tab\tname",
+      manifestVersion: "",
+    });
+  });
+
+  it.each([
+    null,
+    [],
+    {},
+    { name: 7 },
+    { name: "" },
+    { name: "ascii space" },
+    { name: "ordinary", version: null },
+  ])("refuses malformed present metadata", async (manifest) => {
+    const value = await fixture();
+    await mkdir(join(value.root, ".claude-plugin"));
+    await writeFile(
+      join(value.root, ".claude-plugin", "plugin.json"),
+      JSON.stringify(manifest),
+    );
+    await expect(readClaudePluginManifest(value.root)).rejects.toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+  });
+});
+
+describe("scoped settings observations for the existing plugin inventory", () => {
+  it("projects only bounded plugin selections, not unrelated settings content", async () => {
+    const value = await fixture();
+    const bytes = Buffer.from(
+      JSON.stringify({
+        enabledPlugins: { "ordinary@market": true, "disabled@market": false },
+        unrelated: "SECRET-CANARY",
+      }),
+    );
+    await writeFile(value.path, bytes);
+    const observed = await readClaudePluginSettingsLayer(value.path, "project");
+    expect(observed.layer).toEqual({
+      scope: "project",
+      targetPath: value.path,
+      targetDigest: hash(bytes),
+      targetExists: true,
+      enabledPlugins: { "ordinary@market": true, "disabled@market": false },
+    });
+    expect(JSON.stringify(observed)).not.toContain("SECRET-CANARY");
+    expect(Object.isFrozen(observed.layer.enabledPlugins)).toBe(true);
+  });
+
+  it("preserves absence versus an existing settings file without selections", async () => {
+    const value = await fixture();
+    expect(
+      (await readClaudePluginSettingsLayer(value.path, "user")).layer,
+    ).toMatchObject({ targetExists: false, enabledPlugins: {} });
+    await writeFile(value.path, "{}\n");
+    expect(
+      (await readClaudePluginSettingsLayer(value.path, "user")).layer,
+    ).toMatchObject({ targetExists: true, enabledPlugins: {} });
+  });
+
+  it.each([
+    { enabledPlugins: { "": true } },
+    { enabledPlugins: { ["é".repeat(257)]: true } },
+    {
+      enabledPlugins: Object.fromEntries(
+        Array.from({ length: 257 }, (_, i) => [`plugin-${i}`, true]),
+      ),
+    },
+    null,
+    [],
+  ])("refuses unresolved or out-of-contract selections", async (settings) => {
+    const value = await fixture();
+    await writeFile(value.path, JSON.stringify(settings));
+    await expect(
+      readClaudePluginSettingsLayer(value.path, "user"),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+  });
+});
+
+describe("native parsed settings reach the actual guarded layer reader", () => {
+  it.each(["user", "managed"] as const)(
+    "applies whole-source versus per-field rejection before the actual %s layer",
+    async (scope) => {
+      const value = await fixture();
+      const bytes = Buffer.from(
+        JSON.stringify({
+          enabledPlugins: { "ordinary@market": true },
+          blockedMarketplaces: 17,
+        }),
+      );
+      await writeFile(value.path, bytes);
+      const observed = await readClaudePluginSettingsLayer(value.path, scope);
+      expect(observed.layer.enabledPlugins).toEqual(
+        scope === "user" ? {} : { "ordinary@market": true },
+      );
+      expect(observed.guard.digest).toBe(hash(bytes));
+      expect(observed.layer.targetExists).toBe(true);
+    },
+  );
+  it("preserves raw string arrays without collapsing them to true", async () => {
+    const value = await fixture();
+    const selections = ["first", "first", "second"];
+    const bytes = Buffer.from(
+      JSON.stringify({
+        enabledPlugins: { "ordinary@market": selections, "empty@market": [] },
+      }),
+    );
+    await writeFile(value.path, bytes);
+    const observed = await readClaudePluginSettingsLayer(value.path, "user");
+    expect(observed.layer.enabledPlugins).toEqual({
+      "ordinary@market": ["first", "first", "second"],
+      "empty@market": [],
+    });
+    expect(
+      Object.isFrozen(observed.layer.enabledPlugins["ordinary@market"]),
+    ).toBe(true);
+    expect(observed.guard.digest).toBe(hash(bytes));
+  });
+  it.each(["user", "managed"] as const)(
+    "does not partially apply a bad native field from %s settings",
+    async (scope) => {
+      const value = await fixture();
+      const bytes = Buffer.from(
+        JSON.stringify({
+          enabledPlugins: { "good@market": true, "bad@market": 17 },
+        }),
+      );
+      await writeFile(value.path, bytes);
+      const observed = await readClaudePluginSettingsLayer(value.path, scope);
+      expect(observed.layer.enabledPlugins).toEqual({});
+      expect(observed.layer.targetExists).toBe(true);
+      expect(observed.guard.digest).toBe(hash(bytes));
+    },
+  );
+});
+describe("versioned installed plugin location observations", () => {
+  it("retains all scoped records without choosing the first or exposing unrelated data", async () => {
+    const value = await fixture();
+    const bytes = Buffer.from(
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "ordinary@market": [
+            { scope: "user", installPath: join(value.root, "user-cache") },
+            {
+              scope: "local",
+              installPath: join(value.root, "local-cache"),
+              projectPath: value.root,
+              version: "1.2.3",
+              unrelated: "SECRET-CANARY",
+            },
+          ],
+        },
+      }),
+    );
+    await writeFile(value.path, bytes);
+    const registry = await readClaudeInstalledPluginRegistry(value.path);
+    expect(registry.guard.digest).toBe(hash(bytes));
+    expect(registry.locations).toEqual([
+      {
+        pluginId: "ordinary@market",
+        scope: "user",
+        installPath: join(value.root, "user-cache"),
+        projectPath: null,
+        version: null,
+      },
+      {
+        pluginId: "ordinary@market",
+        scope: "local",
+        installPath: join(value.root, "local-cache"),
+        projectPath: value.root,
+        version: "1.2.3",
+      },
+    ]);
+    expect(JSON.stringify(registry)).not.toContain("SECRET-CANARY");
+    expect(Object.isFrozen(registry.locations)).toBe(true);
+    expect(registry.locations.every(Object.isFrozen)).toBe(true);
+  });
+
+  it("keeps registry absence and an existing empty V2 registry distinct", async () => {
+    const value = await fixture();
+    const absent = await readClaudeInstalledPluginRegistry(value.path);
+    expect(absent.guard.exists).toBe(false);
+    expect(absent.locations).toEqual([]);
+    await writeFile(value.path, '{"version":2,"plugins":{}}');
+    const empty = await readClaudeInstalledPluginRegistry(value.path);
+    expect(empty.guard.exists).toBe(true);
+    expect(empty.locations).toEqual([]);
+  });
+
+  it.each([
+    { version: "2", plugins: {} },
+    { plugins: {} },
+    { version: 2, plugins: [] },
+    { version: 2, plugins: { "ordinary@market": {} } },
+    { version: 2, plugins: { "": [] } },
+  ])("refuses malformed registry shapes", async (registry) => {
+    const value = await fixture();
+    await writeFile(value.path, JSON.stringify(registry));
+    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+  });
+});
+
+describe("native legacy cache-path conversion", () => {
+  it.each([
+    [
+      "ordinary.plugin@market.name",
+      "1.2.3/branch",
+      "market-name",
+      "ordinary-plugin",
+      "1.2.3-branch",
+    ],
+    ["ordinary", "..", "unknown", "ordinary", "-"],
+  ])(
+    "derives legacy cache identity instead of using its recorded path",
+    async (id, version, market, name, segment) => {
+      const value = await fixture();
+      await writeFile(
+        value.path,
+        JSON.stringify({
+          version: 1,
+          plugins: {
+            [id]: {
+              version,
+              installedAt: "2026-10-06",
+              installPath: "/obsolete/SECRET-CANARY",
+            },
+          },
+        }),
+      );
+      const registry = await readClaudeInstalledPluginRegistry(value.path);
+      expect(registry.locations).toEqual([
+        {
+          pluginId: id,
+          scope: "user",
+          projectPath: null,
+          version,
+          installPath: join(value.root, "cache", market, name, segment),
+        },
+      ]);
+      expect(JSON.stringify(registry)).not.toContain("SECRET-CANARY");
+    },
+  );
+
+  it.each([
+    { version: "1.0", installPath: "/legacy" },
+    { version: "1.0", installedAt: "observed" },
+    { version: null, installedAt: "observed", installPath: "/legacy" },
+  ])(
+    "does not convert invalid legacy installation metadata",
+    async (record) => {
+      const value = await fixture();
+      await writeFile(
+        value.path,
+        JSON.stringify({ version: 1, plugins: { "ordinary@market": record } }),
+      );
+      await expect(
+        readClaudeInstalledPluginRegistry(value.path),
+      ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+    },
+  );
+});
+
+describe("bounded V2 plugin locations", () => {
+  it.each([
+    { scope: "unknown", installPath: "/cache" },
+    { scope: "user", installPath: "relative" },
+    { scope: "local", installPath: "/cache", projectPath: "relative" },
+    { scope: "user", installPath: "/cache", version: null },
+    { scope: "user", installPath: "/cache", version: "" },
+    { scope: "user", installPath: "/cache", version: "\ud800" },
+    { scope: "user", installPath: "/cache", version: "é".repeat(257) },
+  ])("refuses ambiguous or out-of-contract location fields", async (record) => {
+    const value = await fixture();
+    await writeFile(
+      value.path,
+      JSON.stringify({ version: 2, plugins: { "ordinary@market": [record] } }),
+    );
+    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+  });
+
+  it("bounds aggregate records even across distinct registry identities", async () => {
+    const value = await fixture();
+    const record = { scope: "user", installPath: join(value.root, "cache") };
+    await writeFile(
+      value.path,
+      JSON.stringify({
+        version: 2,
+        plugins: { first: Array.from({ length: 128 }, () => record) },
+      }),
+    );
+    expect(
+      (await readClaudeInstalledPluginRegistry(value.path)).locations,
+    ).toHaveLength(128);
+    await writeFile(
+      value.path,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          first: Array.from({ length: 128 }, () => record),
+          second: [record],
+        },
+      }),
+    );
+    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+  });
+});
+const fixture = async () => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "agentscope-plugin-document-")),
+  );
+  roots.push(root);
+  return { root, path: join(root, "document.json") };
+};
+const hash = (bytes: Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex");

@@ -9,20 +9,44 @@ import {
   type HarnessInstallationPlanner,
   type HarnessTargetDecision,
   type HarnessTargetInspection,
+  type HarnessDirectoryInspection,
 } from "@agentscope/harnesses-core";
 import {
   codexHarnessDescriptor,
   createCodexInstallationPlanner,
 } from "@agentscope/harness-codex";
+import {
+  claudeCodeDescriptor,
+  createClaudeCodeInstallationPlanner,
+  type ClaudeCodeDialectAuthority,
+  type ClaudeCodePluginInventory,
+} from "@agentscope/harness-claude-code";
 
 import { createOwnedHookLauncherArtifacts } from "./hook-launcher.js";
+import type { ProductHarnessReadGuard } from "./product-harness-probe-files.js";
+export type { ProductHarnessReadGuard } from "./product-harness-probe-files.js";
+import {
+  selectClaudePluginCacheRecord,
+  selectClaudePluginLoadingPath,
+  type ClaudePluginCacheElection,
+} from "./claude-plugin-inventory.js";
+import {
+  snapshotClaudePlugin as snapshotPlugin,
+  snapshotClaudePluginInventory as snapshotInventory,
+} from "./claude-plugin-selection.js";
+import {
+  claudeSettingsDirectoriesAgree,
+  claudeDirectoryDependencies,
+  selectClaudeCanonicalLocalRootFromHeld,
+  type ClaudeSettingsDirectorySelection,
+} from "./claude-managed-settings.js";
 
 const CONFIGURATION_MODE = 0o600;
 const LAUNCHER_MODE = 0o700;
 const releaseIdentityPattern = /^[0-9A-Za-z][0-9A-Za-z._-]*$/u;
 const digestPattern = /^[a-f0-9]{64}$/u;
 
-export type ProductHarnessInstallationInput = Readonly<{
+type ProductHarnessInstallationCommon = Readonly<{
   agentscopeHome: string;
   hookConfigurationPath: string;
   hookDeadlineMilliseconds: number;
@@ -32,6 +56,28 @@ export type ProductHarnessInstallationInput = Readonly<{
   operation: "install" | "migrate" | "uninstall";
   releaseIdentity: string;
 }>;
+
+export type ProductHarnessInstallationInput = ProductHarnessInstallationCommon &
+  (
+    | Readonly<{ harness?: "codex" }>
+    | Readonly<{
+        harness: "claude-code";
+        dialectAuthority: ClaudeCodeDialectAuthority;
+        pluginInventory: ClaudeCodePluginInventory | null;
+        readGuards: readonly ProductHarnessReadGuard[];
+        cacheElections?: readonly ClaudePluginCacheElection[];
+        settingsDirectorySelections?: readonly ClaudeSettingsDirectorySelection[];
+        localSettingsElection?: Readonly<{
+          cwd: string;
+          candidate: string;
+          realHome: string | null;
+          canonical: Readonly<{
+            pluginInventory: ClaudeCodePluginInventory | null;
+            cacheElections?: readonly ClaudePluginCacheElection[];
+          }>;
+        }>;
+      }>
+  );
 
 const equalBytes = (left: Uint8Array | null, right: Uint8Array): boolean => {
   if (left === null || left.byteLength !== right.byteLength) return false;
@@ -111,7 +157,7 @@ const priorLauncherMetadata = (
       return undefined;
     const prior = createOwnedHookLauncherArtifacts({
       agentscopeHome: input.agentscopeHome,
-      harnessType: codexHarnessDescriptor.harnessType,
+      harnessType: current.metadata.harnessType,
       hookDeadlineMilliseconds: input.hookDeadlineMilliseconds,
       machineEntryPath: value.machineEntryPath,
       nodeExecutable: value.nodeExecutable,
@@ -181,30 +227,295 @@ const configuredFileDecision = (
   return decision;
 };
 
+const snapshotReadGuards = (
+  values: readonly ProductHarnessReadGuard[],
+): readonly ProductHarnessReadGuard[] => {
+  const guards = values.map((guard) => Object.freeze({ ...guard }));
+  const paths = new Set<string>();
+  for (const guard of guards) {
+    if (paths.has(guard.targetPath))
+      throw new Error("cli.harness.plugin-inventory-unavailable");
+    paths.add(guard.targetPath);
+  }
+  return Object.freeze(guards);
+};
+
+const snapshotElections = (
+  elections: readonly ClaudePluginCacheElection[] | undefined,
+) =>
+  elections?.map((election) =>
+    Object.freeze({
+      ...(election.directoryPaths === undefined
+        ? {}
+        : { directoryPaths: Object.freeze([...election.directoryPaths]) }),
+      candidates: Object.freeze(
+        election.candidates.map((candidate) =>
+          Object.freeze({
+            ...candidate,
+            ...(candidate.loading === undefined
+              ? {}
+              : {
+                  loading: Object.freeze({
+                    ...candidate.loading,
+                    paths: Object.freeze([...candidate.loading.paths]),
+                    ...(candidate.loading.versionRoots === undefined
+                      ? {}
+                      : {
+                          versionRoots: Object.freeze(
+                            candidate.loading.versionRoots.map((root) =>
+                              Object.freeze({
+                                ...root,
+                                paths: Object.freeze([...root.paths]),
+                              }),
+                            ),
+                          ),
+                        }),
+                  }),
+                }),
+            plugin:
+              candidate.plugin === null
+                ? null
+                : snapshotPlugin(candidate.plugin),
+          }),
+        ),
+      ),
+    }),
+  );
+
+const electionDirectoryPaths = (
+  elections: readonly ClaudePluginCacheElection[] | undefined,
+): readonly string[] =>
+  Object.freeze(
+    Array.from(
+      new Set(
+        elections?.flatMap(
+          (election) =>
+            election.directoryPaths ??
+            election.candidates.flatMap((candidate) =>
+              candidate.loading === undefined
+                ? [candidate.installPath]
+                : [
+                    ...candidate.loading.paths,
+                    ...(candidate.loading.versionRoots?.flatMap((root) => [
+                      root.parentPath,
+                      ...root.paths,
+                    ]) ?? []),
+                  ],
+            ),
+        ) ?? [],
+      ),
+    ),
+  );
+
+const selectedPluginInventory = (
+  inventory: ClaudeCodePluginInventory,
+  elections: readonly ClaudePluginCacheElection[] | undefined,
+  directories: readonly HarnessDirectoryInspection[],
+): ClaudeCodePluginInventory => {
+  if (elections === undefined) return inventory;
+  return Object.freeze({
+    ...inventory,
+    installedPlugins: Object.freeze(
+      elections.map((election) => {
+        const index = selectClaudePluginCacheRecord(
+          election.candidates.map((candidate) => candidate.installPath),
+          directories,
+        );
+        if (index === undefined)
+          throw new Error("cli.harness.plugin-inventory-unavailable");
+        const candidate = election.candidates[index]!;
+        const paths = candidate.loading?.paths ?? [candidate.installPath];
+        const selected = selectClaudePluginLoadingPath(
+          paths,
+          directories,
+          candidate.loading?.versionRoots,
+          candidate.loading?.localPath,
+        );
+        if (
+          selected === undefined ||
+          selected !==
+            (candidate.loading?.selectedPath ?? candidate.installPath) ||
+          candidate.plugin === null
+        )
+          throw new Error("cli.harness.plugin-inventory-unavailable");
+        return candidate.plugin;
+      }),
+    ),
+  });
+};
+
+const installationArtifacts = (input: ProductHarnessInstallationInput) => {
+  const descriptor =
+    input.harness === "claude-code"
+      ? claudeCodeDescriptor
+      : codexHarnessDescriptor;
+  return Object.freeze({
+    invocation: createOwnedHarnessHookInvocation({
+      agentscopeHome: input.agentscopeHome,
+      harnessType: descriptor.harnessType,
+      hookDeadlineMilliseconds: input.hookDeadlineMilliseconds,
+      platform: "posix",
+    }),
+    launcher: createOwnedHookLauncherArtifacts({
+      agentscopeHome: input.agentscopeHome,
+      harnessType: descriptor.harnessType,
+      hookDeadlineMilliseconds: input.hookDeadlineMilliseconds,
+      machineEntryPath: input.machineEntryPath,
+      nodeExecutable: input.nodeExecutable,
+      platform: "posix",
+      releaseIdentity: input.releaseIdentity,
+    }),
+  });
+};
+
+const installationTargetPaths = (
+  launcher: ReturnType<typeof createOwnedHookLauncherArtifacts>,
+  configurationPath: string,
+  guards: readonly ProductHarnessReadGuard[],
+): readonly string[] =>
+  Object.freeze([
+    ...new Set([
+      // Read-only callbacks precede owned decisions without a second inspection.
+      ...guards
+        .map((guard) => guard.targetPath)
+        .filter(
+          (path) =>
+            path !== launcher.metadataPath &&
+            path !== launcher.launcherPath &&
+            path !== configurationPath,
+        ),
+      launcher.metadataPath,
+      launcher.launcherPath,
+      configurationPath,
+    ]),
+  ]);
+
+const installationPlanningContext = (
+  input: ProductHarnessInstallationInput,
+) => {
+  const claude = input.harness === "claude-code";
+  const { invocation, launcher } = installationArtifacts(input);
+  const inventory =
+    claude && input.pluginInventory !== null
+      ? snapshotInventory(input.pluginInventory)
+      : undefined;
+  const localElection =
+    input.harness === "claude-code" && input.localSettingsElection !== undefined
+      ? Object.freeze({
+          cwd: input.localSettingsElection.cwd,
+          candidate: input.localSettingsElection.candidate,
+          realHome: input.localSettingsElection.realHome,
+          inventory:
+            input.localSettingsElection.canonical.pluginInventory === null
+              ? undefined
+              : snapshotInventory(
+                  input.localSettingsElection.canonical.pluginInventory,
+                ),
+          elections: snapshotElections(
+            input.localSettingsElection.canonical.cacheElections,
+          ),
+        })
+      : undefined;
+  const effectiveUid =
+    typeof process.geteuid === "function" ? process.geteuid() : null;
+  const elections =
+    input.harness === "claude-code"
+      ? snapshotElections(input.cacheElections)
+      : undefined;
+  const { settingsSelections, directoryPaths } = claudeDirectoryDependencies(
+    input.harness === "claude-code" ? input.settingsDirectorySelections : [],
+    [
+      ...electionDirectoryPaths(elections),
+      ...electionDirectoryPaths(localElection?.elections),
+    ],
+  );
+  const codexPlanner = claude
+    ? undefined
+    : createCodexInstallationPlanner(input.operation, invocation);
+  const guards =
+    input.harness === "claude-code" ? snapshotReadGuards(input.readGuards) : [];
+  return Object.freeze({
+    claude,
+    invocation,
+    launcher,
+    inventory,
+    localElection,
+    effectiveUid,
+    elections,
+    settingsSelections,
+    directoryPaths,
+    codexPlanner,
+    guards,
+  });
+};
+
+const configurationPlannerFromHeld = (
+  input: ProductHarnessInstallationInput,
+  context: ReturnType<typeof installationPlanningContext>,
+  directories: readonly HarnessDirectoryInspection[],
+  files: readonly Readonly<
+    Pick<HarnessTargetInspection, "targetPath" | "exists" | "uid">
+  >[],
+): HarnessInstallationPlanner => {
+  const { localElection, inventory, elections, effectiveUid } = context;
+  const canonical =
+    localElection !== undefined &&
+    selectClaudeCanonicalLocalRootFromHeld(
+      localElection.cwd,
+      localElection.candidate,
+      localElection.realHome,
+      effectiveUid,
+      { directories, files },
+    ) === localElection.candidate;
+  const selectedInventory = canonical ? localElection.inventory : inventory;
+  if (input.harness === "claude-code" && selectedInventory === undefined)
+    throw new Error("cli.harness.plugin-inventory-unavailable");
+  return input.harness === "claude-code"
+    ? createClaudeCodeInstallationPlanner(
+        input.operation,
+        context.invocation,
+        selectedPluginInventory(
+          selectedInventory!,
+          canonical ? localElection.elections : elections,
+          directories,
+        ),
+        input.dialectAuthority,
+      )
+    : context.codexPlanner!;
+};
+
 export const createProductHarnessInstallationInput = (
   input: ProductHarnessInstallationInput,
 ): HarnessInstallationPlanInput => {
-  const invocation = createOwnedHarnessHookInvocation({
-    agentscopeHome: input.agentscopeHome,
-    harnessType: codexHarnessDescriptor.harnessType,
-    hookDeadlineMilliseconds: input.hookDeadlineMilliseconds,
-    platform: "posix",
-  });
-  const launcher = createOwnedHookLauncherArtifacts({
-    agentscopeHome: input.agentscopeHome,
-    harnessType: codexHarnessDescriptor.harnessType,
-    hookDeadlineMilliseconds: input.hookDeadlineMilliseconds,
-    machineEntryPath: input.machineEntryPath,
-    nodeExecutable: input.nodeExecutable,
-    platform: "posix",
-    releaseIdentity: input.releaseIdentity,
-  });
-  const codexPlanner = createCodexInstallationPlanner(
-    input.operation,
-    invocation,
-  );
+  const context = installationPlanningContext(input);
+  const { claude, launcher, settingsSelections, directoryPaths, guards } =
+    context;
+  const heldFiles = new Map<
+    string,
+    Readonly<Pick<HarnessTargetInspection, "targetPath" | "exists" | "uid">>
+  >();
   let priorMetadata: PriorLauncherMetadata | undefined;
-  const planner: HarnessInstallationPlanner = (target) => {
+  const planner: HarnessInstallationPlanner = (target, directories = []) => {
+    if (!claudeSettingsDirectoriesAgree(settingsSelections, directories))
+      return Object.freeze({ kind: "conflict" as const });
+    const guard = guards.find(
+      (value) => value.targetPath === target.targetPath,
+    );
+    if (
+      guard !== undefined &&
+      (guard.exists !== target.exists ||
+        guard.digest !== target.digest ||
+        guard.mode !== target.mode)
+    )
+      return Object.freeze({ kind: "conflict" as const });
+    heldFiles.set(
+      target.targetPath,
+      Object.freeze({
+        targetPath: target.targetPath,
+        exists: target.exists,
+        ...(Object.hasOwn(target, "uid") ? { uid: target.uid } : {}),
+      }),
+    );
     if (target.targetPath === launcher.metadataPath) {
       const exact = ownedFileDecision(
         input.operation,
@@ -255,21 +566,31 @@ export const createProductHarnessInstallationInput = (
             mode: LAUNCHER_MODE,
           });
     }
-    if (target.targetPath === input.hookConfigurationPath)
-      return configuredFileDecision(codexPlanner, target);
+    if (target.targetPath === input.hookConfigurationPath) {
+      const configurationPlanner = configurationPlannerFromHeld(
+        input,
+        context,
+        directories,
+        [...heldFiles.values()],
+      );
+      return configuredFileDecision(configurationPlanner, target);
+    }
+    if (guard !== undefined)
+      return Object.freeze({ kind: "unchanged" as const });
     return Object.freeze({ kind: "unsupported" as const });
   };
   return Object.freeze({
     manifestPath: join(
       input.mutationDirectory,
-      `harness-codex-${input.operation}.json`,
+      `harness-${claude ? "claude-code" : "codex"}-${input.operation}.json`,
     ),
     operation: input.operation,
     planner,
-    targetPaths: Object.freeze([
-      launcher.metadataPath,
-      launcher.launcherPath,
+    ...(directoryPaths.length === 0 ? {} : { directoryPaths }),
+    targetPaths: installationTargetPaths(
+      launcher,
       input.hookConfigurationPath,
-    ]),
+      guards,
+    ),
   });
 };
