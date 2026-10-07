@@ -20,6 +20,9 @@ import {
 // @ts-expect-error no declaration file is published for this private module
 import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 
+const readIntegration = (name: string) =>
+  readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+
 const {
   codexArmPendingResearchHint,
   codexArmPtyResearchHint,
@@ -1011,22 +1014,23 @@ describe("Codex trace cutoff ordering", () => {
     for (const other of ["fixture-process-interactive", "", undefined])
       expect(interactivePtyExecutionReserveMilliseconds(other)).toBe(5_000);
 
-    const integrationRoot = resolve(import.meta.dirname, "..");
-    const runner = readFileSync(join(integrationRoot, "runner.mjs"), "utf8");
+    const runner = readIntegration("runner.mjs");
     expect(runner).toContain(
-      "challengedReadinessProgress: receipt.challengedReadinessProgress",
+      "receipt[key] === undefined ? {} : { [key]: receipt[key] }",
     );
-    expect(runner).toContain(
-      "checkpointProgressDiagnostic: receipt.checkpointProgressDiagnostic",
-    );
-    const controller = readFileSync(
-      join(integrationRoot, "run-scenarios.mjs"),
-      "utf8",
-    );
-    const fixture = readFileSync(
-      join(integrationRoot, "codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    expect(
+      [
+        ...runner.matchAll(/\.\.\.optionalReceiptDiagnostic\("([^"]+)"\)/gu),
+      ].map((match) => match[1]),
+    ).toEqual([
+      "pumpFailureDiagnostic",
+      "challengedReadinessProgress",
+      "checkpointProgressDiagnostic",
+      "postSubmissionIdleDiagnostic",
+      "postSubmissionIdleAtTitleDiagnostic",
+    ]);
+    const controller = readIntegration("run-scenarios.mjs");
+    const fixture = readIntegration("codex-pty-scenario.mjs");
     const runnerReserve = runner.match(
       /AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String\(headlessOuterDeadline - ([\d_]+)\)/u,
     )?.[1];
@@ -1845,10 +1849,7 @@ describe("Codex uninstall failure diagnostic transport", () => {
   }
 
   it("records only temporal stages and normalizes a native spawn error", () => {
-    const source = readFileSync(
-      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("codex-pty-scenario.mjs");
     expect(source).toMatch(
       /child\.once\("error", \(\) =>\s+reject\(new Error\("integration\.codex\.child-spawn"\)\),\s+\);/u,
     );
@@ -1878,10 +1879,7 @@ describe("Codex uninstall failure diagnostic transport", () => {
 });
 
 it("reserves specialist codes beyond every scenario phase exit", () => {
-  const runner = readFileSync(
-    resolve(import.meta.dirname, "..", "runner.mjs"),
-    "utf8",
-  );
+  const runner = readIntegration("runner.mjs");
   const phaseDeclaration =
     runner
       .split("const interactivePhases = Object.freeze([", 2)[1]
@@ -1963,10 +1961,7 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
         "codex-tui-trace-smoke",
       ),
     ).toBe(128);
-    const source = readFileSync(
-      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("codex-pty-scenario.mjs");
     const phases =
       source
         .split("const interactivePhases = Object.freeze([", 2)[1]
@@ -1981,10 +1976,7 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
   });
 
   it("executes the production get predicate unchanged for positive, count and locator cases", async () => {
-    const source = readFileSync(
-      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("codex-pty-scenario.mjs");
     const start = source.indexOf('recordInteractivePhase("verify-trace-get");');
     const end = source.indexOf(
       'recordInteractivePhase("verify-correlation");',
@@ -2035,10 +2027,7 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
   });
 
   it("executes the production CLI parser and both original deadline checks", async () => {
-    const source = readFileSync(
-      resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("codex-pty-scenario.mjs");
     const start = source.indexOf("const cli = async (");
     const end = source.indexOf("\nconst prompt =", start);
     const declaration = source.slice(start, end);
@@ -2076,10 +2065,7 @@ describe("Codex production get-child diagnostic wiring", () => {
   it.each(["success", "spawn", "deadline", "signal", "exit", "output-limit"])(
     "classifies %s using the production run body without granting a retry",
     async (kind) => {
-      const source = readFileSync(
-        resolve(import.meta.dirname, "..", "codex-pty-scenario.mjs"),
-        "utf8",
-      );
+      const source = readIntegration("codex-pty-scenario.mjs");
       const start = source.indexOf("const maximumOutput =");
       const end = source.indexOf("\nconst agentscope =", start);
       expect(start).toBeGreaterThan(0);

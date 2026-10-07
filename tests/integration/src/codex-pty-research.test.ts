@@ -27,6 +27,8 @@ const { codexFailureExitPair, validCodexResearchDiagnostic } =
   };
 
 const integrationRoot = resolve(import.meta.dirname, "..");
+const readIntegration = (name: string): string =>
+  readFileSync(resolve(integrationRoot, name), "utf8");
 
 describe("returned receipt failure research retention", () => {
   it.each([
@@ -172,10 +174,7 @@ describe("returned receipt packet compatibility and wiring", () => {
     }
   });
   it("executes the actual outer failure retainer and stays silent for non-Codex", () => {
-    const source = readFileSync(
-      resolve(integrationRoot, "run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("run-scenarios.mjs");
     const start = source.indexOf("const retainCodexResearchDiagnostic =");
     const end = source.indexOf("const captureFailedScenarioReceipt =", start);
     expect(end).toBeGreaterThan(start);
@@ -215,9 +214,9 @@ describe("returned receipt packet compatibility and wiring", () => {
         if (scenarioId === "other") expect(retained.size).toBe(0);
         else {
           const record = retained.get("closed-canary");
-          expect(record?.diagnosticVersion).toBe(4);
+          expect(record?.diagnosticVersion).toBe(5);
           expect(record?.untrustedPtyReceipt).toEqual(
-            projectUntrustedCodexPtyReceipt(receipt) ?? null,
+            projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
           );
           expect(record?.exitPair).toBe("none:1");
         }
@@ -262,7 +261,7 @@ describe("runner failure boundary research", () => {
   });
 
   it("executes the actual catch independently of late or unreadable phase markers", async () => {
-    const source = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const source = readIntegration("runner.mjs");
     const start = source.indexOf("    let receipt;\n");
     const end = source.indexOf("    const returnedAtMs =", start);
     expect(start).toBeGreaterThan(0);
@@ -313,7 +312,7 @@ describe("runner failure boundary research", () => {
   });
 
   it("emits only on failure and before fallible retained-state snapshots", () => {
-    const source = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const source = readIntegration("runner.mjs");
     const failure = source.indexOf(
       'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {',
     );
@@ -343,7 +342,7 @@ describe("runner failure boundary research", () => {
   });
 
   it("emits the actual fixed boundary only once despite later snapshot failure", () => {
-    const source = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const source = readIntegration("runner.mjs");
     const start = source.indexOf("const emitCodexPtyFailureHint =");
     const end = source.indexOf("const recoverRetainedFixtureOutput =", start);
     for (const hint of [
@@ -373,7 +372,7 @@ describe("runner failure boundary research", () => {
 
 describe("best-effort runner diagnostic output", () => {
   it("preserves primary failure and never repeats a failed write", () => {
-    const source = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const source = readIntegration("runner.mjs");
     const start = source.indexOf("const emitCodexPtyFailureHint =");
     const end = source.indexOf("const recoverRetainedFixtureOutput =", start);
     let attempts = 0;
@@ -471,10 +470,7 @@ describe("failed PTY research categories", () => {
   });
 
   it("keeps the post-failure snapshot separate from gate admission", async () => {
-    const source = readFileSync(
-      resolve(integrationRoot, "codex-pty-research.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("codex-pty-research.mjs");
     expect(source).toContain(
       'await import("./runtime/codex-runtime-evidence.mjs")',
     );
@@ -490,15 +486,13 @@ describe("failed PTY research categories", () => {
   });
 
   it("copies the same diagnostic modules into the immutable runtime graph", () => {
-    const authority = readFileSync(
-      resolve(integrationRoot, "immutable-candidate-authority.mjs"),
-      "utf8",
-    );
-    const outer = readFileSync(
-      resolve(integrationRoot, "run-scenarios.mjs"),
-      "utf8",
-    );
-    for (const name of ["kernel-errors.js", "kernel-promise.js"])
+    const authority = readIntegration("immutable-candidate-authority.mjs");
+    const outer = readIntegration("run-scenarios.mjs");
+    for (const name of [
+      "kernel-errors.js",
+      "kernel-promise.js",
+      "pty-transport-observations.js",
+    ])
       expect(authority).toContain(`testkit/internal/${name}`);
     expect(outer).toContain("for (const file of selectedRuntimeFiles)");
     expect(outer).toContain("codex-pty-research.mjs");

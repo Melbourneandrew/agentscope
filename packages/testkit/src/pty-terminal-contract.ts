@@ -71,6 +71,31 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   inputBytes: number;
   inputSha256: string;
   readinessObserved: boolean;
+  /** First caught pump observation only; not a failure cause or admission predicate. */
+  pumpFailureDiagnostic?: Readonly<{
+    operation:
+      | "read"
+      | "write"
+      | "emulator"
+      | "resize"
+      | "eof"
+      | "signal"
+      | "checkpoint-namespace"
+      | "checkpoint-freeze"
+      | "checkpoint-classify"
+      | "checkpoint-release"
+      | "checkpoint-publish"
+      | "pump-other";
+    category:
+      | "observer-read"
+      | "observer-identity"
+      | "transport"
+      | "geometry"
+      | "checkpoint-witness"
+      | "execution-deadline"
+      | "unknown";
+    originalExecutionDeadlineExhausted: boolean;
+  }>;
   /** Fixed, content-free terminal observations; never an admission predicate. */
   challengedReadinessProgress?: Readonly<{
     marker: boolean;

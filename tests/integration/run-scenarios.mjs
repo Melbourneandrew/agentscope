@@ -1911,11 +1911,11 @@ const recordInteractiveExecutionFailure = (
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   codexResearchDiagnostics.set(plan.runId, {
-    diagnosticVersion: 4,
+    diagnosticVersion: 5,
     untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
     untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null,
     untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null,
-    untrustedPtyReceipt: projectUntrustedCodexPtyReceipt(receipt) ?? null,
+    untrustedPtyReceipt: projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
     exitPair:
       codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
       null,

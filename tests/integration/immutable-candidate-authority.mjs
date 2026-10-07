@@ -1038,12 +1038,13 @@ export const codexFailureExitPair = (
 // Strictly research-only failure evidence; never a receipt or admission input.
 // Preserve historical versions; version 4 adds only a nullable closed projection
 // of a parsed returned receipt, never replacing the post-failure hook state.
+// Version 5 adds only its optional first-caught pump diagnostic, not authority.
 export const validCodexResearchDiagnostic = (value) =>
   value === null ||
   (typeof value === "object" &&
     value !== null &&
     Object.getPrototypeOf(value) === Object.prototype &&
-    [1, 2, 3, 4].includes(value.diagnosticVersion) &&
+    [1, 2, 3, 4, 5].includes(value.diagnosticVersion) &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(
         [
@@ -1052,26 +1053,22 @@ export const validCodexResearchDiagnostic = (value) =>
           "untrustedConfigHint",
           ...(value.diagnosticVersion >= 2 ? ["untrustedGateHint"] : []),
           ...(value.diagnosticVersion >= 3 ? ["untrustedPtyHint"] : []),
-          ...(value.diagnosticVersion === 4 ? ["untrustedPtyReceipt"] : []),
+          ...(value.diagnosticVersion >= 4 ? ["untrustedPtyReceipt"] : []),
         ].sort(),
       ) &&
     (value.untrustedConfigHint === null ||
-      [
-        "closed-marker",
-        "render",
-        "create",
-        "open",
-        "prove",
-        "publish",
-      ].includes(value.untrustedConfigHint)) &&
+      candidateConfigStages.includes(value.untrustedConfigHint)) &&
     (value.diagnosticVersion === 1 ||
       value.untrustedGateHint === null ||
       codexGateResearchHints.includes(value.untrustedGateHint)) &&
     (value.diagnosticVersion < 3 ||
       value.untrustedPtyHint === null ||
       codexPtyResearchHints.includes(value.untrustedPtyHint)) &&
-    (value.diagnosticVersion !== 4 ||
-      validUntrustedCodexPtyReceipt(value.untrustedPtyReceipt)) &&
+    (value.diagnosticVersion < 4 ||
+      validUntrustedCodexPtyReceipt(
+        value.untrustedPtyReceipt,
+        value.diagnosticVersion,
+      )) &&
     (value.exitPair === null ||
       /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
         value.exitPair,
@@ -1205,6 +1202,7 @@ export const selectedRuntimeFiles = Object.freeze([
   "testkit/headless-supervisor-kernel.js",
   "testkit/headless-supervisor.js",
   "testkit/internal/headless-supervisor-backend.js",
+  "testkit/internal/pty-transport-observations.js",
   "testkit/internal/kernel-errors.js",
   "testkit/internal/kernel-promise.js",
   "testkit/pty-terminal-contract.js",

@@ -713,6 +713,8 @@ try {
       fingerprintSelectedPtyAuthority(ptyAuthority)
     )
       throw new Error("integration.runner.pty-authority");
+    const optionalReceiptDiagnostic = (key) =>
+      receipt[key] === undefined ? {} : { [key]: receipt[key] };
     const ptyTerminalReceipt = {
       receiptVersion: 1,
       transport: "pty",
@@ -724,27 +726,11 @@ try {
       inputBytes: receipt.inputBytes,
       inputSha256: receipt.inputSha256,
       readinessObserved: receipt.readinessObserved,
-      ...(receipt.challengedReadinessProgress === undefined
-        ? {}
-        : {
-            challengedReadinessProgress: receipt.challengedReadinessProgress,
-          }),
-      ...(receipt.checkpointProgressDiagnostic === undefined
-        ? {}
-        : {
-            checkpointProgressDiagnostic: receipt.checkpointProgressDiagnostic,
-          }),
-      ...(receipt.postSubmissionIdleDiagnostic === undefined
-        ? {}
-        : {
-            postSubmissionIdleDiagnostic: receipt.postSubmissionIdleDiagnostic,
-          }),
-      ...(receipt.postSubmissionIdleAtTitleDiagnostic === undefined
-        ? {}
-        : {
-            postSubmissionIdleAtTitleDiagnostic:
-              receipt.postSubmissionIdleAtTitleDiagnostic,
-          }),
+      ...optionalReceiptDiagnostic("pumpFailureDiagnostic"),
+      ...optionalReceiptDiagnostic("challengedReadinessProgress"),
+      ...optionalReceiptDiagnostic("checkpointProgressDiagnostic"),
+      ...optionalReceiptDiagnostic("postSubmissionIdleDiagnostic"),
+      ...optionalReceiptDiagnostic("postSubmissionIdleAtTitleDiagnostic"),
       actions: receipt.actions,
       outerMonotonicDeadlineMs: headlessOuterDeadline,
       requestConstructedAtMs: now,
