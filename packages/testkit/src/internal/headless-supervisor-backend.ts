@@ -40,7 +40,6 @@ import {
   failObserverRead,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
-  observerReadFailureStage,
   trustedErrorCode,
 } from "./kernel-errors.js";
 import {
@@ -50,6 +49,10 @@ import {
   terminalOf,
   terminalSnapshot,
 } from "./kernel-promise.js";
+import {
+  readProcessSnapshot,
+  type ProcessSnapshot,
+} from "./proc-process-snapshot.js";
 import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
@@ -716,12 +719,6 @@ const execute = async (
 
 type CapturedOutput = Readonly<{ bytes: Uint8Array; truncated: boolean }>;
 type MutableOutput = { chunks: Buffer[]; length: number; truncated: boolean };
-type ProcessSnapshot = Readonly<{
-  parentPid: number;
-  pid: number;
-  startIdentity: string;
-  state: string;
-}>;
 type CheckpointTopologyClassification =
   "matched" | "root-missing" | "nonroot-missing" | "identity-conflict";
 const classifyCheckpointTopology = (
@@ -802,51 +799,6 @@ type ProcessAuthorityRuntime = Pick<
   | "reapAdoptedZombie"
   | "sendSignal"
 >;
-
-const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
-  try {
-    const value = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const close = value.lastIndexOf(")");
-    if (close < 1) return failObserverRead("observer-stat");
-    const fields = value
-      .slice(close + 2)
-      .trim()
-      .split(/\s+/u);
-    const state = fields[0];
-    const encodedParent = fields[1];
-    const start = fields[19];
-    if (
-      state === undefined ||
-      !/^[DIKPRSTWXYZtx]$/u.test(state) ||
-      encodedParent === undefined ||
-      !/^\d+$/u.test(encodedParent) ||
-      start === undefined ||
-      !/^\d+$/u.test(start)
-    )
-      return failObserverRead("observer-stat");
-    const parentPid = Number(encodedParent);
-    if (!numberIsSafeInteger(parentPid) || parentPid < 0)
-      return failObserverRead("observer-stat");
-    return { parentPid, pid, startIdentity: `${pid}:${start}`, state };
-  } catch (error: unknown) {
-    if (trustedErrorCode(error) === "testkit.headless.observer.read")
-      return failObserverRead(readPtyReconciliationStage(error));
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      (error as { code?: unknown }).code === "ENOENT"
-    )
-      return undefined;
-    return failObserverRead(
-      observerReadFailureStage(
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined,
-      ),
-    );
-  }
-};
 
 const assertNamespaceIdentity = (expected: string): void => {
   try {
@@ -1245,6 +1197,7 @@ const createImmutableCandidateAuthority = (
 
 const listContainerProcesses = (
   namespaceIdentity: string,
+  monotonicDeadlineMs: number,
 ): readonly ProcessSnapshot[] => {
   assertNamespaceIdentity(namespaceIdentity);
   let names: string[];
@@ -1258,15 +1211,16 @@ const listContainerProcesses = (
     if (!/^\d+$/u.test(name)) continue;
     const pid = Number(name);
     if (!numberIsSafeInteger(pid) || pid < 2) continue;
-    const snapshot = readProcessSnapshot(pid);
+    const snapshot = readProcessSnapshot(pid, monotonicDeadlineMs);
     if (snapshot !== undefined)
       safeReflectApply(arrayPush, snapshots, [snapshot]);
   }
   return snapshots.sort((left, right) => left.pid - right.pid);
 };
 
-const strictContainerProcessSnapshot = ():
-  readonly ProcessSnapshot[] | undefined => {
+const strictContainerProcessSnapshot = (
+  monotonicDeadlineMs: number,
+): readonly ProcessSnapshot[] | undefined => {
   let names: string[];
   try {
     names = readdirSync("/proc")
@@ -1279,7 +1233,7 @@ const strictContainerProcessSnapshot = ():
   for (const name of names) {
     const pid = Number(name);
     if (!numberIsSafeInteger(pid) || pid < 2 || pid === process.pid) continue;
-    const snapshot = readProcessSnapshot(pid);
+    const snapshot = readProcessSnapshot(pid, monotonicDeadlineMs);
     if (snapshot === undefined) return undefined;
     safeReflectApply(arrayPush, snapshots, [snapshot]);
   }
@@ -1319,10 +1273,10 @@ const freezeContainerProcessSet = (
       safeReflectApply(performanceNow, performance, []) >= monotonicDeadlineMs
     )
       return fail("testkit.headless.execution.deadline");
-    const before = strictContainerProcessSnapshot();
+    const before = strictContainerProcessSnapshot(monotonicDeadlineMs);
     if (before === undefined) continue;
     for (const identity of before) stopProcessForCheckpoint(identity);
-    const after = strictContainerProcessSnapshot();
+    const after = strictContainerProcessSnapshot(monotonicDeadlineMs);
     if (
       after !== undefined &&
       after.every(({ state }) => state === "T" || state === "t") &&
@@ -1344,6 +1298,7 @@ const releaseFrozenContainerProcessSet = (
   processes: readonly ProcessSnapshot[],
   rootPid: number,
   notifyRoot: boolean,
+  monotonicDeadlineMs: number,
 ): void => {
   assertNamespaceIdentity(namespaceIdentity);
   const ordered = [...processes].sort((left, right) => {
@@ -1352,7 +1307,7 @@ const releaseFrozenContainerProcessSet = (
     return right.pid - left.pid;
   });
   for (const expected of ordered) {
-    const current = readProcessSnapshot(expected.pid);
+    const current = readProcessSnapshot(expected.pid, monotonicDeadlineMs);
     if (
       current === undefined ||
       current.startIdentity !== expected.startIdentity ||
@@ -1844,12 +1799,14 @@ const reapAdoptedZombies = (
 };
 const productionContainerRuntime = (
   authority: ImmutableCandidateAuthority,
+  monotonicDeadlineMs: number,
 ): SelectedContainerRuntime => {
   const binding = loadNativePtyBinding(authority);
   return {
     assertNamespaceIdentity,
-    listProcesses: listContainerProcesses,
-    readProcess: readProcessSnapshot,
+    listProcesses: (namespace) =>
+      listContainerProcesses(namespace, monotonicDeadlineMs),
+    readProcess: (pid) => readProcessSnapshot(pid, monotonicDeadlineMs),
     reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
       authority.assertRuntime();
       return binding.reapAdoptedZombie(pid, startIdentity, rootPid, deadline);
@@ -1867,13 +1824,19 @@ const productionContainerRuntime = (
 /* eslint-disable max-lines-per-function -- one immutable runtime facade for selected PTY execution */
 const productionPtyRuntime = (
   authority: ImmutableCandidateAuthority,
+  monotonicDeadlineMs: number,
 ): PtyRuntime => ({
   assertImmutableCandidateFile: authority.assertFile,
   assertImmutableCandidateRuntime: authority.assertRuntime,
   assertNamespaceIdentity,
-  freezeProcessSet: freezeContainerProcessSet,
-  listProcesses: listContainerProcesses,
-  readProcess: readProcessSnapshot,
+  freezeProcessSet: (namespace, deadline) =>
+    freezeContainerProcessSet(
+      namespace,
+      minimum(deadline, monotonicDeadlineMs),
+    ),
+  listProcesses: (namespace) =>
+    listContainerProcesses(namespace, monotonicDeadlineMs),
+  readProcess: (pid) => readProcessSnapshot(pid, monotonicDeadlineMs),
   reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
     authority.assertRuntime();
     return loadNativePtyBinding(authority).reapAdoptedZombie(
@@ -1894,6 +1857,7 @@ const productionPtyRuntime = (
       processes,
       rootPid,
       notifyRoot && authority.publishTopologyCheckpoint === undefined,
+      monotonicDeadlineMs,
     );
   },
   ...(authority.publishTopologyCheckpoint === undefined
@@ -2575,7 +2539,7 @@ const publishTopologyCheckpointIfSelected = (
 
 const armSelectedPty = (
   composition: ContainerComposition,
-  runtime: PtyRuntime,
+  injectedRuntime: PtyRuntime | undefined,
   request: SelectedPtyExecutionRequest,
   whenAborted: Promise<void>,
   // The lifecycle deliberately keeps launch, transport and teardown together.
@@ -2592,6 +2556,12 @@ const armSelectedPty = (
       processRequest.monotonicStartupDeadlineMs
   )
     return fail("testkit.headless.startup.deadline");
+  const runtime =
+    injectedRuntime ??
+    productionPtyRuntime(
+      composition.immutableCandidate ?? fail("testkit.pty.immutable-candidate"),
+      processRequest.monotonicShutdownDeadlineMs,
+    );
   let resolveExpiry!: (receipt: SelectedPtyExecutionReceipt) => void;
   const expiryReceipt = observeAtCreation(
     new SafePromise<SelectedPtyExecutionReceipt>((resolve_) => {
@@ -3709,10 +3679,7 @@ const armSelectedPty = (
 
 const selectedContainerBackend = (
   composition: ContainerComposition,
-  runtime: SelectedContainerRuntime = composition.immutableCandidate ===
-  undefined
-    ? fail("testkit.pty.immutable-candidate")
-    : productionContainerRuntime(composition.immutableCandidate),
+  injectedRuntime?: SelectedContainerRuntime,
   // The backend closes one lifecycle across launch, streams, signals and join.
   // eslint-disable-next-line max-lines-per-function
 ): SelectedIsolationBackendAuthority => ({
@@ -3720,12 +3687,7 @@ const selectedContainerBackend = (
   armPty: (request, whenAborted) =>
     composition.immutableCandidate === undefined
       ? fail("testkit.pty.immutable-candidate")
-      : armSelectedPty(
-          composition,
-          productionPtyRuntime(composition.immutableCandidate),
-          request,
-          whenAborted,
-        ),
+      : armSelectedPty(composition, undefined, request, whenAborted),
   // eslint-disable-next-line max-lines-per-function
   arm: async (request, whenAborted) => {
     if (
@@ -3735,6 +3697,13 @@ const selectedContainerBackend = (
         request.monotonicStartupDeadlineMs
     )
       return fail("testkit.headless.startup.deadline");
+    const runtime =
+      injectedRuntime ??
+      productionContainerRuntime(
+        composition.immutableCandidate ??
+          fail("testkit.pty.immutable-candidate"),
+        request.monotonicShutdownDeadlineMs,
+      );
     let resolveExpiry!: (receipt: BackendTerminalReceipt) => void;
     const expiryReceipt = observeAtCreation(
       new SafePromise<BackendTerminalReceipt>((resolve) => {

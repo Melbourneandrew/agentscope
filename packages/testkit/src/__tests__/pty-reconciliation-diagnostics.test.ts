@@ -83,32 +83,66 @@ describe("exact production proc-reader diagnostic leaves", () => {
     ["unexpected", "observer-read"],
     ["malformed", "observer-stat"],
     ["valid", undefined],
+    ["ESRCH:ENOENT", undefined],
+    ["ESRCH:valid", undefined],
+    ["ESRCH:reused", undefined],
+    ["ESRCH:EACCES", "observer-permission"],
+    ["ESRCH:EPERM", "observer-permission"],
+    ["ESRCH:EIO", "observer-io"],
+    ["ESRCH:malformed", "observer-stat"],
+    ["expired-before", "observer-esrch"],
+    ["expired-after", "observer-esrch"],
+    ["expired-absence", "observer-esrch"],
   ] as const)(
     "preserves the existing %s disposition and fixed leaf",
     (kind, leaf) => {
       const source = readFileSync(
-        new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+        new URL("../internal/proc-process-snapshot.ts", import.meta.url),
         "utf8",
       );
       const start = source.indexOf("const readProcessSnapshot = (");
-      const end = source.indexOf("const assertNamespaceIdentity =", start);
+      const end = source.indexOf("export { readProcessSnapshot", start);
       expect(start).toBeGreaterThan(0);
       expect(end).toBeGreaterThan(start);
       const compiled = transpileModule(source.slice(start, end), {
         compilerOptions: { target: ScriptTarget.ES2022 },
       }).outputText;
+      let reads = 0;
+      let samples = 0;
       const read = runInNewContext(
         `${compiled}\nreadProcessSnapshot;`,
         {
-          readFileSync: () => {
-            if (kind === "valid")
-              return `67 (fixture) S 1 ${"0 ".repeat(17)}123`;
-            if (kind === "malformed") return "private malformed process data";
+          readFileSync: (path: string, encoding: string) => {
+            expect([path, encoding]).toEqual(["/proc/67/stat", "utf8"]);
+            reads += 1;
+            const selected =
+              kind === "expired-after" && reads === 2
+                ? "valid"
+                : kind === "expired-absence" && reads === 2
+                  ? "ENOENT"
+                  : kind.startsWith("expired")
+                    ? "ESRCH"
+                    : (kind.split(":")[reads - 1] ?? kind);
+            if (selected === "valid" || selected === "reused")
+              return `67 (fixture) S 1 ${"0 ".repeat(17)}${selected === "reused" ? 456 : 123}`;
+            if (selected === "malformed")
+              return "private malformed process data";
             throw Object.assign(new Error("private syscall detail"), {
-              code: kind,
+              code: selected,
             });
           },
+          performanceNow: () => {
+            samples += 1;
+            return kind === "expired-before" ||
+              ((kind === "expired-after" || kind === "expired-absence") &&
+                samples === 2)
+              ? 100
+              : 1;
+          },
+          performance: {},
+          safeReflectApply: Reflect.apply,
           numberIsSafeInteger: Number.isSafeInteger,
+          numberIsFinite: Number.isFinite,
           fail,
           failObserverRead,
           observerReadFailureStage,
@@ -116,19 +150,19 @@ describe("exact production proc-reader diagnostic leaves", () => {
           readPtyReconciliationStage,
         },
         { timeout: 1000 },
-      ) as (pid: number) => unknown;
-      if (kind === "ENOENT") expect(read(67)).toBeUndefined();
-      else if (kind === "valid")
-        expect(read(67)).toEqual({
+      ) as (pid: number, deadline: number) => unknown;
+      if (kind.endsWith("ENOENT")) expect(read(67, 100)).toBeUndefined();
+      else if (kind.endsWith("valid") || kind.endsWith("reused"))
+        expect(read(67, 100)).toEqual({
           pid: 67,
           parentPid: 1,
-          startIdentity: "67:123",
+          startIdentity: kind.endsWith("reused") ? "67:456" : "67:123",
           state: "S",
         });
       else {
         let error: unknown;
         try {
-          read(67);
+          read(67, 100);
         } catch (caught) {
           error = caught;
         }
@@ -136,50 +170,45 @@ describe("exact production proc-reader diagnostic leaves", () => {
         expect(readPtyReconciliationStage(error)).toBe(leaf);
         expect(JSON.stringify(error)).not.toContain("private");
       }
+      expect(reads).toBe(
+        kind === "ESRCH" ||
+          kind.startsWith("ESRCH:") ||
+          kind === "expired-after" ||
+          kind === "expired-absence"
+          ? 2
+          : 1,
+      );
     },
   );
-
-  it("admits leaves only with their existing authentic observer codes", () => {
-    for (const stage of [
-      "observer-esrch",
-      "observer-permission",
-      "observer-stat",
-    ] as const) {
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.read", stage),
-        ),
-      ).toBe(stage);
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.identity", stage),
-        ),
-      ).toBeUndefined();
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.kernel.failure", stage),
-        ),
-      ).toBeUndefined();
-    }
-    for (const stage of [
-      "observer-namespace",
-      "observer-root-reuse",
-      "observer-target-reuse",
-      "observer-zombie-before",
-      "observer-zombie-after",
-    ] as const) {
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.identity", stage),
-        ),
-      ).toBe(stage);
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.read", stage),
-        ),
-      ).toBeUndefined();
-      expect(readPtyReconciliationStage(kernelError(code, stage))).toBe(stage);
-    }
+});
+describe("authentic observer-code admission", () => {
+  it.each([
+    ["observer-esrch", true],
+    ["observer-permission", true],
+    ["observer-stat", true],
+    ["observer-namespace", false],
+    ["observer-root-reuse", false],
+    ["observer-target-reuse", false],
+    ["observer-zombie-before", false],
+    ["observer-zombie-after", false],
+  ] as const)("admits %s only with authentic codes", (stage, read) => {
+    const authentic = read
+      ? "testkit.headless.observer.read"
+      : "testkit.headless.observer.identity";
+    const other = read
+      ? "testkit.headless.observer.identity"
+      : "testkit.headless.observer.read";
+    expect(readPtyReconciliationStage(kernelError(authentic, stage))).toBe(
+      stage,
+    );
+    expect(
+      readPtyReconciliationStage(kernelError(other, stage)),
+    ).toBeUndefined();
+    expect(
+      readPtyReconciliationStage(
+        kernelError(read ? "testkit.headless.kernel.failure" : code, stage),
+      ),
+    ).toBe(read ? undefined : stage);
   });
 });
 
