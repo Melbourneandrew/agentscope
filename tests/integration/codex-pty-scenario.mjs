@@ -30,6 +30,8 @@ import {
   parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
 
+import { createCodexModelControlRequest } from "./codex-pty-research.mjs";
+
 let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
@@ -765,67 +767,23 @@ const assertPrivateControlSocket = () => {
 };
 const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
 let modelGateCutoff;
+let modelControlFailureHint;
 const gateHeaders = Object.freeze({
   authorization: `Bearer ${readinessChallenge}`,
   "content-type": "application/json",
 });
-const controlRequest = (path, method, value, signal) => {
-  const operationDeadline =
-    path === "/seal" || path === "/deny"
-      ? deadline
-      : (modelGateCutoff ?? deadline);
-  const operationRemaining = Math.floor(operationDeadline - bootNow());
-  if (operationRemaining <= 0)
-    throw new Error("integration.codex.model-gate-deadline");
-  const boundedSignal = AbortSignal.timeout(operationRemaining);
-  const selectedSignal =
-    signal === undefined
-      ? boundedSignal
-      : AbortSignal.any([signal, boundedSignal]);
-  return new Promise((resolve, reject) => {
-    const body = value === undefined ? undefined : JSON.stringify(value);
-    const request = httpRequest(
-      {
-        agent: modelControlAgent,
-        headers:
-          body === undefined
-            ? gateHeaders
-            : { ...gateHeaders, "content-length": Buffer.byteLength(body) },
-        method,
-        path,
-        signal: selectedSignal,
-        socketPath: modelControlSocket,
-      },
-      (response) => {
-        const chunks = [];
-        let bytes = 0;
-        response.on("data", (chunk) => {
-          bytes += chunk.length;
-          if (bytes > 64 * 1024) request.destroy();
-          else chunks.push(Buffer.from(chunk));
-        });
-        response.once("end", () => {
-          try {
-            if (response.statusCode !== 200)
-              throw new Error("integration.codex.model-gate");
-            const decoded = JSON.parse(
-              new TextDecoder("utf-8", { fatal: true }).decode(
-                Buffer.concat(chunks, bytes),
-              ),
-            );
-            resolve(decoded);
-          } catch {
-            reject(new Error("integration.codex.model-gate"));
-          }
-        });
-      },
-    );
-    request.once("error", () =>
-      reject(new Error("integration.codex.model-gate")),
-    );
-    request.end(body);
-  });
-};
+const controlRequest = createCodexModelControlRequest({
+  httpRequest,
+  agent: modelControlAgent,
+  headers: gateHeaders,
+  socketPath: modelControlSocket,
+  deadline: () => deadline,
+  gateCutoff: () => modelGateCutoff,
+  now: bootNow,
+  observe: (hint) => {
+    modelControlFailureHint = hint;
+  },
+});
 const readModelRequests = async (signal) => {
   const value = await controlRequest("/requests", "PUT", {}, signal);
   if (!exactKeys(value, ["ledger"]))
@@ -1028,15 +986,17 @@ const releaseModelResponse = async () => {
   )
     throw new Error("integration.codex.model-gate");
 };
+const sealRequestFailureHint = (error) =>
+  modelControlFailureHint ??
+  (error?.message === "integration.codex.model-gate-deadline"
+    ? "seal-deadline"
+    : "seal-request");
 const sealModelGate = async (checkpoint) => {
   let value;
   try {
     value = await gateRequest("/seal", { runId: integrationRunId });
   } catch (error) {
-    gateResearchHint =
-      error?.message === "integration.codex.model-gate-deadline"
-        ? "seal-deadline"
-        : "seal-request";
+    gateResearchHint = sealRequestFailureHint(error);
     throw error;
   }
   if (!exactKeys(value, ["ledger", "receipt"])) {

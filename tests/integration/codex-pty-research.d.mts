@@ -1,5 +1,21 @@
 /** Content-free research only; these values never authorize execution or success. */
 export const codexPtyResearchHints: readonly string[];
+export const codexGateResearchHints: readonly string[];
+export function createCodexModelControlRequest(options: {
+  httpRequest: typeof import("node:http").request;
+  agent: import("node:http").Agent;
+  headers: Readonly<Record<string, string>>;
+  socketPath: string;
+  deadline: () => number;
+  gateCutoff: () => number | undefined;
+  now: () => number;
+  observe?: (hint: string) => void;
+}): (
+  path: string,
+  method: string,
+  value?: unknown,
+  signal?: AbortSignal,
+) => Promise<unknown>;
 export function codexArmPtyResearchHint(
   error: unknown,
   stage?: unknown,
