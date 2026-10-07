@@ -1254,7 +1254,12 @@ const sameProcessSnapshotSet = (
   );
 
 const stopProcessForCheckpoint = (identity: ProcessSnapshot): void => {
-  if (identity.state === "T" || identity.state === "t") return;
+  if (
+    identity.state === "T" ||
+    identity.state === "t" ||
+    identity.state === "Z"
+  )
+    return;
   try {
     process.kill(identity.pid, "SIGSTOP");
   } catch (error) {
@@ -1279,9 +1284,14 @@ const freezeContainerProcessSet = (
     const after = strictContainerProcessSnapshot(monotonicDeadlineMs);
     if (
       after !== undefined &&
-      after.every(({ state }) => state === "T" || state === "t") &&
+      after.every(
+        ({ state }) => state === "T" || state === "t" || state === "Z",
+      ) &&
       sameProcessSnapshotSet(
-        before.map((identity) => ({ ...identity, state: "T" })),
+        before.map((identity) => ({
+          ...identity,
+          state: identity.state === "Z" ? "Z" : "T",
+        })),
         after.map((identity) => ({
           ...identity,
           state: identity.state === "t" ? "T" : identity.state,
@@ -1311,11 +1321,15 @@ const releaseFrozenContainerProcessSet = (
     if (
       current === undefined ||
       current.startIdentity !== expected.startIdentity ||
-      (current.state !== "T" && current.state !== "t")
+      current.parentPid !== expected.parentPid ||
+      (expected.state === "Z"
+        ? current.state !== "Z"
+        : current.state !== "T" && current.state !== "t")
     )
       return fail("testkit.headless.observer.identity");
   }
   for (const expected of ordered) {
+    if (expected.state === "Z") continue;
     if (expected.pid === rootPid) {
       if (notifyRoot) process.kill(expected.pid, "SIGUSR2");
       process.kill(expected.pid, "SIGCONT");
