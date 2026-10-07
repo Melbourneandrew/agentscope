@@ -10,6 +10,7 @@ export const processAuthorityFiles = Object.freeze([
 
 export const purePolicyFiles = Object.freeze([
   "acceptance-evidence.test.mjs",
+  "cli-hook-artifact-budget.test.mjs",
   "documentation-policy.test.mjs",
   "native-ci-policy.test.mjs",
   "nx-cache-diagnostics.test.mjs",
