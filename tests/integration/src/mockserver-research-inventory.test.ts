@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -59,6 +65,11 @@ describe("untrusted supplier research inventory boundary", () => {
       "source/mockserver/mockserver-netty/target",
     ])
       mkdirSync(resolve(root, path), { recursive: true, mode: 0o700 });
+    for (const path of [
+      "source/mockserver",
+      "source/mockserver/mockserver-netty",
+    ])
+      chmodSync(resolve(root, path), 0o775);
     for (const path of [
       "maven-repository/org/example/a.jar",
       "npm-cache/_cacache/a",
