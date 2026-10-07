@@ -36,6 +36,8 @@ const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
 };
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
+const readIntegration = (name: string) =>
+  readFileSync(resolve(workspaceRoot, "tests/integration", name), "utf8");
 const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
@@ -70,10 +72,7 @@ describe("integration controller policy", () => {
         resolve(workspaceRoot, "scripts/__tests__/validation-lease.test.mjs"),
       ),
     ).toBe(false);
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/src/controller.ts"),
-      "utf8",
-    );
+    const source = readIntegration("src/controller.ts");
     expect(source).not.toMatch(
       /OIDC|attestation|bootstrap-manifest|PNPM_HOME|validation lease/iu,
     );
@@ -168,10 +167,7 @@ describe("integration controller policy", () => {
 // eslint-disable-next-line max-lines-per-function -- closed integration authority matrix
 describe("integration cleanup authority", () => {
   it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("run-scenarios.mjs");
     const recorder = source.slice(
       source.indexOf("const recordInteractiveReceiptFailure ="),
       source.indexOf("const recordInteractiveExecutionFailure ="),
@@ -183,10 +179,7 @@ describe("integration cleanup authority", () => {
   });
 
   it("carries a semantically nonzero PTY receipt phase into the authenticated exit channel", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/runner.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("runner.mjs");
     expect(source).toContain("interactiveFailureDiagnostic = diagnostic;");
     expect(
       source.indexOf("interactiveFailureDiagnostic = diagnostic;"),
@@ -217,10 +210,7 @@ describe("integration cleanup authority", () => {
       source.indexOf("} else fixtureOutput = recoverRetainedFixtureOutput();"),
     );
 
-    const scenario = readFileSync(
-      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
-      "utf8",
-    );
+    const scenario = readIntegration("codex-pty-scenario.mjs");
     expect(scenario).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
     expect(scenario).toContain(
       "process.stdout.write(`${terminalCompletionMarker}\\r\\n`, (error)",
@@ -256,8 +246,9 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("encodeCodexJoinDeadlineExitCode(");
     expect(scenario).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
     expect(scenario).toContain(
-      'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        `${diagnostic}\\n`',
+      'writeFileSync(\n        join(ledger, "interactive-failure.txt"),\n        encodeAdapterReportedFailureMarker(',
     );
+    expect(scenario).toContain(") ?? `${diagnostic}\\n`,");
     expect(source).toContain(
       "decodeInteractiveFailureExitCode(exitCode, scenarioId)",
     );
@@ -283,10 +274,7 @@ describe("integration cleanup authority", () => {
     expect(source).toContain(
       'AGENTSCOPE_INTEGRATION_RUN_ID: requiredEnvironment(\n      "AGENTSCOPE_INTEGRATION_RUN_ID",\n    )',
     );
-    const controller = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const controller = readIntegration("run-scenarios.mjs");
     expect(controller).toContain("AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,");
     expect(scenario).toContain(
       "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
@@ -297,8 +285,6 @@ describe("integration cleanup authority", () => {
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
-    const readIntegration = (name: string) =>
-      readFileSync(resolve(workspaceRoot, "tests/integration", name), "utf8");
     const scenario = readIntegration("codex-pty-scenario.mjs");
     const authority = readIntegration("immutable-candidate-authority.mjs");
     const runner = readIntegration("runner.mjs");
@@ -355,12 +341,16 @@ describe("integration cleanup authority", () => {
     );
     expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
     expect(scenario).toContain("classifyCodexTraceFailureHint(");
-    expect(scenario).toContain(
-      "codexTraceSearchChildFailureCategory(failureObservation)",
+    expect(scenario).toContain("classifyCodexCollectedChildFailure(");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
+    const search = diagnostic.indexOf(
+      "codexTraceSearchChildFailureCategory(observation)",
     );
-    expect(scenario).toContain(
-      "codexTraceGetChildFailureCategory(failureObservation)",
+    const get = diagnostic.indexOf(
+      "codexTraceGetChildFailureCategory(observation)",
     );
+    expect(search).toBeGreaterThan(-1);
+    expect(get).toBeGreaterThan(search);
     expect(scenario).toContain(
       "const failureObservation = {\n            code,\n            deadlineExpired,\n            signal,\n            stderrBytes: stderr.length,\n            stdoutBytes: stdout.length,\n            maximumBytes: maximumOutput,\n            stderr,\n            stdout,\n          };",
     );
@@ -390,7 +380,9 @@ describe("integration cleanup authority", () => {
     );
     expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
     expect(outer).not.toContain("writeSync(2,");
-    expect(outer).toContain("codexFailureExitPair(");
+    expect(diagnostic).toContain(
+      "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
+    );
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
     expect(outer).not.toContain("process.stderr.write(");
     expect(authority).toContain("extractUntrustedCodexConfigHint");
@@ -411,12 +403,9 @@ describe("integration cleanup authority", () => {
   });
 
   it("keeps post-failure Codex hook snapshots outside gate admission", () => {
-    const runner = readFileSync(
-      resolve(workspaceRoot, "tests/integration/runner.mjs"),
-      "utf8",
-    );
+    const runner = readIntegration("runner.mjs");
     expect(runner).toContain(
-      'import { failedCodexSessionStartHint } from "./codex-pty-research.mjs"',
+      'encodeAdapterReportedFailureMarker,\n  failedCodexSessionStartHint,\n} from "./codex-pty-research.mjs"',
     );
     expect(runner).not.toContain('from "./codex-runtime-evidence.mjs"');
     expect(runner).toContain(
@@ -452,16 +441,18 @@ describe("integration cleanup authority", () => {
   });
 
   it("stores optional Codex research hints only in retired-failure evidence", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
-    expect(source).toContain("codexResearchDiagnostics.set(plan.runId, {");
+    const source = readIntegration("run-scenarios.mjs");
+    expect(source).toContain("codexResearchDiagnostics.set(");
+    expect(source).toContain("createCodexFailureResearchRecord(");
     expect(source).toContain(
-      "untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null",
+      'if (plan.scenarioId !== "codex-tui-trace-smoke") return;',
     );
-    expect(source).toContain(
-      "untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null",
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
+    expect(diagnostic).toContain("untrustedGateHint: gate(output) ?? null");
+    expect(diagnostic).toContain("untrustedPtyHint: pty(output) ?? null");
+    const research = readIntegration("codex-pty-research.mjs");
+    expect(research).toContain(
+      "export const codexResearchDependencies = Object.freeze([\n  extractUntrustedCodexConfigHint,\n  extractUntrustedCodexGateHint,\n  extractUntrustedCodexPtyHint,\n  projectUntrustedCodexPtyReceipt,\n  extractAdapterReportedFailure,\n  codexFailureExitPair,\n]);",
     );
     expect(source).toContain(
       "codexResearchDiagnostic: codexResearchDiagnostics.get(plan.runId) ?? null",
@@ -474,10 +465,7 @@ describe("integration cleanup authority", () => {
   });
 
   it("validates the failed PTY receipt before reporting a Codex join subtype", () => {
-    const controller = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const controller = readIntegration("run-scenarios.mjs");
     const receipt = controller.indexOf(
       "const receipt = captureAvailableFailedScenarioReceipt(",
     );
@@ -506,14 +494,8 @@ describe("integration cleanup authority", () => {
   });
 
   it("gives only interactive fixtures one exact capable terminal identity", () => {
-    const scenarios = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
-    const runner = readFileSync(
-      resolve(workspaceRoot, "tests/integration/runner.mjs"),
-      "utf8",
-    );
+    const scenarios = readIntegration("run-scenarios.mjs");
+    const runner = readIntegration("runner.mjs");
     expect(scenarios).toContain(
       '...(plan.executionMode === "interactive" ? { TERM: "xterm-256color" } : {})',
     );
@@ -525,10 +507,7 @@ describe("integration cleanup authority", () => {
   });
 
   it("reserves the terminal controller window for Docker cleanup only", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("run-scenarios.mjs");
     expect(source).toContain(
       "remainingIntegrationOperationMilliseconds(30_000, true)",
     );
@@ -539,10 +518,7 @@ describe("integration cleanup authority", () => {
   });
 
   it("does not reset a scenario deadline after preparation", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("run-scenarios.mjs");
     expect(source).toContain(
       "const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;",
     );
@@ -556,10 +532,7 @@ describe("integration cleanup authority", () => {
   });
 
   it("uses distinct closed npm configuration files for offline harness installation", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("run-scenarios.mjs");
     expect(source).toContain(
       '"--userconfig=/opt/agentscope/harness/npm-userconfig", "--globalconfig=/opt/agentscope/harness/npm-globalconfig"',
     );
@@ -592,14 +565,9 @@ describe("integration cleanup authority", () => {
 describe("Codex interactive diagnostic order", () => {
   // eslint-disable-next-line max-lines-per-function -- closed diagnostic phase order
   it("keeps retained phases in the writer's strict lifecycle order", () => {
-    const scenario = readFileSync(
-      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
-      "utf8",
-    );
-    const runner = readFileSync(
-      resolve(workspaceRoot, "tests/integration/runner.mjs"),
-      "utf8",
-    );
+    const scenario = readIntegration("codex-pty-scenario.mjs");
+    const runner = readIntegration("runner.mjs");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const expected = [
       "bootstrap",
       "bootstrap-arguments",
@@ -687,7 +655,10 @@ describe("Codex interactive diagnostic order", () => {
       );
     };
     expect(phases(scenario)).toEqual(expected);
-    expect(phases(runner)).toEqual(expected);
+    expect(phases(diagnostic)).toEqual(expected);
+    expect(runner).toContain(
+      'import { interactivePhases } from "./codex-trace-child-diagnostics.mjs";',
+    );
     expect(64 + expected.length - 1).toBeLessThan(139);
     for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
@@ -872,10 +843,7 @@ describe("integration workflow policy", () => {
     );
     for (const certificationCase of SUBSTRATE_CERTIFICATION_CASES)
       expect(workflow).toContain(`          - ${certificationCase}`);
-    const scenarios = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const scenarios = readIntegration("run-scenarios.mjs");
     const exactFile = readFileSync(
       resolve(workspaceRoot, "tests/integration/exact-file.mjs"),
       "utf8",

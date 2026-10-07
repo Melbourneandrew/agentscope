@@ -6,6 +6,8 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCodexModelControlRequest,
+  createCodexFailureResearchRecord,
+  extractAdapterReportedFailure,
   projectUntrustedCodexPtyReceipt,
 } from "../codex-pty-research.mjs";
 // @ts-expect-error private integration module has no published declaration
@@ -313,6 +315,7 @@ describe("returned receipt packet compatibility and wiring", () => {
               typeof projectUntrustedCodexPtyReceipt
             > | null;
             exitPair: string | null;
+            adapterReportedFailure: null;
           }
         >();
         runInNewContext(
@@ -322,6 +325,16 @@ describe("returned receipt packet compatibility and wiring", () => {
             receipt,
             codexResearchDiagnostics: retained,
             projectUntrustedCodexPtyReceipt,
+            extractAdapterReportedFailure,
+            createCodexFailureResearchRecord,
+            codexResearchDependencies: [
+              () => "publish",
+              () => "arm-log-unavailable",
+              () => "arm-pty-returned-failed",
+              projectUntrustedCodexPtyReceipt,
+              extractAdapterReportedFailure,
+              codexFailureExitPair,
+            ],
             extractUntrustedCodexConfigHint: () => "publish",
             extractUntrustedCodexGateHint: () => "arm-log-unavailable",
             extractUntrustedCodexPtyHint: () => "arm-pty-returned-failed",
@@ -332,11 +345,12 @@ describe("returned receipt packet compatibility and wiring", () => {
         if (scenarioId === "other") expect(retained.size).toBe(0);
         else {
           const record = retained.get("closed-canary");
-          expect(record?.diagnosticVersion).toBe(5);
+          expect(record?.diagnosticVersion).toBe(6);
           expect(record?.untrustedPtyReceipt).toEqual(
-            projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
+            projectUntrustedCodexPtyReceipt(receipt, 6) ?? null,
           );
           expect(record?.exitPair).toBe("none:1");
+          expect(record?.adapterReportedFailure).toBeNull();
         }
       }
   });

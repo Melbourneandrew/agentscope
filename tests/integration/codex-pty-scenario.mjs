@@ -19,6 +19,11 @@ import { Agent, request as httpRequest } from "node:http";
 import { createConnection } from "node:net";
 import { basename, join } from "node:path";
 import {
+  createCodexModelControlRequest,
+  encodeAdapterReportedFailureMarker,
+} from "./codex-pty-research.mjs";
+import { classifyCodexCollectedChildFailure } from "./codex-trace-child-diagnostics.mjs";
+import {
   codexArmPendingResearchHint,
   codexProjectionFailureDiagnostic,
   codexUninstallFailureDiagnostic,
@@ -30,8 +35,6 @@ import {
   parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
 
-import { createCodexModelControlRequest } from "./codex-pty-research.mjs";
-
 let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
 let interactiveFailurePhase = "bootstrap";
@@ -39,6 +42,7 @@ let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
 let gateResearchHint;
+let adapterReportedFailure;
 const candidateConfigStages = Object.freeze([
   "closed-marker",
   "render",
@@ -202,7 +206,11 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
-        `${diagnostic}\n`,
+        encodeAdapterReportedFailureMarker(
+          diagnostic,
+          integrationRunId,
+          adapterReportedFailure,
+        ) ?? `${diagnostic}\n`,
         {
           flag: "wx",
           mode: 0o600,
@@ -457,23 +465,14 @@ const run = (executable, arguments_, options = {}) => {
             stderr,
             stdout,
           };
-          const traceFailureKind =
-            options.acceptTraceSearchUnavailable === true
-              ? codexTraceSearchChildFailureCategory(failureObservation)
-              : undefined;
-          const traceGetFailureKind =
-            options.traceGetDiagnostic === true
-              ? codexTraceGetChildFailureCategory(failureObservation)
-              : undefined;
-          return reject(
-            new Error(
-              traceGetFailureKind !== undefined
-                ? `integration.codex.trace-get-child-${traceGetFailureKind}`
-                : traceFailureKind === undefined
-                  ? "integration.codex.child"
-                  : `integration.codex.trace-search-child-${traceFailureKind}`,
-            ),
+          const selected = classifyCodexCollectedChildFailure(
+            failureObservation,
+            options,
+            adapterReportedFailure === undefined,
           );
+          if (adapterReportedFailure === undefined)
+            adapterReportedFailure = selected.adapterReportedFailure;
+          return reject(new Error(selected.message));
         }
         resolve({ stderr, stdout, traceTimedOut, traceUnavailable });
       } catch (error) {
@@ -635,8 +634,6 @@ const {
   classifyCodexSettledTraceObservation,
   classifyCodexTraceFailureHint,
   classifyCodexTraceGetFailure,
-  codexTraceGetChildFailureCategory,
-  codexTraceSearchChildFailureCategory,
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,

@@ -75,7 +75,12 @@ function requireClosure(
   }
 }
 
-function scenarioProjection(omitFrom?: "sources" | "copy") {
+function scenarioProjection(
+  omitFrom?: "sources" | "copy",
+  omitted:
+    | "selected-runtime-files.mjs"
+    | "codex-trace-child-diagnostics.mjs" = "selected-runtime-files.mjs",
+) {
   const names: string[] = [];
   const copied: string[] = [];
   const visit = (node: ts.Node) => {
@@ -120,16 +125,28 @@ function scenarioProjection(omitFrom?: "sources" | "copy") {
   );
   return names.filter(
     (name) =>
-      !(omitFrom === "sources" && name === "selected-runtime-files.mjs") &&
+      !(omitFrom === "sources" && name === omitted) &&
       copied.some(
-        (copy) =>
-          copy === name &&
-          !(omitFrom === "copy" && copy === "selected-runtime-files.mjs"),
+        (copy) => copy === name && !(omitFrom === "copy" && copy === omitted),
       ),
   );
 }
 
 describe("actual emitted immutable scenario runtime closure", () => {
+  it.each(["sources", "copy"] as const)(
+    "rejects the actual static diagnostic helper omitted from %s",
+    (projection) => {
+      expect(() => {
+        requireClosure(
+          scenarioProjection(projection, "codex-trace-child-diagnostics.mjs"),
+          integrationRoot,
+          "",
+          ["immutable-candidate-authority.mjs"],
+          true,
+        );
+      }).toThrow("unresolved-runtime-edge:codex-trace-child-diagnostics.mjs");
+    },
+  );
   it.each([false, true])(
     "checks Testkit closure with helper omitted %s",
     (omitted) => {

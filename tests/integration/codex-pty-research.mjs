@@ -1,3 +1,67 @@
+export {
+  createCodexFailureResearchRecord,
+  classifyCodexCollectedChildFailure,
+  projectAdapterReportedFailure,
+  encodeAdapterReportedFailureMarker,
+  decodeAdapterReportedFailureMarker,
+  extractAdapterReportedFailure,
+} from "./codex-trace-child-diagnostics.mjs";
+import {
+  candidateConfigStages,
+  extractUntrustedCodexConfigHint,
+  codexFailureExitPair,
+  extractAdapterReportedFailure,
+  projectAdapterReportedFailure,
+} from "./codex-trace-child-diagnostics.mjs";
+
+export const validCodexResearchDiagnostic = (value) =>
+  value === null ||
+  (typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    [1, 2, 3, 4, 5, 6].includes(value.diagnosticVersion) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify(
+        [
+          "diagnosticVersion",
+          "exitPair",
+          "untrustedConfigHint",
+          ...(value.diagnosticVersion >= 2 ? ["untrustedGateHint"] : []),
+          ...(value.diagnosticVersion >= 3 ? ["untrustedPtyHint"] : []),
+          ...(value.diagnosticVersion >= 4 ? ["untrustedPtyReceipt"] : []),
+          ...(value.diagnosticVersion >= 6 ? ["adapterReportedFailure"] : []),
+        ].sort(),
+      ) &&
+    (value.untrustedConfigHint === null ||
+      candidateConfigStages.includes(value.untrustedConfigHint)) &&
+    (value.diagnosticVersion === 1 ||
+      value.untrustedGateHint === null ||
+      codexGateResearchHints.includes(value.untrustedGateHint)) &&
+    (value.diagnosticVersion < 3 ||
+      value.untrustedPtyHint === null ||
+      codexPtyResearchHints.includes(value.untrustedPtyHint)) &&
+    (value.diagnosticVersion < 4 ||
+      validUntrustedCodexPtyReceipt(
+        value.untrustedPtyReceipt,
+        value.diagnosticVersion,
+      )) &&
+    (value.diagnosticVersion < 6 ||
+      (() => {
+        const observation = Object.getOwnPropertyDescriptor(
+          value,
+          "adapterReportedFailure",
+        );
+        return (
+          observation !== undefined &&
+          "value" in observation &&
+          (observation.value === null ||
+            projectAdapterReportedFailure(observation.value) !== undefined)
+        );
+      })()) &&
+    (value.exitPair === null ||
+      /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
+        value.exitPair,
+      )));
 // This observer retains only the first fixed seal failure. It neither settles
 // a request nor changes its signal, socket, error, or deadline authority.
 export const createCodexModelControlRequest = ({
@@ -272,17 +336,17 @@ export const projectUntrustedCodexPtyReceipt = (
     )
       return undefined;
     const pumpDescriptor =
-      diagnosticVersion === 5
+      diagnosticVersion >= 5
         ? Object.getOwnPropertyDescriptor(receipt, "pumpFailureDiagnostic")
         : undefined;
     if (pumpDescriptor && !("value" in pumpDescriptor)) return undefined;
     const pumpFailureDiagnostic = projectPumpFailure(pumpDescriptor?.value);
-    if (diagnosticVersion === 5 && pumpFailureDiagnostic === undefined)
+    if (diagnosticVersion >= 5 && pumpFailureDiagnostic === undefined)
       return undefined;
     return Object.freeze({
       outcome: outcome.value,
       checkpointProgressDiagnostic: checkpoint?.value ?? null,
-      ...(diagnosticVersion === 5 ? { pumpFailureDiagnostic } : {}),
+      ...(diagnosticVersion >= 5 ? { pumpFailureDiagnostic } : {}),
     });
   } catch {
     return undefined;
@@ -297,7 +361,7 @@ export const validUntrustedCodexPtyReceipt = (value, diagnosticVersion = 4) => {
       value === null ||
       Object.getPrototypeOf(value) !== Object.prototype ||
       Reflect.ownKeys(value).sort().join("\0") !==
-        (diagnosticVersion === 5
+        (diagnosticVersion >= 5
           ? "checkpointProgressDiagnostic\0outcome\0pumpFailureDiagnostic"
           : "checkpointProgressDiagnostic\0outcome")
     )
@@ -308,11 +372,11 @@ export const validUntrustedCodexPtyReceipt = (value, diagnosticVersion = 4) => {
       "checkpointProgressDiagnostic",
     );
     const pump =
-      diagnosticVersion === 5
+      diagnosticVersion >= 5
         ? Object.getOwnPropertyDescriptor(value, "pumpFailureDiagnostic")
         : undefined;
     return (
-      (diagnosticVersion !== 5 ||
+      (diagnosticVersion < 5 ||
         (pump !== undefined &&
           "value" in pump &&
           pump.value !== undefined &&
@@ -412,3 +476,25 @@ export const failedCodexSessionStartHint = async (home) => {
 };
 import { closeSync, constants, fstatSync, openSync } from "node:fs";
 import { join } from "node:path";
+
+export const extractUntrustedCodexGateHint = (output) => {
+  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
+    return undefined;
+  const lines = [
+    ...output.matchAll(/^integration\.runner\.untrusted-gate-hint:[^\n]*$/gmu),
+  ];
+  if (lines.length !== 1) return undefined;
+  const hint = lines[0]?.[0].match(
+    /^integration\.runner\.untrusted-gate-hint:([a-z-]{1,32})$/u,
+  )?.[1];
+  return codexGateResearchHints.includes(hint) ? hint : undefined;
+};
+
+export const codexResearchDependencies = Object.freeze([
+  extractUntrustedCodexConfigHint,
+  extractUntrustedCodexGateHint,
+  extractUntrustedCodexPtyHint,
+  projectUntrustedCodexPtyReceipt,
+  extractAdapterReportedFailure,
+  codexFailureExitPair,
+]);

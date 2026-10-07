@@ -1,23 +1,114 @@
+import { types } from "node:util";
+import {
+  classifyCodexCollectedChildFailure,
+  decodeAdapterReportedFailureMarker,
+  encodeAdapterReportedFailureMarker,
+  extractAdapterReportedFailure,
+  projectAdapterReportedFailure,
+} from "../codex-pty-research.mjs";
 import { readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import ts from "typescript";
 import {
   classifyCodexTraceGetFailure,
   codexTraceGetChildFailureCategory,
-  codexTraceSearchChildFailureCategory,
 } from "../codex-runtime-evidence.mjs";
 // Private integration JavaScript has no package declaration surface.
 // @ts-expect-error no declaration file is published for this private module
 import * as authority from "../immutable-candidate-authority.mjs";
-import {
-  compileCapabilityManifest,
-  type CapabilityManifest,
-} from "./manifest.js";
 
 const root = resolve(import.meta.dirname, "..");
+const readIntegration = (name: string): string =>
+  readFileSync(resolve(root, name), "utf8");
+describe("adapter-reported unavailable scalar projection (not settlement authority)", () => {
+  it("retains only a complete canonical five-field invocation observation and rejects partial vectors", () => {
+    const source = readIntegration("codex-trace-child-diagnostics.mjs");
+    const end = source.indexOf("export const codexTraceSearchUnavailable");
+    expect(end).toBeGreaterThan(0);
+    const functions = runInNewContext(
+      `${source.slice(0, end).replace('import { types } from "node:util";', "").replaceAll("export const", "const")}\n({codexTraceGetAdapterReportedFailure, codexTraceGetChildFailureCategory})`,
+      { Buffer, TextDecoder, types },
+    ) as {
+      codexTraceGetAdapterReportedFailure: (
+        observation: ReturnType<typeof observe>,
+      ) => unknown;
+      codexTraceGetChildFailureCategory: (
+        observation: ReturnType<typeof observe>,
+      ) => string;
+    };
+    const original = JSON.parse(diagnostic(false).toString()) as {
+      facts: Record<string, unknown>;
+    };
+    const reported = {
+      retrieverReportedStage: 11,
+      retrieverCutoffExpired: false,
+      retrieverWorkerJoined: true,
+      retrieverWatchdogJoined: null,
+      retrieverLeaseReleased: false,
+    };
+    const bytes = (facts: Record<string, unknown>) =>
+      Buffer.from(`${JSON.stringify({ ...original, facts })}\n`);
+    for (const stage of Array.from({ length: 14 }, (_, index) => index + 1)) {
+      const facts = {
+        ...original.facts,
+        ...reported,
+        retrieverReportedStage: stage,
+      };
+      const observation = observe(bytes(facts));
+      expect(functions.codexTraceGetChildFailureCategory(observation)).toBe(
+        "invoke-get",
+      );
+      expect(
+        functions.codexTraceGetAdapterReportedFailure(observation),
+      ).toEqual({
+        stage,
+        cutoffExpired: false,
+        workerJoined: true,
+        watchdogJoined: null,
+        leaseReleased: false,
+      });
+    }
+    for (const changed of [
+      { retrieverReportedStage: 0 },
+      { retrieverReportedStage: 15 },
+      { retrieverReportedStage: 1.5 },
+      { retrieverCutoffExpired: null },
+      { retrieverWorkerJoined: "CANARY" },
+      { retrieverLeaseReleased: 1 },
+      { retrieverPreparationFailed: true },
+      { retrieverInvocationFailed: false },
+      { privateCanary: "secret" },
+    ]) {
+      const observation = observe(
+        bytes({ ...original.facts, ...reported, ...changed }),
+      );
+      expect(functions.codexTraceGetChildFailureCategory(observation)).toBe(
+        "exit",
+      );
+      expect(
+        functions.codexTraceGetAdapterReportedFailure(observation),
+      ).toBeUndefined();
+    }
+    for (const key of Object.keys(reported)) {
+      const partial: Record<string, unknown> = {
+        ...original.facts,
+        ...reported,
+      };
+      delete partial[key];
+      expect(
+        functions.codexTraceGetAdapterReportedFailure(observe(bytes(partial))),
+      ).toBeUndefined();
+      expect(
+        functions.codexTraceGetChildFailureCategory(observe(bytes(partial))),
+      ).toBe("exit");
+    }
+    expect(
+      functions.codexTraceGetAdapterReportedFailure(observe(diagnostic(false))),
+    ).toBeUndefined();
+  });
+});
 const { decodeInteractiveFailureExitCode, encodeInteractiveFailureExitCode } =
   authority as unknown as {
     decodeInteractiveFailureExitCode: (
@@ -213,7 +304,7 @@ describe("trace-get refusal and outcome precedence", () => {
 });
 
 const actualRun = (primary?: Error) => {
-  const source = readFileSync(resolve(root, "codex-pty-scenario.mjs"), "utf8");
+  const source = readIntegration("codex-pty-scenario.mjs");
   const start = source.indexOf("const run = (executable");
   const end = source.indexOf("const agentscope =", start);
   expect(start).toBeGreaterThan(0);
@@ -243,8 +334,8 @@ const actualRun = (primary?: Error) => {
     clearTimeout: () => {
       cleared = true;
     },
-    codexTraceGetChildFailureCategory,
-    codexTraceSearchChildFailureCategory,
+    adapterReportedFailure: undefined,
+    classifyCodexCollectedChildFailure,
     codexTraceSearchUnavailable: () => false,
     codexTraceSearchTimedOut: () => false,
     invoke: undefined as undefined | (() => Promise<unknown>),
@@ -291,62 +382,119 @@ describe("actual collected-child failure wiring", () => {
   });
 });
 
-const runtimeClosure = (omitHelper = false) => {
-  const manifest = compileCapabilityManifest(
-    JSON.parse(
-      readFileSync(resolve(root, "capability-manifest.json"), "utf8"),
-    ) as CapabilityManifest,
-  );
-  const scenario = manifest.scenarios.find(
-    ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
-  );
-  if (!scenario) throw new Error("missing-codex-scenario");
-  const files = new Map(
-    scenario.runtimeArtifacts
-      .filter(
-        ({ destination }) =>
-          !omitHelper || destination !== "codex-trace-child-diagnostics.mjs",
-      )
-      .map((artifact) => [artifact.destination, artifact.source]),
-  );
-  for (const [destination, source] of files) {
-    if (source.kind !== "integration") continue;
-    const ast = ts.createSourceFile(
-      destination,
-      readFileSync(resolve(root, source.path), "utf8"),
-      ts.ScriptTarget.Latest,
-      true,
-    );
-    for (const statement of ast.statements) {
-      if (
-        (!ts.isImportDeclaration(statement) &&
-          !ts.isExportDeclaration(statement)) ||
-        !statement.moduleSpecifier ||
-        !ts.isStringLiteral(statement.moduleSpecifier)
-      )
-        continue;
-      const edge = statement.moduleSpecifier.text;
-      if (edge.startsWith("./") && !files.has(edge.slice(2)))
-        throw new Error("runtime-helper-missing");
-    }
-  }
-};
-
-describe("actual manifest-selected static runtime closure", () => {
-  it("stages the private helper through existing authenticated sources and COPY", () => {
-    expect(() => {
-      runtimeClosure();
-    }).not.toThrow();
-    const staging = readFileSync(resolve(root, "run-scenarios.mjs"), "utf8");
-    expect(staging).toContain(
-      "for (const artifact of scenario.runtimeArtifacts)",
-    );
-    expect(staging).toContain("`runtime/${artifact.destination}`");
-    expect(staging).toContain('"COPY runtime ./runtime"');
+describe("run-bound adapter-reported failure diagnostics", () => {
+  const runId = "0123456789abcdef";
+  const predicate =
+    "integration.fixture.codex-verify-trace-get-child-invoke-get";
+  const markerFor = (value: unknown) =>
+    encodeAdapterReportedFailureMarker(predicate, runId, value);
+  const observation = () => ({
+    stage: 1,
+    cutoffExpired: false,
+    workerJoined: null,
+    watchdogJoined: null,
+    leaseReleased: null,
   });
-  it("causally rejects omitting the extracted helper", () => {
-    expect(() => {
-      runtimeClosure(true);
-    }).toThrow("runtime-helper-missing");
+  const verifyStage = (stage: number) => {
+    for (const cutoffExpired of [false, true])
+      for (const workerJoined of [null, false, true])
+        for (const watchdogJoined of [null, false, true])
+          for (const leaseReleased of [null, false, true]) {
+            const value = {
+              stage,
+              cutoffExpired,
+              workerJoined,
+              watchdogJoined,
+              leaseReleased,
+            };
+            const marker = markerFor(value);
+            expect(typeof marker).toBe("string");
+            expect(Buffer.byteLength(marker!)).toBe(83);
+            expect(decodeAdapterReportedFailureMarker(marker, runId)).toEqual(
+              value,
+            );
+            expect(
+              extractAdapterReportedFailure(
+                `integration.runner.adapter-reported-failure:${marker}`,
+                runId,
+              ),
+            ).toEqual(value);
+          }
+  };
+  it("canonically encodes every closed ordinal and nullable settlement vector within 128 bytes", () => {
+    for (let stage = 1; stage <= 14; stage++) verifyStage(stage);
+  });
+  it("discards malformed, partial, extra, duplicate, and substituted observations", () => {
+    const value = {
+      ...observation(),
+      stage: 14,
+      watchdogJoined: true,
+      leaseReleased: false,
+    };
+    const marker = markerFor(value)!;
+    for (const invalid of [
+      marker.slice(0, -1),
+      `${marker}\n`,
+      marker.replace("|e", "|f"),
+      marker.replace("|e", "|0"),
+      marker.replace("e0", "e2"),
+      marker.replace("e0n", "e0x"),
+      marker.replace(runId, "ffffffffffffffff"),
+      `${marker}extra`,
+      "x".repeat(129),
+    ])
+      expect(
+        decodeAdapterReportedFailureMarker(invalid, runId),
+      ).toBeUndefined();
+    const line = `integration.runner.adapter-reported-failure:${marker}`;
+    expect(extractAdapterReportedFailure(line + line, runId)).toBeUndefined();
+    for (const invalid of [
+      { ...value, stage: 0 },
+      { ...value, stage: 15 },
+      { ...value, stage: 1.5 },
+      { ...value, cutoffExpired: null },
+      { ...value, workerJoined: "true" },
+      { ...value, extra: "canary" },
+      { stage: 1 },
+    ])
+      expect(projectAdapterReportedFailure(invalid)).toBeUndefined();
+    expect(
+      encodeAdapterReportedFailureMarker(
+        "integration.fixture.other",
+        runId,
+        value,
+      ),
+    ).toBeUndefined();
+  });
+  it("never invokes getters or Proxy traps and returns an insulated frozen null-prototype copy", () => {
+    let reads = 0;
+    const accessor = {
+      ...observation(),
+      get leaseReleased() {
+        reads++;
+        return true;
+      },
+    };
+    expect(projectAdapterReportedFailure(accessor)).toBeUndefined();
+    expect(
+      projectAdapterReportedFailure(
+        new Proxy(
+          {},
+          {
+            getPrototypeOf() {
+              reads++;
+              throw new Error("canary");
+            },
+          },
+        ),
+      ),
+    ).toBeUndefined();
+    expect(reads).toBe(0);
+    const value = observation();
+    const projected = projectAdapterReportedFailure(value);
+    value.stage = 14;
+    expect(projected?.stage).toBe(1);
+    expect(Object.getPrototypeOf(projected)).toBeNull();
+    expect(Object.isFrozen(projected)).toBe(true);
   });
 });
