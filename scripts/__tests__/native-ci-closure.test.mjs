@@ -30,7 +30,15 @@ const manifest = JSON.parse(
   readFileSync(join(root, "scripts/native-ci-irrelevant-paths.json"), "utf8"),
 );
 const captured = {};
-function syntheticCapture({ primary, cleanup, creation, output, now = 100 }) {
+function syntheticCapture({
+  primary,
+  cleanup,
+  creation,
+  output,
+  now = 100,
+  sinkThrows = false,
+  setupPhase,
+}) {
   const source = readFileSync(
     join(root, "scripts/fixtures/native-ci-closure-process.mjs"),
     "utf8",
@@ -38,15 +46,35 @@ function syntheticCapture({ primary, cleanup, creation, output, now = 100 }) {
   const body = source
     .slice(source.indexOf("export async function captureNativeCiClosure"))
     .replace("export async function", "async function");
-  const observed = { deadlines: [], cleanup: 0 };
+  const observed = {
+    deadlines: [],
+    cleanup: 0,
+    diagnostics: [],
+    created: 0,
+  };
   let reads = 0;
   const dependencies = {
+    process: {
+      execPath: "/synthetic/node",
+      env: {},
+      stderr: {
+        write: (value) => {
+          observed.diagnostics.push(value);
+          if (sinkThrows) throw new Error("private-sink-secret");
+        },
+      },
+    },
     mkdtempSync: () => {
       if (creation !== undefined) throw creation;
+      observed.created += 1;
       return "/synthetic/exact-root";
     },
-    lstatSync: () => ({ dev: 11, ino: 22 }),
+    lstatSync: () => {
+      if (setupPhase === "identity") throw primary;
+      return { dev: 11, ino: 22 };
+    },
     bindNxCacheFixture: (path, deadline) => {
+      if (setupPhase === "bind") throw primary;
       observed.deadlines.push(deadline);
       return { path };
     },
@@ -101,6 +129,11 @@ test.each([
     });
     assert.deepEqual(observed.deadlines, [5100]);
     assert.equal(observed.cleanup, 1);
+    assert.equal(observed.diagnostics.length, 1);
+    assert.match(
+      observed.diagnostics[0],
+      /^native-ci\.fixture\.quarantined .*\n$/u,
+    );
   },
 );
 test("successful synthetic closure has exact output and no diagnostic authority", async () => {
@@ -109,6 +142,7 @@ test("successful synthetic closure has exact output and no diagnostic authority"
   assert.deepEqual(await capture("tracked"), { trackedEntries: output });
   assert.deepEqual(observed.deadlines, [5100]);
   assert.equal(observed.cleanup, 1);
+  assert.deepEqual(observed.diagnostics, []);
 });
 test("creation failure keeps setup elapsed and admits no cleanup or child", async () => {
   const creation = new Error("private-root-secret");
@@ -120,58 +154,58 @@ test("creation failure keeps setup elapsed and admits no cleanup or child", asyn
       /operation=tracked stage=setup inner_phase=unknown elapsed_ms=60 /u,
     );
     assert.equal(error.message.includes("secret"), false);
+    assert.deepEqual(observed.diagnostics, [`${error.message}\n`]);
     return true;
   });
   assert.deepEqual(observed.deadlines, []);
   assert.equal(observed.cleanup, 0);
 });
-test("primary-only and cleanup-only failures preserve separate originals", async () => {
-  const primary = new Error("nx-cache.fixture.deadline");
-  const first = syntheticCapture({ primary });
-  await assert.rejects(first.capture("tracked"), (error) => {
-    assert.equal(error.cause, primary);
-    assert.match(
-      error.message,
-      /operation=tracked stage=start inner_phase=unknown /u,
-    );
-    assert.match(error.message, /primary=deadline cleanup=unknown$/u);
-    return true;
-  });
-  const cleanup = new Error("nx-cache.fixture.cleanup-deadline");
-  const second = syntheticCapture({ cleanup });
-  await assert.rejects(second.capture("graph"), (error) => {
-    assert.deepEqual(error.errors, [cleanup]);
-    assert.equal(error.cause, cleanup);
-    assert.match(error.message, /stage=settlement inner_phase=unknown /u);
-    return true;
-  });
-});
+test.each([false, true])(
+  "primary-only and cleanup-only failures preserve originals with throwing sink=%s",
+  async (sinkThrows) => {
+    const primary = new Error("nx-cache.fixture.deadline");
+    const first = syntheticCapture({ primary, sinkThrows });
+    await assert.rejects(first.capture("tracked"), (error) => {
+      assert.equal(error.cause, primary);
+      assert.match(
+        error.message,
+        /operation=tracked stage=start inner_phase=unknown .*primary=deadline cleanup=unknown$/u,
+      );
+      assert.deepEqual(first.observed.diagnostics, [`${error.message}\n`]);
+      return true;
+    });
+    const cleanup = new Error("nx-cache.fixture.cleanup-deadline");
+    const second = syntheticCapture({ cleanup, sinkThrows });
+    await assert.rejects(second.capture("graph"), (error) => {
+      assert.deepEqual(error.errors, [cleanup]);
+      assert.equal(error.cause, cleanup);
+      assert.match(error.message, /stage=settlement inner_phase=unknown /u);
+      assert.deepEqual(second.observed.diagnostics, [`${error.message}\n`]);
+      return true;
+    });
+    for (const observed of [first.observed, second.observed]) {
+      assert.deepEqual(observed.deadlines, [5100]);
+      assert.equal(observed.cleanup, 1);
+    }
+  },
+);
 test("diagnostics reject hostile or absent error observations without reading content", () => {
   let accessed = 0;
+  const refuse = () => {
+    accessed += 1;
+    throw new Error("secret");
+  };
   const hostile = Object.defineProperties(
     {},
     {
-      message: {
-        get() {
-          accessed += 1;
-          throw new Error("secret");
-        },
-      },
-      cause: {
-        get() {
-          accessed += 1;
-          throw new Error("secret");
-        },
-      },
+      message: { get: refuse },
+      cause: { get: refuse },
     },
   );
   const proxy = new Proxy(
     {},
     {
-      getOwnPropertyDescriptor() {
-        accessed += 1;
-        throw new Error("secret");
-      },
+      getOwnPropertyDescriptor: refuse,
     },
   );
   for (const primary of [
@@ -396,48 +430,11 @@ test("preparation rejects unknown command and seed before root creation", async 
 test.each(["bind", "identity"])(
   "post-creation %s failure preserves primary and quarantined root",
   async (phase) => {
-    const source = readFileSync(
-      join(root, "scripts/fixtures/native-ci-closure-process.mjs"),
-      "utf8",
-    );
-    const body = source
-      .slice(source.indexOf("export async function captureNativeCiClosure"))
-      .replace("export async function", "async function");
     const primary = new Error("synthetic.setup");
-    let created = 0;
-    let cleaned = 0;
-    const capture = new Function(
-      "mkdtempSync",
-      "lstatSync",
-      "bindNxCacheFixture",
-      "cleanupNxCacheFixture",
-      "assertNativeCiSeed",
-      "performance",
-      "join",
-      "tmpdir",
-      "projectNativeCiClosureFailure",
-      `${body}; return captureNativeCiClosure;`,
-    )(
-      () => {
-        created += 1;
-        return "/synthetic/exact-root";
-      },
-      () => {
-        if (phase === "identity") throw primary;
-        return { dev: 11, ino: 22 };
-      },
-      () => {
-        throw primary;
-      },
-      () => {
-        cleaned += 1;
-      },
-      () => {},
-      { now: () => 0 },
-      join,
-      () => "/synthetic",
-      projectNativeCiClosureFailure,
-    );
+    const { capture, observed } = syntheticCapture({
+      primary,
+      setupPhase: phase,
+    });
     await assert.rejects(capture("tracked"), (error) => {
       assert.match(
         error.message,
@@ -455,8 +452,8 @@ test.each(["bind", "identity"])(
       });
       return true;
     });
-    assert.equal(created, 1);
-    assert.equal(cleaned, 0);
+    assert.equal(observed.created, 1);
+    assert.equal(observed.cleanup, 0);
   },
 );
 
