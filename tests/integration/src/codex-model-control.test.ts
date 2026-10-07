@@ -9,20 +9,96 @@ import {
   createCodexFailureResearchRecord,
   extractAdapterReportedFailure,
   projectUntrustedCodexPtyReceipt,
+  encodeAdapterReportedFailureMarker,
 } from "../codex-pty-research.mjs";
 // @ts-expect-error private integration module has no published declaration
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
-const { codexFailureExitPair, validCodexResearchDiagnostic } =
-  privateAuthority as {
-    codexFailureExitPair: (
-      fixture: unknown,
-      container: unknown,
-      scenario: string,
-    ) => string | undefined;
-    validCodexResearchDiagnostic: (value: unknown) => boolean;
-  };
+const {
+  codexFailureExitPair,
+  validCodexResearchDiagnostic,
+  encodeInteractiveFailureExitCode,
+} = privateAuthority as {
+  codexFailureExitPair: (
+    fixture: unknown,
+    container: unknown,
+    scenario: string,
+  ) => string | undefined;
+  validCodexResearchDiagnostic: (value: unknown) => boolean;
+  encodeInteractiveFailureExitCode: (
+    value: string,
+    scenario: string,
+  ) => number | undefined;
+};
 const readIntegration = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+
+describe("optional runner diagnostic sink preserves the original failure", () => {
+  it.each([false, true])(
+    "preserves the actual exit when sink throws %s",
+    async (throws) => {
+      const source = readIntegration("runner.mjs");
+      const start = source.indexOf(
+        'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+      );
+      expect(start).toBeGreaterThan(0);
+      const predicate =
+        "integration.fixture.codex-verify-trace-get-child-invoke-get";
+      const writes: string[] = [];
+      const process = {
+        env: {},
+        exitCode: undefined as number | undefined,
+        stdout: {
+          write: (value: string) => {
+            writes.push(value);
+            if (throws) throw new Error("synthetic sink failure");
+          },
+        },
+      };
+      const completed: unknown = runInNewContext(
+        `(async () => { ${source.slice(start)} })()`,
+        {
+          scenario: { executionMode: "interactive" },
+          scenarioId: "codex-tui-trace-smoke",
+          fixtureFailure: new Error("original failure"),
+          fixtureOutput: "",
+          interactiveFailureDiagnostic: predicate,
+          ledger: "owned-fixture",
+          home: "owned-home",
+          process,
+          emitCodexPtyFailureHint: () => undefined,
+          retainedCandidateConfigStage: () => undefined,
+          untrustedCodexJoinHint: () => undefined,
+          requiredEnvironment: () => "0123456789abcdef",
+          readBoundedInteractiveFailureRecord: () => ({
+            predicate,
+            adapterReportedFailure: {
+              stage: 11,
+              cutoffExpired: false,
+              workerJoined: true,
+              watchdogJoined: null,
+              leaseReleased: false,
+            },
+          }),
+          encodeAdapterReportedFailureMarker,
+          retainedInteractivePhase: () => undefined,
+          codexGateResearchHints: [],
+          untrustedCodexTraceHint: () => undefined,
+          encodeInteractiveFailureExitCode,
+        },
+        { timeout: 1000 },
+      );
+      await expect(Promise.resolve(completed)).resolves.toBeUndefined();
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatch(
+        /^integration\.runner\.adapter-reported-failure:/u,
+      );
+      expect(process.exitCode).toBe(189);
+      expect(process.exitCode).toBe(
+        encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
+      );
+    },
+  );
+});
 
 const modelFixture = (observe?: (hint: string) => void) => {
   const response = Object.assign(new EventEmitter(), { statusCode: 200 });

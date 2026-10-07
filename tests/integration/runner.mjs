@@ -785,10 +785,15 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
       runId,
       failure?.adapterReportedFailure,
     );
-    if (reported !== undefined)
-      process.stdout.write(
-        `integration.runner.adapter-reported-failure:${reported}`,
-      );
+    if (reported !== undefined) {
+      try {
+        process.stdout.write(
+          `integration.runner.adapter-reported-failure:${reported}`,
+        );
+      } catch {
+        // Optional reported facts cannot replace the original failure outcome.
+      }
+    }
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)
