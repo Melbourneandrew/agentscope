@@ -165,7 +165,7 @@
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "5ca16e7fdf026baa60ae2c9129a1e892007ed68d50d00ada1fd58d2bd4eb528b"
+        "sha256": "456abbab9e39d955c8e85e1bcca482d710d7cfaa99636c2e5397f21727106574"
       },
       "runtimeArtifacts": [
         {
