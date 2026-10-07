@@ -1512,7 +1512,7 @@ export const executeIsolationPlan = async (
       evidence.cleanup,
       cleanupResult,
       failure,
-      failure === undefined ? null : originalWorkPhase,
+      workOutcome === "passed" ? null : originalWorkPhase,
     );
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
