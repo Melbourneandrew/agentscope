@@ -1,6 +1,10 @@
 /** Pure output representation only; no subprocess or lifecycle authority. */
 const maximumHeaderBytes = 16_384;
 const supplierStages = [
+  "supplier-connected-entry",
+  "supplier-connected-extract",
+  "supplier-connected-package",
+  "supplier-connected-inventory",
   "supplier-entry",
   "supplier-extract",
   "supplier-package",

@@ -46,9 +46,9 @@ const enter = (stage) => {
   }
 };
 const enterSupplier = (observe, stage) => {
-  // Composite CLI observes only its final build. The standalone research
-  // export retains its original sequence; connected CLI failures stay unknown.
-  if (observe) enter(stage);
+  // Connected CLI uses an earlier fixed sequence; standalone exports retain
+  // their original stages. These observations never describe an outcome.
+  enter(observe ? stage : stage.replace("supplier-", "supplier-connected-"));
 };
 const readFixed = (path, size, mode = 0o600) => {
   const fd = openSync(

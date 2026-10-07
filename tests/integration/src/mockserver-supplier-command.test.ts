@@ -149,7 +149,7 @@ const privateWorker = runInNewContext(
     supplierMavenSettings,
   },
 ) as (
-  run: (...args: unknown[]) => Promise<unknown>,
+  run: (file: string, ...args: unknown[]) => Promise<unknown>,
   phase: string,
   observe?: boolean,
 ) => Promise<void>;
@@ -177,7 +177,9 @@ const phases = Object.freeze([
   "supplier-package",
   "supplier-inventory",
 ]);
-describe("composite build has one final-phase diagnostic sequence", () => {
+const supplierMarker = (stage: string, connected = false) =>
+  `[agentscope-material:v1 stage=${connected ? stage.replace("supplier-", "supplier-connected-") : stage} family=none]\n`;
+describe("composite build has monotonic connected and offline diagnostics", () => {
   it.each(phases)(
     "retains %s from the actual collector after the connected build",
     async (phase) => {
@@ -187,7 +189,9 @@ describe("composite build has one final-phase diagnostic sequence", () => {
         "dependency-research",
         false,
       );
-      expect(state.markers).toEqual([]);
+      expect(state.markers).toEqual(
+        phases.map((stage) => supplierMarker(stage, true)),
+      );
       const primary = new Error("PRIVATE_CANARY");
       state.primary = primary;
       state.rejects = phase === "supplier-entry" ? "source" : "";
@@ -210,11 +214,7 @@ describe("composite build has one final-phase diagnostic sequence", () => {
       expect(state.markers.join("")).not.toContain("CANARY");
       const prior = createBuildStderrObservation();
       for (const [index, stage] of phases.entries())
-        prior.consume(
-          Buffer.from(
-            `#10 ${index}.100 [agentscope-material:v1 stage=${stage} family=none]\n`,
-          ),
-        );
+        prior.consume(Buffer.from(`#10 ${index}.100 ${supplierMarker(stage)}`));
       prior.consume(
         Buffer.from(
           "#20 4.100 [agentscope-material:v1 stage=supplier-entry family=none]\n",
@@ -223,17 +223,19 @@ describe("composite build has one final-phase diagnostic sequence", () => {
       expect(prior.snapshot().untrustedBootstrapStage).toBeUndefined();
     },
   );
-  it("keeps a connected-stage failure unclassified by the actual collector", async () => {
+  it("retains a connected-stage failure without an offline or cause claim", async () => {
     state.rejects = "source";
     const observation = createBuildStderrObservation();
     await expect(
       privateWorker(vi.fn(), "dependency-research", false),
     ).rejects.toThrow("source");
-    expect(state.markers).toEqual([]);
-    expect(observation.snapshot().untrustedBootstrapStage).toBeUndefined();
-    expect(
-      observation.snapshot().untrustedBootstrapFailureFamily,
-    ).toBeUndefined();
+    for (const marker of state.markers)
+      observation.consume(Buffer.from(marker));
+    expect(observation.snapshot()).toEqual({
+      stderrClass: "unknown",
+      untrustedBootstrapStage: "supplier-connected-entry",
+      untrustedBootstrapFailureFamily: "none",
+    });
   });
 });
 
@@ -364,9 +366,13 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
       expect(state.writes.at(-1)?.[0]).toBe("/out/material.json");
     },
   );
-  it.each(phases)(
-    "marks %s before its actual original operation",
-    async (phase) => {
+  it.each(
+    phases.flatMap((phase) =>
+      [false, true].map((connected) => ({ phase, connected })),
+    ),
+  )(
+    "marks $phase before its actual original operation (connected=$connected)",
+    async ({ phase, connected }) => {
       for (const failed of [false, true]) {
         state.markers = [];
         state.writes = [];
@@ -383,16 +389,15 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
             return Promise.reject(primary);
           return Promise.resolve();
         });
-        await expect(runMockServerSupplierResearch(execute)).rejects.toBe(
-          state.primary,
-        );
+        await expect(
+          connected
+            ? privateWorker(execute, "dependency-research", false)
+            : runMockServerSupplierResearch(execute),
+        ).rejects.toBe(state.primary);
         expect(state.markers).toEqual(
           phases
             .slice(0, phases.indexOf(phase) + 1)
-            .map(
-              (stage) =>
-                `[agentscope-material:v1 stage=${stage} family=none]\n`,
-            ),
+            .map((stage) => supplierMarker(stage, connected)),
         );
         expect(state.markers.join("")).not.toContain("CANARY");
         expect(

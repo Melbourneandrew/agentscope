@@ -376,12 +376,13 @@ describe("partial material-step observation", () => {
 });
 
 describe("closed always-after projection", () => {
-  it.each([
-    "supplier-entry",
-    "supplier-extract",
-    "supplier-package",
-    "supplier-inventory",
-  ])(
+  it.each(
+    ["connected-", ""].flatMap((prefix) =>
+      ["entry", "extract", "package", "inventory"].map(
+        (stage) => `supplier-${prefix}${stage}`,
+      ),
+    ),
+  )(
     "projects supplier last-entered %s without a success or failure-family claim",
     (stage) => {
       for (const family of [
@@ -401,10 +402,7 @@ describe("closed always-after projection", () => {
         });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain(
-          `untrusted_bootstrap_stage=${family === "none" ? stage : "unknown"}`,
-        );
-        expect(result.stdout).toContain(
-          `untrusted_bootstrap_failure_family=${family === "none" ? "none" : "unknown"}`,
+          `untrusted_bootstrap_stage=${family === "none" ? stage : "unknown"} untrusted_bootstrap_failure_family=${family === "none" ? "none" : "unknown"}`,
         );
         expect(result.stdout).not.toContain("CANARY");
       }

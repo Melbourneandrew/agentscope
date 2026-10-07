@@ -223,6 +223,10 @@ describe("signature-policy substage projection", () => {
 
 describe("fixed supplier phase projection", () => {
   it.each([
+    "supplier-connected-entry",
+    "supplier-connected-extract",
+    "supplier-connected-package",
+    "supplier-connected-inventory",
     "supplier-entry",
     "supplier-extract",
     "supplier-package",

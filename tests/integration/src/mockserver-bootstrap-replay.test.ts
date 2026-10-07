@@ -10,6 +10,10 @@ const observe = (chunks: readonly string[]) => {
 };
 const absent = { stderrClass: "unknown" };
 const supplierStages = [
+  "supplier-connected-entry",
+  "supplier-connected-extract",
+  "supplier-connected-package",
+  "supplier-connected-inventory",
   "supplier-entry",
   "supplier-extract",
   "supplier-package",
@@ -150,7 +154,12 @@ describe("closed supplier last-entered observations", () => {
       for (const value of [
         replay,
         original + replay + replay,
-        marker(stage) + marker("supplier-entry"),
+        marker(stage) +
+          marker(
+            stage.startsWith("supplier-connected-")
+              ? "supplier-connected-entry"
+              : "supplier-entry",
+          ),
         marker(stage).replace("family=none", "family=none CANARY"),
       ])
         expect(observe([value])).toEqual(absent);
