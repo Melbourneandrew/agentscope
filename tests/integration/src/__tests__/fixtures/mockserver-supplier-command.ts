@@ -1,6 +1,7 @@
 import type * as FileSystem from "node:fs";
 import type * as LifecyclePatch from "../../../mockserver-material/lifecycle-patch.mjs";
 import * as fs from "node:fs";
+import { types } from "node:util";
 import { runInNewContext } from "node:vm";
 import { beforeEach, expect, vi } from "vitest";
 const state = vi.hoisted(() => ({
@@ -189,6 +190,7 @@ export const privateWorker = runInNewContext(
   `${workerSource.slice(workerSource.indexOf("const environment ="), workerSource.indexOf("export const runMockServerSupplierResearch"))}\nrunSupplier`,
   {
     ...fs,
+    types,
     Buffer,
     maximumOutputBytes: 8 * 1024 * 1024,
     verifyMockServerSourceArchive,
