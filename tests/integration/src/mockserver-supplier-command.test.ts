@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   sinkFailure: false,
   primary: undefined as Error | undefined,
   inventoryFailure: false,
+  callbackMode: 0o664,
 }));
 function expectedSize() {
   if (state.wrongLength) return 8;
@@ -32,7 +33,7 @@ vi.mock("node:fs", async (original) => ({
     size: expectedSize(),
     uid: 0,
     gid: 0,
-    mode: state.path.endsWith(".java") ? 0o644 : 0o600,
+    mode: state.path.endsWith(".java") ? state.callbackMode : 0o600,
   }),
   readSync: (
     _fd: number,
@@ -96,6 +97,7 @@ beforeEach(() => {
   state.sinkFailure = false;
   state.primary = undefined;
   state.inventoryFailure = false;
+  state.callbackMode = 0o664;
 });
 
 describe("fixed last-entered supplier phases without outcome authority", () => {
@@ -163,6 +165,22 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
 });
 afterEach(() => vi.restoreAllMocks());
 describe("supplier command extraction/input boundary", () => {
+  it.each([0o644, 0o600, 0o674, 0o777])(
+    "rejects substituted callback mode %s before patching or packaging",
+    async (mode) => {
+      state.callbackMode = mode;
+      const execute = vi.fn(() => Promise.resolve());
+      await expect(runMockServerSupplierResearch(execute)).rejects.toThrow(
+        "integration.mockserver-material.supplier-command",
+      );
+      expect(execute).toHaveBeenCalledTimes(4);
+      expect(state.writes).toEqual([]);
+      expect(state.markers).toEqual([
+        "[agentscope-material:v1 stage=supplier-entry family=none]\n",
+        "[agentscope-material:v1 stage=supplier-extract family=none]\n",
+      ]);
+    },
+  );
   it("rejects wrong input lengths before tools, configuration or inventory", async () => {
     state.wrongLength = true;
     const execute = vi.fn();

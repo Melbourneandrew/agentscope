@@ -145,7 +145,7 @@ export const runMockServerSupplierResearch = async (run) => {
   const callback = mockServerSupplierLayout.callback;
   writeFileSync(
     callback,
-    patchCallbackSource(readFixed(callback, 9101, 0o644)),
+    patchCallbackSource(readFixed(callback, 9101, 0o664)),
     {
       flag: "w",
       mode: 0o644,
