@@ -1,5 +1,19 @@
 import { isAbsolute, normalize } from "node:path";
 import { isProxy } from "node:util/types";
+import {
+  consumeInventoryString,
+  exactArrayValues,
+  exactRecordValues,
+  isRecord,
+  parsePluginLoadSelections,
+  type InventoryBudget,
+  type PluginLoadSelections,
+} from "./plugin-loading-selection.js";
+export {
+  exactArrayValues,
+  exactRecordValues,
+  isRecord,
+} from "./plugin-loading-selection.js";
 import { CLAUDE_CODE_LIFECYCLE_EVENTS } from "./owned-profile.js";
 
 export const CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID =
@@ -54,6 +68,7 @@ export type ClaudeCodeInstalledPlugin = Readonly<{
 export type ClaudeCodePluginInventory = Readonly<{
   settingsLayers: readonly ClaudeCodePluginSettingsLayer[];
   installedPlugins: readonly ClaudeCodeInstalledPlugin[];
+  loadSelections?: PluginLoadSelections;
 }>;
 
 export type ClaudeCodePluginOverlap =
@@ -69,9 +84,7 @@ const scopeOrder: Readonly<Record<ClaudeCodeSettingsScope, number>> = {
 };
 // The current owned four-event profile plus the historical SessionEnd owner.
 const overlappingEvents = new Set<string>(CLAUDE_CODE_LIFECYCLE_EVENTS);
-const encoder = new TextEncoder();
 const digestPattern = /^[a-f0-9]{64}$/u;
-const maximumInventoryArrayLength = 1_024;
 const maximumSettingsLayerCount = 4;
 const maximumInstalledPluginCount = 128;
 const maximumEnabledPluginCount = 256;
@@ -80,91 +93,6 @@ const maximumTargetPathBytes = 4_096;
 const maximumPluginFieldBytes = 512;
 export const maximumHookEventBytes = 128;
 export const maximumInventoryUtf8Bytes = 96 * 1_024;
-type InventoryBudget = { remainingBytes: number };
-
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-export const exactRecordValues = (
-  value: unknown,
-  keys: readonly string[],
-): Readonly<Record<string, unknown>> | undefined => {
-  if (
-    isProxy(value) ||
-    !isRecord(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.keys(descriptors).sort().join("\0") !==
-      [...keys].sort().join("\0") ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-  )
-    return undefined;
-  return Object.freeze(
-    Object.fromEntries(
-      keys.map((key) => [key, descriptors[key]!.value as unknown]),
-    ),
-  );
-};
-
-export const exactArrayValues = (
-  value: unknown,
-): readonly unknown[] | undefined => {
-  if (
-    isProxy(value) ||
-    !Array.isArray(value) ||
-    Object.getPrototypeOf(value) !== Array.prototype
-  )
-    return undefined;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const lengthDescriptor = descriptors["length"] as
-    PropertyDescriptor | undefined;
-  const lengthValue = lengthDescriptor?.value as unknown;
-  if (
-    lengthDescriptor === undefined ||
-    !("value" in lengthDescriptor) ||
-    !Number.isSafeInteger(lengthValue) ||
-    (lengthValue as number) < 0 ||
-    (lengthValue as number) > maximumInventoryArrayLength
-  )
-    return undefined;
-  const length = lengthValue as number;
-  const expected = [
-    ...Array.from({ length }, (_, index) => String(index)),
-    "length",
-  ].sort();
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.keys(descriptors).sort().join("\0") !== expected.join("\0") ||
-    Object.entries(descriptors).some(
-      ([key, descriptor]) => key !== "length" && !("value" in descriptor),
-    )
-  )
-    return undefined;
-  return Object.freeze(
-    Array.from(
-      { length },
-      (_, index) => descriptors[String(index)]!.value as unknown,
-    ),
-  );
-};
-
-const consumeInventoryString = (
-  value: unknown,
-  maximumBytes: number,
-  budget: InventoryBudget,
-): value is string => {
-  if (typeof value !== "string" || value.length === 0) return false;
-  if (value.length > maximumBytes) return false;
-  const byteLength = encoder.encode(value).byteLength;
-  if (byteLength > maximumBytes || byteLength > budget.remainingBytes)
-    return false;
-  budget.remainingBytes -= byteLength;
-  return true;
-};
 
 export const parseEnabledPlugins = (
   value: unknown,
@@ -346,10 +274,12 @@ export const enabledPluginsEqual = (
 export const parsePluginInventory = (
   value: unknown,
 ): ClaudeCodePluginInventory | undefined => {
-  const record = exactRecordValues(value, [
-    "installedPlugins",
-    "settingsLayers",
-  ]);
+  const record =
+    exactRecordValues(value, [
+      "installedPlugins",
+      "settingsLayers",
+      "loadSelections",
+    ]) ?? exactRecordValues(value, ["installedPlugins", "settingsLayers"]);
   if (record === undefined) return undefined;
   const rawLayers = exactArrayValues(record.settingsLayers);
   const rawPlugins = exactArrayValues(record.installedPlugins);
@@ -386,7 +316,15 @@ export const parsePluginInventory = (
     if (plugin === undefined) return undefined;
     installedPlugins.push(plugin);
   }
+  const effective = effectiveEnabledPlugins(settingsLayers);
+  const hasSelections = Object.hasOwn(record, "loadSelections");
+  const loadSelections =
+    hasSelections && effective !== undefined
+      ? parsePluginLoadSelections(record.loadSelections, effective, budget)
+      : undefined;
+  if (hasSelections && loadSelections === undefined) return undefined;
   return Object.freeze({
+    ...(hasSelections ? { loadSelections: loadSelections! } : {}),
     settingsLayers: Object.freeze(settingsLayers),
     installedPlugins: Object.freeze(installedPlugins),
   });
@@ -446,7 +384,11 @@ export const inspectParsedPluginOverlap = (
   if (records.length > 1) return Object.freeze({ status: "ambiguous" });
   const record = records[0];
   const officialState = enabled.get(CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID);
-  const officialEnabled = officialState?.enabled === true;
+  const officialEnabled =
+    officialState?.enabled === true &&
+    (parsed.loadSelections === undefined ||
+      parsed.loadSelections[CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID] ===
+        CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID);
   if (officialEnabled) {
     if (record === undefined || !isReviewedOfficialLangfuseRecord(record))
       return Object.freeze({ status: "ambiguous" });
@@ -465,8 +407,14 @@ export const inspectParsedPluginOverlap = (
     return Object.freeze({ status: "ambiguous" });
   for (const [pluginId, state] of enabled) {
     if (!state.enabled) continue;
+    const loadedId =
+      parsed.loadSelections === undefined
+        ? pluginId
+        : parsed.loadSelections[pluginId];
+    if (loadedId === null) continue;
+    if (loadedId === undefined) return Object.freeze({ status: "ambiguous" });
     const enabledRecords = parsed.installedPlugins.filter(
-      (plugin) => plugin.pluginId === pluginId,
+      (plugin) => plugin.pluginId === loadedId,
     );
     if (enabledRecords.length !== 1)
       return Object.freeze({ status: "ambiguous" });
@@ -481,10 +429,19 @@ export const inspectParsedPluginOverlap = (
     );
     if (overlaps && plugin.directTraceExporter === null)
       return Object.freeze({ status: "ambiguous" });
+    // Original official settings alone cannot authorize migrating a different
+    // canonical load; conversely an alias never acquires the official ID.
+    if (
+      overlaps &&
+      plugin.directTraceExporter === true &&
+      pluginId === CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID &&
+      loadedId !== pluginId
+    )
+      return Object.freeze({ status: "ambiguous" });
     if (overlaps && plugin.directTraceExporter === true)
       return Object.freeze({
         status: "conflict",
-        pluginId: plugin.pluginId,
+        pluginId,
         effectiveScope: state.scope,
         targetPath: state.targetPath,
         targetDigest: state.targetDigest,
