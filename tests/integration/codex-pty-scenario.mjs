@@ -692,7 +692,7 @@ const readModelRequests = async () => {
     ),
   );
 };
-const configureModelGate = async (modelAdmissionCutoff) => {
+const configureModelGate = async (preparationCutoff, traceDeadline) => {
   const endpoint = new URL(modelEndpoint);
   if (
     endpoint.protocol !== "http:" ||
@@ -704,7 +704,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
   upstreamControl = openMockServerControl({
     runId: integrationRunId,
     host: "mockserver",
-    deadline: modelAdmissionCutoff,
+    deadline: traceDeadline,
     now: bootNow,
   });
   const routeAuthority = JSON.parse(
@@ -730,14 +730,17 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     expectation?.httpResponse?.body !== body
   )
     throw new Error("integration.codex.model-control");
-  const response = await upstreamControl.configure({
-    ...expectation,
-    httpResponse: {
-      ...expectation.httpResponse,
-      body: body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage),
+  const response = await upstreamControl.configure(
+    {
+      ...expectation,
+      httpResponse: {
+        ...expectation.httpResponse,
+        body: body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage),
+      },
     },
-  });
-  if (response.status !== 201)
+    preparationCutoff,
+  );
+  if (response.status !== 201 || bootNow() >= preparationCutoff)
     throw new Error("integration.codex.model-control");
   const candidate = await run(
     process.execPath,
@@ -745,9 +748,9 @@ const configureModelGate = async (modelAdmissionCutoff) => {
       "--input-type=module",
       "-e",
       `import { probeMockServerCandidate, readMockServerBootClock as now } from "/opt/agentscope/mockserver-control.mjs";
-console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(integrationRunId)},host:"mockserver",deadline:${modelAdmissionCutoff},now})));`,
+console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(integrationRunId)},host:"mockserver",deadline:${preparationCutoff},now})));`,
     ],
-    { candidatePrincipal: true, monotonicDeadline: modelAdmissionCutoff },
+    { candidatePrincipal: true, monotonicDeadline: preparationCutoff },
   );
   candidateTraffic = snapshotMockServerTraffic(
     JSON.parse(candidate.stdout.toString("utf8")),
@@ -1235,13 +1238,14 @@ try {
   )
     throw new Error("integration.codex.candidate-home");
   recordInteractivePhase("model-gate-start");
-  const modelAdmissionCutoff = Math.floor(deadline - 5_000);
+  const preparationCutoff = Math.floor(deadline - 5_000);
+  const traceDeadline = deadline - 3_000;
   if (
-    !Number.isSafeInteger(modelAdmissionCutoff) ||
-    modelAdmissionCutoff <= bootNow()
+    !Number.isSafeInteger(preparationCutoff) ||
+    preparationCutoff <= bootNow()
   )
     throw new Error("integration.codex.model-gate");
-  await configureModelGate(modelAdmissionCutoff);
+  await configureModelGate(preparationCutoff, traceDeadline);
   recordInteractivePhase("model-gate-configured");
   recordCandidateConfigStage("closed-marker");
   recordInteractivePhase("control-plane-closed");
@@ -1296,7 +1300,6 @@ try {
     closeSync(configurationDescriptor);
   }
   recordCandidateConfigStage("publish");
-  const traceDeadline = deadline - 3_000;
   await new Promise((resolve, reject) => {
     process.stdout.write(
       `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,

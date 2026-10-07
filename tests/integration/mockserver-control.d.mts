@@ -15,7 +15,10 @@ export interface MockServerControl {
     authentication?: string,
     upgrade?: boolean,
   ): Promise<MockServerControlResponse>;
-  configure(expectations: unknown): Promise<MockServerControlResponse>;
+  configure(
+    expectations: unknown,
+    cutoff?: number,
+  ): Promise<MockServerControlResponse>;
   requests(): Promise<MockServerControlResponse>;
   stop(): Promise<MockServerControlResponse>;
   snapshot(): Readonly<MockServerTrafficSnapshot>;

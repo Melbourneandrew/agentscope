@@ -312,11 +312,9 @@ describe("integration cleanup authority", () => {
     const controller = readIntegration("run-scenarios.mjs");
     expect(controller).toContain("AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,");
     expect(scenario).toContain(
-      "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
+      "const preparationCutoff = Math.floor(deadline - 5_000);",
     );
-    expect(scenario).toContain(
-      "!Number.isSafeInteger(modelAdmissionCutoff) ||",
-    );
+    expect(scenario).toContain("!Number.isSafeInteger(preparationCutoff) ||");
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
