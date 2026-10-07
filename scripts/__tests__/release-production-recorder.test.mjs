@@ -38,7 +38,8 @@ function fixture(kind = "product", response = "received") {
       schemaVersion: 1,
       sequence: 4,
       digest: hash,
-      transition: "draft-prepared",
+      transition: "pre-stage-intent",
+      ownerCheckpointDigest: tuple.ownerCheckpointDigest,
       transactionId: tuple.transactionId,
       draftReleaseDatabaseId: checkpoint.draftReleaseDatabaseId,
       candidateManifestDigest: hash,
@@ -86,6 +87,11 @@ test.each(["product"])(
 );
 test("refuses probe results at the product recorder boundary", () => {
   assert.throws(() => proposeStageRecord(fixture("probe")));
+});
+test("refuses the former unconsumed draft-prepared head", () => {
+  const input = fixture();
+  input.head.transition = "draft-prepared";
+  assert.throws(() => proposeStageRecord(input));
 });
 test.each(["missing", "ambiguous"])(
   "quarantines %s as unresolved, never accepted",

@@ -49,6 +49,7 @@ function validateHead(head, tuple) {
     "candidateManifestDigest",
     "sourceRevision",
     "kind",
+    "ownerCheckpointDigest",
   ]);
   if (
     head.schemaVersion !== 1 ||
@@ -56,7 +57,8 @@ function validateHead(head, tuple) {
     head.sequence < 1 ||
     head.sequence >= Number.MAX_SAFE_INTEGER ||
     !digest.test(head.digest) ||
-    head.transition !== "draft-prepared" ||
+    head.transition !== "pre-stage-intent" ||
+    head.ownerCheckpointDigest !== tuple.ownerCheckpointDigest ||
     head.transactionId !== tuple.transactionId ||
     head.candidateManifestDigest !== tuple.candidateManifestDigest ||
     head.sourceRevision !== tuple.sourceRevision ||

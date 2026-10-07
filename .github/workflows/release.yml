@@ -1,0 +1,93 @@
+name: Prepare durable release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        required: true
+        type: choice
+        options: [prepare-draft, consume-intent]
+      candidate-run-id:
+        required: true
+        type: string
+      candidate-manifest-digest:
+        required: true
+        type: string
+      transaction-id:
+        required: true
+        type: string
+      release-id:
+        type: string
+      environment-id:
+        type: string
+      owner-observation:
+        type: string
+      stage-tuple:
+        type: string
+      expected-sequence:
+        type: string
+      expected-prior-digest:
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: agentscope-release-records
+  cancel-in-progress: false
+jobs:
+  verify-candidate:
+    if: github.ref == 'refs/tags/v0.1.0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: 22 }
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Require nonprivileged semantic and external-control admission
+        run: node scripts/record-release-stage.mjs --verify-admission
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-certified-candidate
+          path: artifacts/release-candidate
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - run: >-
+          node scripts/verify-release-candidate.mjs
+          --artifact-root artifacts/release-candidate
+          --manifest-relative candidate-manifest.json
+          --certification-relative certification-record.json
+          --tarball-relative agentscope-cli-0.1.0.tgz
+          --manifest-digest "$CANDIDATE_MANIFEST_DIGEST"
+          --source-revision "$GITHUB_SHA" --protected-tag v0.1.0
+        env:
+          CANDIDATE_MANIFEST_DIGEST: ${{ inputs.candidate-manifest-digest }}
+  prepare-draft:
+    needs: verify-candidate
+    environment: npm-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: 22 }
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-certified-candidate
+          path: artifacts/release-candidate
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - run: node scripts/record-release-stage.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANDIDATE_MANIFEST_DIGEST: ${{ inputs.candidate-manifest-digest }}
+          RELEASE_TRANSACTION_ID: ${{ inputs.transaction-id }}
