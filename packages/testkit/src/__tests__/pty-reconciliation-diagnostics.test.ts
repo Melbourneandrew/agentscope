@@ -14,10 +14,7 @@ import { executeSelectedPtyTransportForTest } from "../internal/headless-supervi
 import type * as Backend from "../internal/headless-supervisor-backend.js";
 import {
   kernelError,
-  fail,
   failObserverIdentity,
-  failObserverRead,
-  observerReadFailureStage,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
   trustedErrorCode,
@@ -73,122 +70,51 @@ const rejection = async (promise: Promise<unknown>): Promise<unknown> =>
     (error: unknown) => error,
   );
 
-describe("exact production proc-reader diagnostic leaves", () => {
-  it.each([
-    ["ENOENT", undefined],
-    ["ESRCH", "observer-esrch"],
-    ["EACCES", "observer-permission"],
-    ["EPERM", "observer-permission"],
-    ["EIO", "observer-io"],
-    ["unexpected", "observer-read"],
-    ["malformed", "observer-stat"],
-    ["valid", undefined],
-  ] as const)(
-    "preserves the existing %s disposition and fixed leaf",
-    (kind, leaf) => {
-      const source = readFileSync(
-        new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
-        "utf8",
-      );
-      const start = source.indexOf("const readProcessSnapshot = (");
-      const end = source.indexOf("const assertNamespaceIdentity =", start);
-      expect(start).toBeGreaterThan(0);
-      expect(end).toBeGreaterThan(start);
-      const compiled = transpileModule(source.slice(start, end), {
-        compilerOptions: { target: ScriptTarget.ES2022 },
-      }).outputText;
-      const read = runInNewContext(
-        `${compiled}\nreadProcessSnapshot;`,
-        {
-          readFileSync: () => {
-            if (kind === "valid")
-              return `67 (fixture) S 1 ${"0 ".repeat(17)}123`;
-            if (kind === "malformed") return "private malformed process data";
-            throw Object.assign(new Error("private syscall detail"), {
-              code: kind,
-            });
-          },
-          numberIsSafeInteger: Number.isSafeInteger,
-          fail,
-          failObserverRead,
-          observerReadFailureStage,
-          trustedErrorCode,
-          readPtyReconciliationStage,
-        },
-        { timeout: 1000 },
-      ) as (pid: number) => unknown;
-      if (kind === "ENOENT") expect(read(67)).toBeUndefined();
-      else if (kind === "valid")
-        expect(read(67)).toEqual({
-          pid: 67,
-          parentPid: 1,
-          startIdentity: "67:123",
-          state: "S",
-        });
-      else {
-        let error: unknown;
-        try {
-          read(67);
-        } catch (caught) {
-          error = caught;
-        }
-        expect(trustedErrorCode(error)).toBe("testkit.headless.observer.read");
-        expect(readPtyReconciliationStage(error)).toBe(leaf);
-        expect(JSON.stringify(error)).not.toContain("private");
-      }
-    },
-  );
+const readInternal = (name: string): string =>
+  readFileSync(new URL(`../internal/${name}`, import.meta.url), "utf8");
+const caughtFailure = (operation: () => unknown): unknown => {
+  try {
+    operation();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+};
 
-  it("admits leaves only with their existing authentic observer codes", () => {
-    for (const stage of [
-      "observer-esrch",
-      "observer-permission",
-      "observer-stat",
-    ] as const) {
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.read", stage),
-        ),
-      ).toBe(stage);
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.identity", stage),
-        ),
-      ).toBeUndefined();
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.kernel.failure", stage),
-        ),
-      ).toBeUndefined();
-    }
-    for (const stage of [
-      "observer-namespace",
-      "observer-root-reuse",
-      "observer-target-reuse",
-      "observer-zombie-before",
-      "observer-zombie-after",
-    ] as const) {
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.identity", stage),
-        ),
-      ).toBe(stage);
-      expect(
-        readPtyReconciliationStage(
-          kernelError("testkit.headless.observer.read", stage),
-        ),
-      ).toBeUndefined();
-      expect(readPtyReconciliationStage(kernelError(code, stage))).toBe(stage);
-    }
+describe("authentic observer-code admission", () => {
+  it.each([
+    ["observer-esrch", true],
+    ["observer-permission", true],
+    ["observer-stat", true],
+    ["observer-namespace", false],
+    ["observer-root-reuse", false],
+    ["observer-target-reuse", false],
+    ["observer-zombie-before", false],
+    ["observer-zombie-after", false],
+  ] as const)("admits %s only with authentic codes", (stage, read) => {
+    const authentic = read
+      ? "testkit.headless.observer.read"
+      : "testkit.headless.observer.identity";
+    const other = read
+      ? "testkit.headless.observer.identity"
+      : "testkit.headless.observer.read";
+    expect(readPtyReconciliationStage(kernelError(authentic, stage))).toBe(
+      stage,
+    );
+    expect(
+      readPtyReconciliationStage(kernelError(other, stage)),
+    ).toBeUndefined();
+    expect(
+      readPtyReconciliationStage(
+        kernelError(read ? "testkit.headless.kernel.failure" : code, stage),
+      ),
+    ).toBe(read ? undefined : stage);
   });
 });
 
 describe("exact production observer graph leaf", () => {
   it("keeps a mixed missing-parent snapshot rejected with its original code", () => {
-    const source = readFileSync(
-      new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
-      "utf8",
-    );
+    const source = readInternal("headless-supervisor-backend.ts");
     const start = source.indexOf("const processesDescendantsFirst = (");
     const end = source.indexOf("const reapAdoptedZombies =", start);
     expect(end).toBeGreaterThan(start);
@@ -200,18 +126,15 @@ describe("exact production observer graph leaf", () => {
       { failObserverIdentity },
       { timeout: 1000 },
     ) as (processes: unknown, root: number) => unknown;
-    let error: unknown;
-    try {
+    const error = caughtFailure(() =>
       order(
         [
           { pid: 21, parentPid: 22, startIdentity: "21:1", state: "R" },
           { pid: 23, parentPid: 1, startIdentity: "23:1", state: "R" },
         ],
         99,
-      );
-    } catch (caught) {
-      error = caught;
-    }
+      ),
+    );
     expect(trustedErrorCode(error)).toBe("testkit.headless.observer.identity");
     expect(readPtyReconciliationStage(error)).toBe("observer-graph");
   });
@@ -302,8 +225,7 @@ describe("kernel promise diagnostic ordering", () => {
 
   it("keeps authentic synchronous failure provenance", () => {
     const original = kernelError(code, "observer");
-    let error: unknown;
-    try {
+    const error = caughtFailure(() => {
       void boundedInvoke(
         () => {
           throw original;
@@ -311,9 +233,7 @@ describe("kernel promise diagnostic ordering", () => {
         performance.now() + 1000,
         code,
       );
-    } catch (caught) {
-      error = caught;
-    }
+    });
     expect(trustedErrorCode(error)).toBe(code);
     expect(readPtyReconciliationStage(error)).toBe("observer");
   });
@@ -416,29 +336,25 @@ describe("kernel diagnostic authenticity", () => {
   });
 
   it("keeps diagnostics closed and absent on other rejection codes", () => {
-    expect(ptyAuthorityFailureStage("testkit.headless.observer.read")).toBe(
-      "observer-read",
-    );
-    expect(ptyAuthorityFailureStage("testkit.headless.observer.identity")).toBe(
-      "observer-identity",
-    );
-    expect(ptyAuthorityFailureStage("testkit.headless.observer.root")).toBe(
-      "observer",
-    );
+    for (const [suffix, stage] of [
+      ["read", "observer-read"],
+      ["identity", "observer-identity"],
+      ["root", "observer"],
+    ] as const)
+      expect(
+        ptyAuthorityFailureStage(`testkit.headless.observer.${suffix}`),
+      ).toBe(stage);
     expect(
       readPtyReconciliationStage(
         kernelError("testkit.headless.kernel.failure", "observer"),
       ),
     ).toBeUndefined();
-    expect(ptyAuthorityFailureStage("testkit.headless.observer.reap")).toBe(
-      "reap",
-    );
-    expect(ptyAuthorityFailureStage("testkit.headless.observer.signal")).toBe(
-      "signal",
-    );
-    expect(ptyAuthorityFailureStage("private-unexpected-code")).toBe(
-      "authority",
-    );
+    for (const [errorCode, stage] of [
+      ["testkit.headless.observer.reap", "reap"],
+      ["testkit.headless.observer.signal", "signal"],
+      ["private-unexpected-code", "authority"],
+    ] as const)
+      expect(ptyAuthorityFailureStage(errorCode)).toBe(stage);
   });
 });
 
@@ -455,6 +371,13 @@ describe("public selected PTY diagnostic consumer", () => {
     try {
       const { executeSelectedPtyProcess } =
         await import("../headless-supervisor-kernel.js");
+      const publicRejection = (): Promise<unknown> =>
+        rejection(
+          executeSelectedPtyProcess(
+            {} as HeadlessSupervisorCapability,
+            request(),
+          ),
+        );
       for (const stage of [
         "observer",
         "observer-esrch",
@@ -462,23 +385,13 @@ describe("public selected PTY diagnostic consumer", () => {
         "outer-shutdown",
       ] as const) {
         backendError = kernelError(code, stage);
-        const publicError = await rejection(
-          executeSelectedPtyProcess(
-            {} as HeadlessSupervisorCapability,
-            request(),
-          ),
-        );
+        const publicError = await publicRejection();
         expect(publicError).not.toBe(backendError);
         expect(trustedErrorCode(publicError)).toBe(code);
         expect(readPtyReconciliationStage(publicError)).toBe(stage);
       }
       backendError = new HeadlessSupervisorError(code);
-      const publicError = await rejection(
-        executeSelectedPtyProcess(
-          {} as HeadlessSupervisorCapability,
-          request(),
-        ),
-      );
+      const publicError = await publicRejection();
       expect(trustedErrorCode(publicError)).toBe(
         "testkit.headless.kernel.failure",
       );

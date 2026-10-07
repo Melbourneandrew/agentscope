@@ -400,10 +400,19 @@ describe("actual selected runtime closure", () => {
       new URL("immutable-candidate-authority.mjs", integration),
       "utf8",
     );
-    const start = authority.indexOf("export const selectedRuntimeFiles =");
-    const end = authority.indexOf("]);", start) + 3;
+    expect(authority).toContain(
+      'export { selectedRuntimeFiles } from "./selected-runtime-files.mjs";',
+    );
+    const roster = readFileSync(
+      new URL("selected-runtime-files.mjs", integration),
+      "utf8",
+    );
+    const start = roster.indexOf("export const selectedRuntimeFiles =");
+    const end = roster.indexOf("]);", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
     const files = runInNewContext(
-      `${authority.slice(start, end).replace("export const", "const")} selectedRuntimeFiles;`,
+      `${roster.slice(start, end + 3).replace("export const", "const")} selectedRuntimeFiles;`,
       {},
       { timeout: 1000 },
     ) as string[];

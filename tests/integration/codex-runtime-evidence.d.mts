@@ -42,6 +42,8 @@ export function classifyCodexTraceGetFailure(
   | "child-deadline"
   | "child-signal"
   | "child-exit"
+  | "child-prepare-retriever"
+  | "child-invoke-get"
   | "child-output-limit"
   | "terminal-deadline"
   | "machine-output"
@@ -56,7 +58,15 @@ export function codexTraceGetChildFailureCategory(input: {
   stderrBytes: number;
   stdoutBytes: number;
   maximumBytes: number;
-}): "output-limit" | "deadline" | "signal" | "exit";
+  stderr?: Buffer;
+  stdout?: Buffer;
+}):
+  | "output-limit"
+  | "deadline"
+  | "signal"
+  | "exit"
+  | "prepare-retriever"
+  | "invoke-get";
 
 export function codexTraceSearchUnavailable(input: {
   code: number | null;

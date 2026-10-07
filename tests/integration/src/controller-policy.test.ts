@@ -297,25 +297,12 @@ describe("integration cleanup authority", () => {
   });
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
-    const scenario = readFileSync(
-      resolve(workspaceRoot, "tests/integration/codex-pty-scenario.mjs"),
-      "utf8",
-    );
-    const authority = readFileSync(
-      resolve(
-        workspaceRoot,
-        "tests/integration/immutable-candidate-authority.mjs",
-      ),
-      "utf8",
-    );
-    const runner = readFileSync(
-      resolve(workspaceRoot, "tests/integration/runner.mjs"),
-      "utf8",
-    );
-    const outer = readFileSync(
-      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
-      "utf8",
-    );
+    const readIntegration = (name: string) =>
+      readFileSync(resolve(workspaceRoot, "tests/integration", name), "utf8");
+    const scenario = readIntegration("codex-pty-scenario.mjs");
+    const authority = readIntegration("immutable-candidate-authority.mjs");
+    const runner = readIntegration("runner.mjs");
+    const outer = readIntegration("run-scenarios.mjs");
     for (const phase of [
       "trace-terminal",
       "trace-settlement",
@@ -368,7 +355,15 @@ describe("integration cleanup authority", () => {
     );
     expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
     expect(scenario).toContain("classifyCodexTraceFailureHint(");
-    expect(scenario).toContain("codexTraceSearchChildFailureCategory({");
+    expect(scenario).toContain(
+      "codexTraceSearchChildFailureCategory(failureObservation)",
+    );
+    expect(scenario).toContain(
+      "codexTraceGetChildFailureCategory(failureObservation)",
+    );
+    expect(scenario).toContain(
+      "const failureObservation = {\n            code,\n            deadlineExpired,\n            signal,\n            stderrBytes: stderr.length,\n            stdoutBytes: stdout.length,\n            maximumBytes: maximumOutput,\n            stderr,\n            stdout,\n          };",
+    );
     expect(scenario).toContain("errorMessage: error?.message,");
     for (const phase of [
       "trace-await-hook",

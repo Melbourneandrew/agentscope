@@ -16,7 +16,8 @@ import {
 // @ts-expect-error no declaration file is published for this private module
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
 
-const { codexFailureExitPair } = privateAuthority as {
+const { codexFailureExitPair, selectedRuntimeFiles } = privateAuthority as {
+  selectedRuntimeFiles: readonly string[];
   codexFailureExitPair: (
     fixture: unknown,
     container: unknown,
@@ -383,14 +384,21 @@ describe("failed PTY research categories", () => {
   });
 
   it("copies the same diagnostic modules into the immutable runtime graph", () => {
-    const authority = readIntegration("immutable-candidate-authority.mjs");
     const outer = readIntegration("run-scenarios.mjs");
-    for (const name of [
-      "kernel-errors.js",
-      "kernel-promise.js",
-      "pty-transport-observations.js",
-    ])
-      expect(authority).toContain(`testkit/internal/${name}`);
+    expect(selectedRuntimeFiles).toEqual([
+      "testkit/bounded-terminal-emulator.js",
+      "testkit/headless-supervisor-contract.js",
+      "testkit/headless-supervisor-kernel.js",
+      "testkit/headless-supervisor.js",
+      "testkit/internal/headless-supervisor-backend.js",
+      "testkit/internal/pty-transport-observations.js",
+      "testkit/internal/kernel-errors.js",
+      "testkit/internal/kernel-promise.js",
+      "testkit/internal/proc-process-snapshot.js",
+      "testkit/pty-terminal-contract.js",
+      "testkit/pty-runtime/node127-linux-x64-glibc/pty.node",
+      "testkit/pty-runtime/node127-linux-x64-musl/pty.node",
+    ]);
     expect(outer).toContain("for (const file of selectedRuntimeFiles)");
     expect(outer).toContain("codex-pty-research.mjs");
   });
