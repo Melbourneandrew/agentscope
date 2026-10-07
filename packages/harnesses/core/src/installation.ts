@@ -299,6 +299,7 @@ const safeDecision = (
     bytes: before.bytes && new Uint8Array(before.bytes),
     digest: before.digest,
     mode: before.mode,
+    ...(before.uid === undefined ? {} : { uid: before.uid }),
   });
   let decision: unknown;
   try {
@@ -1049,6 +1050,7 @@ export const applyHarnessInstallation = async (
     for (const preimage of registered.preimages) {
       const current = await inspectFile(preimage.targetPath);
       if (
+        current.uid !== preimage.before.uid ||
         !snapshotMatchesManifestState(
           current,
           preimage.before.exists,

@@ -13,6 +13,7 @@ export type FileSnapshot = Readonly<{
   bytes: Uint8Array | null;
   digest: string;
   mode: number | null;
+  uid?: number | null;
 }>;
 
 export const nodeErrorCode = (error: unknown): string | undefined =>
@@ -29,6 +30,12 @@ export const inspectInstallationPreimage = async (
     handle = await open(path, readFlags);
     const metadata = await handle.stat();
     if (!metadata.isFile()) return invalid();
+    const uid =
+      process.platform === "linux" || process.platform === "darwin"
+        ? metadata.uid
+        : null;
+    if (uid !== null && (!Number.isSafeInteger(uid) || uid < 0))
+      return invalid();
     if (metadata.size > MAXIMUM_TARGET_BYTES) return invalid();
     const buffer = Buffer.alloc(MAXIMUM_TARGET_BYTES + 1);
     let offset = 0;
@@ -46,11 +53,13 @@ export const inspectInstallationPreimage = async (
        guard catches an external growth race without allocating past max+1. */
     if (offset > MAXIMUM_TARGET_BYTES) return invalid();
     const bytes = new Uint8Array(buffer.subarray(0, offset));
+    if (uid !== null && (await handle.stat()).uid !== uid) return invalid();
     return Object.freeze({
       exists: true,
       bytes,
       digest: createHash("sha256").update(bytes).digest("hex"),
       mode: metadata.mode & 0o777,
+      uid,
     });
   } catch (error) {
     /* v8 ignore next -- admission rejects links; this contains a link swapped
@@ -62,6 +71,7 @@ export const inspectInstallationPreimage = async (
         bytes: null,
         digest: emptyDigest,
         mode: null,
+        uid: null,
       });
     throw error;
   } finally {
