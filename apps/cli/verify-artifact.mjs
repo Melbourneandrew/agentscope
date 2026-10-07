@@ -30,6 +30,8 @@ import {
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
+// The reviewed retrieval diagnostics add 3,077 bytes to the installed hook bundle.
+const hookMachineArtifactByteLimit = 1_610_000;
 const artifactDirectory = resolve(repositoryRoot, "artifacts/npm");
 const stagingRoot = resolve(repositoryRoot, "artifacts/staging/cli");
 const installRoot = realpathSync(
@@ -250,7 +252,7 @@ try {
     "agentscope-hook-machine.js",
   );
   assert.ok(
-    lstatSync(machineEntryPath).size <= 1_600_000,
+    lstatSync(machineEntryPath).size <= hookMachineArtifactByteLimit,
     "the installed hook machine must retain its bounded cold-start artifact",
   );
   assert.ok(
