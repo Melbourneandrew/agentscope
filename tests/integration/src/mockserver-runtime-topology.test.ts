@@ -5,6 +5,36 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 describe("upstream control staging closure", () => {
+  it("excludes only the synthetic helper while retaining every canonical test include", () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../../../vitest.config.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("export default defineConfig({");
+    expect(start).toBeGreaterThan(0);
+    const definition = runInNewContext(
+      source.slice(start).replace("export default ", ""),
+      {
+        defineConfig: (value: unknown) => value,
+        process: { cwd: () => "/fixture" },
+        thresholds: undefined,
+      },
+    );
+    expect(definition.test.include).toEqual([
+      "src/**/*.{test,spec}.{ts,tsx}",
+      "src/**/__tests__/**/*.{ts,tsx}",
+      "scripts/__tests__/**/*.test.mjs",
+    ]);
+    expect(definition.test.exclude).toEqual([
+      "**/dist/**",
+      "**/node_modules/**",
+      "src/__tests__/fixtures/mockserver-supplier-command.ts",
+    ]);
+    expect(definition.test.exclude).not.toContain(
+      "src/mockserver-supplier-command.test.ts",
+    );
+    expect(definition.test.coverage.exclude).toContain("src/**/__tests__/**");
+  });
   it("stages the actual control-to-ledger edge in both fixed projections", () => {
     const root = resolve(import.meta.dirname, "..");
     const source = readFileSync(resolve(root, "run-scenarios.mjs"), "utf8");

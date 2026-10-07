@@ -1248,6 +1248,10 @@ const expected = () => ({
   candidateRoot: "/opt/agentscope/prepared",
   ...plan(),
 });
+const controlVolume = (handoff: ReturnType<typeof compiled>) => ({
+  name: `agentscope-int-${handoff.runId}-control`,
+  mountpoint: "/var/lib/docker/volumes/control/_data",
+});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const container = (handoff: ReturnType<typeof compiled>): any => ({
   Image: handoff.imageId,
@@ -1262,7 +1266,15 @@ const container = (handoff: ReturnType<typeof compiled>): any => ({
     SecurityOpt: ["no-new-privileges"],
     Tmpfs: { "/tmp": "rw,noexec,nosuid,nodev,size=1024" },
   },
-  Mounts: [],
+  Mounts: [
+    {
+      Type: "volume",
+      Name: controlVolume(handoff).name,
+      Source: controlVolume(handoff).mountpoint,
+      Destination: "/control",
+      RW: true,
+    },
+  ],
 });
 // eslint-disable-next-line max-lines-per-function -- one closed handoff and container adversarial matrix
 describe("immutable candidate authority", () => {
@@ -1309,6 +1321,7 @@ describe("immutable candidate authority", () => {
     expect(
       validateImmutableScenarioContainer({
         container: container(handoff),
+        controlVolume: controlVolume(handoff),
         handoff,
         image: image(),
         networkName: "selected-network",
@@ -1442,6 +1455,7 @@ describe("immutable candidate authority", () => {
     expect(() =>
       validateImmutableScenarioContainer({
         container: selected,
+        controlVolume: controlVolume(handoff),
         handoff,
         image: selectedImage,
         networkName: "selected-network",
@@ -1960,8 +1974,10 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
       ),
     ).toBe(128);
     const source = readIntegration("codex-pty-scenario.mjs");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
+    expect(source).toContain('from "./codex-trace-child-diagnostics.mjs"');
     const phases =
-      source
+      diagnostic
         .split("const interactivePhases = Object.freeze([", 2)[1]
         ?.split("]);", 1)[0] ?? "";
     const names = [...phases.matchAll(/"([a-z-]+)"/gu)].map(
