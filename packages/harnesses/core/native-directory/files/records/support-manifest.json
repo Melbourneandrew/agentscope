@@ -25,18 +25,18 @@
     },
     {
       "relativePath": "records/provenance.json",
-      "bytes": 983,
-      "digest": "sha256:ac7ba5d0ff221a1d0bb8bb019c16e6a2d2488df852bcde958118be9bc6b5a4fc"
+      "bytes": 1099,
+      "digest": "sha256:606a093a1200c044683c879b5444cf8af4214278528279c9712bc10040eaf5d7"
     },
     {
       "relativePath": "records/release-materials.json",
-      "bytes": 49243,
-      "digest": "sha256:8f37a4e66e81e7d0576d44b701446f18e392dd5b588a8d3800ec24bb6853c423"
+      "bytes": 63506,
+      "digest": "sha256:1bf5e18673f53f5fb640df6b4a7e36e3bf894a51eb4b2e283472c0474caa330d"
     },
     {
       "relativePath": "records/sbom.spdx.json",
-      "bytes": 964,
-      "digest": "sha256:4461abfc71960b8bcef11c125b51c4ba5b8057dcdc20307e641a9a2101f68958"
+      "bytes": 1229,
+      "digest": "sha256:3b5f4d88db4c285de20bd3f593d7f65b0d0645ffcbf81ae3dd3b47cfb637af36"
     }
   ],
   "nativeBinaries": [
