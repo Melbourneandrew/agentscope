@@ -378,9 +378,16 @@ describe("partial material-step observation", () => {
 describe("closed always-after projection", () => {
   it.each(
     ["connected-", ""].flatMap((prefix) =>
-      ["entry", "extract", "package", "inventory"].map(
-        (stage) => `supplier-${prefix}${stage}`,
-      ),
+      [
+        "entry",
+        "extract",
+        "package",
+        "inventory",
+        "inventory-read",
+        "inventory-guard",
+        "output-create",
+        "output-write",
+      ].map((stage) => `supplier-${prefix}${stage}`),
     ),
   )(
     "projects supplier last-entered %s without a success or failure-family claim",

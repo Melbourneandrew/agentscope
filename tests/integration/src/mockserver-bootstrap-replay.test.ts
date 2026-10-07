@@ -14,10 +14,18 @@ const supplierStages = [
   "supplier-connected-extract",
   "supplier-connected-package",
   "supplier-connected-inventory",
+  "supplier-connected-inventory-read",
+  "supplier-connected-inventory-guard",
+  "supplier-connected-output-create",
+  "supplier-connected-output-write",
   "supplier-entry",
   "supplier-extract",
   "supplier-package",
   "supplier-inventory",
+  "supplier-inventory-read",
+  "supplier-inventory-guard",
+  "supplier-output-create",
+  "supplier-output-write",
 ];
 const signatureStages = [
   "recordset",
@@ -116,13 +124,27 @@ describe("exact bounded BuildKit failed-RUN replay", () => {
 });
 
 describe("closed supplier last-entered observations", () => {
+  it("refuses any new marker after a first failure category while allowing exact replay", () => {
+    const failures = supplierStages.filter((stage) =>
+      /-(?:inventory-read|inventory-guard|output-create|output-write)$/u.test(
+        stage,
+      ),
+    );
+    for (const first of failures)
+      for (const next of supplierStages)
+        expect(observe([marker(first), marker(next)])).toEqual(absent);
+  });
   it.each(supplierStages)(
     "keeps only entered %s through splits, late bytes and exact replay",
     (stage) => {
-      const entered = supplierStages.slice(
-        0,
-        supplierStages.indexOf(stage) + 1,
-      );
+      const entered = supplierStages
+        .slice(0, supplierStages.indexOf(stage) + 1)
+        .filter(
+          (value) =>
+            !/-(?:inventory-read|inventory-guard|output-create|output-write)$/u.test(
+              value,
+            ) || value === stage,
+        );
       const original = entered
         .map((value, index) => `#7 0.19${index} ${marker(value)}`)
         .join("");

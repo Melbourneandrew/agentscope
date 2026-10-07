@@ -5,11 +5,24 @@ const supplierStages = [
   "supplier-connected-extract",
   "supplier-connected-package",
   "supplier-connected-inventory",
+  "supplier-connected-inventory-read",
+  "supplier-connected-inventory-guard",
+  "supplier-connected-output-create",
+  "supplier-connected-output-write",
   "supplier-entry",
   "supplier-extract",
   "supplier-package",
   "supplier-inventory",
+  "supplier-inventory-read",
+  "supplier-inventory-guard",
+  "supplier-output-create",
+  "supplier-output-write",
 ];
+const supplierFailureStages = supplierStages.filter((stage) =>
+  /-(?:inventory-read|inventory-guard|output-create|output-write)$/u.test(
+    stage,
+  ),
+);
 const bootstrapStages = [
   "authenticate-inputs",
   "keyrings",
@@ -107,6 +120,7 @@ export const createBuildStderrObservation = () => {
     }
     if (
       (family !== "unknown" && family !== "none") ||
+      supplierFailureStages.includes(stage) ||
       bootstrapStages.indexOf(match[3]) < bootstrapStages.indexOf(stage) ||
       (match[3] === stage && match[4] === "none")
     ) {

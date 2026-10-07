@@ -50,6 +50,20 @@ const enterSupplier = (observe, stage) => {
   // their original stages. These observations never describe an outcome.
   enter(observe ? stage : stage.replace("supplier-", "supplier-connected-"));
 };
+const writeInventory = (inventory, observe) => {
+  try {
+    mkdirSync("/out", { mode: 0o700 });
+  } catch (error) {
+    enterSupplier(observe, "supplier-output-create");
+    throw error;
+  }
+  try {
+    writeFileSync("/out/material.json", inventory, { flag: "wx", mode: 0o644 });
+  } catch (error) {
+    enterSupplier(observe, "supplier-output-write");
+    throw error;
+  }
+};
 const readFixed = (path, size, mode = 0o600) => {
   const fd = openSync(
     path,
@@ -251,9 +265,13 @@ const runSupplier = async (run, phase, observe = true) => {
   for (const [index, before] of adopted.entries())
     adoptCache(`/supplier/${caches[index]}`, before);
   enterSupplier(observe, "supplier-inventory");
-  const inventory = inventoryMockServerSupplier("/supplier");
-  mkdirSync("/out", { mode: 0o700 });
-  writeFileSync("/out/material.json", inventory, { flag: "wx", mode: 0o644 });
+  const inventory = inventoryMockServerSupplier("/supplier", (category) => {
+    if (category === "inventory-read")
+      enterSupplier(observe, "supplier-inventory-read");
+    else if (category === "inventory-guard")
+      enterSupplier(observe, "supplier-inventory-guard");
+  });
+  writeInventory(inventory, observe);
 };
 
 export const runMockServerSupplierResearch = async (run) =>

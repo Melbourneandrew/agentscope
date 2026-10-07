@@ -163,6 +163,53 @@ describe("supplier cache/JAR observations (not dependency authentication)", () =
     );
   });
 });
+describe("supplier inventory first-failure observations", () => {
+  it("reports only the first fixed guard category and preserves refusal with a throwing sink", () => {
+    const categories: string[] = [];
+    const sink = new Error("SECRET_CANARY");
+    expect(() =>
+      inventoryMockServerSupplier("relative", (category: string) => {
+        categories.push(category);
+        throw sink;
+      }),
+    ).toThrow("integration.mockserver-material.supplier-inventory");
+    expect(categories).toEqual(["inventory-guard"]);
+  });
+  it("reports a filesystem read failure without reading or replacing its error", () => {
+    const root = fixture();
+    const categories: string[] = [];
+    const primary = new Error("SECRET_CANARY");
+    const body = readFileSync(
+      new URL("../mockserver-material/supplier-inventory.mjs", import.meta.url),
+      "utf8",
+    )
+      .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
+      .replace(
+        "export const inventoryMockServerSupplier",
+        "const inventoryMockServerSupplier",
+      );
+    const result: unknown = runInNewContext(
+      `${body}\n(() => { try { inventoryMockServerSupplier(root, observer); } catch (error) { return error; } })();`,
+      {
+        ...fileSystem,
+        createHash,
+        resolve,
+        root,
+        Buffer,
+        process,
+        lstatSync: () => {
+          throw primary;
+        },
+        observer: (category: string) => {
+          categories.push(category);
+          throw Error("SINK_CANARY");
+        },
+      },
+    );
+    expect(result).toBe(primary);
+    expect(categories).toEqual(["inventory-read"]);
+  });
+});
 describe("supplier inventory byte bounds", () => {
   it("reads at most the remaining entry budget plus one and closes before rejection", () => {
     const root = fixture();

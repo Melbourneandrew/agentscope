@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   sinkFailure: false,
   primary: undefined as Error | undefined,
   inventoryFailure: false,
+  failureCategory: "",
   callbackMode: 0o664,
   cacheIssue: "",
   opened: 0,
@@ -77,9 +78,19 @@ vi.mock("node:fs", async (original) => ({
     buffer.fill(32, offset, offset + count);
     return count;
   },
-  mkdirSync: (path: string) => state.directories.push(path),
-  writeFileSync: (path: string, bytes: unknown) =>
-    state.writes.push([path, bytes]),
+  mkdirSync: (path: string) => {
+    if (path === "/out" && state.failureCategory === "output-create")
+      throw state.primary ?? Error("synthetic-output-create");
+    return state.directories.push(path);
+  },
+  writeFileSync: (path: string, bytes: unknown) => {
+    if (
+      path === "/out/material.json" &&
+      state.failureCategory === "output-write"
+    )
+      throw state.primary ?? Error("synthetic-output-write");
+    return state.writes.push([path, bytes]);
+  },
   copyFileSync: () => {},
   writeSync: (fd: number, value: string) => {
     expect(fd).toBe(2);
@@ -110,7 +121,14 @@ vi.mock("../mockserver-material/callback-patch.mjs", () => ({
   patchCallbackSource: () => "synthetic-patched",
 }));
 vi.mock("../mockserver-material/supplier-inventory.mjs", () => ({
-  inventoryMockServerSupplier: () => {
+  inventoryMockServerSupplier: (
+    _root: string,
+    observe?: (category: string) => void,
+  ) => {
+    if (state.failureCategory.startsWith("inventory-")) {
+      observe?.(state.failureCategory);
+      throw state.primary ?? Error("synthetic-inventory");
+    }
     if (state.inventoryFailure) throw state.primary ?? new Error("inventory");
     return Buffer.from("synthetic-inventory");
   },
@@ -165,6 +183,7 @@ beforeEach(() => {
   state.sinkFailure = false;
   state.primary = undefined;
   state.inventoryFailure = false;
+  state.failureCategory = "";
   state.callbackMode = 0o664;
   state.cacheIssue = "";
   state.opened = state.closed = 0;
@@ -412,6 +431,34 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
 });
 afterEach(() => vi.restoreAllMocks());
 describe("supplier command extraction/input boundary", () => {
+  it.each([
+    "inventory-read",
+    "inventory-guard",
+    "output-create",
+    "output-write",
+  ])(
+    "preserves exact %s failure across phase and throwing diagnostic sinks",
+    async (category) => {
+      for (const connected of [false, true])
+        for (const sinkFailure of [false, true]) {
+          state.markers = [];
+          state.failureCategory = category;
+          state.primary = new Error("SECRET_CANARY");
+          state.sinkFailure = sinkFailure;
+          await expect(
+            privateWorker(
+              async () => {},
+              connected ? "dependency-research" : "offline-build",
+              !connected,
+            ),
+          ).rejects.toBe(state.primary);
+          expect(state.markers.at(-1)).toBe(
+            supplierMarker(`supplier-${category}`, connected),
+          );
+          expect(state.markers.join("")).not.toContain("CANARY");
+        }
+    },
+  );
   it.each([0o644, 0o600, 0o674, 0o777])(
     "rejects substituted callback mode %s before patching or packaging",
     async (mode) => {

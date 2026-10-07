@@ -227,10 +227,18 @@ describe("fixed supplier phase projection", () => {
     "supplier-connected-extract",
     "supplier-connected-package",
     "supplier-connected-inventory",
+    "supplier-connected-inventory-read",
+    "supplier-connected-inventory-guard",
+    "supplier-connected-output-create",
+    "supplier-connected-output-write",
     "supplier-entry",
     "supplier-extract",
     "supplier-package",
     "supplier-inventory",
+    "supplier-inventory-read",
+    "supplier-inventory-guard",
+    "supplier-output-create",
+    "supplier-output-write",
   ])("projects last-entered %s only with none family", (stage) => {
     for (const family of [
       "none",
