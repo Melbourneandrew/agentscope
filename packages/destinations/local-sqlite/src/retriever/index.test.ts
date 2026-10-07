@@ -25,6 +25,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { prepareLocalSqliteTrace } from "../reporter/transaction.js";
 import {
+  associateLocalSqliteRetrieval,
+  createLocalSqliteFailureLedger,
+} from "../production/retrieval-diagnostics.js";
+import {
   compileLocalSqliteSearchPlan,
   createLocalSqliteRetriever,
   type LocalSqliteRetrievalRow,
@@ -46,6 +50,96 @@ const primary = prepareLocalSqliteTrace(
   }),
   "1000000",
 );
+
+describe("reported get failure observations", () => {
+  it("attributes concurrent reused Errors only to each exact database get Promise", async () => {
+    const error = new Error("shared");
+    const request = createTraceGetRequest(
+      createTraceLocator({
+        connectionId,
+        destinationType,
+        traceId: primary.traceId,
+      }),
+      { connectionId, destinationType },
+    );
+    const retriever = (stage: 7 | 11) =>
+      createLocalSqliteRetriever({
+        ...database(),
+        get: () => {
+          const ledger = createLocalSqliteFailureLedger(-1);
+          ledger.enter(stage);
+          return associateLocalSqliteRetrieval(Promise.reject(error), ledger);
+        },
+      });
+    const [first, second] = await Promise.all([
+      invokeRetrieverGet(retriever(7), request, context()),
+      invokeRetrieverGet(retriever(11), request, context()),
+    ]);
+    expect(first).toMatchObject({
+      ok: false,
+      code: "unavailable",
+      adapterFailureObservation: { stage: 7 },
+    });
+    expect(second).toMatchObject({
+      ok: false,
+      code: "unavailable",
+      adapterFailureObservation: { stage: 11 },
+    });
+    const unrelated = createLocalSqliteRetriever({
+      ...database(),
+      get: () => Promise.reject(error),
+    });
+    expect(await invokeRetrieverGet(unrelated, request, context())).toEqual({
+      ok: false,
+      code: "unavailable",
+    });
+  });
+  it("carries only privately associated observations and preserves original unavailable", async () => {
+    const error = new Error("CANARY SQL PATH CONTENT");
+    const ledger = createLocalSqliteFailureLedger(-1);
+    ledger.enter(11);
+    ledger.settle(true, true, true);
+    ledger.capture();
+    const retriever = createLocalSqliteRetriever({
+      ...database(),
+      get: () => associateLocalSqliteRetrieval(Promise.reject(error), ledger),
+    });
+    const getRequest = createTraceGetRequest(
+      createTraceLocator({
+        connectionId,
+        destinationType,
+        traceId: primary.traceId,
+      }),
+      { connectionId, destinationType },
+    );
+    const result = await invokeRetrieverGet(retriever, getRequest, context());
+    expect(result).toEqual({
+      ok: false,
+      code: "unavailable",
+      adapterFailureObservation: {
+        stage: 11,
+        cutoffExpired: true,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: true,
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("CANARY");
+    const foreign = createLocalSqliteRetriever({
+      ...database(),
+      get: () =>
+        Promise.reject(
+          Object.assign(new Error("foreign"), {
+            adapterFailureObservation: { stage: 11 },
+          }),
+        ),
+    });
+    expect(await invokeRetrieverGet(foreign, getRequest, context())).toEqual({
+      ok: false,
+      code: "unavailable",
+    });
+  });
+});
 const secondary = prepareLocalSqliteTrace(
   createSanitizedRedactedCanonicalTraceFixture({
     sequence: 5,

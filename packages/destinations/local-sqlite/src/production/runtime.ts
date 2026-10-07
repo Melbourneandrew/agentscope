@@ -19,6 +19,11 @@ import {
 } from "../lifecycle/fence.js";
 import { LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES } from "../lifecycle/capability.js";
 import { bindLocalSqliteProductionLifecyclePorts } from "../lifecycle/configuration.js";
+import { retrieveWithChild } from "./retrieval-attempt.js";
+import {
+  associateLocalSqliteRetrieval,
+  createLocalSqliteFailureLedger,
+} from "./retrieval-diagnostics.js";
 import {
   LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST,
   LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST,
@@ -49,9 +54,9 @@ import {
   type LocalSqliteReporterChildPrograms,
 } from "./reporter-child-parent.js";
 import { localSqliteReporterChildBatchFits } from "./reporter-child-protocol.js";
-import {
+import type {
   executeLocalSqliteRetrieverChild,
-  type LocalSqliteRetrieverChildPrograms,
+  LocalSqliteRetrieverChildPrograms,
 } from "./retriever-child-parent.js";
 import type {
   LocalSqliteGetEvidence,
@@ -426,126 +431,6 @@ const reportPreparedWithChild = async (
   });
 };
 
-const retrieveWithChild = async (
-  input: Readonly<{
-    home: LocalResourceHome;
-    programs: LocalSqliteRetrieverChildPrograms;
-    opener: OwnedSqliteOpener;
-    allowPathFallbackForTesting: boolean;
-    childIdentity?: ((pid: number) => string | undefined) | undefined;
-    afterSharedLeaseAcquired?:
-      ((lifecycleDirectory: string) => void) | undefined;
-    executeChild?: typeof executeLocalSqliteRetrieverChild | undefined;
-    operation: "search" | "get";
-    attempt: Readonly<{
-      connectionId: string;
-      lifecycleFingerprint: string;
-      policy: LocalSqliteExecutionPolicy;
-      plan: LocalSqliteSearchPlan | LocalSqliteGetPlan;
-      signal: AbortSignal;
-      deadline: ReporterDeadline;
-    }>;
-  }>,
-): Promise<LocalSqliteSearchEvidence | LocalSqliteGetEvidence> => {
-  const {
-    home,
-    opener,
-    programs,
-    allowPathFallbackForTesting,
-    operation,
-    attempt,
-  } = input;
-  const reserve =
-    LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeTeardownReserveMilliseconds;
-  const cutoffAtMonotonicMilliseconds =
-    attempt.deadline.expiresAtMonotonicMilliseconds - reserve;
-  /* v8 ignore start -- the admitted native tuple is Linux; Windows grammar is
-     covered by the namespace compiler's cross-platform matrix. */
-  const namespace = planLocalSqliteNamespace({
-    agentscopeHome: home.root,
-    connectionId: attempt.connectionId,
-    platform: home.platform === "win32" ? "win32" : "posix",
-  });
-  /* v8 ignore stop */
-  const gate = createLocalSqliteFilesystemGatePort(
-    namespace.lifecycleDirectory,
-    {
-      allowPathFallbackForTesting,
-      atomicExchange: opener.exchangeOwnedFiles,
-      lockOwnedFile: opener.lockOwnedFile,
-      unlockOwnedFile: opener.unlockOwnedFile,
-    },
-  );
-  const acquired = await acquireLocalSqliteSharedLease(gate, {
-    leaseId: randomBytes(16).toString("hex"),
-    lifecycleFingerprint: attempt.lifecycleFingerprint,
-    lifecycleGeneration: 1,
-    parent: Object.freeze({
-      pid: process.pid,
-      startIdentity: currentProcessStartIdentity(),
-    }),
-  });
-  if (!acquired.ok)
-    throw new Error(`destination.local-sqlite.${acquired.state}`);
-  input.afterSharedLeaseAcquired?.(namespace.lifecycleDirectory);
-  if (
-    attempt.signal.aborted ||
-    cutoffAtMonotonicMilliseconds - monotonicNow() < 1
-  ) {
-    const released = await releaseLocalSqliteSharedLease(gate, acquired.value);
-    /* v8 ignore next 2 -- exact shared-lease cleanup failure classification is
-       proved in the fence module; this path preserves its fixed outcome. */
-    if (!released.ok)
-      throw new Error("destination.local-sqlite.outcome-unknown");
-    throw new Error("destination.local-sqlite.unavailable");
-  }
-  const connection = openOwnedDirectory(
-    namespace.connectionNamespace,
-    allowPathFallbackForTesting,
-  );
-  let databaseFamily: readonly Readonly<{
-    name: string;
-    physicalIdentity: string;
-  }>[];
-  try {
-    databaseFamily = inspectOwnedSqliteFamily(
-      connection,
-      basename(namespace.databasePath),
-      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
-    ).map(({ name, evidence }) =>
-      Object.freeze({ name, physicalIdentity: evidence.physicalIdentity }),
-    );
-  } catch (error) {
-    const released = await releaseLocalSqliteSharedLease(gate, acquired.value);
-    if (!released.ok)
-      throw new Error("destination.local-sqlite.outcome-unknown", {
-        cause: error,
-      });
-    throw new Error("destination.local-sqlite.filesystem.invalid", {
-      cause: error,
-    });
-  } finally {
-    connection.close();
-  }
-  return (input.executeChild ?? executeLocalSqliteRetrieverChild)({
-    programs,
-    gate,
-    lease: acquired.value,
-    nonce: randomBytes(16).toString("hex"),
-    databasePath: namespace.databasePath,
-    databaseFamily: Object.freeze(databaseFamily),
-    policy: attempt.policy,
-    operation,
-    plan: attempt.plan,
-    cutoffAtMonotonicMilliseconds,
-    teardownReserveMilliseconds: reserve,
-    signal: attempt.signal,
-    ...(input.childIdentity === undefined
-      ? {}
-      : { childIdentity: input.childIdentity }),
-  });
-};
-
 /* eslint-disable max-lines-per-function -- closed runtime composition includes restricted deterministic test executors. */
 const createRuntime = (
   home: LocalResourceHome,
@@ -636,18 +521,27 @@ const createRuntime = (
         operation: "search",
         attempt,
       })) as LocalSqliteSearchEvidence,
-    get: async (attempt) =>
-      (await retrieveWithChild({
-        home,
-        opener,
-        programs: retrieverPrograms,
-        allowPathFallbackForTesting,
-        childIdentity: testingHooks?.childIdentity,
-        afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
-        executeChild: testingHooks?.executeRetrieverChild,
-        operation: "get",
-        attempt,
-      })) as LocalSqliteGetEvidence,
+    get: (attempt) => {
+      const ledger = createLocalSqliteFailureLedger(
+        attempt.deadline.expiresAtMonotonicMilliseconds -
+          LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeTeardownReserveMilliseconds,
+      );
+      return associateLocalSqliteRetrieval(
+        retrieveWithChild({
+          home,
+          opener,
+          programs: retrieverPrograms,
+          allowPathFallbackForTesting,
+          childIdentity: testingHooks?.childIdentity,
+          afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
+          executeChild: testingHooks?.executeRetrieverChild,
+          operation: "get",
+          failureLedger: ledger,
+          attempt,
+        }) as Promise<LocalSqliteGetEvidence>,
+        ledger,
+      );
+    },
     withSharedDatabase: async ({
       connectionId,
       lifecycleFingerprint,

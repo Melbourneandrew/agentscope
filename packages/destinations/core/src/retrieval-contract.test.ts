@@ -47,6 +47,101 @@ import {
   RetrieverContractError,
 } from "./retriever.js";
 
+describe("adapter-reported failure observation normalization", () => {
+  const observation = () => ({
+    stage: 11,
+    cutoffExpired: false,
+    workerJoined: true,
+    watchdogJoined: true,
+    leaseReleased: null,
+  });
+  it("copies once into a frozen branded failure and retains unavailable", async () => {
+    const raw = observation();
+    const result = createRetrieverFailure("unavailable", undefined, raw);
+    raw.stage = 4;
+    expect(result.adapterFailureObservation).toEqual({
+      ...observation(),
+      stage: 11,
+    });
+    expect(Object.isFrozen(result.adapterFailureObservation)).toBe(true);
+    const retriever = createDestinationRetriever({
+      get: () => Promise.resolve(result),
+      search: () => Promise.resolve(result),
+    });
+    expect(
+      await invokeRetrieverGet(
+        retriever,
+        createTraceGetRequest(locator(), { connectionId, destinationType }),
+        context(),
+      ),
+    ).toBe(result);
+  });
+  it.each([
+    null,
+    {},
+    { stage: 0 },
+    { stage: 15 },
+    { stage: 1.5 },
+    { stage: "worker-negative" },
+    { cutoffExpired: null },
+    { workerJoined: 1 },
+    { watchdogJoined: "true" },
+    { leaseReleased: undefined },
+    { extra: "CANARY" },
+  ])("rejects malformed observation %j", (changed) => {
+    const value =
+      changed === null || Object.keys(changed).length === 0
+        ? changed
+        : { ...observation(), ...changed };
+    expect(() =>
+      createRetrieverFailure("unavailable", undefined, value),
+    ).toThrow(RetrieverContractError);
+  });
+  it("does not invoke accessors and rejects symbols, wrong failures and copied brands", async () => {
+    let reads = 0;
+    const value = Object.defineProperty(observation(), "stage", {
+      get() {
+        reads++;
+        return 1;
+      },
+    });
+    expect(() =>
+      createRetrieverFailure("unavailable", undefined, value),
+    ).toThrow(RetrieverContractError);
+    expect(reads).toBe(0);
+    expect(() =>
+      createRetrieverFailure("not-found", undefined, observation()),
+    ).toThrow(RetrieverContractError);
+    expect(() =>
+      createRetrieverFailure("unavailable", undefined, {
+        ...observation(),
+        [Symbol("extra")]: true,
+      }),
+    ).toThrow(RetrieverContractError);
+    expect(() =>
+      createRetrieverFailure(
+        "unavailable",
+        undefined,
+        Object.assign(new Date(), observation()),
+      ),
+    ).toThrow(RetrieverContractError);
+    const forged = {
+      ...createRetrieverFailure("unavailable", undefined, observation()),
+    };
+    const retriever = createDestinationRetriever({
+      get: () => Promise.resolve(forged as never),
+      search: () => Promise.resolve(forged as never),
+    });
+    expect(
+      await invokeRetrieverGet(
+        retriever,
+        createTraceGetRequest(locator(), { connectionId, destinationType }),
+        context(),
+      ),
+    ).toEqual({ ok: false, code: "malformed-response" });
+  });
+});
+
 const connectionId = createDestinationConnectionId(
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 );

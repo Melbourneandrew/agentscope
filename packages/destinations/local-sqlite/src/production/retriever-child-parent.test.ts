@@ -32,6 +32,41 @@ import {
   executeLocalSqliteRetrieverChild,
   readWorkerMessages,
 } from "./retriever-child-parent.js";
+import {
+  createLocalSqliteFailureLedger,
+  retrievalFailureStages,
+} from "./retrieval-diagnostics.js";
+
+describe("reported child settlement observations", () => {
+  it("retains the actual parent first worker-negative boundary when release fails", async () => {
+    const result = await run("false-result", { failRelease: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      message: "destination.local-sqlite.outcome-unknown",
+      observation: {
+        stage: 11,
+        cutoffExpired: false,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: false,
+      },
+    });
+  });
+  it("does not replace a captured worker-negative stage with a later teardown stage", () => {
+    const ledger = createLocalSqliteFailureLedger(-1);
+    ledger.enter(retrievalFailureStages.workerNegative);
+    ledger.capture();
+    ledger.enter(retrievalFailureStages.settlement);
+    ledger.settle(true, true, false);
+    expect(ledger.snapshot()).toEqual({
+      stage: 11,
+      cutoffExpired: true,
+      workerJoined: true,
+      watchdogJoined: true,
+      leaseReleased: false,
+    });
+  });
+});
 
 const fingerprint = `sha256-${"a".repeat(64)}`;
 const childIdentity = "5".repeat(32);
@@ -225,6 +260,10 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
             controller.abort();
           }, options.abortAfterMilliseconds);
     const startedAt = performance.now();
+    const cutoffAt =
+      performance.now() +
+      (options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000));
+    const ledger = createLocalSqliteFailureLedger(cutoffAt);
     try {
       const settled = await executeLocalSqliteRetrieverChild({
         programs: { workerPath, watchdogPath },
@@ -245,9 +284,8 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         },
         operation: "search",
         plan,
-        cutoffAtMonotonicMilliseconds:
-          performance.now() +
-          (options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000)),
+        cutoffAtMonotonicMilliseconds: cutoffAt,
+        failureLedger: ledger,
         teardownReserveMilliseconds: 250,
         signal: controller.signal,
         ...(options.omitChildIdentity === true
@@ -261,6 +299,7 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         (error: unknown) => ({
           state: "rejected" as const,
           message: error instanceof Error ? error.message : "hostile",
+          observation: ledger.snapshot(),
         }),
       );
       const completedDescendant =

@@ -17,6 +17,35 @@ const diagnostic = (facts) => ({
   }),
 });
 
+test("get summary retains only the complete closed adapter-reported scalar observation", () => {
+  const facts = {
+    retrieverPreparationFailed: false,
+    retrieverInvocationFailed: true,
+    retrieverReportedStage: 11,
+    retrieverCutoffExpired: false,
+    retrieverWorkerJoined: true,
+    retrieverWatchdogJoined: false,
+    retrieverLeaseReleased: null,
+  };
+  assert.equal(
+    traceGetFailureSummary(diagnostic(facts)),
+    "installed trace get failed; status=5; retrievalPhase=invoke-get; adapterReportedStage=11; cutoffExpired=false; workerJoined=true; watchdogJoined=false; leaseReleased=null",
+  );
+  for (const invalid of [
+    { ...facts, retrieverReportedStage: 15 },
+    { ...facts, retrieverReportedStage: 1.5 },
+    { ...facts, retrieverCutoffExpired: "CANARY" },
+    { ...facts, retrieverLeaseReleased: 1 },
+    { ...facts, extra: "CANARY" },
+    { ...facts, retrieverPreparationFailed: true },
+    { ...facts, retrieverWatchdogJoined: undefined },
+  ]) {
+    const summary = traceGetFailureSummary(diagnostic(invalid));
+    assert.match(summary, /retrievalPhase=unclassified$/u);
+    assert.equal(summary.includes("CANARY"), false);
+  }
+});
+
 test("get summary projects only exact owned phase boolean pairs", () => {
   assert.equal(
     traceGetFailureSummary(

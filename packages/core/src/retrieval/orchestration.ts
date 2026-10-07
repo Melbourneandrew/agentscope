@@ -785,7 +785,12 @@ export const getConfiguredTrace = async (
       context(boundedRuntime, prepared.controller.signal),
     );
     if (!result.ok)
-      return failure(result.code, result.retryAfterMilliseconds, "invoke-get");
+      return failure(
+        result.code,
+        result.retryAfterMilliseconds,
+        "invoke-get",
+        result.adapterFailureObservation,
+      );
     const graph = governRetrievedTrace(result.value, prepared.policy);
     return Object.freeze({
       ok: true,
