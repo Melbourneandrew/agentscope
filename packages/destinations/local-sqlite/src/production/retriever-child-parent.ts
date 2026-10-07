@@ -13,8 +13,13 @@ import type {
   LocalSqliteGetPlan,
   LocalSqliteSearchEvidence,
   LocalSqliteSearchPlan,
-} from "../retriever/index.js";
+} from "../retriever/evidence-types.js";
 import { processStartIdentity } from "./filesystem-port.js";
+import {
+  bounded,
+  createLocalSqliteFailureLedger,
+  retrievalFailureStages as stages,
+} from "./retrieval-diagnostics.js";
 import type { LocalSqliteExecutionPolicy } from "./sqlite-port.js";
 import {
   decodeLocalSqliteReporterChildReady,
@@ -49,6 +54,7 @@ export type LocalSqliteRetrieverChildAttempt = Readonly<{
   teardownReserveMilliseconds: number;
   signal: AbortSignal;
   childIdentity?: (pid: number) => string | undefined;
+  failureLedger?: ReturnType<typeof createLocalSqliteFailureLedger>;
 }>;
 
 type Exit = Readonly<{
@@ -79,42 +85,6 @@ const waitForExit = (child: ChildProcess): Promise<Exit> =>
       finish({ code: null, signal: null });
     });
     /* v8 ignore stop */
-  });
-
-const bounded = async <Value>(
-  promise: Promise<Value>,
-  milliseconds: number,
-): Promise<Value | undefined> =>
-  new Promise((resolve) => {
-    let settled = false;
-    const timer = setTimeout(
-      () => {
-        /* v8 ignore next -- the resolved promise can race the timer, but cannot
-           deterministically execute both settlements in one source test. */
-        if (settled) return;
-        settled = true;
-        resolve(undefined);
-      },
-      Math.max(0, milliseconds),
-    );
-    timer.unref();
-    void promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      /* v8 ignore start -- all promises supplied by this module normalize
-         failure into values; rejection handling remains fail-closed. */
-      () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(undefined);
-      },
-      /* v8 ignore stop */
-    );
   });
 
 const terminateAndJoin = async (
@@ -386,163 +356,206 @@ export const executeLocalSqliteRetrieverChild = async (
   let authority = input.lease;
   const cutoffAt = input.cutoffAtMonotonicMilliseconds;
   const teardownDeadline = cutoffAt + input.teardownReserveMilliseconds;
+  const ledger =
+    input.failureLedger ?? createLocalSqliteFailureLedger(cutoffAt);
   const remaining = (): number => Math.max(0, cutoffAt - performance.now());
-  const worker = spawn(process.execPath, [input.programs.workerPath], {
-    detached: process.platform !== "win32",
-    stdio: ["pipe", "pipe", "ignore", "pipe"],
-    windowsHide: true,
-  });
-  const workerPid = worker.pid;
-  /* v8 ignore start -- supported Node spawn always assigns a PID; missing
-     executable tests exercise immediate post-spawn failure and cleanup. */
-  if (workerPid === undefined) {
-    await terminateAndJoin(worker, teardownDeadline, true);
-    await releaseLocalSqliteSharedLease(input.gate, input.lease);
-    throw new Error("destination.local-sqlite.unavailable");
-  }
-  /* v8 ignore stop */
-  const watchdog = spawn(process.execPath, [input.programs.watchdogPath], {
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-    windowsHide: true,
-  });
-  const messages = readWorkerMessages(worker, input.nonce);
-  const workerIdentity = (input.childIdentity ?? processStartIdentity)(
-    workerPid,
-  );
-  const abort = (): void => {
-    try {
-      /* v8 ignore start -- platform-owned process termination is proven by the
-         POSIX source gate and the cross-platform CI contract. */
-      if (process.platform !== "win32") process.kill(-workerPid, "SIGKILL");
-      else worker.kill("SIGKILL");
-      /* v8 ignore stop */
-    } catch {
-      // Joined settlement below remains conservative.
-    }
-  };
-  input.signal.addEventListener("abort", abort, { once: true });
-  let evidence: LocalSqliteSearchEvidence | LocalSqliteGetEvidence | undefined;
-  let failure: Error | undefined;
   try {
-    if (
-      workerIdentity === undefined ||
-      !(await bounded(
-        watch(watchdog, workerPid, workerIdentity),
-        remaining(),
-      )) ||
-      input.signal.aborted
-    )
-      throw new Error("destination.local-sqlite.unavailable");
-    const request: LocalSqliteRetrieverChildRequest = Object.freeze({
-      type: "retrieve",
-      nonce: input.nonce,
-      databasePath: input.databasePath,
-      databaseFamily: input.databaseFamily,
-      maximumWorkMilliseconds: Math.max(
-        1,
-        Math.min(input.plan.maximumWorkMilliseconds, Math.floor(remaining())),
-      ),
-      policy: input.policy,
-      operation: input.operation,
-      plan: Object.freeze({
-        ...input.plan,
+    const worker = spawn(process.execPath, [input.programs.workerPath], {
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "ignore", "pipe"],
+      windowsHide: true,
+    });
+    const workerPid = worker.pid;
+    /* v8 ignore start -- supported Node spawn always assigns a PID; missing
+     executable tests exercise immediate post-spawn failure and cleanup. */
+    if (workerPid === undefined) {
+      ledger.capture();
+      const joined = await terminateAndJoin(worker, teardownDeadline, true);
+      const released = await releaseLocalSqliteSharedLease(
+        input.gate,
+        input.lease,
+      );
+      ledger.settle(joined, null, released.ok);
+      const error = new Error("destination.local-sqlite.unavailable");
+      ledger.capture();
+      throw error;
+    }
+    /* v8 ignore stop */
+    const watchdog = spawn(process.execPath, [input.programs.watchdogPath], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      windowsHide: true,
+    });
+    const messages = readWorkerMessages(worker, input.nonce);
+    const workerIdentity = (input.childIdentity ?? processStartIdentity)(
+      workerPid,
+    );
+    const abort = (): void => {
+      try {
+        /* v8 ignore start -- platform-owned process termination is proven by the
+         POSIX source gate and the cross-platform CI contract. */
+        if (process.platform !== "win32") process.kill(-workerPid, "SIGKILL");
+        else worker.kill("SIGKILL");
+        /* v8 ignore stop */
+      } catch {
+        // Joined settlement below remains conservative.
+      }
+    };
+    input.signal.addEventListener("abort", abort, { once: true });
+    let evidence:
+      LocalSqliteSearchEvidence | LocalSqliteGetEvidence | undefined;
+    let failure: Error | undefined;
+    try {
+      ledger.enter(stages.watchdogAssociation);
+      if (
+        workerIdentity === undefined ||
+        !(await bounded(
+          watch(watchdog, workerPid, workerIdentity),
+          remaining(),
+        )) ||
+        input.signal.aborted
+      )
+        throw new Error("destination.local-sqlite.unavailable");
+      const request: LocalSqliteRetrieverChildRequest = Object.freeze({
+        type: "retrieve",
+        nonce: input.nonce,
+        databasePath: input.databasePath,
+        databaseFamily: input.databaseFamily,
         maximumWorkMilliseconds: Math.max(
           1,
           Math.min(input.plan.maximumWorkMilliseconds, Math.floor(remaining())),
         ),
-      }),
-    });
-    /* v8 ignore start -- a child that closes stdin after the authenticated
+        policy: input.policy,
+        operation: input.operation,
+        plan: Object.freeze({
+          ...input.plan,
+          maximumWorkMilliseconds: Math.max(
+            1,
+            Math.min(
+              input.plan.maximumWorkMilliseconds,
+              Math.floor(remaining()),
+            ),
+          ),
+        }),
+      });
+      ledger.enter(stages.requestWrite);
+      /* v8 ignore start -- a child that closes stdin after the authenticated
        ready frame is an OS pipe race; hostile close tests prove the same
        post-amendment operation cannot be reported successful. */
-    if (
-      !(await bounded(
-        writeInput(worker, encodeLocalSqliteRetrieverChildRequest(request)),
-        remaining(),
-      ))
-    )
-      throw new Error("destination.local-sqlite.unavailable");
-    const ready = await bounded(messages.ready, remaining());
-    if (
-      ready === undefined ||
-      ready === null ||
-      ready.pid !== workerPid ||
-      ready.startIdentity !== workerIdentity ||
-      input.signal.aborted
-    )
-      throw new Error("destination.local-sqlite.unavailable");
-    const amended = await amendLocalSqliteLeaseWithChild(
-      input.gate,
-      authority,
-      Object.freeze({
-        nonce: input.nonce,
-        pid: workerPid,
-        startIdentity: workerIdentity,
-      }),
-    );
-    if (!amended.ok || input.signal.aborted)
-      throw new Error("destination.local-sqlite.unavailable");
-    authority = amended.value;
-    if (
-      !(await bounded(
-        writeInput(
-          worker,
-          encodeLocalSqliteReporterChildMessage({
-            type: "permission",
-            nonce: input.nonce,
-          }),
-        ),
-        remaining(),
-      ))
-    )
-      throw new Error("destination.local-sqlite.outcome-unknown");
-    /* v8 ignore stop */
-    const result = await bounded(messages.result, remaining());
-    if (result === undefined || result === null || !messages.valid())
-      throw new Error("destination.local-sqlite.unavailable");
-    // Closing the existing request pipe acknowledges a complete private-fd
-    // result. The authenticated worker remains alive until this close.
-    worker.stdin?.end();
-    const exit = await bounded(waitForExit(worker), remaining());
-    if (
-      !result.ok ||
-      result.evidence === undefined ||
-      !messages.valid() ||
-      exit?.code !== 0 ||
-      exit.signal !== null
-    )
-      throw new Error("destination.local-sqlite.unavailable");
-    evidence = result.evidence;
-  } catch (error) {
-    /* v8 ignore next -- package-owned helpers throw Error instances; the
+      if (
+        !(await bounded(
+          writeInput(worker, encodeLocalSqliteRetrieverChildRequest(request)),
+          remaining(),
+        ))
+      )
+        throw new Error("destination.local-sqlite.unavailable");
+      ledger.enter(stages.readyFrame);
+      const ready = await bounded(messages.ready, remaining());
+      if (
+        ready === undefined ||
+        ready === null ||
+        ready.pid !== workerPid ||
+        ready.startIdentity !== workerIdentity ||
+        input.signal.aborted
+      )
+        throw new Error("destination.local-sqlite.unavailable");
+      ledger.enter(stages.leaseAmendment);
+      const amended = await amendLocalSqliteLeaseWithChild(
+        input.gate,
+        authority,
+        Object.freeze({
+          nonce: input.nonce,
+          pid: workerPid,
+          startIdentity: workerIdentity,
+        }),
+      );
+      if (!amended.ok || input.signal.aborted)
+        throw new Error("destination.local-sqlite.unavailable");
+      authority = amended.value;
+      ledger.enter(stages.permissionWrite);
+      if (
+        !(await bounded(
+          writeInput(
+            worker,
+            encodeLocalSqliteReporterChildMessage({
+              type: "permission",
+              nonce: input.nonce,
+            }),
+          ),
+          remaining(),
+        ))
+      )
+        throw new Error("destination.local-sqlite.outcome-unknown");
+      /* v8 ignore stop */
+      ledger.enter(stages.resultTransport);
+      const result = await bounded(messages.result, remaining());
+      if (result === undefined || result === null || !messages.valid())
+        throw new Error("destination.local-sqlite.unavailable");
+      if (!result.ok) {
+        ledger.enter(stages.workerNegative);
+        ledger.capture();
+      }
+      // Closing the existing request pipe acknowledges a complete private-fd
+      // result. The authenticated worker remains alive until this close.
+      worker.stdin?.end();
+      ledger.enter(stages.workerTerminal);
+      const exit = await bounded(waitForExit(worker), remaining());
+      ledger.enter(!result.ok ? stages.workerNegative : stages.workerTerminal);
+      if (
+        !result.ok ||
+        result.evidence === undefined ||
+        !messages.valid() ||
+        exit?.code !== 0 ||
+        exit.signal !== null
+      )
+        throw new Error("destination.local-sqlite.unavailable");
+      evidence = result.evidence;
+    } catch (error) {
+      ledger.capture();
+      /* v8 ignore next -- package-owned helpers throw Error instances; the
        fallback prevents a hostile JavaScript boundary from leaking content. */
-    failure =
-      error instanceof Error
-        ? error
-        : new Error("destination.local-sqlite.unavailable");
-  } finally {
-    input.signal.removeEventListener("abort", abort);
-    try {
-      watchdog.send?.({ type: "complete" }, () => undefined);
-    } catch {
-      // Forced shared-deadline teardown below owns settlement.
+      failure =
+        error instanceof Error
+          ? error
+          : new Error("destination.local-sqlite.unavailable");
+    } finally {
+      ledger.enter(stages.settlement);
+      input.signal.removeEventListener("abort", abort);
+      try {
+        watchdog.send?.({ type: "complete" }, () => undefined);
+      } catch {
+        // Forced shared-deadline teardown below owns settlement.
+      }
+      const [workerJoined, watchdogJoined] = await Promise.all([
+        terminateAndJoin(worker, teardownDeadline, true),
+        terminateAndJoin(watchdog, teardownDeadline),
+      ]);
+      const released = await bounded(
+        releaseLocalSqliteSharedLease(input.gate, authority),
+        Math.max(0, teardownDeadline - performance.now()),
+      );
+      ledger.settle(
+        workerJoined,
+        watchdogJoined,
+        released === undefined ? null : released.ok,
+      );
+      if (
+        !workerJoined ||
+        !watchdogJoined ||
+        released === undefined ||
+        !released.ok
+      ) {
+        ledger.enter(stages.settlement);
+        ledger.capture();
+        failure = new Error("destination.local-sqlite.outcome-unknown");
+      }
     }
-    const [workerJoined, watchdogJoined] = await Promise.all([
-      terminateAndJoin(worker, teardownDeadline, true),
-      terminateAndJoin(watchdog, teardownDeadline),
-    ]);
-    const released = await bounded(
-      releaseLocalSqliteSharedLease(input.gate, authority),
-      Math.max(0, teardownDeadline - performance.now()),
-    );
-    if (
-      !workerJoined ||
-      !watchdogJoined ||
-      released === undefined ||
-      !released.ok
-    )
-      failure = new Error("destination.local-sqlite.outcome-unknown");
+    if (failure !== undefined) {
+      ledger.capture();
+      throw failure;
+    }
+    return evidence!;
+  } catch (error) {
+    ledger.capture();
+    throw error;
   }
-  if (failure !== undefined) throw failure;
-  return evidence!;
 };

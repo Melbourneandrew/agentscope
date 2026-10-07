@@ -26,19 +26,12 @@ import {
   type TraceSearchQuery,
 } from "./retrieval-query.js";
 
-export const RETRIEVER_FAILURE_CODES = Object.freeze([
-  "invalid-query",
-  "unknown-connection",
-  "retrieval-unsupported",
-  "unauthorized",
-  "forbidden",
-  "rate-limited",
-  "unavailable",
-  "deadline-exceeded",
-  "malformed-response",
-  "incompatible-trace",
-  "not-found",
-] as const);
+import {
+  RETRIEVER_FAILURE_CODES,
+  normalizeRetrieverFailure,
+  type RetrieverFailureObservation,
+} from "./retrieval-diagnostics.js";
+export { RETRIEVER_FAILURE_CODES };
 export type RetrieverFailureCode = (typeof RETRIEVER_FAILURE_CODES)[number];
 
 declare const retrieverFailureBrand: unique symbol;
@@ -51,6 +44,7 @@ export type RetrieverFailure = Readonly<{
   ok: false;
   code: RetrieverFailureCode;
   retryAfterMilliseconds?: number;
+  adapterFailureObservation?: RetrieverFailureObservation;
   readonly [retrieverFailureBrand]: true;
 }>;
 
@@ -143,21 +137,15 @@ const signalIsAborted = (signal: unknown): boolean | undefined => {
 export const createRetrieverFailure = (
   code: RetrieverFailureCode,
   retryAfterMilliseconds?: number,
+  observation?: unknown,
 ): RetrieverFailure => {
-  if (
-    !RETRIEVER_FAILURE_CODES.includes(code) ||
-    (retryAfterMilliseconds !== undefined &&
-      (!Number.isSafeInteger(retryAfterMilliseconds) ||
-        retryAfterMilliseconds < 0 ||
-        retryAfterMilliseconds > 3_600_000 ||
-        !["rate-limited", "unavailable"].includes(code)))
-  )
-    return invalid();
-  const failure = Object.freeze({
-    ok: false as const,
+  const normalized = normalizeRetrieverFailure(
     code,
-    ...(retryAfterMilliseconds === undefined ? {} : { retryAfterMilliseconds }),
-  }) as RetrieverFailure;
+    retryAfterMilliseconds,
+    observation,
+  );
+  if (normalized === undefined) return invalid();
+  const failure = normalized as RetrieverFailure;
   failureRegistry.add(failure);
   return failure;
 };

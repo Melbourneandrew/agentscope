@@ -32,6 +32,62 @@ import {
   executeLocalSqliteRetrieverChild,
   readWorkerMessages,
 } from "./retriever-child-parent.js";
+import {
+  createLocalSqliteFailureLedger,
+  retrievalFailureStages,
+} from "./retrieval-diagnostics.js";
+
+describe("reported child settlement observations", () => {
+  it("retains unavailable lease settlement when release outlives the original reserve", async () => {
+    const result = await run("false-result", { delayRelease: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      message: "destination.local-sqlite.outcome-unknown",
+      observation: {
+        stage: 11,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: null,
+      },
+    });
+  });
+  it("preserves rejection when the caller omits its optional failure ledger", async () => {
+    const result = await run("false-result", { omitFailureLedger: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      observation: undefined,
+    });
+    expect(result.lifecycleEntries).toEqual([]);
+  });
+  it("retains the actual parent first worker-negative boundary when release fails", async () => {
+    const result = await run("false-result", { failRelease: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      message: "destination.local-sqlite.outcome-unknown",
+      observation: {
+        stage: 11,
+        cutoffExpired: false,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: false,
+      },
+    });
+  });
+  it("does not replace a captured worker-negative stage with a later teardown stage", () => {
+    const ledger = createLocalSqliteFailureLedger(-1);
+    ledger.enter(retrievalFailureStages.workerNegative);
+    ledger.capture();
+    ledger.enter(retrievalFailureStages.settlement);
+    ledger.settle(true, true, false);
+    expect(ledger.snapshot()).toEqual({
+      stage: 11,
+      cutoffExpired: true,
+      workerJoined: true,
+      watchdogJoined: true,
+      leaseReleased: false,
+    });
+  });
+});
 
 const fingerprint = `sha256-${"a".repeat(64)}`;
 const childIdentity = "5".repeat(32);
@@ -132,6 +188,8 @@ type AttemptOptions = Readonly<{
   abortAfterMilliseconds?: number;
   failAmend?: boolean;
   failRelease?: boolean;
+  delayRelease?: boolean;
+  omitFailureLedger?: boolean;
   throwAmend?: boolean;
   identityMissing?: boolean;
   missingWorker?: boolean;
@@ -160,6 +218,8 @@ const proveDescendantStopped = async (path: string): Promise<boolean> => {
 const run = async (state: WorkerState, options: AttemptOptions = {}) => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-retriever-child-"));
   chmodSync(root, 0o700);
+  let releaseCleanup: (() => void) | undefined;
+  let delayedRelease: Promise<unknown> | undefined;
   try {
     const lifecycle = join(root, "lifecycle");
     const workerPath = join(root, "worker.cjs");
@@ -208,6 +268,18 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
               Object.freeze({ state: "mismatch" as const }),
           }
         : {}),
+      ...(options.delayRelease === true
+        ? {
+            removeArtifactIfIdentity: () => {
+              delayedRelease = new Promise((resolve) => {
+                releaseCleanup = () => {
+                  resolve({ state: "mismatch" });
+                };
+              });
+              return delayedRelease;
+            },
+          }
+        : {}),
       ...(options.throwAmend === true
         ? {
             replaceLeaseDurably: () => {
@@ -225,6 +297,10 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
             controller.abort();
           }, options.abortAfterMilliseconds);
     const startedAt = performance.now();
+    const cutoffAt =
+      performance.now() +
+      (options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000));
+    const ledger = createLocalSqliteFailureLedger(cutoffAt);
     try {
       const settled = await executeLocalSqliteRetrieverChild({
         programs: { workerPath, watchdogPath },
@@ -245,9 +321,10 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         },
         operation: "search",
         plan,
-        cutoffAtMonotonicMilliseconds:
-          performance.now() +
-          (options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000)),
+        cutoffAtMonotonicMilliseconds: cutoffAt,
+        ...(options.omitFailureLedger === true
+          ? {}
+          : { failureLedger: ledger }),
         teardownReserveMilliseconds: 250,
         signal: controller.signal,
         ...(options.omitChildIdentity === true
@@ -261,6 +338,7 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         (error: unknown) => ({
           state: "rejected" as const,
           message: error instanceof Error ? error.message : "hostile",
+          observation: ledger.snapshot(),
         }),
       );
       const completedDescendant =
@@ -281,6 +359,8 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
       if (abortTimer !== undefined) clearTimeout(abortTimer);
     }
   } finally {
+    releaseCleanup?.();
+    await delayedRelease;
     rmSync(root, { recursive: true, force: true });
   }
 };

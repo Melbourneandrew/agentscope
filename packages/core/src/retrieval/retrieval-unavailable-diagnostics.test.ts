@@ -130,6 +130,49 @@ const fixture = (
   };
 };
 
+describe("Core-owned reported invocation observation", () => {
+  it("copies the validated reported observation without surrendering the owned phase", async () => {
+    const reported = createRetrieverFailure("unavailable", undefined, {
+      stage: 11,
+      cutoffExpired: false,
+      workerJoined: true,
+      watchdogJoined: false,
+      leaseReleased: null,
+    });
+    const current = fixture({ returned: reported });
+    const result = await getConfiguredTrace(current.runtime, input);
+    expect(result).toEqual({
+      ok: false,
+      code: "unavailable",
+      failurePhase: "invoke-get",
+      adapterFailureObservation: reported.adapterFailureObservation,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.adapterFailureObservation).not.toBe(
+        reported.adapterFailureObservation,
+      );
+      expect(Object.isFrozen(result.adapterFailureObservation)).toBe(true);
+    }
+    expect(
+      failure(
+        "unavailable",
+        undefined,
+        "prepare-retriever",
+        reported.adapterFailureObservation,
+      ),
+    ).not.toHaveProperty("adapterFailureObservation");
+    expect(
+      failure(
+        "deadline-exceeded",
+        undefined,
+        "invoke-get",
+        reported.adapterFailureObservation,
+      ),
+    ).not.toHaveProperty("adapterFailureObservation");
+  });
+});
+
 describe("Core-owned unavailable get diagnostics", () => {
   it("distinguishes preparation failure without invoking the adapter", async () => {
     const current = fixture({ preparationFault: true });

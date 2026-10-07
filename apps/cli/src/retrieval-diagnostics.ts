@@ -42,6 +42,19 @@ export const retrievalDiagnostic = (
           retrieverInvocationFailed: phase === "invoke-get",
         }
       : {}),
+    ...(phase === "invoke-get" &&
+    failure.adapterFailureObservation !== undefined
+      ? {
+          retrieverReportedStage: failure.adapterFailureObservation.stage,
+          retrieverCutoffExpired:
+            failure.adapterFailureObservation.cutoffExpired,
+          retrieverWorkerJoined: failure.adapterFailureObservation.workerJoined,
+          retrieverWatchdogJoined:
+            failure.adapterFailureObservation.watchdogJoined,
+          retrieverLeaseReleased:
+            failure.adapterFailureObservation.leaseReleased,
+        }
+      : {}),
   };
   return diagnostic(
     category,

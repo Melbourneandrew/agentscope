@@ -45,9 +45,35 @@ export function runTraceSearchUntilAvailable(
 }
 
 // Never reflect argv, trace locators, stream contents, or native error text.
+const reportedKeys = [
+  "retrieverReportedStage",
+  "retrieverCutoffExpired",
+  "retrieverWorkerJoined",
+  "retrieverWatchdogJoined",
+  "retrieverLeaseReleased",
+];
+const validReportedFacts = (facts) => {
+  const present = reportedKeys.filter((key) => Object.hasOwn(facts, key));
+  return (
+    present.length === 0 ||
+    (present.length === 5 &&
+      Number.isInteger(facts.retrieverReportedStage) &&
+      facts.retrieverReportedStage >= 1 &&
+      facts.retrieverReportedStage <= 14 &&
+      typeof facts.retrieverCutoffExpired === "boolean" &&
+      reportedKeys
+        .slice(2)
+        .every(
+          (key) => facts[key] === null || typeof facts[key] === "boolean",
+        ) &&
+      facts.retrieverPreparationFailed === false &&
+      facts.retrieverInvocationFailed === true)
+  );
+};
 export function traceGetFailureSummary(result) {
   const status = Number.isInteger(result.status) ? result.status : "absent";
   let phase = "unclassified";
+  let observation = "";
   if (
     result.status === 5 &&
     result.stdout === "" &&
@@ -75,8 +101,10 @@ export function traceGetFailureSummary(result) {
             "retrieverPreparationFailed",
             "retrieverInvocationFailed",
             "retryAfterMilliseconds",
+            ...reportedKeys,
           ].includes(name),
         ) &&
+        validReportedFacts(facts) &&
         (facts.retryAfterMilliseconds === undefined ||
           (typeof facts.retryAfterMilliseconds === "number" &&
             Number.isFinite(facts.retryAfterMilliseconds) &&
@@ -90,12 +118,16 @@ export function traceGetFailureSummary(result) {
         if (
           facts.retrieverPreparationFailed === false &&
           facts.retrieverInvocationFailed === true
-        )
+        ) {
           phase = "invoke-get";
+          observation = Object.hasOwn(facts, "retrieverReportedStage")
+            ? `; adapterReportedStage=${facts.retrieverReportedStage}; cutoffExpired=${facts.retrieverCutoffExpired}; workerJoined=${facts.retrieverWorkerJoined}; watchdogJoined=${facts.retrieverWatchdogJoined}; leaseReleased=${facts.retrieverLeaseReleased}`
+            : "";
+        }
       }
     } catch {
       /* Malformed output has no diagnostic authority. */
     }
   }
-  return `installed trace get failed; status=${status}; retrievalPhase=${phase}`;
+  return `installed trace get failed; status=${status}; retrievalPhase=${phase}${observation}`;
 }

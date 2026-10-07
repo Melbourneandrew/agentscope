@@ -32,6 +32,121 @@ import {
   getLocalSqliteProductionRuntime,
 } from "./runtime.js";
 import type { OwnedSqliteConnection } from "./sqlite-port.js";
+import {
+  associateLocalSqliteRetrieval,
+  createLocalSqliteFailureLedger,
+  readLocalSqliteFailureObservation,
+  retrievalFailureStages,
+} from "./retrieval-diagnostics.js";
+
+describe("reported retrieval failure ledger", () => {
+  it("preserves the first boundary independently of later settlement failure", async () => {
+    const ledger = createLocalSqliteFailureLedger(
+      performance.now() + 1_000_000,
+    );
+    ledger.enter(retrievalFailureStages.readyFrame);
+    ledger.capture();
+    ledger.enter(retrievalFailureStages.settlement);
+    ledger.capture();
+    ledger.settle(true, false, null);
+    const failure = new Error("original outcome-unknown");
+    const invocation = associateLocalSqliteRetrieval(
+      Promise.reject(failure),
+      ledger,
+    );
+    await expect(invocation).rejects.toBe(failure);
+    expect(readLocalSqliteFailureObservation(invocation)).toEqual({
+      stage: 7,
+      cutoffExpired: false,
+      workerJoined: true,
+      watchdogJoined: false,
+      leaseReleased: null,
+    });
+    ledger.settle(false, true, true);
+    expect(readLocalSqliteFailureObservation(invocation)?.watchdogJoined).toBe(
+      false,
+    );
+    expect(Object.isFrozen(readLocalSqliteFailureObservation(invocation))).toBe(
+      true,
+    );
+  });
+  it("reports existing expired cutoff and does not invent settlement or unwrap foreign errors", async () => {
+    const ledger = createLocalSqliteFailureLedger(-1);
+    ledger.enter(retrievalFailureStages.preChildCutoff);
+    const error = new Error("primary");
+    const invocation = associateLocalSqliteRetrieval(
+      Promise.reject(error),
+      ledger,
+    );
+    await expect(invocation).rejects.toBe(error);
+    expect(readLocalSqliteFailureObservation(invocation)).toEqual({
+      stage: 2,
+      cutoffExpired: true,
+      workerJoined: null,
+      watchdogJoined: null,
+      leaseReleased: null,
+    });
+    expect(
+      readLocalSqliteFailureObservation(new Error("primary")),
+    ).toBeUndefined();
+    expect(readLocalSqliteFailureObservation("primary")).toBeUndefined();
+    expect(readLocalSqliteFailureObservation(error)).toBeUndefined();
+  });
+});
+
+describe("per-invocation reported failure association", () => {
+  it("separates concurrent and repeated rejection of the same Error", async () => {
+    const error = new Error("reused");
+    const first = createLocalSqliteFailureLedger(-1);
+    first.enter(7);
+    first.settle(true, false, null);
+    const second = createLocalSqliteFailureLedger(
+      performance.now() + 1_000_000,
+    );
+    second.enter(11);
+    second.settle(false, true, false);
+    const a = associateLocalSqliteRetrieval(Promise.reject(error), first);
+    const b = associateLocalSqliteRetrieval(Promise.reject(error), second);
+    await Promise.all([
+      expect(a).rejects.toBe(error),
+      expect(b).rejects.toBe(error),
+    ]);
+    expect(readLocalSqliteFailureObservation(a)).toEqual({
+      stage: 7,
+      cutoffExpired: true,
+      workerJoined: true,
+      watchdogJoined: false,
+      leaseReleased: null,
+    });
+    expect(readLocalSqliteFailureObservation(b)).toEqual({
+      stage: 11,
+      cutoffExpired: false,
+      workerJoined: false,
+      watchdogJoined: true,
+      leaseReleased: false,
+    });
+    const third = createLocalSqliteFailureLedger(-1);
+    third.enter(2);
+    const c = associateLocalSqliteRetrieval(Promise.reject(error), third);
+    await expect(c).rejects.toBe(error);
+    expect(readLocalSqliteFailureObservation(c)?.stage).toBe(2);
+    expect(readLocalSqliteFailureObservation(a)?.stage).toBe(7);
+    expect(readLocalSqliteFailureObservation(error)).toBeUndefined();
+  });
+  it("does not associate success or an unrelated Promise", async () => {
+    const ledger = createLocalSqliteFailureLedger(-1);
+    const invocation = associateLocalSqliteRetrieval(
+      Promise.resolve(4),
+      ledger,
+    );
+    await expect(invocation).resolves.toBe(4);
+    expect(readLocalSqliteFailureObservation(invocation)).toBeUndefined();
+    expect(
+      readLocalSqliteFailureObservation(Promise.resolve(4)),
+    ).toBeUndefined();
+    expect(ledger.snapshot()).toBeUndefined();
+  });
+});
 
 const connectionId = `destination-connection-v1-${"2".repeat(64)}`;
 const fingerprint = `sha256-${"a".repeat(64)}`;

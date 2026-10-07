@@ -7,6 +7,38 @@ import {
 } from "./retrieval-diagnostics.js";
 
 describe("fixed retrieval diagnostics preserve failure and disclose only owned phase", () => {
+  it("projects reported unavailable observations into only existing bounded scalar facts", () => {
+    const adapterFailureObservation = Object.freeze({
+      stage: 11 as const,
+      cutoffExpired: false,
+      workerJoined: true,
+      watchdogJoined: false,
+      leaseReleased: null,
+    });
+    const result = retrievalDiagnostic({
+      ok: false,
+      code: "unavailable",
+      failurePhase: "invoke-get",
+      adapterFailureObservation,
+    });
+    expect(result.facts).toEqual({
+      retrieverPreparationFailed: false,
+      retrieverInvocationFailed: true,
+      retrieverReportedStage: 11,
+      retrieverCutoffExpired: false,
+      retrieverWorkerJoined: true,
+      retrieverWatchdogJoined: false,
+      retrieverLeaseReleased: null,
+    });
+    expect(cliDiagnosticSchema.safeParse(result).success).toBe(true);
+    expect(
+      retrievalDiagnostic({
+        ok: false,
+        code: "deadline-exceeded",
+        adapterFailureObservation,
+      }).facts,
+    ).toBeUndefined();
+  });
   it.each(["prepare-retriever", "invoke-get"] as const)(
     "projects %s through existing boolean facts without reflecting a string",
     (failurePhase) => {

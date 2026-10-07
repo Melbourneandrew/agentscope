@@ -1,5 +1,13 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
+import { readLocalSqliteFailureObservation } from "../production/retrieval-diagnostics.js";
+import type {
+  LocalSqliteSearchPlan,
+  LocalSqliteGetPlan,
+  LocalSqliteRetrievalRow,
+  LocalSqliteSearchEvidence,
+  LocalSqliteRetrieverDatabase,
+} from "./evidence-types.js";
 
 import {
   createDestinationRetriever,
@@ -12,7 +20,6 @@ import {
   createTraceSummary,
   reporterDeadlineRemainingMilliseconds,
   type JsonValue,
-  type ReporterDeadline,
   type RetrievalContext,
   type Retriever,
   type TraceGetRequest,
@@ -28,56 +35,14 @@ export const localSqliteRetrieverPackageId =
   "@agentscope/destination-local-sqlite/retriever" as const;
 export const LOCAL_SQLITE_RETRIEVER_PLAN_VERSION = 1 as const;
 
-export type LocalSqliteSearchPlan = Readonly<{
-  planVersion: 1;
-  sql: string;
-  parameters: Readonly<Record<string, string | number>>;
-  maximumRows: number;
-  maximumResponseBytes: number;
-  maximumWorkMilliseconds: number;
-  retentionCutoffParameter: "retentionCutoffSortKey";
-  snapshotToken?: string;
-}>;
-export type LocalSqliteGetPlan = Readonly<{
-  planVersion: 1;
-  sql: string;
-  parameters: Readonly<{ traceId: string }>;
-  maximumResponseBytes: number;
-  maximumWorkMilliseconds: number;
-  retentionCutoffParameter: "retentionCutoffSortKey";
-}>;
-export type LocalSqliteRetrievalRow = Readonly<{
-  deliveryIdentity: string;
-  traceId: string;
-  startTimeSortKey: string;
-  admissionTimeSortKey: string;
-  protocolCompatibilityId: string;
-  payloadUtf8: string;
-  payloadSha256: string;
-  payloadBytes: number;
-}>;
-export type LocalSqliteSearchEvidence = Readonly<{
-  rows: readonly LocalSqliteRetrievalRow[];
-  responseByteLimitReached: boolean;
-  retentionCutoffSortKey: string;
-  snapshotToken: string;
-}>;
-export type LocalSqliteGetEvidence = Readonly<{
-  row: LocalSqliteRetrievalRow | undefined;
-  retentionCutoffSortKey: string;
-}>;
-export type LocalSqliteRetrieverDatabase = Readonly<{
-  search: (
-    plan: LocalSqliteSearchPlan,
-    signal: AbortSignal,
-    deadline?: ReporterDeadline,
-  ) => Promise<LocalSqliteSearchEvidence>;
-  get: (
-    plan: LocalSqliteGetPlan,
-    signal: AbortSignal,
-    deadline?: ReporterDeadline,
-  ) => Promise<LocalSqliteGetEvidence>;
-}>;
+export type {
+  LocalSqliteSearchPlan,
+  LocalSqliteGetPlan,
+  LocalSqliteRetrievalRow,
+  LocalSqliteSearchEvidence,
+  LocalSqliteGetEvidence,
+  LocalSqliteRetrieverDatabase,
+} from "./evidence-types.js";
 
 type Cursor = Readonly<{
   version: 1;
@@ -904,10 +869,16 @@ export const createLocalSqliteRetriever = (
        * signal/deadline check immediately before calling this handler. */
       if (!hasTime(context)) return createRetrieverFailure("deadline-exceeded");
       let raw: unknown;
+      let invocation: unknown;
       try {
-        raw = await database.get(plan, context.signal, context.deadline);
+        invocation = database.get(plan, context.signal, context.deadline);
+        raw = await invocation;
       } catch {
-        return createRetrieverFailure("unavailable");
+        return createRetrieverFailure(
+          "unavailable",
+          undefined,
+          readLocalSqliteFailureObservation(invocation),
+        );
       }
       if (!hasTime(context)) return createRetrieverFailure("deadline-exceeded");
       const evidence = parseGetEvidence(raw, plan.maximumResponseBytes);
