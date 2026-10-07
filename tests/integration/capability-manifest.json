@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-ea88aa118f5bc3f794e0b0ef2f8cf98c109ef81ac229540fbee968a0e6639083",
+  "manifestIdentity": "sha256-a62720800973e9536763cfe7b1fa01538e5fcf0c94aa7d634f65f79ab5d7398e",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
