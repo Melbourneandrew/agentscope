@@ -140,17 +140,6 @@ export function codexStopHookReadyForExit(
     | "session-end-completed",
 ): boolean;
 
-export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: {
-  afterRead?: () => void;
-  directoryDescriptor: number;
-  directoryPath: string;
-}):
-  | Readonly<{
-      durationMilliseconds: number;
-      spanSha256: string;
-    }>
-  | undefined;
-
 export function classifyCodexSessionStartAtFailedPty(input: {
   afterRead?: () => void;
   directoryDescriptor: number;
@@ -167,23 +156,12 @@ export function inspectCodexRootHookLifecycle(input: {
   directoryPath: string;
 }):
   | Readonly<{
-      sessionStartDurationMilliseconds: number;
-      sessionStartSpanSha256: string;
+      sessionStartDurationMilliseconds: number | null;
+      sessionStartSpanSha256: string | null;
       stopDurationMilliseconds: number;
       sessionEndDurationMilliseconds: number;
     }>
   | undefined;
-
-export function codexSessionStartCheckpointMatchesLifecycle(
-  checkpoint:
-    Readonly<{ durationMilliseconds: number; spanSha256: string }> | undefined,
-  lifecycle:
-    | Readonly<{
-        sessionStartDurationMilliseconds: number;
-        sessionStartSpanSha256: string;
-      }>
-    | undefined,
-): boolean;
 
 export function inspectCodexStopHookCommand(input: {
   afterRead?: () => void;

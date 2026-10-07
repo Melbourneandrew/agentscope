@@ -69,7 +69,7 @@ const harnessObservation = z.strictObject({
     .number()
     .finite()
     .min(0)
-    .max(1_000),
+    .nullable(),
 });
 const fixtureResult = z
   .strictObject({

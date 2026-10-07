@@ -72,9 +72,9 @@ export const translateCodexPlatformObservations = (input) => {
   const { mediation, search, retrieval, doctor, uninstall } = input;
   if (
     !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
-    !Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
-    mediation.sessionStartCommandDurationMilliseconds < 0 ||
-    mediation.sessionStartCommandDurationMilliseconds > 1_000 ||
+    (mediation.sessionStartCommandDurationMilliseconds !== null &&
+      (!Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
+        mediation.sessionStartCommandDurationMilliseconds < 0)) ||
     !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
     !boundedString(search.completion, 32) ||
     !boundedString(search.harness, 64) ||
