@@ -60,7 +60,11 @@ vi.mock("../image-preparation.mjs", () => ({
     state.builds.push(input);
     state.afterBuild();
     if (state.failure === "build") return Promise.reject(state.primary);
-    return Promise.resolve(Buffer.from("synthetic-research"));
+    return Promise.resolve(
+      input.buildOutput === "image"
+        ? `sha256-${"a".repeat(64)}`
+        : Buffer.from("synthetic-research"),
+    );
   },
   markPreparedDockerClientForOuterHostRetirement: () => {
     state.marked = true;
@@ -77,7 +81,10 @@ vi.mock("../controller-file-command.mjs", () => ({
     if (state.sinkFailure) throw Error("sink");
   },
 }));
-import { researchMockServerSupplier } from "../mockserver-material/prepare-supplier.mjs";
+import {
+  prepareMockServerService,
+  researchMockServerSupplier,
+} from "../mockserver-material/prepare-supplier.mjs";
 const roots: string[] = [];
 const fixture = () => {
   const privateRoot = mkdtempSync(
@@ -116,6 +123,67 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("connected supplier research under inherited lifecycle (synthetic builder)", () => {
+  it("builds the actual service from fresh offline sources and only two inherited caches", async () => {
+    const input = fixture();
+    const service = {
+      tag: "agentscope-int-0123456789abcdef:mockserver",
+      privateKey: Buffer.from("synthetic-key"),
+      jwks: Buffer.from('{"keys":[]}'),
+      expectations: Buffer.from("[]"),
+    };
+    state.afterBuild = () => {
+      const context = state.builds[0]?.context as string;
+      const source = readFileSync(
+        resolve(context, "Supplier.Dockerfile"),
+        "utf8",
+      );
+      expect(source).toContain('"cache-seeding"]');
+      expect(source).toContain(
+        'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "service-offline"]',
+      );
+      expect(source.match(/COPY --from=supplier .+/gu)).toEqual([
+        "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
+        "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
+      ]);
+      expect(source).not.toContain("/out/material.json");
+      expect(source).toContain(
+        "COPY --from=offline --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+      );
+      expect(source).toContain("USER 0:0");
+      expect(source).toContain("umask 077; mkdir /control/private;");
+      expect(readFileSync(resolve(context, "control-private.pem"))).toEqual(
+        service.privateKey,
+      );
+      expect(readFileSync(resolve(context, "expectations.json"))).toEqual(
+        service.expectations,
+      );
+    };
+    const result = await prepareMockServerService(input as never, service);
+    expect(result.imageId).toBe(`sha256-${"a".repeat(64)}`);
+    expect(result.tag).toBe(service.tag);
+    expect(state.builds[0]).toMatchObject({
+      buildOutput: "image",
+      retirementRequired: true,
+      tag: service.tag,
+      maximumBuildContextBytes: 384 * 1024 * 1024,
+    });
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+  it("preserves the service build failure and cleans private credential staging", async () => {
+    const input = fixture();
+    state.failure = "build";
+    await expect(
+      prepareMockServerService(input as never, {
+        tag: "agentscope-int-0123456789abcdef:mockserver",
+        privateKey: Buffer.from("key"),
+        jwks: Buffer.from("{}"),
+        expectations: Buffer.from("[]"),
+      }),
+    ).rejects.toBe(state.primary);
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+});
+describe("supplier research staging and cleanup", () => {
   it("stages complete helper graph and exact compressed inputs through the existing builder", async () => {
     const input = fixture();
     state.afterBuild = () => {
@@ -128,6 +196,7 @@ describe("connected supplier research under inherited lifecycle (synthetic build
           "build-recipe.mjs",
           "build-tool-archive.mjs",
           "callback-patch.mjs",
+          "lifecycle-patch.mjs",
           "jdk.tar.gz",
           "maven.zip",
           "node.tar.gz",

@@ -15,14 +15,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { Agent, request as httpRequest } from "node:http";
-import { createConnection } from "node:net";
 import { basename, join } from "node:path";
+import { encodeAdapterReportedFailureMarker } from "./codex-pty-research.mjs";
 import {
-  createCodexModelControlRequest,
-  encodeAdapterReportedFailureMarker,
-} from "./codex-pty-research.mjs";
-import { classifyCodexCollectedChildFailure } from "./codex-trace-child-diagnostics.mjs";
+  interactivePhases,
+  classifyCodexCollectedChildFailure,
+} from "./codex-trace-child-diagnostics.mjs";
 import {
   codexArmPendingResearchHint,
   codexProjectionFailureDiagnostic,
@@ -31,9 +29,14 @@ import {
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
   encodeInteractiveFailureExitCode,
-  gateReceiptResearchRejection,
   parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
+
+import {
+  openMockServerControl,
+  projectMockServerRequests,
+  snapshotMockServerTraffic,
+} from "./mockserver-control.mjs";
 
 let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
@@ -41,7 +44,6 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
-let gateResearchHint;
 let adapterReportedFailure;
 const candidateConfigStages = Object.freeze([
   "closed-marker",
@@ -53,83 +55,6 @@ const candidateConfigStages = Object.freeze([
 ]);
 let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
-const interactivePhases = Object.freeze([
-  "bootstrap",
-  "bootstrap-arguments",
-  "bootstrap-deadline",
-  "bootstrap-readiness",
-  "bootstrap-environment",
-  "bootstrap-modules",
-  "bootstrap-artifact",
-  "bootstrap-pty",
-  "init",
-  "destination",
-  "routing",
-  "install",
-  "model-gate-start",
-  "model-gate-configured",
-  "control-plane-closed",
-  "tui-readiness-challenge-published",
-  "tui-start",
-  "tui-run-created",
-  "tui-checkpoint",
-  "model-gate-arm-start",
-  "model-gate-arm-health-pending",
-  "model-gate-arm-session-start",
-  "tui-exit-before-arm",
-  "model-gate-arm-complete",
-  "model-request-observed",
-  "model-request",
-  "trace-terminal",
-  "tui-exit-published",
-  "tui-join-deadline",
-  "tui-child-rejected",
-  "tui-joined",
-  "trace-settlement",
-  "trace-search",
-  "hook-command-timeout",
-  "hook-command-spawn-error",
-  "hook-command-stdin-error",
-  "hook-command-wait-error",
-  "hook-command-missing",
-  "hook-command-completed-before-budget-boundary",
-  "hook-command-completed-near-budget-boundary",
-  "hook-no-operational-state-subsecond",
-  "hook-no-operational-state-low-latency",
-  "hook-no-operational-state-mid-latency",
-  "hook-no-operational-state-high-latency",
-  "hook-no-operational-state-near-deadline",
-  "hook-start-suppressed",
-  "hook-start-deadline",
-  "hook-capture-suppressed",
-  "hook-capture-deadline",
-  "hook-redaction-suppressed",
-  "hook-redaction-deadline",
-  "hook-routing-no-route",
-  "hook-delivery-rejected",
-  "hook-delivery-unavailable",
-  "hook-delivery-deadline",
-  "hook-delivery-unknown",
-  "hook-accepted-without-trace",
-  "hook-operational-unclassified",
-  "trace-search-record-count",
-  "trace-search-shape",
-  "trace-search-ambiguous",
-  "trace-search-harness",
-  "trace-search-locator",
-  "trace-reporter-settled",
-  "trace-search-result",
-  "verify",
-  "verify-config",
-  "verify-gate",
-  "verify-trace-get",
-  "verify-correlation",
-  "verify-doctor",
-  "verify-uninstall",
-  "verify-status",
-  "verify-projection",
-  "verify-evidence",
-]);
 const advanceInteractivePhase = (phase) => {
   const phaseIndex = interactivePhases.indexOf(phase);
   if (phaseIndex <= interactiveFailurePhaseIndex)
@@ -159,11 +84,9 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       ? `integration.fixture.codex-candidate-config-${candidateConfigStage}`
       : undefined;
   const gateResearchDiagnostic =
-    interactiveFailurePhase === "verify-gate" && gateResearchHint !== undefined
-      ? `integration.fixture.codex-gate-research-${gateResearchHint}`
-      : interactiveFailurePhase === "model-gate-arm-health-pending"
-        ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
-        : undefined;
+    interactiveFailurePhase === "model-gate-arm-health-pending"
+      ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
+      : undefined;
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
     candidateConfigDiagnostic ??
@@ -556,7 +479,6 @@ let localSqliteLifecycleDescriptor;
 let operationalStateHealthDescriptor;
 let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
-let sessionStartBeforeFirstModelRequestAdmission;
 let traceWaitHookCompleted = false;
 let traceWaitReporterSettled = false;
 const recordInteractivePhase = (phase) => {
@@ -591,22 +513,6 @@ const recordPreCheckpointFailure = (kind) => {
     { flag: "wx", mode: 0o600 },
   );
 };
-const recordModelGateArmFailure = (predicate) => {
-  if (
-    ![
-      "control",
-      "hook-log",
-      "hook-mediation",
-      "session-start-missing",
-    ].includes(predicate)
-  )
-    throw new Error("integration.codex.model-gate-arm-diagnostic");
-  writeFileSync(
-    join(ledger, "interactive-failure.txt"),
-    `integration.fixture.codex-model-gate-arm-${predicate}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
-};
 const codexStopHookCommandFailure = (outcome) => {
   let phase;
   if (outcome === "timeout") phase = "hook-command-timeout";
@@ -637,9 +543,7 @@ const {
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
-  codexSessionStartCheckpointMatchesLifecycle,
   inspectCodexRootHookLifecycle,
-  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
@@ -741,89 +645,68 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const modelControlSocket = "/control/private/gate.sock";
-const assertPrivateControlSocket = () => {
-  const directory = lstatSync("/control/private");
-  const socket = lstatSync(modelControlSocket);
-  if (
-    process.getuid() !== 0 ||
-    !directory.isDirectory() ||
-    directory.isSymbolicLink() ||
-    directory.uid !== 0 ||
-    (directory.mode & 0o777) !== 0o700 ||
-    !socket.isSocket() ||
-    socket.isSymbolicLink() ||
-    socket.uid !== 0 ||
-    (socket.mode & 0o777) !== 0o600
-  )
-    throw new Error("integration.codex.model-gate-control-identity");
-};
-const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-let modelGateCutoff;
-let modelControlFailureHint;
-const gateHeaders = Object.freeze({
-  authorization: `Bearer ${readinessChallenge}`,
-  "content-type": "application/json",
-});
-const controlRequest = createCodexModelControlRequest({
-  httpRequest,
-  agent: modelControlAgent,
-  headers: gateHeaders,
-  socketPath: modelControlSocket,
-  deadline: () => deadline,
-  gateCutoff: () => modelGateCutoff,
-  now: bootNow,
-  observe: (hint) => {
-    modelControlFailureHint = hint;
-  },
-});
-const readModelRequests = async (signal) => {
-  const value = await controlRequest("/requests", "PUT", {}, signal);
-  if (!exactKeys(value, ["ledger"]))
-    throw new Error("integration.codex.model-gate");
-  return boundedRequestLedger(value.ledger);
-};
-const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
-  sessionStartBeforeFirstModelRequestAdmission =
-    inspectCodexSessionStartBeforeFirstModelRequestAdmission({
-      directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
-      directoryPath: codexDiagnosticLogDirectory,
-    });
-  return sessionStartBeforeFirstModelRequestAdmission;
-};
-const gateRequest = (path, value, signal) =>
-  controlRequest(path, "POST", value, signal);
-const proveControlPlaneClosed = async () => {
-  const endpoint = new URL(modelEndpoint);
-  if (endpoint.protocol !== "http:" || endpoint.pathname !== "/")
-    throw new Error("integration.codex.model-gate");
-  endpoint.port = "1081";
-  await new Promise((resolve, reject) => {
-    const socket = createConnection({
-      host: endpoint.hostname,
-      port: Number(endpoint.port),
-    });
-    const timer = setTimeout(
-      () => {
-        socket.destroy();
-        reject(new Error("integration.codex.model-gate-control-open"));
-      },
-      Math.min(250, remaining()),
-    );
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      reject(new Error("integration.codex.model-gate-control-open"));
-    });
-    socket.once("error", () => {
-      clearTimeout(timer);
-      resolve();
-    });
+let upstreamControl;
+let candidateTraffic;
+let upstreamTraffic;
+const readModelRequests = async () => {
+  // One configuration, four candidate denials, one model and four final outer
+  // controls leave at most six retrievals within the existing sixteen rows.
+  if (upstreamControl.snapshot().entries.length >= 7)
+    throw new Error("integration.codex.model-control");
+  const response = await upstreamControl.requests();
+  if (response.status !== 200)
+    throw new Error("integration.codex.model-control");
+  const observed = projectMockServerRequests(response.bytes, promptSha256);
+  const sent = upstreamControl.snapshot().entries;
+  const controls = [sent[0], ...candidateTraffic.entries, ...sent.slice(1)];
+  let controlIndex = 0;
+  const entries = observed.map((row) => {
+    if (row.role === undefined || row.role === "data-plane")
+      return {
+        method: row.method,
+        path: row.path,
+        role: "data-plane",
+        status: 200,
+        bodyBytes: row.bodyBytes,
+        bodySha256: row.bodySha256,
+      };
+    const client = controls[controlIndex++];
+    if (
+      client === undefined ||
+      ["method", "path", "role", "status", "bodyBytes", "bodySha256"].some(
+        (key) => row[key] !== client[key],
+      )
+    )
+      throw new Error("integration.codex.model-control");
+    return client;
   });
+  if (controlIndex !== controls.length)
+    throw new Error("integration.codex.model-control");
+  upstreamTraffic = snapshotMockServerTraffic(
+    { runId: integrationRunId, entries },
+    integrationRunId,
+  );
+  return boundedRequestLedger(
+    observed.filter(
+      (row) => row.role === undefined || row.role === "data-plane",
+    ),
+  );
 };
 const configureModelGate = async (modelAdmissionCutoff) => {
-  modelGateCutoff = modelAdmissionCutoff;
-  assertPrivateControlSocket();
+  const endpoint = new URL(modelEndpoint);
+  if (
+    endpoint.protocol !== "http:" ||
+    endpoint.hostname !== "mockserver" ||
+    endpoint.port !== "1080" ||
+    endpoint.pathname !== "/"
+  )
+    throw new Error("integration.codex.model-control");
+  upstreamControl = openMockServerControl({
+    runId: integrationRunId,
+    host: "mockserver",
+    deadline: modelAdmissionCutoff,
+    now: bootNow,
+  });
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
   );
@@ -832,6 +715,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     Number.isInteger(routeIndex) && routeIndex >= 0
       ? routeAuthority.routes?.[routeIndex]
       : undefined;
+  const expectation = routeAuthority.mockServerInitialization?.[routeIndex];
   const body = route?.responseBodyText;
   if (
     routeAuthority.routeIds?.lastIndexOf("codex-tui-responses") !==
@@ -840,130 +724,50 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     route?.path !== "/v1/responses" ||
     typeof body !== "string" ||
     body.split("AGENTSCOPE_PTY_COMPLETE").length !== 2 ||
-    body.includes(expectedAssistantMessage)
+    body.includes(expectedAssistantMessage) ||
+    expectation?.httpRequest?.method !== "POST" ||
+    expectation.httpRequest.path !== "/v1/responses" ||
+    expectation?.httpResponse?.body !== body
   )
-    throw new Error("integration.codex.model-gate");
-  const response = await controlRequest(
-    "/configure",
-    "POST",
-    {
-      challenge: readinessChallenge,
-      cutoff: modelAdmissionCutoff,
-      promptSha256,
-      responseText: body.replace(
-        "AGENTSCOPE_PTY_COMPLETE",
-        expectedAssistantMessage,
-      ),
-      runId: integrationRunId,
+    throw new Error("integration.codex.model-control");
+  const response = await upstreamControl.configure({
+    ...expectation,
+    httpResponse: {
+      ...expectation.httpResponse,
+      body: body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage),
     },
-    AbortSignal.timeout(Math.min(1_000, remaining())),
+  });
+  if (response.status !== 201)
+    throw new Error("integration.codex.model-control");
+  const candidate = await run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { probeMockServerCandidate, readMockServerBootClock as now } from "/opt/agentscope/mockserver-control.mjs";
+console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(integrationRunId)},host:"mockserver",deadline:${modelAdmissionCutoff},now})));`,
+    ],
+    { candidatePrincipal: true, monotonicDeadline: modelAdmissionCutoff },
   );
-  if (
-    !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== integrationRunId ||
-    response.state !== "pending"
-  )
-    throw new Error("integration.codex.model-gate");
+  candidateTraffic = snapshotMockServerTraffic(
+    JSON.parse(candidate.stdout.toString("utf8")),
+    integrationRunId,
+  );
 };
-const armModelGate = async (modelAdmissionCutoff) => {
-  let observedPendingHealth = false;
-  while (bootNow() < modelAdmissionCutoff) {
-    let checkpoint;
-    try {
-      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      recordModelGateArmFailure(
-        message === "integration.codex.hook-mediation"
-          ? "hook-mediation"
-          : "hook-log",
-      );
-      throw error;
-    }
-    if (checkpoint !== undefined) {
-      recordInteractivePhase("model-gate-arm-session-start");
-      let response;
-      try {
-        response = await gateRequest("/arm", {
-          runId: integrationRunId,
-          sessionStartSpanSha256: checkpoint.spanSha256,
-        });
-      } catch (error) {
-        recordModelGateArmFailure("control");
-        throw error;
-      }
-      if (
-        !exactKeys(response, [
-          "challengeSha256",
-          "generation",
-          "runId",
-          "state",
-        ]) ||
-        response.challengeSha256 !==
-          createHash("sha256").update(readinessChallenge).digest("hex") ||
-        typeof response.generation !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(response.generation) ||
-        response.runId !== integrationRunId ||
-        response.state !== "awaiting-ack"
-      ) {
-        recordModelGateArmFailure("control");
-        throw new Error("integration.codex.model-gate");
-      }
-      const acknowledged = await gateRequest("/ack", {
-        challengeSha256: response.challengeSha256,
-        generation: response.generation,
-        runId: integrationRunId,
-      });
-      if (
-        !exactKeys(acknowledged, ["generation", "runId", "state"]) ||
-        acknowledged.generation !== response.generation ||
-        acknowledged.runId !== integrationRunId ||
-        acknowledged.state !== "armed"
-      ) {
-        recordModelGateArmFailure("control");
-        throw new Error("integration.codex.model-gate");
-      }
-      return checkpoint;
-    }
-    let health;
-    try {
-      health = await controlRequest(
-        "/health",
-        "GET",
-        undefined,
-        AbortSignal.timeout(Math.min(250, remaining())),
-      );
-    } catch (error) {
-      recordModelGateArmFailure("control");
-      throw error;
-    }
-    if (!exactKeys(health, ["state"]) || typeof health.state !== "string") {
-      recordModelGateArmFailure("control");
-      throw new Error("integration.codex.model-gate");
-    }
-    if (health.state === "denied") {
-      recordInteractivePhase("model-request-observed");
-      throw new Error("integration.codex.model-request-before-session-start");
-    }
-    if (health.state !== "pending") {
-      recordModelGateArmFailure("control");
-      throw new Error("integration.codex.model-gate");
-    }
-    if (!observedPendingHealth) {
-      recordInteractivePhase("model-gate-arm-health-pending");
-      observedPendingHealth = true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  recordModelGateArmFailure("session-start-missing");
-  throw new Error("integration.codex.hook-session-start-missing");
-};
-const releaseModelResponse = async () => {
-  codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
-  if (codexLedgerBaseline.length !== 1)
+const recordModelBaseline = () => {
+  const records = readCodexSessionLedgerRecords(homeDescriptor);
+  if (records.length !== 1) throw new Error("integration.codex.session-ledger");
+  codexSessionId = codexSessionIdentity(records);
+  const newline = records[0].content.indexOf("\n");
+  if (newline < 0) throw new Error("integration.codex.session-ledger");
+  const prefix = records[0].content.slice(0, newline + 1);
+  if (JSON.parse(prefix).type !== "session_meta")
     throw new Error("integration.codex.session-ledger");
-  codexSessionId = codexSessionIdentity(codexLedgerBaseline);
+  // Actual byte-zero metadata prefix of a newly created authenticated inode;
+  // not a claim that this sample preceded the model request.
+  codexLedgerBaseline = [{ ...records[0], content: prefix }];
   if (
+    codexSessionIdentity(codexLedgerBaseline) !== codexSessionId ||
     codexTurnTerminalObservedAfterBaseline(
       codexLedgerBaseline,
       codexLedgerBaseline,
@@ -971,96 +775,10 @@ const releaseModelResponse = async () => {
     )
   )
     throw new Error("integration.codex.session-ledger");
-  const response = await gateRequest("/release", { runId: integrationRunId });
-  if (
-    !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== integrationRunId ||
-    (response.state !== "admitted" && response.state !== "draining")
-  )
-    throw new Error("integration.codex.model-gate");
 };
-const sealRequestFailureHint = (error) =>
-  modelControlFailureHint ??
-  (error?.message === "integration.codex.model-gate-deadline"
-    ? "seal-deadline"
-    : "seal-request");
-const sealModelGate = async (checkpoint) => {
-  let value;
-  try {
-    value = await gateRequest("/seal", { runId: integrationRunId });
-  } catch (error) {
-    gateResearchHint = sealRequestFailureHint(error);
-    throw error;
-  }
-  if (!exactKeys(value, ["ledger", "receipt"])) {
-    gateResearchHint = "response-shape";
-    throw new Error("integration.codex.model-gate");
-  }
-  const receipt = value.receipt;
-  if (
-    !exactKeys(receipt, [
-      "challengeSha256",
-      "connectionCount",
-      "connections",
-      "cutoffUnsettled",
-      "ledgerCount",
-      "mutationGeneration",
-      "parserFailures",
-      "runId",
-      "sessionStartSpanSha256",
-      "state",
-    ]) ||
-    receipt.challengeSha256 !==
-      createHash("sha256").update(readinessChallenge).digest("hex") ||
-    receipt.connectionCount !== 1 ||
-    receipt.cutoffUnsettled !== false ||
-    !Array.isArray(receipt.connections) ||
-    receipt.connections.length !== 1 ||
-    !exactKeys(receipt.connections[0], [
-      "admission",
-      "closed",
-      "eof",
-      "generation",
-      "parserOutcome",
-      "parserTransportClosed",
-      "rawForwardedBytes",
-      "rawRejectedBytes",
-      "responseBytes",
-    ]) ||
-    receipt.connections[0].admission !== "admitted" ||
-    receipt.connections[0].closed !== true ||
-    receipt.connections[0].generation !== 1 ||
-    receipt.connections[0].parserOutcome !== "accepted" ||
-    receipt.connections[0].parserTransportClosed !== true ||
-    !Number.isSafeInteger(receipt.connections[0].rawForwardedBytes) ||
-    receipt.connections[0].rawForwardedBytes <= 0 ||
-    receipt.connections[0].rawRejectedBytes !== 0 ||
-    !Number.isSafeInteger(receipt.connections[0].responseBytes) ||
-    receipt.connections[0].responseBytes <= 0 ||
-    receipt.ledgerCount !== 1 ||
-    !Number.isSafeInteger(receipt.mutationGeneration) ||
-    receipt.mutationGeneration < 1 ||
-    receipt.parserFailures !== 0 ||
-    receipt.runId !== integrationRunId ||
-    receipt.sessionStartSpanSha256 !== checkpoint.spanSha256 ||
-    receipt.state !== "draining"
-  ) {
-    gateResearchHint = gateReceiptResearchRejection(receipt, {
-      challengeSha256: createHash("sha256")
-        .update(readinessChallenge)
-        .digest("hex"),
-      runId: integrationRunId,
-      sessionStartSpanSha256: checkpoint.spanSha256,
-    });
-    throw new Error("integration.codex.model-gate");
-  }
-  try {
-    return boundedRequestLedger(value.ledger);
-  } catch (error) {
-    gateResearchHint = "ledger-shape";
-    throw error;
-  }
-};
+// Retrieval is provisional. The outer controller accepts the full ledger only
+// after the original stop barrier and exact container join.
+const readTerminalModelRequests = async () => readModelRequests();
 const projectHarnessStatus = (
   records,
   installation,
@@ -1525,7 +1243,6 @@ try {
     throw new Error("integration.codex.model-gate");
   await configureModelGate(modelAdmissionCutoff);
   recordInteractivePhase("model-gate-configured");
-  await proveControlPlaneClosed();
   recordCandidateConfigStage("closed-marker");
   recordInteractivePhase("control-plane-closed");
   recordCandidateConfigStage("render");
@@ -1590,6 +1307,8 @@ try {
   candidateConfigStage = undefined;
   recordInteractivePhase("tui-readiness-challenge-published");
   recordInteractivePhase("tui-start");
+  if (readCodexSessionLedgerRecords(homeDescriptor).length !== 0)
+    throw new Error("integration.codex.session-ledger");
   const codexRun = run(
     "/usr/local/bin/node",
     ["/opt/agentscope/codex-candidate-dropper.mjs"],
@@ -1645,11 +1364,7 @@ try {
   recordInteractivePhase("tui-checkpoint");
   preArmExitPhase = "tui-exit-before-arm";
   recordInteractivePhase("model-gate-arm-start");
-  const gateArm = armModelGate(modelAdmissionCutoff);
-  sessionStartBeforeFirstModelRequestAdmission = await Promise.race([
-    gateArm,
-    earlyCodexExit,
-  ]);
+  recordModelBaseline();
   armPending = false;
   recordInteractivePhase("model-gate-arm-complete");
   await waitForModelRequestBeforeDeadline({
@@ -1661,7 +1376,6 @@ try {
   });
   recordInteractivePhase("model-request-observed");
   recordInteractivePhase("model-request");
-  await releaseModelResponse();
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
@@ -1719,13 +1433,6 @@ try {
     recordInteractivePhase("hook-command-missing");
     throw new Error("integration.codex.hook-command-missing");
   }
-  if (
-    !codexSessionStartCheckpointMatchesLifecycle(
-      sessionStartBeforeFirstModelRequestAdmission,
-      rootHookLifecycle,
-    )
-  )
-    throw new Error("integration.codex.hook-lifecycle");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1743,9 +1450,7 @@ try {
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
   recordInteractivePhase("verify-gate");
-  const modelRequests = await sealModelGate(
-    sessionStartBeforeFirstModelRequestAdmission,
-  );
+  const modelRequests = await readTerminalModelRequests();
   recordInteractivePhase("verify-trace-get");
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
@@ -1826,9 +1531,9 @@ try {
     scenarioId,
   });
   recordInteractivePhase("verify-evidence");
-  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
-    "base64url",
-  );
+  const encodedEvidence = Buffer.from(
+    JSON.stringify({ ...evidence, mockServerTraffic: upstreamTraffic }),
+  ).toString("base64url");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1841,19 +1546,6 @@ try {
   });
   completed = true;
 } finally {
-  if (!completed) {
-    try {
-      await gateRequest(
-        "/deny",
-        { runId: integrationRunId },
-        AbortSignal.timeout(Math.min(1_000, Math.max(1, deadline - bootNow()))),
-      );
-    } catch {
-      // The outer controller retains the causal failure and retires the exact
-      // sidecar when the in-container denial receipt cannot be completed.
-    }
-  }
-  modelControlAgent.destroy();
   if (localSqliteLifecycleDescriptor !== undefined)
     closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)

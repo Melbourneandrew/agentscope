@@ -124,7 +124,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(5);
+    expect(scenario?.runtimeArtifacts).toHaveLength(4);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -312,9 +312,12 @@ describe("integration capability manifest", () => {
     );
     expect(configOwner).toBeGreaterThan(configMode);
     expect(configFinalProof).toBeGreaterThan(configOwner);
-    expect(source).toContain("fchownSync(ledgerDescriptor, 0, 0);");
-    expect(source).toContain("fchmodSync(ledgerDescriptor, 0o700);");
-    expect(source).toContain('ledger !== "/ledger"');
+    for (const literal of [
+      "fchownSync(ledgerDescriptor, 0, 0);",
+      "fchmodSync(ledgerDescriptor, 0o700);",
+      'ledger !== "/ledger"',
+    ])
+      expect(source).toContain(literal);
     expect(source.indexOf("fchmodSync(ledgerDescriptor, 0o700);")).toBeLessThan(
       source.indexOf('recordInteractivePhase("init")'),
     );
@@ -327,12 +330,15 @@ describe("integration capability manifest", () => {
       "publish",
     ])
       expect(source).toContain(`recordCandidateConfigStage("${stage}");`);
-    expect(source).toContain("candidateConfigStage = undefined;");
-    expect(source).toContain("codexHomeStatus.uid !== 1000");
-    expect(source).toContain("hookStatus.uid !== 1000");
-    expect(source).toContain("launcherStatus.uid !== 1000");
-    expect(source).toContain("(hookStatus.mode & 0o7777) !== 0o600");
-    expect(source).toContain("(launcherStatus.mode & 0o7777) !== 0o700");
+    for (const literal of [
+      "candidateConfigStage = undefined;",
+      "codexHomeStatus.uid !== 1000",
+      "hookStatus.uid !== 1000",
+      "launcherStatus.uid !== 1000",
+      "(hookStatus.mode & 0o7777) !== 0o600",
+      "(launcherStatus.mode & 0o7777) !== 0o700",
+    ])
+      expect(source).toContain(literal);
     expect(dropperSource).toContain(
       "process.setgid(1000);\nprocess.setuid(1000);",
     );
@@ -343,8 +349,8 @@ describe("integration capability manifest", () => {
     const readinessChallengePublication = source.indexOf(
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
-    const sessionStartCheckpoint = source.indexOf(
-      "      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
+    const freshSessionHome = source.indexOf(
+      "readCodexSessionLedgerRecords(homeDescriptor).length !== 0",
     );
     const explicitHookEnablement = dropperSource.indexOf(
       '    "--enable",\n    "hooks",\n',
@@ -370,7 +376,10 @@ describe("integration capability manifest", () => {
     const checkpointWait = source.indexOf(
       "  const checkpointWitness = waitForCheckpointWitness();\n",
     );
-    const modelResponse = source.indexOf("  await releaseModelResponse();\n");
+    const metadataBaseline = source.indexOf(
+      "  recordModelBaseline();\n",
+      checkpointAcknowledgement,
+    );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
       modelRequest,
@@ -380,7 +389,8 @@ describe("integration capability manifest", () => {
       terminalWait,
     );
     expect(codexLaunch).toBeGreaterThan(-1);
-    expect(sessionStartCheckpoint).toBeGreaterThan(-1);
+    expect(freshSessionHome).toBeGreaterThan(-1);
+    expect(freshSessionHome).toBeLessThan(codexLaunch);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
     expect(readinessChallengePublication).toBeGreaterThan(challengeRead);
@@ -395,72 +405,51 @@ describe("integration capability manifest", () => {
     expect(checkpointWait).toBeGreaterThan(codexLaunch);
     expect(checkpointWait).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
-    expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
+    expect(metadataBaseline).toBeGreaterThan(checkpointAcknowledgement);
+    expect(metadataBaseline).toBeLessThan(modelRequest);
+    expect(source).not.toContain(
+      "inspectCodexSessionStartBeforeFirstModelRequestAdmission",
+    );
     expect(source).not.toContain("      prompt,\n");
-    expect(source).toContain(
+    for (const literal of [
       "const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;",
-    );
-    expect(source).toContain(
       "terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;",
-    );
-    expect(source).toContain(
-      'body.replace(\n        "AGENTSCOPE_PTY_COMPLETE",\n        expectedAssistantMessage,\n      )',
-    );
-    expect(source).toContain("baseUrl: `${modelEndpoint}/v1`,");
-    expect(source).toContain(
-      "codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);",
-    );
+      'body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage)',
+      "baseUrl: `${modelEndpoint}/v1`,",
+      "codexLedgerBaseline = [{ ...records[0], content: prefix }];",
+    ])
+      expect(source).toContain(literal);
     expect(source).not.toContain("readFileSync(`/proc/${pid}/stat`");
     expect(source).not.toContain('readdirSync("/proc"');
-    expect(source).toContain(
+    for (const literal of [
       "const checkpointWitness = waitForCheckpointWitness();",
-    );
-    expect(source).toContain(
       'recordInteractivePhase("tui-child-rejected");\n      throw new Error("integration.codex.tui-child-rejected");',
-    );
-    expect(source).toContain(
       'preCheckpointFailureDiagnostic = `integration.fixture.codex-${kind}`;\n  writeFileSync(\n    join(ledger, "interactive-failure.txt"),\n    `${preCheckpointFailureDiagnostic}\\n`,\n    { flag: "wx", mode: 0o600 },\n  );',
-    );
+    ])
+      expect(source).toContain(literal);
     expect(source).not.toContain('process.once("SIGUSR2", onSignal);');
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
-    expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
-    expect(source).toContain(
+    for (const literal of [
+      "decodeCodexJoinDeadlineExitCode(exitCode) ??",
       "codexProjectionFailureDiagnostic(error?.message)",
-    );
-    expect(source).toContain("codexUninstallFailureDiagnostic(error?.message)");
-    expect(source).toContain(
+      "codexUninstallFailureDiagnostic(error?.message)",
       "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    postTraceFailureDiagnostic(error);",
-    );
-    expect(source).toContain(
       'if (interactiveFailurePhase === "verify-projection")',
-    );
-    expect(source).toContain(
       'if (interactiveFailurePhase === "verify-uninstall")',
-    );
-    expect(source).toContain(
       'if (interactiveFailurePhase === "verify-trace-get")',
-    );
-    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
-    expect(source).toContain(
+      "classifyCodexTraceGetFailure(error?.message)",
       "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
-    );
-    expect(source).toContain(
       ": `integration.fixture.codex-${interactiveFailurePhase}`);",
-    );
-    expect(source).toContain("`${diagnostic}\\n`");
-    expect(source).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
-    expect(source).toContain("encodeCodexJoinDeadlineExitCode(");
-    expect(source).toContain(
+      "`${diagnostic}\\n`",
+      "exitCode = 64 + interactiveFailurePhaseIndex;",
+      "encodeCodexJoinDeadlineExitCode(",
       'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
-    );
-    expect(source).toContain(
       "value.discovery.configurationLocationCount !== 2",
-    );
-    expect(source).toContain(
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
-    );
+    ])
+      expect(source).toContain(literal);
     const rootLogDirectory = source.indexOf(
       "const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\\n${createCodexInternalProviderConfiguration(",
     );
@@ -512,9 +501,12 @@ describe("integration capability manifest", () => {
     const terminalObservation = source.indexOf(
       "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
     );
-    expect(source).toContain("localSqliteAcceptanceBaseline");
-    expect(source).toContain("classifyLocalSqliteOutcomeAfterBaseline");
-    expect(source).toContain("openOperationalStateHealth");
+    for (const literal of [
+      "localSqliteAcceptanceBaseline",
+      "classifyLocalSqliteOutcomeAfterBaseline",
+      "openOperationalStateHealth",
+    ])
+      expect(source).toContain(literal);
     const traceSummaryWait = source.slice(
       source.indexOf("const waitForTraceSummary ="),
       source.indexOf("let completed = false;"),
@@ -633,13 +625,12 @@ describe("integration capability manifest", () => {
     expect(postJoinDeadline).toBeGreaterThan(codexJoin);
     expect(postJoinDeadline).toBeLessThan(traceSettlementPhase);
     expect(source).not.toContain("const waitForTraceSettlement =");
-    expect(source).toContain(
+    for (const literal of [
       "  await publishTerminalCompletionBeforeDeadline({",
-    );
-    expect(source).toContain('            child.kill("SIGKILL");\n');
-    expect(source).toContain(
+      '            child.kill("SIGKILL");\n',
       "      if (timer !== undefined) clearTimeout(timer);\n",
-    );
+    ])
+      expect(source).toContain(literal);
     expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
     expect(traceDeadline).toBeGreaterThan(challengeRead);
     expect(traceDeadline).toBeLessThan(modelRequest);
@@ -652,7 +643,7 @@ describe("integration capability manifest", () => {
       '    await cli(["harness", "status", "codex"], "agentscope harness status", {\n      monotonicDeadline: traceDeadline,\n    }),\n',
     );
     const evidenceEncoding = source.indexOf(
-      "  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(\n",
+      '  const encodedEvidence = Buffer.from(\n    JSON.stringify({ ...evidence, mockServerTraffic: upstreamTraffic }),\n  ).toString("base64url");\n',
     );
     const guardedEvidenceWrite = source.indexOf(
       '  recordTerminalObservationBeforeDeadline({\n    deadline: traceDeadline,\n    now: bootNow,\n    record: () =>\n      writeFileSync(\n        join(ledger, "fixture-result.json"),\n',
@@ -667,12 +658,14 @@ describe("integration capability manifest", () => {
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(checkpointAcknowledgement).toBeGreaterThan(codexLaunch);
     expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
-    expect(modelResponse).toBeGreaterThan(-1);
+    expect(metadataBaseline).toBeGreaterThan(-1);
     expect(codexJoin).toBeGreaterThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
-    expect(
-      source.indexOf("  await releaseModelResponse();\n", modelRequest),
-    ).toBeLessThan(terminalWait);
+    const configureUpstream = source.indexOf(
+      "  await configureModelGate(modelAdmissionCutoff);\n",
+    );
+    expect(configureUpstream).toBeGreaterThan(-1);
+    expect(configureUpstream).toBeLessThan(codexLaunch);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_TOPOLOGY");
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
@@ -752,6 +745,11 @@ describe("integration capability manifest", () => {
       "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
     );
     expect(codex.mockServerImage).toBe(codex.image);
+    expect(
+      manifest.scenarios.every(
+        (scenario) => scenario.mockServerImage === codex.image,
+      ),
+    ).toBe(true);
     expect(codex.image).not.toBe(
       manifest.scenarios.find(
         ({ scenarioId }) => scenarioId === "fixture-process-smoke",

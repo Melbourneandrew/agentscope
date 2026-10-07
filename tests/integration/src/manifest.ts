@@ -14,7 +14,6 @@ const dockerImage = z
   .regex(/^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f\d]{64}$/u);
 const fileDigest = z.string().regex(/^[a-f\d]{64}$/u);
 const sriSha512 = z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/u);
-const sha256Hex = z.string().regex(/^[a-f\d]{64}$/u);
 const npmPackageName = z
   .string()
   .regex(/^@[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/u);
@@ -35,6 +34,12 @@ const relativeScenarioProcessPath = z
   .string()
   .regex(/^(?:fixtures\/)?[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
   .refine((value) => !value.split("/").includes(".."));
+const scenarioSourceSchema = z.strictObject({
+  path: relativeScenarioProcessPath,
+  sha256: fileDigest,
+});
+const mockServerBaseImage =
+  "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
 const relativeWorkspaceArtifactPath = z
   .string()
   .regex(
@@ -69,7 +74,7 @@ const signedObjectSchema = z.strictObject({
     .int()
     .min(1)
     .max(384 * 1024 * 1024),
-  sha256: sha256Hex,
+  sha256: fileDigest,
 });
 
 const npmMaterialPackageSchema = z.strictObject({
@@ -80,7 +85,7 @@ const npmMaterialPackageSchema = z.strictObject({
       .int()
       .min(1)
       .max(64 * 1024),
-    bundleDigest: sha256Hex,
+    bundleDigest: fileDigest,
   }),
   installName: npmPackageName,
   packageName: npmPackageName,
@@ -252,7 +257,7 @@ const scenarioSchema = z
       .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
     mockServerImage: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
+      .refine((image): boolean => image === mockServerBaseImage),
     modelRoutes: uniqueList(id),
     tags: uniqueList(id),
     destinations: uniqueList(id),
@@ -260,14 +265,8 @@ const scenarioSchema = z
       path: relativeAdapterPath,
       sha256: fileDigest,
     }),
-    scenarioOracle: z.strictObject({
-      path: relativeScenarioProcessPath,
-      sha256: fileDigest,
-    }),
-    scenarioProcess: z.strictObject({
-      path: relativeScenarioProcessPath,
-      sha256: fileDigest,
-    }),
+    scenarioOracle: scenarioSourceSchema,
+    scenarioProcess: scenarioSourceSchema,
     runtimeArtifacts: z
       .array(runtimeArtifactSchema)
       .max(8)

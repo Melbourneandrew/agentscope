@@ -40,6 +40,7 @@ const modules = Object.freeze(
       "supplier-inventory.mjs",
       "build-recipe.mjs",
       "callback-patch.mjs",
+      "lifecycle-patch.mjs",
       "source-archive.mjs",
       "build-tool-archive.mjs",
       "bootstrap-archive.mjs",
@@ -69,6 +70,24 @@ const dockerfile = Buffer.from(
   ].join("\n"),
 );
 const reserve = 6_000;
+const serviceDockerfile = Buffer.from(
+  dockerfile
+    .toString("utf8")
+    .replace('"dependency-research"]', '"cache-seeding"]')
+    .replace('"offline-build"]', '"service-offline"]')
+    .replace(
+      "FROM scratch\nCOPY --from=offline --chmod=0644 /out/material.json /material.json",
+      [
+        "FROM ${BASE_IMAGE}",
+        "COPY --from=offline /supplier/tools/jdk-17.0.20.1+1 /opt/java",
+        "COPY --from=offline --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+        "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
+        "COPY --chmod=0444 expectations.json /config/expectations.json",
+        "USER 0:0",
+        'ENTRYPOINT ["/bin/sh", "-ec", "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080"]',
+      ].join("\n"),
+    ),
+);
 const fail = () => {
   throw new Error("integration.mockserver-material.supplier");
 };
@@ -120,7 +139,53 @@ const cleanup = (owned, deadline) => {
   check({ aborted: false }, deadline);
 };
 
-export const researchMockServerSupplier = async (input) => {
+const supplierContextFiles = (archives, service) => {
+  const files = {
+    ...archives,
+    "Supplier.Dockerfile":
+      service === undefined ? dockerfile : serviceDockerfile,
+  };
+  if (service !== undefined) {
+    if (
+      !/^agentscope-int-[a-f0-9]{16}:mockserver$/u.test(service.tag ?? "") ||
+      !Buffer.isBuffer(service.privateKey) ||
+      service.privateKey.length < 1 ||
+      service.privateKey.length > 4096 ||
+      !Buffer.isBuffer(service.jwks) ||
+      service.jwks.length < 1 ||
+      service.jwks.length > 4096 ||
+      !Buffer.isBuffer(service.expectations) ||
+      service.expectations.length < 1 ||
+      service.expectations.length > 1024 * 1024
+    )
+      fail();
+    files["control-private.pem"] = Buffer.from(service.privateKey);
+    files["control-jwks.json"] = Buffer.from(service.jwks);
+    files["expectations.json"] = Buffer.from(service.expectations);
+  }
+  for (const [name, snapshot] of Object.entries(modules)) {
+    if (
+      createHash("sha256").update(snapshot.bytes).digest("hex") !==
+      snapshot.sha256
+    )
+      fail();
+    files[name] = snapshot.bytes;
+  }
+  return files;
+};
+
+const preserveSupplierBuildFailure = (error, dockerClient) => {
+  try {
+    publishBootstrapGpgObservation(
+      preparedDockerClientDiagnostic(dockerClient),
+    );
+  } catch {
+    // Optional observation cannot replace the supplier's original failure.
+  }
+  throw error;
+};
+
+const prepareSupplier = async (input, service) => {
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserve - performance.now();
   if (
@@ -169,15 +234,7 @@ export const researchMockServerSupplier = async (input) => {
     created = true;
     owned = { parent, root: exactDirectory(rootPath), files: [] };
     if (owned.root.dev !== parent.dev) fail();
-    const files = { ...archives, "Supplier.Dockerfile": dockerfile };
-    for (const [name, snapshot] of Object.entries(modules)) {
-      if (
-        createHash("sha256").update(snapshot.bytes).digest("hex") !==
-        snapshot.sha256
-      )
-        fail();
-      files[name] = snapshot.bytes;
-    }
+    const files = supplierContextFiles(archives, service);
     for (const [name, bytes] of Object.entries(files)) {
       check(workSignal, deadline - reserve);
       sameDirectory(owned.root);
@@ -190,7 +247,7 @@ export const researchMockServerSupplier = async (input) => {
     const inventory = await buildPreparedDockerImage(dockerClient, {
       buildArguments: { BASE_IMAGE: base },
       buildNetwork: "default",
-      buildOutput: "evidence-tar",
+      buildOutput: service === undefined ? "evidence-tar" : "image",
       context: rootPath,
       dockerfile: "Supplier.Dockerfile",
       labels: {
@@ -199,37 +256,37 @@ export const researchMockServerSupplier = async (input) => {
       },
       maximumBuildContextBytes: 384 * 1024 * 1024,
       maximumMilliseconds: Math.floor(deadline - reserve - performance.now()),
-      retirementRequired: false,
+      retirementRequired: service !== undefined,
+      ...(service === undefined ? {} : { tag: service.tag }),
       signal: workSignal,
-    }).catch((error) => {
-      try {
-        publishBootstrapGpgObservation(
-          preparedDockerClientDiagnostic(dockerClient),
-        );
-      } catch {
-        // Optional observation cannot replace the supplier's original failure.
-      }
-      throw error;
-    });
+    }).catch((error) => preserveSupplierBuildFailure(error, dockerClient));
     check(workSignal, deadline - reserve);
     publishMaterialResearchPhase("supplier-inventory");
     if (
-      !Buffer.isBuffer(inventory) ||
-      inventory.length < 1 ||
-      inventory.length > 8 * 1024 * 1024
+      service !== undefined
+        ? !/^sha256-[a-f0-9]{64}$/u.test(inventory ?? "")
+        : !Buffer.isBuffer(inventory) ||
+          inventory.length < 1 ||
+          inventory.length > 8 * 1024 * 1024
     )
       fail();
-    const bytes = Buffer.from(inventory);
+    const bytes = service === undefined ? Buffer.from(inventory) : undefined;
     publishMaterialResearchPhase("supplier-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     created = false;
     check(signal, deadline);
-    return Object.freeze({
-      evidenceScope: "untrusted-cache-and-jar-research-only",
-      inventory: bytes,
-      bootstrapVerification: bootstrap.verification,
-    });
+    return service === undefined
+      ? Object.freeze({
+          evidenceScope: "untrusted-cache-and-jar-research-only",
+          inventory: bytes,
+          bootstrapVerification: bootstrap.verification,
+        })
+      : Object.freeze({
+          imageId: inventory,
+          tag: service.tag,
+          bootstrapVerification: bootstrap.verification,
+        });
   } catch (error) {
     if (owned !== undefined) {
       try {
@@ -244,3 +301,9 @@ export const researchMockServerSupplier = async (input) => {
     clearTimeout(timer);
   }
 };
+
+export const researchMockServerSupplier = (input) =>
+  prepareSupplier(input, undefined);
+/** Actual fresh offline image, not a whole-cache inventory certificate. */
+export const prepareMockServerService = (input, service) =>
+  prepareSupplier(input, service);

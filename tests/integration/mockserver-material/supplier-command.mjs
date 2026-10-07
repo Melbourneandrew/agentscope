@@ -23,6 +23,10 @@ import {
 } from "./build-recipe.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { patchCallbackSource } from "./callback-patch.mjs";
+import {
+  lifecycleSourcePins,
+  patchMockServerLifecycleSource,
+} from "./lifecycle-patch.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
 import { inventoryMockServerSupplier } from "./supplier-inventory.mjs";
 
@@ -64,7 +68,7 @@ const writeInventory = (inventory, observe) => {
     throw error;
   }
 };
-const readFixed = (path, size, mode = 0o600) => {
+const readFixed = (path, size, mode = 0o600, expected) => {
   const fd = openSync(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -78,6 +82,21 @@ const readFixed = (path, size, mode = 0o600) => {
       before.uid !== 0 ||
       before.gid !== 0 ||
       (before.mode & 0o7777) !== mode
+    )
+      throw new Error("integration.mockserver-material.supplier-command");
+    if (
+      expected !== undefined &&
+      [
+        "dev",
+        "ino",
+        "mode",
+        "uid",
+        "gid",
+        "nlink",
+        "size",
+        "mtimeMs",
+        "ctimeMs",
+      ].some((field) => before[field] !== expected[field])
     )
       throw new Error("integration.mockserver-material.supplier-command");
     const bytes = Buffer.alloc(size);
@@ -152,13 +171,67 @@ const adoptCache = (path, expected) => {
   }
 };
 
+const patchSupplierSource = (service) => {
+  const callback = mockServerSupplierLayout.callback;
+  writeFileSync(
+    callback,
+    patchCallbackSource(readFixed(callback, 9101, 0o664)),
+    {
+      flag: "w",
+      mode: 0o644,
+    },
+  );
+  if (service) {
+    for (const pin of lifecycleSourcePins) {
+      const path = `/supplier/source/${pin.path}`;
+      writeFileSync(
+        path,
+        patchMockServerLifecycleSource(
+          pin.name,
+          readFixed(path, pin.bytes, 0o664),
+        ),
+        { flag: "w", mode: 0o644 },
+      );
+    }
+  }
+};
+const finishServiceArtifact = (offline, caches) => {
+  // The next stage adopts only physical cache roots, never this stage's
+  // generated source, frontend, target or JAR. The final offline JAR stays
+  // inside the same builder and is copied by its fixed Dockerfile path.
+  for (const name of caches) adoptCache(`/supplier/${name}`);
+  if (offline) {
+    const artifact = mockServerSupplierLayout.artifact;
+    const named = lstatSync(artifact);
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== 1 ||
+      named.size < 1 ||
+      named.size > 256 * 1024 * 1024
+    )
+      throw new Error("integration.mockserver-material.supplier-command");
+    readFixed(artifact, named.size, 0o644, named);
+    const current = lstatSync(artifact);
+    if (
+      [...cacheFields, "nlink", "size", "mtimeMs", "ctimeMs"].some(
+        (field) => named[field] !== current[field],
+      )
+    )
+      throw new Error("integration.mockserver-material.supplier-command");
+  }
+};
+
 const runSupplier = async (run, phase, observe = true) => {
-  const plan = mockServerSupplierBuildPlan(phase);
+  const service = phase === "cache-seeding" || phase === "service-offline";
+  const offline = phase === "offline-build" || phase === "service-offline";
+  const plan = mockServerSupplierBuildPlan(
+    service ? (offline ? "offline-build" : "dependency-research") : phase,
+  );
   const caches = ["maven-repository", "npm-cache"];
-  const adopted =
-    phase === "offline-build"
-      ? caches.map((name) => adoptCache(`/supplier/${name}`))
-      : [];
+  const adopted = offline
+    ? caches.map((name) => adoptCache(`/supplier/${name}`))
+    : [];
   enterSupplier(observe, "supplier-entry");
   // Only exact previously authenticated archives are admitted. Host staging also
   // authenticates them; this rejects mutation at the actual extraction boundary.
@@ -184,7 +257,7 @@ const runSupplier = async (run, phase, observe = true) => {
     "maven-home",
   ])
     mkdirSync(`/supplier/${name}`, { mode: 0o700 });
-  if (phase === "dependency-research")
+  if (!offline)
     for (const name of caches) mkdirSync(`/supplier/${name}`, { mode: 0o700 });
   for (const [archive, destination] of [
     ["source", "/supplier/source"],
@@ -210,15 +283,7 @@ const runSupplier = async (run, phase, observe = true) => {
     ["-q", "/supplier/inputs/maven.zip", "-d", "/supplier/tools"],
     options,
   );
-  const callback = mockServerSupplierLayout.callback;
-  writeFileSync(
-    callback,
-    patchCallbackSource(readFixed(callback, 9101, 0o664)),
-    {
-      flag: "w",
-      mode: 0o644,
-    },
-  );
+  patchSupplierSource(service);
   writeFileSync("/supplier/settings.xml", supplierMavenSettings, {
     flag: "wx",
     mode: 0o600,
@@ -264,6 +329,10 @@ const runSupplier = async (run, phase, observe = true) => {
   });
   for (const [index, before] of adopted.entries())
     adoptCache(`/supplier/${caches[index]}`, before);
+  if (service) {
+    finishServiceArtifact(offline, caches);
+    return;
+  }
   enterSupplier(observe, "supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier", (category) => {
     if (category === "inventory-read")
@@ -282,14 +351,20 @@ export const runMockServerSupplierResearch = async (run) =>
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (
     process.argv.length !== 3 ||
-    !["dependency-research", "offline-build"].includes(process.argv[2])
+    ![
+      "dependency-research",
+      "offline-build",
+      "cache-seeding",
+      "service-offline",
+    ].includes(process.argv[2])
   )
     throw new Error("integration.mockserver-material.supplier-command");
   try {
     await runSupplier(
       execute,
       process.argv[2],
-      process.argv[2] === "offline-build",
+      process.argv[2] === "offline-build" ||
+        process.argv[2] === "service-offline",
     );
   } catch {
     process.exitCode = 1;

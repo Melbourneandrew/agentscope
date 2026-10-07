@@ -1305,8 +1305,6 @@ export const decodeImmutableCandidateHandoff = (encoded, expected) => {
 
 const selectedControlMountMatches = (container, controlVolume, handoff) => {
   if (!Array.isArray(container?.Mounts)) return false;
-  if (handoff.scenarioId !== "codex-tui-trace-smoke")
-    return container.Mounts.length === 0 && controlVolume === undefined;
   const mount = container.Mounts[0];
   return (
     controlVolume?.name === `agentscope-int-${handoff.runId}-control` &&
