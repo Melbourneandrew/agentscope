@@ -363,19 +363,14 @@ const stageBuildContext = (plan) => {
   )
     throw new Error("integration.isolation.context");
   const sources = [
-    ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
-    [
+    ...[
+      "runner.mjs",
       "immutable-candidate-authority.mjs",
-      resolve(integrationRoot, "immutable-candidate-authority.mjs"),
-    ],
-    [
       "retained-fixture-result.mjs",
-      resolve(integrationRoot, "retained-fixture-result.mjs"),
-    ],
-    [
       "destination-server.mjs",
-      resolve(integrationRoot, "destination-server.mjs"),
-    ],
+      "codex-pty-research.mjs",
+      "selected-runtime-files.mjs",
+    ].map((name) => [name, resolve(integrationRoot, name)]),
     [
       "scenario-process.mjs",
       resolve(integrationRoot, scenario.scenarioProcess.path),
@@ -407,10 +402,6 @@ const stageBuildContext = (plan) => {
     [
       "testkit/platform-fixture.js",
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
-    ],
-    [
-      "codex-pty-research.mjs",
-      resolve(integrationRoot, "codex-pty-research.mjs"),
     ],
     [
       "capability-manifest.json",
@@ -554,7 +545,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs selected-runtime-files.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
