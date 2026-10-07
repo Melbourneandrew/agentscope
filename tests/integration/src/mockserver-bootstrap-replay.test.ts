@@ -16,6 +16,7 @@ const supplierStages = [
   "supplier-connected-inventory",
   "supplier-connected-inventory-read",
   "supplier-connected-inventory-guard",
+  "supplier-connected-inventory-internal",
   "supplier-connected-output-create",
   "supplier-connected-output-write",
   "supplier-entry",
@@ -24,6 +25,7 @@ const supplierStages = [
   "supplier-inventory",
   "supplier-inventory-read",
   "supplier-inventory-guard",
+  "supplier-inventory-internal",
   "supplier-output-create",
   "supplier-output-write",
 ];
@@ -126,7 +128,7 @@ describe("exact bounded BuildKit failed-RUN replay", () => {
 describe("closed supplier last-entered observations", () => {
   it("refuses any new marker after a first failure category while allowing exact replay", () => {
     const failures = supplierStages.filter((stage) =>
-      /-(?:inventory-read|inventory-guard|output-create|output-write)$/u.test(
+      /-(?:inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
         stage,
       ),
     );
@@ -141,7 +143,7 @@ describe("closed supplier last-entered observations", () => {
         .slice(0, supplierStages.indexOf(stage) + 1)
         .filter(
           (value) =>
-            !/-(?:inventory-read|inventory-guard|output-create|output-write)$/u.test(
+            !/-(?:inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
               value,
             ) || value === stage,
         );

@@ -83,6 +83,7 @@ const bootstrapStages = [
   "supplier-connected-inventory",
   "supplier-connected-inventory-read",
   "supplier-connected-inventory-guard",
+  "supplier-connected-inventory-internal",
   "supplier-connected-output-create",
   "supplier-connected-output-write",
   "supplier-entry",
@@ -91,6 +92,7 @@ const bootstrapStages = [
   "supplier-inventory",
   "supplier-inventory-read",
   "supplier-inventory-guard",
+  "supplier-inventory-internal",
   "supplier-output-create",
   "supplier-output-write",
 ];

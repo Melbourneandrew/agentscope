@@ -270,6 +270,8 @@ const runSupplier = async (run, phase, observe = true) => {
       enterSupplier(observe, "supplier-inventory-read");
     else if (category === "inventory-guard")
       enterSupplier(observe, "supplier-inventory-guard");
+    else if (category === "inventory-internal")
+      enterSupplier(observe, "supplier-inventory-internal");
   });
   writeInventory(inventory, observe);
 };

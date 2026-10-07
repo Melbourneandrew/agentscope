@@ -164,6 +164,69 @@ describe("supplier cache/JAR observations (not dependency authentication)", () =
   });
 });
 describe("supplier inventory first-failure observations", () => {
+  it("does not report a failure on successful inventory", () => {
+    const categories: string[] = [];
+    expect(
+      inventoryMockServerSupplier(fixture(), (category) =>
+        categories.push(category),
+      ),
+    ).toBeInstanceOf(Buffer);
+    expect(categories).toEqual([]);
+  });
+  it.each([false, true])(
+    "preserves a non-IO compute failure with sink failure %s",
+    (sinkFailure) => {
+      const root = fixture();
+      const categories: string[] = [];
+      let errorReads = 0;
+      let closes = 0;
+      const primary = new Error("SECRET_CANARY");
+      Object.defineProperty(primary, "message", {
+        get: () => {
+          errorReads += 1;
+          throw Error("SECRET_CANARY");
+        },
+      });
+      const body = readFileSync(
+        new URL(
+          "../mockserver-material/supplier-inventory.mjs",
+          import.meta.url,
+        ),
+        "utf8",
+      )
+        .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
+        .replace(
+          "export const inventoryMockServerSupplier",
+          "const inventoryMockServerSupplier",
+        );
+      const result: unknown = runInNewContext(
+        `${body}\n(() => { try { inventoryMockServerSupplier(root, observer); } catch (error) { return error; } })();`,
+        {
+          ...fileSystem,
+          resolve,
+          root,
+          Buffer,
+          process,
+          createHash: () => {
+            throw primary;
+          },
+          closeSync: (fd: number) => {
+            closes += 1;
+            fileSystem.closeSync(fd);
+          },
+          observer: (category: string) => {
+            categories.push(category);
+            if (sinkFailure) throw Error("SINK_CANARY");
+          },
+        },
+      );
+      expect(result).toBe(primary);
+      expect(categories).toEqual(["inventory-internal"]);
+      expect(categories.join("")).not.toContain("CANARY");
+      expect(errorReads).toBe(0);
+      expect(closes).toBe(1);
+    },
+  );
   it("reports only the first fixed guard category and preserves refusal with a throwing sink", () => {
     const categories: string[] = [];
     const sink = new Error("SECRET_CANARY");

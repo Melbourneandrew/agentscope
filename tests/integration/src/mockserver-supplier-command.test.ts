@@ -432,8 +432,7 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
 afterEach(() => vi.restoreAllMocks());
 describe("supplier command extraction/input boundary", () => {
   it.each([
-    "inventory-read",
-    "inventory-guard",
+    ...["read", "guard", "internal"].map((kind) => `inventory-${kind}`),
     "output-create",
     "output-write",
   ])(

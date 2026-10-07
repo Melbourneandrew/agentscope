@@ -219,5 +219,10 @@ export const inventoryMockServerSupplier = (root, observer) => {
       // A diagnostic sink cannot replace the original operation failure.
     }
   };
-  return inventory(root, observe);
+  try {
+    return inventory(root, observe);
+  } catch (error) {
+    observe("inventory-internal");
+    throw error;
+  }
 };
