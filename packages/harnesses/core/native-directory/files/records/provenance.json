@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "capability": "installation-directory",
+  "disposition": "proposed-unpublished-execution-eligible",
+  "primitiveSourceDigest": "sha256:49f8170f3564584150ea6827d98ca10479537ab5fa329e17086dbc60515be816",
+  "loaderSourceDigest": "sha256:083a8f492dbe1460c89104df7c440f92b612296b35d53e61e8412955173e8e80",
+  "releaseMaterialsDigest": "sha256:8f37a4e66e81e7d0576d44b701446f18e392dd5b588a8d3800ec24bb6853c423",
+  "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+  "sourceTree": "6165479a49f4d4bb5febdcc3a365d9950ddb2243",
+  "candidateRunId": "37546616926",
+  "componentProofSourceDigest": "sha256:acac611d2192e823dcc1d636c80beb670aa212ca93802682650c66581850ad26",
+  "outputs": [
+    {
+      "relativePath": "native/napi8-linux-x64-glibc/directory.node",
+      "bytes": 16656,
+      "digest": "sha256:909685d906cba53b31079dee3c58edb71bcac94cfb9aae382c46dbb804981f9b"
+    },
+    {
+      "relativePath": "native/napi8-darwin-arm64/directory.node",
+      "bytes": 51680,
+      "digest": "sha256:3697db5a055a8f8c810ea797b479d0ee4ace6a22d7bfcb289140ae9fcbbcb16c"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "agentscope-installation-directory",
+  "documentNamespace": "https://github.com/Melbourneandrew/agentscope/actions/runs/37546616926/directory-native",
+  "creationInfo": {
+    "creators": ["Organization: Agentscope"],
+    "created": "2026-10-06T23:30:19Z"
+  },
+  "files": [
+    {
+      "SPDXID": "SPDXRef-linux",
+      "fileName": "native/napi8-linux-x64-glibc/directory.node",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "909685d906cba53b31079dee3c58edb71bcac94cfb9aae382c46dbb804981f9b"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "SPDXID": "SPDXRef-darwin",
+      "fileName": "native/napi8-darwin-arm64/directory.node",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3697db5a055a8f8c810ea797b479d0ee4ace6a22d7bfcb289140ae9fcbbcb16c"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "externalDocumentRefs": []
+}

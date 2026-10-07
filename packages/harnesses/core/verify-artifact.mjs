@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { verifyDirectoryArtifact } from "./native-directory/verify-artifact.mjs";
 
 import {
   defineHarnessDescriptor,
@@ -40,9 +41,11 @@ const listRegularFiles = (directory, prefix = "") => {
 const sources = listRegularFiles(resolve(import.meta.dirname, "src"))
   .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
   .map((file) => file.slice(0, -3));
-const expected = sources
-  .flatMap((file) => [`${file}.d.ts`, `${file}.js`])
-  .sort();
+const directoryAsset = await verifyDirectoryArtifact(true);
+const expected = [
+  ...sources.flatMap((file) => [`${file}.d.ts`, `${file}.js`]),
+  ...directoryAsset.paths.map((file) => `directory-runtime/${file}`),
+].sort();
 const actual = listRegularFiles(resolve(import.meta.dirname, "dist"));
 if (
   actual.length !== expected.length ||

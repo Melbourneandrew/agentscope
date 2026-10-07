@@ -80,6 +80,7 @@ export type {
   NativeUnavailableState,
 } from "./native-mapping.js";
 export type {
+  HarnessDirectoryInspection,
   HarnessInstallationDisposition,
   HarnessInstallationPlan,
   HarnessInstallationPlanInput,
