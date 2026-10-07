@@ -63,6 +63,17 @@ import type {
   SelectedPtyExecutionRequest,
 } from "../pty-terminal-contract.js";
 
+import {
+  exactPtyExit,
+  exactPtyObservation,
+  exactPtyRead,
+  exactPtyWrite,
+  classifyPtyPumpFailure,
+  type PtyExit,
+  type PtyTerminalObservation,
+  type PtyReadObservation,
+  type PtyWriteObservation,
+} from "./pty-transport-observations.js";
 type BackendTerminalReceipt = Readonly<{
   cleanup: "clean" | "uncertain";
   monotonicShutdownDeadlineMs: number;
@@ -1451,22 +1462,7 @@ const signalExactProcess = (
   return true;
 };
 
-type PtyExit = Readonly<{ code: number; signal: number }>;
 type PtyTerminalHandle = object;
-type PtyTerminalObservation = Readonly<{
-  canonical: boolean;
-  columns: number;
-  eofByte: number;
-  isTTY: boolean;
-  rows: number;
-}>;
-type PtyReadObservation =
-  | Readonly<{ status: "data"; bytes: Buffer }>
-  | Readonly<{ status: "eof" | "eio" | "would-block" }>;
-type PtyWriteObservation = Readonly<{
-  status: "complete" | "partial" | "would-block";
-  bytesWritten: number;
-}>;
 type PtyProcess = Readonly<{
   pid: number;
   closed: Promise<PtyExit>;
@@ -2561,87 +2557,6 @@ const ptySignal = (signal: number): "SIGINT" | "SIGTERM" | "SIGKILL" | null =>
         ? "SIGKILL"
         : null;
 
-const exactPtyExit = (value: PtyExit): PtyExit => {
-  if (
-    !plainRecord(value) ||
-    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
-      "code\0signal" ||
-    !boundedNonnegativeInteger(ownData(value, "signal"), 64) ||
-    !(
-      boundedNonnegativeInteger(ownData(value, "code"), 255) &&
-      (ownData(value, "signal") === 0 || ownData(value, "code") === 0)
-    )
-  )
-    return fail("testkit.pty.transport");
-  return value;
-};
-
-const exactPtyObservation = (
-  value: PtyTerminalObservation,
-  geometry: Readonly<{ columns: number; rows: number }>,
-  requireCanonicalMode: boolean,
-): PtyTerminalObservation => {
-  if (
-    !plainRecord(value) ||
-    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
-      "canonical\0columns\0eofByte\0isTTY\0rows" ||
-    ownData(value, "isTTY") !== true ||
-    typeof ownData(value, "canonical") !== "boolean" ||
-    (requireCanonicalMode && ownData(value, "canonical") !== true) ||
-    ownData(value, "columns") !== geometry.columns ||
-    ownData(value, "rows") !== geometry.rows ||
-    !boundedNonnegativeInteger(ownData(value, "eofByte"), 255)
-  )
-    return fail("testkit.pty.geometry");
-  return value;
-};
-
-const exactPtyRead = (value: PtyReadObservation): PtyReadObservation => {
-  if (!plainRecord(value)) return fail("testkit.pty.transport");
-  const status = ownData(value, "status");
-  const keys = safeReflectApply(objectKeys, Object, [value]).sort();
-  if (status === "data") {
-    const bytes = ownData(value, "bytes");
-    if (
-      keys.join("\0") !== "bytes\0status" ||
-      !Buffer.isBuffer(bytes) ||
-      bytes.length < 1 ||
-      bytes.length > 4_096
-    )
-      return fail("testkit.pty.transport");
-  } else if (
-    (status !== "eof" && status !== "eio" && status !== "would-block") ||
-    keys.length !== 1 ||
-    keys[0] !== "status"
-  )
-    return fail("testkit.pty.transport");
-  return value;
-};
-
-const exactPtyWrite = (
-  value: PtyWriteObservation,
-  maximumBytes: number,
-): PtyWriteObservation => {
-  if (
-    !plainRecord(value) ||
-    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
-      "bytesWritten\0status" ||
-    (ownData(value, "status") !== "complete" &&
-      ownData(value, "status") !== "partial" &&
-      ownData(value, "status") !== "would-block") ||
-    !boundedNonnegativeInteger(ownData(value, "bytesWritten"), maximumBytes) ||
-    (ownData(value, "status") === "would-block" &&
-      ownData(value, "bytesWritten") !== 0) ||
-    (ownData(value, "status") === "complete" &&
-      ownData(value, "bytesWritten") !== maximumBytes) ||
-    (ownData(value, "status") === "partial" &&
-      (ownData(value, "bytesWritten") === 0 ||
-        ownData(value, "bytesWritten") === maximumBytes))
-  )
-    return fail("testkit.pty.transport");
-  return value;
-};
-
 const publishTopologyCheckpointIfSelected = (
   runtime: PtyRuntime,
   request: SelectedPtyExecutionRequest,
@@ -2795,6 +2710,7 @@ const armSelectedPty = (
     );
     let outputLimited = false;
     let transportError = false;
+    let pumpFailureDiagnostic: SelectedPtyExecutionReceipt["pumpFailureDiagnostic"];
     let inputOffset = 0;
     let actionInputOffset = 0;
     let actionIndex = 0;
@@ -2872,6 +2788,9 @@ const armSelectedPty = (
     // sequence adjacent so no action can escape the selected backend authority.
     // eslint-disable-next-line complexity,max-lines-per-function
     const pumpTransport = (allowInput: boolean): void => {
+      let pumpOperation: NonNullable<
+        SelectedPtyExecutionReceipt["pumpFailureDiagnostic"]
+      >["operation"] = "pump-other";
       try {
         const flushTerminalResponse = (): boolean => {
           if (pendingTerminalResponseOffset >= pendingTerminalResponse.length)
@@ -2879,10 +2798,12 @@ const armSelectedPty = (
           const pending = pendingTerminalResponse.subarray(
             pendingTerminalResponseOffset,
           );
+          pumpOperation = "write";
           const written = exactPtyWrite(child.write(pending), pending.length);
           pendingTerminalResponseOffset += written.bytesWritten;
           const responseFlushed =
             pendingTerminalResponseOffset === pendingTerminalResponse.length;
+          pumpOperation = "emulator";
           if (
             responseFlushed &&
             request.readiness.kind !== "challenge-process-topology"
@@ -2897,6 +2818,7 @@ const armSelectedPty = (
         const collectTerminalResponse = (): void => {
           if (pendingTerminalResponseOffset < pendingTerminalResponse.length)
             return fail("testkit.pty.transport");
+          pumpOperation = "emulator";
           const response = safeReflectApply(
             emulatorTakeTerminalResponses,
             terminal,
@@ -3000,6 +2922,7 @@ const armSelectedPty = (
           // Keep one complete semantic marker inside the emulator's bounded
           // recent window, then stop at readiness so its gated action cannot
           // be overtaken by a fast child's later completion output.
+          pumpOperation = "read";
           const observation = exactPtyRead(child.read(512));
           if (observation.status === "would-block") {
             causalInputDrainObserved = requiresCausalInputDrain;
@@ -3019,6 +2942,7 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
+            pumpOperation = "emulator";
             const readinessObservedBeforeCaptured = safeReflectApply(
               emulatorReadinessObserved,
               terminal,
@@ -3032,6 +2956,7 @@ const armSelectedPty = (
             );
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
+            pumpOperation = "emulator";
             safeReflectApply(emulatorWrite, terminal, [
               new SafeUint8Array(captured),
             ]);
@@ -3042,6 +2967,7 @@ const armSelectedPty = (
             )
               terminalProtocolOrderingRejected = true;
             if (!flushTerminalResponse()) break;
+            pumpOperation = "emulator";
             const semanticState = safeReflectApply(
               emulatorSnapshot,
               terminal,
@@ -3068,6 +2994,7 @@ const armSelectedPty = (
           if (observation.bytes.length > captured.length) {
             outputLimited = true;
             try {
+              pumpOperation = "emulator";
               safeReflectApply(emulatorWrite, terminal, [
                 new SafeUint8Array(
                   observation.bytes.subarray(
@@ -3153,18 +3080,22 @@ const armSelectedPty = (
         ) {
           const action = request.interaction.actions[actionIndex];
           if (action?.action === "resize") {
+            pumpOperation = "resize";
             child.resize(action.geometry.columns, action.geometry.rows);
+            pumpOperation = "resize";
             terminalObservation = exactPtyObservation(
               child.inspect(),
               action.geometry,
               requestRequiresCanonicalEof,
             );
+            pumpOperation = "emulator";
             safeReflectApply(emulatorResize, terminal, [action.geometry]);
             readinessObserved = safeReflectApply(
               emulatorReadinessObserved,
               terminal,
               [],
             );
+            pumpOperation = "pump-other";
             recordAction({
               action: "resize",
               geometry: action.geometry,
@@ -3177,11 +3108,13 @@ const armSelectedPty = (
               inputOffset,
               inputOffset + remainingActionBytes,
             );
+            pumpOperation = "write";
             const written = exactPtyWrite(child.write(pending), pending.length);
             inputOffset += written.bytesWritten;
             actionInputOffset += written.bytesWritten;
             if (actionInputOffset === action.byteLength) {
               const start = inputOffset - action.byteLength;
+              pumpOperation = "pump-other";
               recordAction({
                 action: "input",
                 byteLength: action.byteLength,
@@ -3223,11 +3156,14 @@ const armSelectedPty = (
               return;
             if (root === undefined)
               return fail("testkit.headless.observer.root");
+            pumpOperation = "checkpoint-namespace";
             runtime.assertNamespaceIdentity(composition.namespaceIdentity);
+            pumpOperation = "checkpoint-freeze";
             const processSet = runtime.freezeProcessSet(
               composition.namespaceIdentity,
               processRequest.monotonicExecutionDeadlineMs,
             );
+            pumpOperation = "checkpoint-classify";
             const topology = classifyCheckpointTopology(processSet, root);
             if (
               safeReflectApply(performanceNow, performance, []) >=
@@ -3236,6 +3172,7 @@ const armSelectedPty = (
               return fail("testkit.headless.execution.deadline");
             if (topology !== "matched") {
               checkpointTopologyMismatchKind = topology;
+              pumpOperation = "checkpoint-release";
               runtime.releaseFrozenProcessSet(
                 composition.namespaceIdentity,
                 processSet,
@@ -3244,18 +3181,21 @@ const armSelectedPty = (
               );
               return;
             }
+            pumpOperation = "checkpoint-release";
             runtime.releaseFrozenProcessSet(
               composition.namespaceIdentity,
               processSet,
               root.pid,
               true,
             );
+            pumpOperation = "pump-other";
             recordAction({
               action: "checkpoint-process-topology",
               topology: action.topology,
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             checkpointPublicationAttempted = true;
+            pumpOperation = "checkpoint-publish";
             publishTopologyCheckpointIfSelected(
               runtime,
               request,
@@ -3268,6 +3208,7 @@ const armSelectedPty = (
             checkpointActionAdvanced = true;
           } else if (action?.action === "eof") {
             eofAttempted = true;
+            pumpOperation = "eof";
             const eof = child.eof();
             if (
               !plainRecord(eof) ||
@@ -3280,6 +3221,7 @@ const armSelectedPty = (
             )
               return fail("testkit.pty.transport");
             eofByteWritten = true;
+            pumpOperation = "pump-other";
             recordAction({
               action: "eof",
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
@@ -3293,6 +3235,7 @@ const armSelectedPty = (
               semanticCompletionObservedAtOutputBytes >
                 lastCompletedInputOutputBytes
             ) {
+              pumpOperation = "pump-other";
               recordAction({
                 action: "wait-for-semantic-completion",
                 monotonicAtMs: safeReflectApply(
@@ -3318,6 +3261,7 @@ const armSelectedPty = (
                 [],
               )
             ) {
+              pumpOperation = "pump-other";
               recordAction({
                 action: "wait-for-post-submission-idle-prompt",
                 monotonicAtMs: safeReflectApply(
@@ -3330,12 +3274,14 @@ const armSelectedPty = (
             }
           } else if (action?.action === "interrupt-byte") {
             const interrupt = safeBufferFrom([action.byte]);
+            pumpOperation = "write";
             const written = exactPtyWrite(
               child.write(interrupt),
               interrupt.length,
             );
             if (written.bytesWritten !== 1)
               return fail("testkit.pty.transport");
+            pumpOperation = "pump-other";
             recordAction({
               action: "interrupt-byte",
               byte: 3,
@@ -3343,16 +3289,21 @@ const armSelectedPty = (
             });
             actionIndex += 1;
           } else if (action?.action === "signal") {
+            pumpOperation = "signal";
             if (root === undefined)
               return fail("testkit.headless.observer.root");
+            pumpOperation = "signal";
             runtime.assertNamespaceIdentity(composition.namespaceIdentity);
+            pumpOperation = "signal";
             const current = runtime.readProcess(root.pid);
             if (
               current === undefined ||
               current.startIdentity !== root.startIdentity
             )
               return fail("testkit.headless.observer.identity");
+            pumpOperation = "signal";
             runtime.sendSignal(root.pid, action.signal);
+            pumpOperation = "pump-other";
             recordAction({
               action: "signal",
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
@@ -3362,7 +3313,21 @@ const armSelectedPty = (
             actionIndex += 1;
           }
         }
-      } catch {
+      } catch (error) {
+        if (pumpFailureDiagnostic === undefined) {
+          const firstDiagnostic: NonNullable<
+            SelectedPtyExecutionReceipt["pumpFailureDiagnostic"]
+          > = {
+            operation: pumpOperation,
+            category: classifyPtyPumpFailure(error),
+            originalExecutionDeadlineExhausted:
+              safeReflectApply(performanceNow, performance, []) >=
+              processRequest.monotonicExecutionDeadlineMs,
+          };
+          pumpFailureDiagnostic = safeReflectApply(freeze, Object, [
+            firstDiagnostic,
+          ]) as typeof firstDiagnostic;
+        }
         transportError = true;
       }
     };
@@ -3655,6 +3620,9 @@ const armSelectedPty = (
           inputBytes: ptyAuthority.inputBytes,
           inputSha256: ptyAuthority.inputSha256,
           readinessObserved,
+          ...(pumpFailureDiagnostic === undefined
+            ? {}
+            : { pumpFailureDiagnostic }),
           ...(request.readiness.kind === "challenge-styled-text"
             ? {
                 challengedReadinessProgress: safeReflectApply(

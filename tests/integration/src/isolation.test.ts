@@ -1449,6 +1449,11 @@ describe("selected PTY backend evidence", () => {
     const receipt = {
       ...ptyChallengeReceiptFor(),
       readinessObserved: false,
+      pumpFailureDiagnostic: {
+        operation: "checkpoint-freeze",
+        category: "observer-read",
+        originalExecutionDeadlineExhausted: false,
+      },
     };
     expect(
       receipt.request.process.monotonicShutdownDeadlineMs -
@@ -1488,6 +1493,34 @@ describe("selected PTY backend evidence", () => {
       { ...receipt, outcome: "input-incomplete" },
       { ...receipt, cleanup: "uncertain" },
       { ...receipt, processJoined: false },
+      {
+        ...receipt,
+        pumpFailureDiagnostic: {
+          ...receipt.pumpFailureDiagnostic,
+          operation: "private-canary",
+        },
+      },
+      {
+        ...receipt,
+        pumpFailureDiagnostic: {
+          ...receipt.pumpFailureDiagnostic,
+          category: "private-canary",
+        },
+      },
+      {
+        ...receipt,
+        pumpFailureDiagnostic: {
+          ...receipt.pumpFailureDiagnostic,
+          originalExecutionDeadlineExhausted: 1,
+        },
+      },
+      {
+        ...receipt,
+        pumpFailureDiagnostic: {
+          ...receipt.pumpFailureDiagnostic,
+          raw: "private-canary",
+        },
+      },
       {
         ...receipt,
         request: {
@@ -1873,92 +1906,50 @@ describe("compiled scenario evidence", () => {
   it("compiles only the closed evidence and policy envelopes", () => {
     const { evidence, policy } = compiledEvidenceFixture();
     expect(compileWithPreparedAuthority(evidence, evidence)).toEqual(evidence);
-    expect(() =>
-      compileWithPreparedAuthority(
-        { ...evidence, credential: "CANARY_SECRET" },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          scenarioId: "different-scenario",
-        },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          executionPolicy: {
-            ...policy,
-            selection: {
-              ...policy.selection,
-              manifestIdentity: `sha256-${"9".repeat(64)}`,
-            },
+    for (const rejected of [
+      { ...evidence, credential: "CANARY_SECRET" },
+      { ...evidence, scenarioId: "different-scenario" },
+      {
+        ...evidence,
+        executionPolicy: {
+          ...policy,
+          selection: {
+            ...policy.selection,
+            manifestIdentity: `sha256-${"9".repeat(64)}`,
           },
         },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          outcome: "failed",
-          executionPolicy: {
-            ...policy,
-            runtimeInspection: { outcome: "unavailable", identity: null },
+      },
+      {
+        ...evidence,
+        outcome: "failed",
+        executionPolicy: {
+          ...policy,
+          runtimeInspection: { outcome: "unavailable", identity: null },
+        },
+      },
+      { ...evidence, builtImageDigest: null },
+      {
+        ...evidence,
+        executionPolicy: {
+          ...policy,
+          runtimeInspection: { outcome: "unavailable", identity: null },
+        },
+      },
+      { ...evidence, outcome: "failed", builtImageDigest: null },
+      {
+        ...evidence,
+        cleanup: {
+          ...evidence.cleanup,
+          remaining: {
+            ...emptyCleanupInventory(),
+            containers: 1,
           },
         },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          builtImageDigest: null,
-        },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          executionPolicy: {
-            ...policy,
-            runtimeInspection: { outcome: "unavailable", identity: null },
-          },
-        },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          outcome: "failed",
-          builtImageDigest: null,
-        },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
-    expect(() =>
-      compileWithPreparedAuthority(
-        {
-          ...evidence,
-          cleanup: {
-            ...evidence.cleanup,
-            remaining: { ...emptyCleanupInventory(), containers: 1 },
-          },
-        },
-        evidence,
-      ),
-    ).toThrow("integration.isolation.evidence");
+      },
+    ])
+      expect(() => compileWithPreparedAuthority(rejected, evidence)).toThrow(
+        "integration.isolation.evidence",
+      );
     expect(
       compileIsolationExecutionPolicy({
         ...executionPolicyFor(),

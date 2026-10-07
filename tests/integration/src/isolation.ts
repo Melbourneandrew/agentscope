@@ -453,6 +453,34 @@ const ptyTerminalReceiptRecordSchema = z.strictObject({
   inputBytes: z.number().int().nonnegative().max(1_048_576),
   inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
   readinessObserved: z.boolean(),
+  pumpFailureDiagnostic: z
+    .strictObject({
+      operation: z.enum([
+        "read",
+        "write",
+        "emulator",
+        "resize",
+        "eof",
+        "signal",
+        "checkpoint-namespace",
+        "checkpoint-freeze",
+        "checkpoint-classify",
+        "checkpoint-release",
+        "checkpoint-publish",
+        "pump-other",
+      ]),
+      category: z.enum([
+        "observer-read",
+        "observer-identity",
+        "transport",
+        "geometry",
+        "checkpoint-witness",
+        "execution-deadline",
+        "unknown",
+      ]),
+      originalExecutionDeadlineExhausted: z.boolean(),
+    })
+    .optional(),
   challengedReadinessProgress: z
     .strictObject({
       marker: z.boolean(),

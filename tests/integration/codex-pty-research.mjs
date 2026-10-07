@@ -48,9 +48,70 @@ const checkpointCategories = Object.freeze([
   "advanced",
 ]);
 
+const pumpOperations = Object.freeze([
+  "read",
+  "write",
+  "emulator",
+  "resize",
+  "eof",
+  "signal",
+  "checkpoint-namespace",
+  "checkpoint-freeze",
+  "checkpoint-classify",
+  "checkpoint-release",
+  "checkpoint-publish",
+  "pump-other",
+]);
+const pumpCategories = Object.freeze([
+  "observer-read",
+  "observer-identity",
+  "transport",
+  "geometry",
+  "checkpoint-witness",
+  "execution-deadline",
+  "unknown",
+]);
+const projectPumpFailure = (value) => {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== "object" ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null) ||
+    Reflect.ownKeys(value).sort().join("\0") !==
+      "category\0operation\0originalExecutionDeadlineExhausted"
+  )
+    return undefined;
+  const operation = Object.getOwnPropertyDescriptor(value, "operation");
+  const category = Object.getOwnPropertyDescriptor(value, "category");
+  const exhausted = Object.getOwnPropertyDescriptor(
+    value,
+    "originalExecutionDeadlineExhausted",
+  );
+  if (
+    !operation ||
+    !("value" in operation) ||
+    !pumpOperations.includes(operation.value) ||
+    !category ||
+    !("value" in category) ||
+    !pumpCategories.includes(category.value) ||
+    !exhausted ||
+    !("value" in exhausted) ||
+    typeof exhausted.value !== "boolean"
+  )
+    return undefined;
+  return Object.freeze({
+    operation: operation.value,
+    category: category.value,
+    originalExecutionDeadlineExhausted: exhausted.value,
+  });
+};
+
 // Failure retention only. Copy two closed observations from an already parsed
 // receipt, never its terminal text, identifiers, paths, timings or raw errors.
-export const projectUntrustedCodexPtyReceipt = (receipt) => {
+export const projectUntrustedCodexPtyReceipt = (
+  receipt,
+  diagnosticVersion = 4,
+) => {
   try {
     if (
       typeof receipt !== "object" ||
@@ -72,16 +133,25 @@ export const projectUntrustedCodexPtyReceipt = (receipt) => {
           !checkpointCategories.includes(checkpoint.value)))
     )
       return undefined;
+    const pumpDescriptor =
+      diagnosticVersion === 5
+        ? Object.getOwnPropertyDescriptor(receipt, "pumpFailureDiagnostic")
+        : undefined;
+    if (pumpDescriptor && !("value" in pumpDescriptor)) return undefined;
+    const pumpFailureDiagnostic = projectPumpFailure(pumpDescriptor?.value);
+    if (diagnosticVersion === 5 && pumpFailureDiagnostic === undefined)
+      return undefined;
     return Object.freeze({
       outcome: outcome.value,
       checkpointProgressDiagnostic: checkpoint?.value ?? null,
+      ...(diagnosticVersion === 5 ? { pumpFailureDiagnostic } : {}),
     });
   } catch {
     return undefined;
   }
 };
 
-export const validUntrustedCodexPtyReceipt = (value) => {
+export const validUntrustedCodexPtyReceipt = (value, diagnosticVersion = 4) => {
   if (value === null) return true;
   try {
     if (
@@ -89,7 +159,9 @@ export const validUntrustedCodexPtyReceipt = (value) => {
       value === null ||
       Object.getPrototypeOf(value) !== Object.prototype ||
       Reflect.ownKeys(value).sort().join("\0") !==
-        "checkpointProgressDiagnostic\0outcome"
+        (diagnosticVersion === 5
+          ? "checkpointProgressDiagnostic\0outcome\0pumpFailureDiagnostic"
+          : "checkpointProgressDiagnostic\0outcome")
     )
       return false;
     const outcome = Object.getOwnPropertyDescriptor(value, "outcome");
@@ -97,7 +169,16 @@ export const validUntrustedCodexPtyReceipt = (value) => {
       value,
       "checkpointProgressDiagnostic",
     );
+    const pump =
+      diagnosticVersion === 5
+        ? Object.getOwnPropertyDescriptor(value, "pumpFailureDiagnostic")
+        : undefined;
     return (
+      (diagnosticVersion !== 5 ||
+        (pump !== undefined &&
+          "value" in pump &&
+          pump.value !== undefined &&
+          projectPumpFailure(pump.value) !== undefined)) &&
       outcome !== undefined &&
       "value" in outcome &&
       receiptOutcomes.includes(outcome.value) &&
