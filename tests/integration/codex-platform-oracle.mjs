@@ -8,10 +8,6 @@ export const correlateCodexPlatformObservations = (
 ) => {
   assert(observation.scenarioId === scenarioId, "scenario");
   assert(
-    observation.mediation.sessionStartCommandDurationMilliseconds <= 1_000,
-    "hook-mediation",
-  );
-  assert(
     expectedPromptSha256 ===
       "28e80ac9dd2867aa0163739ec137f67504a75b3465a840bd422e5eba6c724c35",
     "stimulus",

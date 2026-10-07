@@ -17,7 +17,7 @@ const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   prompt,
   promptSha256,
-  mediation: { sessionStartCommandDurationMilliseconds: 125 },
+  mediation: { sessionStartCommandDurationMilliseconds: 125 as number | null },
   modelRequests: [
     {
       method: "POST",
@@ -69,6 +69,30 @@ const correlate = (value = raw()) =>
 
 // eslint-disable-next-line max-lines-per-function -- one matrix proves translation/oracle separation across every retained observation
 describe("Codex PTY scenario observation boundary", () => {
+  it.each([null, 1_001, 60_001])(
+    "retains diagnostic duration %s without timing certification",
+    (duration) => {
+      const value = raw();
+      value.mediation.sessionStartCommandDurationMilliseconds = duration;
+      expect(
+        correlate(value).harnessObservation
+          .sessionStartCommandDurationMilliseconds,
+      ).toBe(duration);
+      value.search.spanCount = 0;
+      expect(() => correlate(value)).toThrow("integration.codex.oracle-trace");
+    },
+  );
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, undefined])(
+    "rejects malformed diagnostic %s",
+    (duration) => {
+      const value = raw();
+      value.mediation.sessionStartCommandDurationMilliseconds =
+        duration as number;
+      expect(() => translateCodexPlatformObservations(value)).toThrow(
+        "integration.codex.adapter-observation",
+      );
+    },
+  );
   it("reduces exact loopback, trace, Doctor, and uninstall observations", () => {
     expect(correlate()).toMatchObject({
       resultStatus: "complete",

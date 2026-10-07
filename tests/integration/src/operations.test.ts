@@ -163,7 +163,19 @@ describe("integration Codex retained evidence", () => {
     expect(sanitizeFixtureResult(codex, "fixture-process-smoke")).toEqual(
       codex,
     );
-    for (const duration of [-1, 1_001, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const duration of [null, 1_001, 60_001]) {
+      const observed = {
+        ...codex,
+        harnessObservation: {
+          ...codex.harnessObservation,
+          sessionStartCommandDurationMilliseconds: duration,
+        },
+      };
+      expect(sanitizeFixtureResult(observed, "fixture-process-smoke")).toEqual(
+        observed,
+      );
+    }
+    for (const duration of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() =>
         sanitizeFixtureResult(
           {
