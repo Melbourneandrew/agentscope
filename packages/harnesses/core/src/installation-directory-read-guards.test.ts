@@ -127,7 +127,13 @@ describe("directory guard composition with ordinary file plans", () => {
       directoryPaths: [directory],
       planner: (_target, directories) => {
         expect(directories).toEqual([
-          { directoryPath: directory, exists: false, mode: null, entries: [] },
+          {
+            directoryPath: directory,
+            exists: false,
+            mode: null,
+            uid: null,
+            entries: [],
+          },
         ]);
         return { kind: "unchanged" };
       },
@@ -261,6 +267,7 @@ const observationFixture = (raw: unknown, drift = false) => {
     dev: 1n,
     ino: 2n,
     mode: 0o40700n,
+    uid: 0n,
     nlink: 2n,
     mtimeNs: 3n,
     ctimeNs: 4n,

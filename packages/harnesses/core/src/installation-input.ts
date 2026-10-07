@@ -6,6 +6,7 @@ export type HarnessTargetInspection = Readonly<{
   bytes: Uint8Array | null;
   digest: string;
   mode: number | null;
+  uid?: number | null;
 }>;
 
 export type HarnessTargetDecision =
@@ -30,6 +31,7 @@ export type HarnessDirectoryInspection = Readonly<{
   exists: boolean;
   entries: readonly string[];
   mode: number | null;
+  uid?: number | null;
 }>;
 
 export type HarnessInstallationPlanInput = Readonly<{

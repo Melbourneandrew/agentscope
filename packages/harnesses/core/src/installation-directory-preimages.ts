@@ -12,6 +12,7 @@ export type DirectoryPreimage = Readonly<{
   directoryPath: string;
   exists: boolean;
   mode: number | null;
+  uid?: number | null;
   entries: readonly string[];
   digest: string;
   identity: string | null;
@@ -121,6 +122,7 @@ const metadataIdentity = (value: BigIntStats) =>
     value.dev,
     value.ino,
     value.mode,
+    value.uid,
     value.nlink,
     value.mtimeNs,
     value.ctimeNs,
@@ -143,6 +145,8 @@ export const inspectDirectoryPreimage = async (
     );
     const before = await handle.stat({ bigint: true });
     if (!before.isDirectory()) return unavailable();
+    const uid = Number(before.uid);
+    if (!Number.isSafeInteger(uid) || uid < 0) return unavailable();
     const { value: observed } = await nativeObservation(handle.fd);
     const entries = names(observed, directoryPath, identity);
     const after = await handle.stat({ bigint: true });
@@ -159,6 +163,7 @@ export const inspectDirectoryPreimage = async (
       directoryPath,
       exists: true,
       mode: Number(before.mode & 0o777n),
+      uid,
       entries,
       digest: digest(entries),
       identity: metadataIdentity(before),
@@ -170,6 +175,7 @@ export const inspectDirectoryPreimage = async (
         directoryPath,
         exists: false,
         mode: null,
+        uid: null,
         entries,
         digest: digest(entries),
         identity: null,
@@ -188,6 +194,7 @@ export const directoryPreimageMatches = (
   before.exists === after.exists &&
   before.identity === after.identity &&
   before.mode === after.mode &&
+  before.uid === after.uid &&
   before.digest === after.digest;
 
 export const directoryInspection = (
@@ -199,6 +206,7 @@ export const directoryInspection = (
         directoryPath: value.directoryPath,
         exists: value.exists,
         mode: value.mode,
+        ...(value.uid === undefined ? {} : { uid: value.uid }),
         entries: Object.freeze([...value.entries]),
       }),
     ),
