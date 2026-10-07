@@ -1,3 +1,8 @@
+import ts from "typescript";
+import {
+  compileCapabilityManifest,
+  type CapabilityManifest,
+} from "./manifest.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -30,6 +35,22 @@ const readIntegration = (name: string): string =>
   readFileSync(resolve(integrationRoot, name), "utf8");
 
 describe("returned receipt failure research retention", () => {
+  it("preserves the same optional pump observation in versions five and six", () => {
+    const receipt = {
+      outcome: "transport-failed",
+      checkpointProgressDiagnostic: "advanced",
+      pumpFailureDiagnostic: {
+        operation: "read",
+        category: "transport",
+        originalExecutionDeadlineExhausted: false,
+      },
+    };
+    const fifth = projectUntrustedCodexPtyReceipt(receipt, 5);
+    const sixth = projectUntrustedCodexPtyReceipt(receipt, 6);
+    expect(sixth).toEqual(fifth);
+    expect(sixth?.pumpFailureDiagnostic).toEqual(receipt.pumpFailureDiagnostic);
+    expect(validUntrustedCodexPtyReceipt(sixth, 6)).toBe(true);
+  });
   it.each([
     "completed",
     "signaled",
@@ -401,5 +422,71 @@ describe("failed PTY research categories", () => {
     ]);
     expect(outer).toContain("for (const file of selectedRuntimeFiles)");
     expect(outer).toContain("codex-pty-research.mjs");
+  });
+});
+
+const runtimeClosure = (omitHelper = false) => {
+  const manifest = compileCapabilityManifest(
+    JSON.parse(
+      readFileSync(
+        resolve(integrationRoot, "capability-manifest.json"),
+        "utf8",
+      ),
+    ) as CapabilityManifest,
+  );
+  const scenario = manifest.scenarios.find(
+    ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+  );
+  if (!scenario) throw new Error("missing-codex-scenario");
+  const files = new Map(
+    scenario.runtimeArtifacts
+      .filter(
+        ({ destination }) =>
+          !omitHelper || destination !== "codex-trace-child-diagnostics.mjs",
+      )
+      .map((artifact) => [artifact.destination, artifact.source]),
+  );
+  for (const [destination, source] of files) {
+    if (source.kind !== "integration") continue;
+    const ast = ts.createSourceFile(
+      destination,
+      readFileSync(resolve(integrationRoot, source.path), "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    for (const statement of ast.statements) {
+      if (
+        (!ts.isImportDeclaration(statement) &&
+          !ts.isExportDeclaration(statement)) ||
+        !statement.moduleSpecifier ||
+        !ts.isStringLiteral(statement.moduleSpecifier)
+      )
+        continue;
+      const edge = statement.moduleSpecifier.text;
+      if (edge.startsWith("./") && !files.has(edge.slice(2)))
+        throw new Error("runtime-helper-missing");
+    }
+  }
+};
+
+describe("actual manifest-selected static runtime closure", () => {
+  it("stages the private helper through existing authenticated sources and COPY", () => {
+    expect(() => {
+      runtimeClosure();
+    }).not.toThrow();
+    const staging = readFileSync(
+      resolve(integrationRoot, "run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(staging).toContain(
+      "for (const artifact of scenario.runtimeArtifacts)",
+    );
+    expect(staging).toContain("`runtime/${artifact.destination}`");
+    expect(staging).toContain('"COPY runtime ./runtime"');
+  });
+  it("causally rejects omitting the extracted helper", () => {
+    expect(() => {
+      runtimeClosure(true);
+    }).toThrow("runtime-helper-missing");
   });
 });

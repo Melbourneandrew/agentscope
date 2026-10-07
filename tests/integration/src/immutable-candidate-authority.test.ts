@@ -11,10 +11,8 @@ import { EventEmitter } from "node:events";
 import { join, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import {
-  classifyCodexTraceGetFailure,
-  codexTraceGetChildFailureCategory,
-} from "../codex-runtime-evidence.mjs";
+import { classifyCodexTraceGetFailure } from "../codex-runtime-evidence.mjs";
+import { classifyCodexCollectedChildFailure } from "../codex-pty-research.mjs";
 
 // The authority is deliberately private integration JavaScript, not a package API.
 // @ts-expect-error no declaration file is published for this private module
@@ -1879,27 +1877,27 @@ describe("Codex uninstall failure diagnostic transport", () => {
 });
 
 it("reserves specialist codes beyond every scenario phase exit", () => {
-  const runner = readIntegration("runner.mjs");
+  expect(readIntegration("runner.mjs")).toContain(
+    'import { interactivePhases } from "./codex-trace-child-diagnostics.mjs";',
+  );
   const phaseDeclaration =
-    runner
+    readIntegration("codex-trace-child-diagnostics.mjs")
       .split("const interactivePhases = Object.freeze([", 2)[1]
       ?.split("]);", 1)[0] ?? "";
   expect(phaseDeclaration.length).toBeGreaterThan(0);
   const phaseCount = [...phaseDeclaration.matchAll(/^ {2}"[a-z-]+",$/gmu)]
     .length;
   expect(64 + phaseCount - 1).toBeLessThan(160);
-  expect(
-    encodeInteractiveFailureExitCode(
-      "integration.fixture.codex-verify-adapter-observation",
-      "codex-tui-trace-smoke",
-    ),
-  ).toBe(160);
-  expect(
-    encodeInteractiveFailureExitCode(
-      "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
-      "codex-tui-trace-smoke",
-    ),
-  ).toBe(176);
+  const expectCode = (predicate: string, code: number) => {
+    expect(
+      encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
+    ).toBe(code);
+  };
+  expectCode("integration.fixture.codex-verify-adapter-observation", 160);
+  expectCode(
+    "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
+    176,
+  );
 });
 
 // eslint-disable-next-line max-lines-per-function -- closed transport and source-level causal matrix
@@ -2096,7 +2094,8 @@ describe("Codex production get-child diagnostic wiring", () => {
         clearTimeout: () => {
           cleared = true;
         },
-        codexTraceGetChildFailureCategory,
+        classifyCodexCollectedChildFailure,
+        adapterReportedFailure: undefined,
       });
       const completion = run("synthetic", [], {
         monotonicDeadline: 300,

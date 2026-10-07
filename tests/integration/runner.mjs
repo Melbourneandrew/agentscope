@@ -22,7 +22,11 @@ import {
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
 import { readPtyReconciliationStage } from "./testkit/internal/kernel-errors.js";
-import { failedCodexSessionStartHint } from "./codex-pty-research.mjs";
+import {
+  encodeAdapterReportedFailureMarker,
+  failedCodexSessionStartHint,
+} from "./codex-pty-research.mjs";
+import { interactivePhases } from "./codex-trace-child-diagnostics.mjs";
 import {
   codexArmPtyResearchHint,
   codexGateResearchHints,
@@ -33,6 +37,8 @@ import {
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyReceiptFailed,
   readBoundedInteractiveFailureMarker,
+  readBoundedInteractiveFailureRecord,
+  readRetainedInteractivePhase as retainedInteractivePhase,
   selectInteractiveFailureDiagnostic,
   untrustedCodexTraceHint,
 } from "./immutable-candidate-authority.mjs";
@@ -44,104 +50,6 @@ const substrateCertificationCase = parseSubstrateCertificationCaseValue(
   process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
 );
 
-const interactivePhases = Object.freeze([
-  "bootstrap",
-  "bootstrap-arguments",
-  "bootstrap-deadline",
-  "bootstrap-readiness",
-  "bootstrap-environment",
-  "bootstrap-modules",
-  "bootstrap-artifact",
-  "bootstrap-pty",
-  "init",
-  "destination",
-  "routing",
-  "install",
-  "model-gate-start",
-  "model-gate-configured",
-  "control-plane-closed",
-  "tui-readiness-challenge-published",
-  "tui-start",
-  "tui-run-created",
-  "tui-checkpoint",
-  "model-gate-arm-start",
-  "model-gate-arm-health-pending",
-  "model-gate-arm-session-start",
-  "tui-exit-before-arm",
-  "model-gate-arm-complete",
-  "model-request-observed",
-  "model-request",
-  "trace-terminal",
-  "tui-exit-published",
-  "tui-join-deadline",
-  "tui-child-rejected",
-  "tui-joined",
-  "trace-settlement",
-  "trace-search",
-  "hook-command-timeout",
-  "hook-command-spawn-error",
-  "hook-command-stdin-error",
-  "hook-command-wait-error",
-  "hook-command-missing",
-  "hook-command-completed-before-budget-boundary",
-  "hook-command-completed-near-budget-boundary",
-  "hook-no-operational-state-subsecond",
-  "hook-no-operational-state-low-latency",
-  "hook-no-operational-state-mid-latency",
-  "hook-no-operational-state-high-latency",
-  "hook-no-operational-state-near-deadline",
-  "hook-start-suppressed",
-  "hook-start-deadline",
-  "hook-capture-suppressed",
-  "hook-capture-deadline",
-  "hook-redaction-suppressed",
-  "hook-redaction-deadline",
-  "hook-routing-no-route",
-  "hook-delivery-rejected",
-  "hook-delivery-unavailable",
-  "hook-delivery-deadline",
-  "hook-delivery-unknown",
-  "hook-accepted-without-trace",
-  "hook-operational-unclassified",
-  "trace-search-record-count",
-  "trace-search-shape",
-  "trace-search-ambiguous",
-  "trace-search-harness",
-  "trace-search-locator",
-  "trace-reporter-settled",
-  "trace-search-result",
-  "verify",
-  "verify-config",
-  "verify-gate",
-  "verify-trace-get",
-  "verify-correlation",
-  "verify-doctor",
-  "verify-uninstall",
-  "verify-status",
-  "verify-projection",
-  "verify-evidence",
-]);
-const retainedInteractivePhase = (ledger) => {
-  let retained;
-  for (const phase of interactivePhases) {
-    const path = join(ledger, `interactive-phase-${phase}.txt`);
-    try {
-      const status = lstatSync(path);
-      const content = readFileSync(path, "utf8");
-      if (
-        !status.isFile() ||
-        status.isSymbolicLink() ||
-        status.size !== Buffer.byteLength(content) ||
-        content !== `integration.fixture.codex-${phase}\n`
-      )
-        throw new Error("integration.runner.interactive-phase");
-      retained = content.trim();
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
-  return retained;
-};
 // A root-ledger progress marker helps diagnose a failed replay. It does not
 // authenticate attached stdout or establish any scenario/checkpoint authority.
 const retainedCandidateConfigStage = (ledger) => {
@@ -869,7 +777,23 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
   if (hint !== undefined)
     process.stdout.write(`integration.runner.untrusted-join-hint:${hint}\n`);
   if (scenarioId === "codex-tui-trace-smoke") {
-    const marker = readBoundedInteractiveFailureMarker(ledger);
+    const runId = requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID");
+    const failure = readBoundedInteractiveFailureRecord(ledger, runId);
+    const marker = failure?.predicate;
+    const reported = encodeAdapterReportedFailureMarker(
+      marker,
+      runId,
+      failure?.adapterReportedFailure,
+    );
+    if (reported !== undefined) {
+      try {
+        process.stdout.write(
+          `integration.runner.adapter-reported-failure:${reported}`,
+        );
+      } catch {
+        // Optional reported facts cannot replace the original failure outcome.
+      }
+    }
     const gatePrefix = "integration.fixture.codex-gate-research-";
     const gateHint = marker?.startsWith(gatePrefix)
       ? marker.slice(gatePrefix.length)

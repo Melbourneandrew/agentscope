@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
-  codexGateResearchHints,
-  codexPtyResearchHints,
-  validUntrustedCodexPtyReceipt,
+  decodeAdapterReportedFailureMarker,
+  validCodexResearchDiagnostic,
 } from "./codex-pty-research.mjs";
+import {
+  candidateConfigStages,
+  interactivePhases,
+} from "./codex-trace-child-diagnostics.mjs";
 export { selectedRuntimeFiles } from "./selected-runtime-files.mjs";
 
 const fail = () => {
@@ -29,7 +40,7 @@ export const parseCodexMachineOutput = (bytes, command) => {
     throw new Error("integration.codex.cli-output");
   return value.records;
 };
-export const readBoundedInteractiveFailureMarker = (ledger) => {
+export const readBoundedInteractiveFailureRecord = (ledger, runId) => {
   let descriptor;
   try {
     descriptor = openSync(
@@ -50,14 +61,50 @@ export const readBoundedInteractiveFailureMarker = (ledger) => {
     )
       return undefined;
     const content = bytes.subarray(0, count).toString("utf8");
-    return /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+    const predicate = /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
       ? content.trim()
-      : undefined;
+      : content.startsWith(
+            "integration.fixture.codex-verify-trace-get-child-invoke-get|",
+          )
+        ? "integration.fixture.codex-verify-trace-get-child-invoke-get"
+        : undefined;
+    return predicate === undefined
+      ? undefined
+      : {
+          predicate,
+          adapterReportedFailure: decodeAdapterReportedFailureMarker(
+            content,
+            runId,
+          ),
+        };
   } catch {
     return undefined;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
   }
+};
+export const readBoundedInteractiveFailureMarker = (ledger) =>
+  readBoundedInteractiveFailureRecord(ledger)?.predicate;
+export const readRetainedInteractivePhase = (ledger) => {
+  let retained;
+  for (const phase of interactivePhases) {
+    const path = join(ledger, `interactive-phase-${phase}.txt`);
+    try {
+      const status = lstatSync(path);
+      const content = readFileSync(path, "utf8");
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        status.size !== Buffer.byteLength(content) ||
+        content !== `integration.fixture.codex-${phase}\n`
+      )
+        throw new Error("integration.runner.interactive-phase");
+      retained = content.trim();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return retained;
 };
 export const ptyExecutionFailurePredicates = Object.freeze([
   "child-failure",
@@ -780,14 +827,6 @@ const interactiveFixtureFailurePredicates = Object.freeze(
 const interactiveFailureExitCodeBase = 64;
 const interactivePostTraceExitCodeBase = 160;
 const candidateConfigExitCodeBase = 150;
-const candidateConfigStages = Object.freeze([
-  "render",
-  "create",
-  "open",
-  "prove",
-  "closed-marker",
-  "publish",
-]);
 
 const codexJoinDeadlineDiagnosticStates = Object.freeze([
   "log-unavailable",
@@ -846,20 +885,7 @@ export const extractUntrustedCodexTraceHint = (output) => {
 };
 
 // Research-only progress, never a receipt, checkpoint, or admission predicate.
-export const extractUntrustedCodexConfigHint = (output) => {
-  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
-    return undefined;
-  const lines = [
-    ...output.matchAll(
-      /^integration\.runner\.untrusted-config-hint:[^\n]*$/gmu,
-    ),
-  ];
-  if (lines.length !== 1) return undefined;
-  const stage = lines[0]?.[0].match(
-    /^integration\.runner\.untrusted-config-hint:(closed-marker|render|create|open|prove|publish)$/u,
-  )?.[1];
-  return stage;
-};
+export { extractUntrustedCodexConfigHint } from "./codex-trace-child-diagnostics.mjs";
 
 export { codexGateResearchHints } from "./codex-pty-research.mjs";
 
@@ -968,77 +994,16 @@ export const gateReceiptResearchRejection = (receipt, expected) => {
 };
 
 // Candidate output is an untrusted research hint, never terminal authority.
-export const extractUntrustedCodexGateHint = (output) => {
-  if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
-    return undefined;
-  const lines = [
-    ...output.matchAll(/^integration\.runner\.untrusted-gate-hint:[^\n]*$/gmu),
-  ];
-  if (lines.length !== 1) return undefined;
-  const hint = lines[0]?.[0].match(
-    /^integration\.runner\.untrusted-gate-hint:([a-z-]{1,32})$/u,
-  )?.[1];
-  return codexGateResearchHints.includes(hint) ? hint : undefined;
-};
+export { extractUntrustedCodexGateHint } from "./codex-pty-research.mjs";
 
 // Failure-only transport comparison. Neither number authorizes a receipt.
-export const codexFailureExitPair = (
-  fixtureExit,
-  containerExit,
-  scenarioId,
-) => {
-  if (
-    scenarioId !== "codex-tui-trace-smoke" ||
-    !Number.isSafeInteger(containerExit) ||
-    containerExit < 1 ||
-    containerExit > 255
-  )
-    return undefined;
-  const fixture =
-    Number.isSafeInteger(fixtureExit) && fixtureExit >= 0 && fixtureExit <= 255
-      ? String(fixtureExit)
-      : "none";
-  return `${fixture}:${containerExit}`;
-};
+export { codexFailureExitPair } from "./codex-trace-child-diagnostics.mjs";
 
 // Strictly research-only failure evidence; never a receipt or admission input.
 // Preserve historical versions; version 4 adds only a nullable closed projection
 // of a parsed returned receipt, never replacing the post-failure hook state.
 // Version 5 adds only its optional first-caught pump diagnostic, not authority.
-export const validCodexResearchDiagnostic = (value) =>
-  value === null ||
-  (typeof value === "object" &&
-    value !== null &&
-    Object.getPrototypeOf(value) === Object.prototype &&
-    [1, 2, 3, 4, 5].includes(value.diagnosticVersion) &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify(
-        [
-          "diagnosticVersion",
-          "exitPair",
-          "untrustedConfigHint",
-          ...(value.diagnosticVersion >= 2 ? ["untrustedGateHint"] : []),
-          ...(value.diagnosticVersion >= 3 ? ["untrustedPtyHint"] : []),
-          ...(value.diagnosticVersion >= 4 ? ["untrustedPtyReceipt"] : []),
-        ].sort(),
-      ) &&
-    (value.untrustedConfigHint === null ||
-      candidateConfigStages.includes(value.untrustedConfigHint)) &&
-    (value.diagnosticVersion === 1 ||
-      value.untrustedGateHint === null ||
-      codexGateResearchHints.includes(value.untrustedGateHint)) &&
-    (value.diagnosticVersion < 3 ||
-      value.untrustedPtyHint === null ||
-      codexPtyResearchHints.includes(value.untrustedPtyHint)) &&
-    (value.diagnosticVersion < 4 ||
-      validUntrustedCodexPtyReceipt(
-        value.untrustedPtyReceipt,
-        value.diagnosticVersion,
-      )) &&
-    (value.exitPair === null ||
-      /^(?:none|(?:0|[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])):(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])$/u.test(
-        value.exitPair,
-      )));
+export { validCodexResearchDiagnostic };
 
 export const selectInteractiveExecutionFailurePredicate = (
   candidate,

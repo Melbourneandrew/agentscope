@@ -283,10 +283,11 @@ describe("content-free receipt projection and actual runtime closure", () => {
       new URL("codex-pty-research.mjs", integration),
       "utf8",
     );
-    const pure = source.slice(
-      0,
-      source.indexOf("export const codexPtyResearchHints"),
-    );
+    const start = source.indexOf("const receiptOutcomes =");
+    const end = source.indexOf("export const codexPtyResearchHints", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const pure = source.slice(start, end);
     const { project, valid } = runInNewContext(
       `${pure.replaceAll("export const", "const")} ({project:projectUntrustedCodexPtyReceipt,valid:validUntrustedCodexPtyReceipt});`,
       { Object, Reflect },

@@ -280,24 +280,21 @@ describe("integration capability manifest", () => {
       expect(dropperSource.indexOf(denial)).toBeGreaterThan(-1);
       expect(dropperSource.indexOf(denial)).toBeLessThan(candidateExec);
     }
-    expect(source).toContain("AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,");
     // The controller remains root for /control/private, but the installed
     // product and its private Codex home must belong to the eventual UID 1000
     // candidate. Root-owned 0700 hooks/config made the real TUI exit before
     // the protected process-topology checkpoint.
-    expect(source).toContain(
+    for (const literal of [
+      "AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,",
       "...(options.candidatePrincipal === true ? { uid: 1000, gid: 1000 } : {}),",
-    );
-    expect(source).toContain("{ ...options, candidatePrincipal: true },");
-    expect(source).toContain(
+      "{ ...options, candidatePrincipal: true },",
       '["harness", "status", "codex", "--output", "json"],\n    { candidatePrincipal: true },',
-    );
-    expect(source).toContain(
       "fchownSync(codexDiagnosticLogDirectoryDescriptor, 1000, 1000);",
-    );
-    expect(source).toContain(
       "fchownSync(configurationDescriptor, 1000, 1000);",
-    );
+    ])
+      expect(source).toContain(literal);
+    expect(source).toContain('from "./codex-trace-child-diagnostics.mjs"');
+    expect(source).toContain("encodeAdapterReportedFailureMarker(");
     // CAP_CHOWN is admitted but CAP_FOWNER is not: chmod must precede the
     // ownership handoff, with the same final inode proof afterward.
     const configMode = source.indexOf(

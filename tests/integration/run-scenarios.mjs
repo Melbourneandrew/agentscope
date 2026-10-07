@@ -65,16 +65,13 @@ import {
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
-import { projectUntrustedCodexPtyReceipt } from "./codex-pty-research.mjs";
+import { codexResearchDependencies } from "./codex-pty-research.mjs";
+import { createCodexFailureResearchRecord } from "./codex-trace-child-diagnostics.mjs";
 import {
-  codexFailureExitPair,
   compileImmutableCandidateHandoff,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
-  extractUntrustedCodexConfigHint,
-  extractUntrustedCodexGateHint,
-  extractUntrustedCodexPtyHint,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyExecutionReserveMilliseconds,
@@ -369,6 +366,7 @@ const stageBuildContext = (plan) => {
       "retained-fixture-result.mjs",
       "destination-server.mjs",
       "codex-pty-research.mjs",
+      "codex-trace-child-diagnostics.mjs",
       "selected-runtime-files.mjs",
     ].map((name) => [name, resolve(integrationRoot, name)]),
     [
@@ -545,7 +543,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs selected-runtime-files.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs codex-trace-child-diagnostics.mjs selected-runtime-files.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
@@ -1901,16 +1899,16 @@ const recordInteractiveExecutionFailure = (
 };
 const retainCodexResearchDiagnostic = (plan, output, receipt, error) => {
   if (plan.scenarioId !== "codex-tui-trace-smoke") return;
-  codexResearchDiagnostics.set(plan.runId, {
-    diagnosticVersion: 5,
-    untrustedConfigHint: extractUntrustedCodexConfigHint(output) ?? null,
-    untrustedGateHint: extractUntrustedCodexGateHint(output) ?? null,
-    untrustedPtyHint: extractUntrustedCodexPtyHint(output) ?? null,
-    untrustedPtyReceipt: projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
-    exitPair:
-      codexFailureExitPair(receipt?.exitCode, error?.code, plan.scenarioId) ??
-      null,
-  });
+  codexResearchDiagnostics.set(
+    plan.runId,
+    createCodexFailureResearchRecord(
+      plan,
+      output,
+      receipt,
+      error,
+      codexResearchDependencies,
+    ),
+  );
 };
 const captureFailedScenarioReceipt = (
   output,

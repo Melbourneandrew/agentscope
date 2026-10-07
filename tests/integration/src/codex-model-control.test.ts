@@ -6,21 +6,99 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCodexModelControlRequest,
+  createCodexFailureResearchRecord,
+  extractAdapterReportedFailure,
   projectUntrustedCodexPtyReceipt,
+  encodeAdapterReportedFailureMarker,
 } from "../codex-pty-research.mjs";
 // @ts-expect-error private integration module has no published declaration
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
-const { codexFailureExitPair, validCodexResearchDiagnostic } =
-  privateAuthority as {
-    codexFailureExitPair: (
-      fixture: unknown,
-      container: unknown,
-      scenario: string,
-    ) => string | undefined;
-    validCodexResearchDiagnostic: (value: unknown) => boolean;
-  };
+const {
+  codexFailureExitPair,
+  validCodexResearchDiagnostic,
+  encodeInteractiveFailureExitCode,
+} = privateAuthority as {
+  codexFailureExitPair: (
+    fixture: unknown,
+    container: unknown,
+    scenario: string,
+  ) => string | undefined;
+  validCodexResearchDiagnostic: (value: unknown) => boolean;
+  encodeInteractiveFailureExitCode: (
+    value: string,
+    scenario: string,
+  ) => number | undefined;
+};
 const readIntegration = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+
+describe("optional runner diagnostic sink preserves the original failure", () => {
+  it.each([false, true])(
+    "preserves the actual exit when sink throws %s",
+    async (throws) => {
+      const source = readIntegration("runner.mjs");
+      const start = source.indexOf(
+        'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
+      );
+      expect(start).toBeGreaterThan(0);
+      const predicate =
+        "integration.fixture.codex-verify-trace-get-child-invoke-get";
+      const writes: string[] = [];
+      const process = {
+        env: {},
+        exitCode: undefined as number | undefined,
+        stdout: {
+          write: (value: string) => {
+            writes.push(value);
+            if (throws) throw new Error("synthetic sink failure");
+          },
+        },
+      };
+      const completed: unknown = runInNewContext(
+        `(async () => { ${source.slice(start)} })()`,
+        {
+          scenario: { executionMode: "interactive" },
+          scenarioId: "codex-tui-trace-smoke",
+          fixtureFailure: new Error("original failure"),
+          fixtureOutput: "",
+          interactiveFailureDiagnostic: predicate,
+          ledger: "owned-fixture",
+          home: "owned-home",
+          process,
+          emitCodexPtyFailureHint: () => undefined,
+          retainedCandidateConfigStage: () => undefined,
+          untrustedCodexJoinHint: () => undefined,
+          requiredEnvironment: () => "0123456789abcdef",
+          readBoundedInteractiveFailureRecord: () => ({
+            predicate,
+            adapterReportedFailure: {
+              stage: 11,
+              cutoffExpired: false,
+              workerJoined: true,
+              watchdogJoined: null,
+              leaseReleased: false,
+            },
+          }),
+          encodeAdapterReportedFailureMarker,
+          retainedInteractivePhase: () => undefined,
+          codexGateResearchHints: [],
+          untrustedCodexTraceHint: () => undefined,
+          encodeInteractiveFailureExitCode,
+        },
+        { timeout: 1000 },
+      );
+      await expect(Promise.resolve(completed)).resolves.toBeUndefined();
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatch(
+        /^integration\.runner\.adapter-reported-failure:/u,
+      );
+      expect(process.exitCode).toBe(189);
+      expect(process.exitCode).toBe(
+        encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
+      );
+    },
+  );
+});
 
 const modelFixture = (observe?: (hint: string) => void) => {
   const response = Object.assign(new EventEmitter(), { statusCode: 200 });
@@ -313,6 +391,7 @@ describe("returned receipt packet compatibility and wiring", () => {
               typeof projectUntrustedCodexPtyReceipt
             > | null;
             exitPair: string | null;
+            adapterReportedFailure: null;
           }
         >();
         runInNewContext(
@@ -322,6 +401,16 @@ describe("returned receipt packet compatibility and wiring", () => {
             receipt,
             codexResearchDiagnostics: retained,
             projectUntrustedCodexPtyReceipt,
+            extractAdapterReportedFailure,
+            createCodexFailureResearchRecord,
+            codexResearchDependencies: [
+              () => "publish",
+              () => "arm-log-unavailable",
+              () => "arm-pty-returned-failed",
+              projectUntrustedCodexPtyReceipt,
+              extractAdapterReportedFailure,
+              codexFailureExitPair,
+            ],
             extractUntrustedCodexConfigHint: () => "publish",
             extractUntrustedCodexGateHint: () => "arm-log-unavailable",
             extractUntrustedCodexPtyHint: () => "arm-pty-returned-failed",
@@ -332,11 +421,12 @@ describe("returned receipt packet compatibility and wiring", () => {
         if (scenarioId === "other") expect(retained.size).toBe(0);
         else {
           const record = retained.get("closed-canary");
-          expect(record?.diagnosticVersion).toBe(5);
+          expect(record?.diagnosticVersion).toBe(6);
           expect(record?.untrustedPtyReceipt).toEqual(
-            projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
+            projectUntrustedCodexPtyReceipt(receipt, 6) ?? null,
           );
           expect(record?.exitPair).toBe("none:1");
+          expect(record?.adapterReportedFailure).toBeNull();
         }
       }
   });
