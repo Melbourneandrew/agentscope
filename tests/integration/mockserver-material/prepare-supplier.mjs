@@ -8,6 +8,7 @@ import {
   realpathSync,
   rmdirSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -185,6 +186,21 @@ const preserveSupplierBuildFailure = (error, dockerClient) => {
   throw error;
 };
 
+const observeSupplierFailure = (phase, dockerClient) => {
+  try {
+    const bytes = Buffer.from(
+      `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({
+        phase,
+        imagePreparation: preparedDockerClientDiagnostic(dockerClient) ?? null,
+      })}\n`,
+    );
+    if (bytes.length > 4096) return;
+    writeSync(2, bytes);
+  } catch {
+    // Optional owned diagnostics cannot replace the original failure.
+  }
+};
+
 const prepareSupplier = async (input, service) => {
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserve - performance.now();
@@ -204,11 +220,13 @@ const prepareSupplier = async (input, service) => {
   const workSignal = AbortSignal.any([signal, work.signal]);
   let owned;
   let created = false;
+  let phase = "bootstrap-preflight";
   try {
     // Bootstrap owns its own cutoff at this same absolute deadline. Its original
     // caller signal must remain usable during reserved late-image retirement.
     const bootstrap = await prepareMockServerBootstrap(input);
     check(workSignal, deadline - reserve);
+    phase = "supplier-context";
     publishMaterialResearchPhase("supplier-context");
     // Mutable returned bytes are never accepted on the strength of the receipt.
     const archives = {
@@ -243,6 +261,7 @@ const prepareSupplier = async (input, service) => {
       owned.files.push({ path, status: lstatSync(path) });
     }
     check(workSignal, deadline - reserve);
+    phase = "supplier-build";
     publishMaterialResearchPhase("supplier-build");
     const inventory = await buildPreparedDockerImage(dockerClient, {
       buildArguments: { BASE_IMAGE: base },
@@ -261,6 +280,7 @@ const prepareSupplier = async (input, service) => {
       signal: workSignal,
     }).catch((error) => preserveSupplierBuildFailure(error, dockerClient));
     check(workSignal, deadline - reserve);
+    phase = "supplier-inventory";
     publishMaterialResearchPhase("supplier-inventory");
     if (
       service !== undefined
@@ -271,6 +291,7 @@ const prepareSupplier = async (input, service) => {
     )
       fail();
     const bytes = service === undefined ? Buffer.from(inventory) : undefined;
+    phase = "supplier-cleanup";
     publishMaterialResearchPhase("supplier-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
@@ -288,6 +309,7 @@ const prepareSupplier = async (input, service) => {
           bootstrapVerification: bootstrap.verification,
         });
   } catch (error) {
+    observeSupplierFailure(phase, dockerClient);
     if (owned !== undefined) {
       try {
         cleanup(owned, deadline);

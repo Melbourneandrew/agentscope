@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type * as NodeFs from "node:fs";
 import {
   existsSync,
   mkdtempSync,
@@ -11,6 +12,15 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const stderr = vi.hoisted(() => vi.fn((bytes: Uint8Array) => bytes.byteLength));
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>();
+  return {
+    ...original,
+    writeSync: (descriptor: number, bytes: Uint8Array) =>
+      descriptor === 2 ? stderr(bytes) : original.writeSync(descriptor, bytes),
+  };
+});
 const state = vi.hoisted(() => ({
   inputs: [] as Record<string, unknown>[],
   builds: [] as Record<string, unknown>[],
@@ -103,6 +113,7 @@ const fixture = () => {
   };
 };
 beforeEach(() => {
+  stderr.mockReset().mockImplementation((bytes) => bytes.byteLength);
   state.inputs = [];
   state.builds = [];
   state.failure = "";
@@ -387,5 +398,77 @@ describe("supplier deadline and cancellation boundary", () => {
       "supplier",
     );
     expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+});
+
+describe("ordinary supplier catch emits only owned diagnostics", () => {
+  it("observes the build envelope before cleanup without reading its raw cause", async () => {
+    const input = fixture();
+    state.failure = "build";
+    let causeReads = 0;
+    Object.defineProperty(state.primary, "cause", {
+      get: () => {
+        causeReads++;
+        throw Error("raw-secret-canary");
+      },
+    });
+    const diagnostic = Object.freeze({
+      operationKind: "image-build",
+      outcome: "failed-settled",
+      process: Object.freeze({ exited: true, joined: true }),
+    });
+    state.diagnostic = () => diagnostic;
+    const output: string[] = [];
+    stderr.mockImplementation((bytes) => {
+      expect(readdirSync(input.privateRoot)).not.toEqual([]);
+      output.push(String(bytes));
+      return bytes.byteLength;
+    });
+    await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+      state.primary,
+    );
+    expect(output).toEqual([
+      `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({ phase: "supplier-build", imagePreparation: diagnostic })}\n`,
+    ]);
+    expect(Buffer.byteLength(output[0] ?? "")).toBeLessThanOrEqual(4096);
+    expect(output.join("")).not.toContain("raw-secret-canary");
+    expect(causeReads).toBe(0);
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+  it("reports bootstrap entry and honest absent preparation evidence", async () => {
+    state.failure = "bootstrap";
+    const write = stderr;
+    await expect(
+      researchMockServerSupplier(fixture() as never),
+    ).rejects.toThrow("bootstrap");
+    expect(write).toHaveBeenCalledWith(
+      Buffer.from(
+        'integration.mockserver-material.supplier-diagnostic:{"phase":"bootstrap-preflight","imagePreparation":null}\n',
+      ),
+    );
+  });
+  it.each(["reader", "sink", "oversized"])(
+    "preserves primary and cleanup if the optional %s observation fails",
+    async (kind) => {
+      const input = fixture();
+      state.failure = "build";
+      state.diagnosticFailure = kind === "reader";
+      if (kind === "oversized")
+        state.diagnostic = () => ({ syntheticOversized: "x".repeat(4096) });
+      const write = stderr.mockImplementation((bytes) => {
+        if (kind === "sink") throw Error("sink");
+        return bytes.byteLength;
+      });
+      await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+        state.primary,
+      );
+      expect(write).toHaveBeenCalledTimes(kind === "sink" ? 1 : 0);
+      expect(readdirSync(input.privateRoot)).toEqual([]);
+    },
+  );
+  it("keeps successful completion silent", async () => {
+    const write = stderr;
+    await researchMockServerSupplier(fixture() as never);
+    expect(write).not.toHaveBeenCalled();
   });
 });
