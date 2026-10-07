@@ -8,6 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { HarnessInstallationPlanInput } from "@agentscope/harnesses-core/cli-management";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -20,6 +21,7 @@ import { createHarnessCliServices } from "./harness-services.js";
 import { claudeUserConfiguration } from "./claude-discovery.js";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
 import { createProductHarnesses } from "./product-harnesses.js";
+import { claudeServiceProofInNode } from "./__tests__/product-installation-fixture.js";
 
 afterEach(cleanupProductHarnessFixtures);
 
@@ -60,8 +62,58 @@ const claudeFixture = async (override?: string) => {
     ...value,
     claudePath,
     environment,
+    input,
     services: createHarnessCliServices(input),
   };
+};
+
+const servicesWithPlan = (
+  value: Awaited<ReturnType<typeof claudeFixture>>,
+  transform: (plan: HarnessInstallationPlanInput) => unknown,
+) =>
+  createHarnessCliServices({
+    ...value.input,
+    adapters: (value.input.adapters ?? []).map((adapter) =>
+      adapter.commandName === "claude-code"
+        ? {
+            ...adapter,
+            createInstallationInput: async (operation) =>
+              transform(
+                await adapter.createInstallationInput(operation),
+              ) as HarnessInstallationPlanInput,
+          }
+        : adapter,
+    ),
+  });
+
+const serviceProofInNode = (
+  value: Awaited<ReturnType<typeof claudeFixture>>,
+  kind: "empty-profile" | "directory-drift",
+) =>
+  claudeServiceProofInNode({
+    agentscopeRoot: value.agentscopeRoot,
+    vendorHome: value.vendorHome,
+    machineEntryPath: value.machineEntryPath,
+    environment: value.environment,
+    codexDiscoveryPolicy: testDiscoveryPolicy,
+    claudeDiscoveryPolicy: {
+      version: "2.1.245",
+      platforms: { "darwin-arm64": nativeIdentity },
+    },
+    kind,
+  });
+
+const expectOutsideExpectedTupleUnavailable = (
+  proof: ReturnType<typeof claudeServiceProofInNode>,
+) => {
+  expect(proof.result).toMatchObject({
+    status: "partial",
+    value: { applied: false, disposition: "unavailable" },
+  });
+  expect(proof.presented).toBe(false);
+  expect(proof.presentationDisposition).toBeNull();
+  expect(proof.settingsMode).toBeNull();
+  expect(proof.launcherNames).toEqual([]);
 };
 
 describe("ordinary CLI registry exposes Codex and Claude independently", () => {
@@ -147,22 +199,26 @@ describe("ordinary CLI registry exposes Codex and Claude independently", () => {
 describe("ordinary Claude CLI owned lifecycle", () => {
   it("keeps the captured empty-profile project parent and its existing mode", async () => {
     const value = await claudeFixture("");
+    // Bound the fixture's repository lookup instead of depending on host temp
+    // ancestry; candidate === cwd keeps the native home/cwd fallback unchanged.
+    await mkdir(join(value.vendorHome, ".git"), { mode: 0o700 });
     await chmod(value.vendorHome, 0o755);
-    const settings = join(value.vendorHome, "settings.json");
-    await expect(
-      value.services.installHarness({
-        apply: true,
-        harness: "claude-code",
-        presentPlan: () => {
-          value.environment.CLAUDE_CONFIG_DIR = "/foreign-profile";
-          value.environment.CLAUDE_CODE_USE_COWORK_PLUGINS = "1";
-          value.environment.CLAUDE_CODE_PLUGIN_CACHE_DIR = "/foreign-cache";
-          return Promise.resolve();
-        },
-      }),
-    ).resolves.toMatchObject({ status: "success", value: { applied: true } });
+    const proof = serviceProofInNode(value, "empty-profile");
+    expect(proof.gitGuarded).toBe(true);
+    expect(proof.parentMode).toBe(0o755);
+    expect(proof.coworkExists).toBe(false);
+    if (!proof.tupleExpected) {
+      expectOutsideExpectedTupleUnavailable(proof);
+      return;
+    }
+    expect(proof.presented).toBe(true);
+    expect(proof.presentationDisposition).toBe("ready");
+    expect(proof.result).toMatchObject({
+      status: "success",
+      value: { applied: true, disposition: "committed" },
+    });
     expect((await lstat(value.vendorHome)).mode & 0o777).toBe(0o755);
-    expect((await lstat(settings)).mode & 0o777).toBe(0o600);
+    expect(proof.settingsMode).toBe(0o600);
     await expect(
       lstat(join(value.vendorHome, "cowork_settings.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
@@ -257,6 +313,87 @@ describe("ordinary Claude CLI owned lifecycle", () => {
 });
 
 describe("ordinary Claude CLI presentation preimages", () => {
+  it("preserves held-directory guards through the CLI service until apply", async () => {
+    const value = await claudeFixture();
+    await mkdir(join(value.vendorHome, ".git"), { mode: 0o700 });
+    const proof = serviceProofInNode(value, "directory-drift");
+    expect(proof.gitGuarded).toBe(true);
+    if (!proof.tupleExpected) {
+      expectOutsideExpectedTupleUnavailable(proof);
+      return;
+    }
+    expect(proof.presented).toBe(true);
+    expect(proof.presentationDisposition).toBe("ready");
+    expect(proof.result).toMatchObject({
+      status: "partial",
+      value: { applied: false, disposition: "conflict" },
+    });
+    expect(proof.launcherNames).toEqual([]);
+    expect(await readdir(value.home.launcherDirectory)).toEqual([]);
+  });
+
+  it.each([
+    { paths: undefined, status: "failure" },
+    { paths: ["relative"], status: "partial" },
+    {
+      paths: Array.from({ length: 17 }, (_, index) => `/oversized/${index}`),
+      status: "failure",
+    },
+    { paths: new Array<string>(1), status: "failure" },
+  ])(
+    "rejects malformed directory guards without presenting a plan",
+    async ({ paths, status }) => {
+      const value = await claudeFixture();
+      let presented = false;
+      const services = servicesWithPlan(value, (plan) =>
+        Object.assign({ ...plan }, { directoryPaths: paths }),
+      );
+      await expect(
+        services.installHarness({
+          apply: true,
+          harness: "claude-code",
+          presentPlan: () => {
+            presented = true;
+            return Promise.resolve();
+          },
+        }),
+      ).resolves.toMatchObject({
+        status,
+        diagnostic: { code: "harness.plan-invalid" },
+      });
+      expect(presented).toBe(false);
+      expect(await readdir(value.home.launcherDirectory)).toEqual([]);
+    },
+  );
+
+  it("rejects directory-path accessors and proxies without invoking them", async () => {
+    const value = await claudeFixture();
+    let invoked = false;
+    const getter = () => {
+      invoked = true;
+      throw new Error("unexpected fixture access");
+    };
+    const accessor = Object.defineProperty(["unused"], "0", { get: getter });
+    const proxy = new Proxy(["unused"], { getPrototypeOf: getter });
+    for (const paths of [accessor, proxy]) {
+      const services = servicesWithPlan(value, (plan) => ({
+        ...plan,
+        directoryPaths: paths,
+      }));
+      await expect(
+        services.installHarness({
+          apply: false,
+          harness: "claude-code",
+          presentPlan: () => Promise.resolve(),
+        }),
+      ).resolves.toMatchObject({
+        status: "failure",
+        diagnostic: { code: "harness.plan-invalid" },
+      });
+    }
+    expect(invoked).toBe(false);
+  });
+
   it("does not overwrite settings changed after plan presentation", async () => {
     const value = await claudeFixture();
     const directory = join(value.vendorHome, ".claude");

@@ -29,6 +29,102 @@ export const digest = (bytes: Uint8Array): string =>
 export const encode = (value: string): Uint8Array =>
   new TextEncoder().encode(value);
 
+// Real held-directory DTOs originate in Node's realm, not Vitest's VM realm.
+// This child invokes only first-party services over synthetic vendor bytes.
+export const claudeServiceProofInNode = (
+  input: Readonly<{
+    agentscopeRoot: string;
+    vendorHome: string;
+    machineEntryPath: string;
+    environment: Readonly<Record<string, string | undefined>>;
+    codexDiscoveryPolicy: unknown;
+    claudeDiscoveryPolicy: unknown;
+    kind: "empty-profile" | "directory-drift";
+  }>,
+): Readonly<{
+  tupleExpected: boolean;
+  result: unknown;
+  presented: boolean;
+  presentationDisposition: string | null;
+  gitGuarded: boolean;
+  parentMode: number;
+  settingsMode: number | null;
+  coworkExists: boolean;
+  launcherNames: readonly string[];
+}> =>
+  JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `
+    import { lstat, mkdir, readdir, writeFile } from "node:fs/promises";
+    import { join } from "node:path";
+    import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
+    import { createHarnessCliServices } from "./src/harness-services.ts";
+    import { createProductHarnesses } from "./src/product-harnesses.ts";
+    import { createProductHarnessInstallationInput } from "./src/product-harness-installation.ts";
+    const input = JSON.parse(process.argv[1]);
+    const environment = { ...input.environment };
+    const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: input.agentscopeRoot },
+      environmentOverrideAuthority: "test", platform: process.platform })();
+    const product = createProductHarnesses({ home, environment, homeDirectory: input.vendorHome,
+      projectDirectory: input.vendorHome, architecture: "arm64", platform: "darwin",
+      codexDiscoveryPolicy: input.codexDiscoveryPolicy, claudeDiscoveryPolicy: input.claudeDiscoveryPolicy,
+      installationFactory: createProductHarnessInstallationInput, machineEntryPath: input.machineEntryPath,
+      nodeExecutable: process.execPath, releaseIdentity: "0.1.0",
+      readHookDeadlineMilliseconds: () => Promise.resolve(2000) });
+    const directory = join(input.vendorHome, "observed-directory");
+    if (input.kind === "directory-drift") await mkdir(directory, { mode: 0o700 });
+    let gitGuarded = false;
+    const adapters = product.adapters.map(adapter => adapter.commandName !== "claude-code" ? adapter : {
+      ...adapter, createInstallationInput: async operation => {
+        const plan = await adapter.createInstallationInput(operation);
+        gitGuarded = plan.directoryPaths?.includes(join(input.vendorHome, ".git")) === true;
+        return input.kind === "directory-drift"
+          ? { ...plan, directoryPaths: [...(plan.directoryPaths ?? []), directory] } : plan;
+      }
+    });
+    let presented = false, presentationDisposition = null;
+    const result = await createHarnessCliServices({ ...product, adapters }).installHarness({
+      apply: true, harness: "claude-code", presentPlan: async plan => {
+        presented = true; presentationDisposition = plan.disposition;
+        if (input.kind === "directory-drift") await writeFile(join(directory, "late-entry"), "changed");
+        else {
+          environment.CLAUDE_CONFIG_DIR = "/foreign-profile";
+          environment.CLAUDE_CODE_USE_COWORK_PLUGINS = "1";
+          environment.CLAUDE_CODE_PLUGIN_CACHE_DIR = "/foreign-cache";
+        }
+      }
+    });
+    const selected = input.kind === "empty-profile" ? input.vendorHome : join(input.vendorHome, ".claude");
+    const mode = async path => { try { return (await lstat(path)).mode & 0o777; }
+      catch (error) { if (error.code !== "ENOENT") throw error; return null; } };
+    // This is the canonical positive CI tuple expectation, not loader admission.
+    // OS/libc/NAPI/assets must still pass the real loader or the positive fails.
+    const tupleExpected = process.versions.node.split(".")[0] === "22" &&
+      ((process.platform === "darwin" && process.arch === "arm64") ||
+       (process.platform === "linux" && process.arch === "x64"));
+    console.log(JSON.stringify({ tupleExpected, result, presented, presentationDisposition, gitGuarded,
+      parentMode: await mode(input.vendorHome), settingsMode: await mode(join(selected, "settings.json")),
+      coworkExists: (await mode(join(selected, "cowork_settings.json"))) !== null,
+      launcherNames: await readdir(home.launcherDirectory) }));
+  `,
+        JSON.stringify(input),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        maxBuffer: 4096,
+        cwd: new URL("../..", import.meta.url),
+        env: { PATH: "/usr/bin:/bin" },
+      },
+    ),
+  ) as ReturnType<typeof claudeServiceProofInNode>;
+
 export const directoryProofInNode = (
   input: ProductHarnessInstallationInput,
 ): unknown =>
