@@ -47,6 +47,40 @@ import {
   RetrieverContractError,
 } from "./retriever.js";
 
+describe("adapter-reported failure observation proxy refusal", () => {
+  it("rejects live and revoked proxies without invoking traps", () => {
+    let traps = 0;
+    const observed = () => {
+      traps++;
+      throw new Error("proxy trap must not execute");
+    };
+    const proxy = Proxy.revocable(
+      {
+        stage: 11,
+        cutoffExpired: false,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: null,
+      },
+      {
+        get: observed,
+        getPrototypeOf: observed,
+        ownKeys: observed,
+        getOwnPropertyDescriptor: observed,
+      },
+    );
+    expect(() =>
+      createRetrieverFailure("unavailable", undefined, proxy.proxy),
+    ).toThrow(RetrieverContractError);
+    expect(traps).toBe(0);
+    proxy.revoke();
+    expect(() =>
+      createRetrieverFailure("unavailable", undefined, proxy.proxy),
+    ).toThrow(RetrieverContractError);
+    expect(traps).toBe(0);
+  });
+});
+
 describe("adapter-reported failure observation normalization", () => {
   const observation = () => ({
     stage: 11,

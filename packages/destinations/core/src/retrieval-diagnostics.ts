@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 // Adapter-reported observations only; these values confer no result authority.
 export type RetrieverFailureObservation = Readonly<{
   stage: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
@@ -12,6 +14,7 @@ const descriptorsOf = Object.getOwnPropertyDescriptors;
 const prototypeOf = Object.getPrototypeOf;
 const ownKeys = Reflect.ownKeys;
 const freeze = Object.freeze;
+const isProxy = types.isProxy;
 const nullableBoolean = (value: unknown): value is boolean | null =>
   value === null || typeof value === "boolean";
 
@@ -19,7 +22,8 @@ export const normalizeRetrieverFailureObservation = (
   value: unknown,
 ): RetrieverFailureObservation | undefined => {
   try {
-    if (typeof value !== "object" || value === null) return undefined;
+    if (typeof value !== "object" || value === null || isProxy(value))
+      return undefined;
     const prototype: unknown = prototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) return undefined;
     const descriptors = descriptorsOf(value);
