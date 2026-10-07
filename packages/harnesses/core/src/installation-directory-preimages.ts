@@ -97,7 +97,10 @@ const names = (
       return unavailable();
     total += byteLength;
     const bytes = copyNativeBytes(value, byteLength);
-    const name = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const name = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: true,
+    }).decode(bytes);
     if (name === "." || name === ".." || /[\0/]/u.test(name))
       return unavailable();
     result.push(name);
