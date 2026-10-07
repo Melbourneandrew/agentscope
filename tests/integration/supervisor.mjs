@@ -46,6 +46,10 @@ export const runSupervisedProcess = async ({
   maximumMilliseconds,
   stdio = "inherit",
 }) => {
+  const enteredAt = performance.now();
+  if (!Number.isSafeInteger(maximumMilliseconds) || maximumMilliseconds < 1)
+    throw new Error("integration.controller.deadline");
+  const deadline = enteredAt + maximumMilliseconds;
   const child = spawn(executable, arguments_, {
     detached: process.platform !== "win32",
     env: environment,
@@ -64,7 +68,10 @@ export const runSupervisedProcess = async ({
       signalGroup(processGroup, "SIGKILL");
     }, containmentProofMilliseconds);
   };
-  const deadlineTimer = setTimeout(terminate, maximumMilliseconds);
+  const deadlineTimer = setTimeout(
+    terminate,
+    Math.max(0, deadline - performance.now()),
+  );
   const forwardSignal = () => {
     terminate();
   };
@@ -81,7 +88,13 @@ export const runSupervisedProcess = async ({
     if (forcedTimer !== undefined) clearTimeout(forcedTimer);
     const residualWorkObserved = signalGroup(processGroup, "SIGKILL");
     const contained = await proveGroupAbsent(processGroup);
-    return { ...result, contained, residualWorkObserved };
+    return Object.freeze({
+      ...result,
+      contained,
+      residualWorkObserved,
+      terminationInitiated: terminating,
+      completedWithinDeadline: performance.now() < deadline,
+    });
   } finally {
     clearTimeout(deadlineTimer);
     if (forcedTimer !== undefined) clearTimeout(forcedTimer);

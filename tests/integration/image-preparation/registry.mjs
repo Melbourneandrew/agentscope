@@ -287,6 +287,7 @@ const fetchRegistryBlob = async ({
   signal,
   tokenCache,
   transport,
+  maximumBytes = maximumManifestBytes,
 }) => {
   const parsed = parseImageReference(image);
   const token = tokenCache.get(parsed.name);
@@ -301,7 +302,7 @@ const fetchRegistryBlob = async ({
     origin: parsed.origin,
     path: `/v2/${parsed.name}/blobs/${digest}`,
     signal,
-    maximumBytes: maximumManifestBytes,
+    maximumBytes,
   });
   if (response.statusCode === 302 || response.statusCode === 307) {
     const location = allowedBlobRedirect(response.headers.location);
@@ -312,7 +313,7 @@ const fetchRegistryBlob = async ({
       origin: location,
       path: `${location.pathname}${location.search}`,
       signal,
-      maximumBytes: maximumManifestBytes,
+      maximumBytes,
     });
   }
   if (
@@ -325,6 +326,26 @@ const fetchRegistryBlob = async ({
   )
     throw fixedError("integration.images.config");
   return response.body;
+};
+
+/** Private exact Node base input; never a configurable blob acquisition API. */
+export const acquireNodeBaseLayer = async (input) => {
+  if (
+    input.image !==
+      "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2" ||
+    !digestPattern.test(input.digest) ||
+    !Number.isSafeInteger(input.size) ||
+    input.size < 1 ||
+    input.size > 211_394_364
+  )
+    throw fixedError("integration.images.build.base");
+  const bytes = await fetchRegistryBlob({
+    ...input,
+    maximumBytes: input.size,
+  });
+  if (bytes.byteLength !== input.size)
+    throw fixedError("integration.images.build.base");
+  return bytes;
 };
 
 export const acquireManifestProof = async ({

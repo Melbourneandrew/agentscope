@@ -11,6 +11,7 @@ import { compileLocalSelection } from "./dist/operations.js";
 import {
   registerIntegrationArtifactFile,
   requireDisposableOuterHostCapability,
+  requireMockServerResearchRequest,
 } from "./dist/controller.js";
 
 requireDisposableOuterHostCapability();
@@ -24,7 +25,12 @@ const manifest = compileCapabilityManifest(
 );
 verifyManifestEvidence(manifest, integrationRoot);
 
-const { mode: selectionMode, selector } = compileLocalSelection(process.env);
+// Research selects preparation inputs only. Its live controller has already
+// rejected every caller selector and never admits scenario execution.
+const { mode: selectionMode, selector } =
+  requireMockServerResearchRequest() === undefined
+    ? compileLocalSelection(process.env)
+    : { mode: "full", selector: {} };
 const scenarios = selectCapabilityScenarios(manifest, selector);
 const selection = {
   selectionVersion: 2,

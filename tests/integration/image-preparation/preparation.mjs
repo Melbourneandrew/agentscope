@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { performance } from "node:perf_hooks";
 import {
   fixedError,
   jsonRecord,
@@ -25,6 +26,29 @@ const ownErrorValue = (error, name) => {
 
 export const readImagePreparationDiagnostic = (error) =>
   objectKey(error) ? diagnostics.get(error) : undefined;
+
+// Preserve the setup primary and cleanup uncertainty without exposing either
+// exception's arbitrary message or inventing mutation/retirement authority.
+export const recordClientSetupCleanupFailure = (primary, cleanup) => {
+  const failure = fixedError("integration.images.cleanup");
+  diagnostics.set(
+    failure,
+    Object.freeze({
+      primary: "preparation-failed",
+      cleanup: "private-cleanup-failed",
+      trigger:
+        ownErrorValue(primary, "message") === "integration.images.deadline"
+          ? "timeout"
+          : "unknown",
+      reconciliation: "not-attempted",
+    }),
+  );
+  // Keep the cleanup's bounded inventory projection when it exists; it is
+  // diagnostic data only and never read as a cleanup capability.
+  const detail = ownErrorValue(cleanup, "privateCleanupDiagnostic");
+  if (detail !== undefined) failure.privateCleanupDiagnostic = detail;
+  return failure;
+};
 
 export const recordUnexpectedEngineStatus = (error) => {
   engineFailures.set(error, "unexpected-status");
@@ -145,7 +169,10 @@ export const prepareImageOperation = async (
         : Object.freeze({ ...options.socketIdentityForTesting });
     if (!validSocketEvidence(socket))
       throw fixedError("integration.images.socket");
-    privateClient = dependencies.createPrivateClientRoot(options);
+    privateClient = dependencies.createPrivateClientRoot(
+      options,
+      policy.deadline,
+    );
     const engine =
       options.engineRequestForTesting === undefined
         ? dependencies.engineTransport(socket)
@@ -159,6 +186,8 @@ export const prepareImageOperation = async (
       signal: options.signal,
       socket,
     });
+    if (performance.now() >= policy.workDeadline)
+      throw fixedError("integration.images.timeout", true);
   } catch (error) {
     failure = preparationFailure(error);
     primaryDiagnostic =
@@ -192,6 +221,8 @@ export const prepareImageOperation = async (
     }
   }
   if (failure !== undefined) throw failure;
+  if (performance.now() >= policy.deadline)
+    throw fixedError("integration.images.timeout", true);
   const completed = Object.freeze({
     ...prepared,
     preparationPolicy: Object.freeze({

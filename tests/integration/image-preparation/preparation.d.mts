@@ -16,6 +16,10 @@ export type ImagePreparationDiagnostic = Readonly<{
 export declare const readImagePreparationDiagnostic: (
   error: unknown,
 ) => ImagePreparationDiagnostic | undefined;
+export declare const recordClientSetupCleanupFailure: (
+  primary: unknown,
+  cleanup: unknown,
+) => Error;
 
 type PullPolicy = Readonly<{
   workDeadline: number;
@@ -58,7 +62,10 @@ export declare const prepareImageOperation: (
   dependencies: Readonly<{
     engineTransport: (socket: unknown) => unknown;
     prepareImageSet: (input: unknown) => Promise<unknown>;
-    createPrivateClientRoot: (options: unknown) => Readonly<{ root: string }>;
+    createPrivateClientRoot: (
+      options: unknown,
+      deadline: number,
+    ) => Readonly<{ root: string }>;
     cleanupPrivateClient: (
       owned: Readonly<{ root: string }>,
       deadline: number,

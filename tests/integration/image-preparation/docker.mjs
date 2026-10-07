@@ -5,17 +5,14 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import {
-  BUILDKIT_IMAGE,
   IMAGE_PREPARATION_EXECUTION_POLICY,
   apiVersionPattern,
   assertSocketCurrent,
   boundedRequest,
-  boundedText,
   daemonIdentity,
   defaultMaximumBuildContextBytes,
   diagnosticDigest,
   digestPattern,
-  exactKeys,
   executableRecord,
   fixedError,
   jsonRecord,
@@ -24,29 +21,37 @@ import {
   maximumResponseBytes,
   normalizePlatform,
   preparationPolicy,
-  preparationTeardownMilliseconds,
-  productionDockerEnvironment,
-  productionDockerExecutable,
   requestWith,
   resolveBuildxExecutable,
-  resolveDockerExecutable,
   runOwnedImageCommandForTesting,
   sameDaemon,
   sameExecutable,
   samePlatform,
   sameSocket,
   socketRecord,
-  validEvidenceDaemon,
-  validSocketEvidence,
   readImageProcessDiagnostic,
 } from "./boundary.mjs";
-import { createBoundedBuildContext } from "./build-context.mjs";
+import { readBuildArtifactTar } from "./build-artifact.mjs";
+import { withBuildBase } from "./build-base.mjs";
+import {
+  buildArgumentsFor,
+  buildPhaseFailure,
+  builderNetworkFor,
+  createBuildArchive,
+  imageBuildPolicy,
+  selectBuildNetwork,
+  selectBuildOutput,
+  settledBuildFailure,
+  unavailableProcessDiagnostic,
+  validBuildInput,
+} from "./build-policy.mjs";
 import { evidenceImage } from "./evidence.mjs";
 import {
   cleanupPrivateClient,
   createPrivateClientRoot,
 } from "./private-storage.mjs";
 import { acquireManifestProof } from "./registry.mjs";
+import { createPreparedClient } from "./prepared-client.mjs";
 import {
   createPullOperation,
   prepareImageOperation,
@@ -274,61 +279,8 @@ export const createDockerOperations = (state) => {
     }
   };
 
-  const createPreparedDockerClient = (evidence, options = {}) => {
-    let privateClient;
-    try {
-      if (
-        typeof evidence !== "object" ||
-        evidence === null ||
-        !validSocketEvidence(evidence.dockerSocket) ||
-        !validEvidenceDaemon(evidence.dockerDaemon) ||
-        !Array.isArray(evidence.images) ||
-        evidence.images.length === 0
-      )
-        throw fixedError("integration.images.docker-client");
-      const socket =
-        options.socketIdentityForTesting === undefined
-          ? socketRecord(evidence.dockerSocket.path)
-          : Object.freeze({ ...options.socketIdentityForTesting });
-      if (!sameSocket(socket, evidence.dockerSocket))
-        throw fixedError("integration.images.docker-client");
-      const executable =
-        options.dockerExecutable === undefined
-          ? resolveDockerExecutable(options.dockerExecutableForTesting)
-          : productionDockerExecutable(options.dockerExecutable);
-      const requestedBuildxExecutable =
-        options.buildxExecutable ?? options.buildxExecutableForTesting;
-      const buildxExecutable =
-        requestedBuildxExecutable === undefined
-          ? undefined
-          : resolveBuildxExecutable(requestedBuildxExecutable);
-      const environment =
-        options.dockerEnvironment === undefined
-          ? Object.freeze({})
-          : productionDockerEnvironment(options.dockerEnvironment, socket);
-      privateClient = createPrivateClientRoot(options);
-      const client = Object.freeze({
-        evidence,
-        buildxExecutable,
-        buildkitImage: options.buildkitImageForTesting ?? BUILDKIT_IMAGE,
-        buildxRunForTesting: options.buildxRunForTesting,
-        executable,
-        environment,
-        privateClient,
-        socket,
-        engineRequestForTesting: options.engineRequestForTesting,
-      });
-      state.admitClient(client);
-      return client;
-    } catch {
-      if (privateClient !== undefined)
-        cleanupPrivateClient(
-          privateClient,
-          performance.now() + preparationTeardownMilliseconds,
-        );
-      throw fixedError("integration.images.docker-client");
-    }
-  };
+  const createPreparedDockerClient = (evidence, options = {}) =>
+    createPreparedClient(state, evidence, options);
 
   const prepareDockerInvocation = async (client, arguments_, signal) => {
     if (
@@ -387,11 +339,6 @@ export const createDockerOperations = (state) => {
       environment: client.environment,
     });
   };
-  const validBuildMap = (value) =>
-    exactKeys(value, Object.keys(value ?? {})) &&
-    Object.entries(value).every(
-      ([name, entry]) => boundedText(name, 128) && boundedText(entry, 1_024),
-    );
   const buildxEnvironment = (client) =>
     Object.freeze({
       BUILDX_CONFIG: resolve(client.privateClient.root, "buildx"),
@@ -533,7 +480,7 @@ export const createDockerOperations = (state) => {
     container.Mounts[0]?.RW === true;
   const builderContainerFailureReason = (
     container,
-    { buildkit, buildkitImage, requireRunning, resources },
+    { buildkit, buildkitImage, buildNetwork, requireRunning, resources },
   ) => {
     if (!/^[a-f\d]{64}$/u.test(container?.Id ?? "")) return "id";
     if (
@@ -546,10 +493,11 @@ export const createDockerOperations = (state) => {
     if (container.Image !== buildkit.configDigest) return "image-id";
     if (container.Config?.Image !== buildkitImage) return "image-reference";
     if (container.Platform !== buildkit.platform.os) return "platform";
-    if (container.HostConfig?.NetworkMode !== "bridge") return "network-mode";
+    const network = builderNetworkFor(buildNetwork);
+    if (container.HostConfig?.NetworkMode !== network) return "network-mode";
     if (
       JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
-      JSON.stringify(["bridge"])
+      JSON.stringify([network])
     )
       return "network-attachment";
     if (!validBuilderMount(container, resources)) return "mount";
@@ -562,12 +510,13 @@ export const createDockerOperations = (state) => {
   };
   const assertBuilderContainer = (
     container,
-    { buildkit, buildkitImage, requireRunning, resources },
+    { buildkit, buildkitImage, buildNetwork, requireRunning, resources },
   ) => {
     if (
       builderContainerFailureReason(container, {
         buildkit,
         buildkitImage,
+        buildNetwork,
         requireRunning,
         resources,
       }) !== "matched"
@@ -657,6 +606,7 @@ export const createDockerOperations = (state) => {
         : builderContainerFailureReason(container, {
             buildkit: authority.buildkit,
             buildkitImage: authority.client.buildkitImage,
+            buildNetwork: authority.buildNetwork,
             requireRunning,
             resources,
           });
@@ -676,6 +626,7 @@ export const createDockerOperations = (state) => {
           : assertBuilderContainer(container, {
               buildkit: authority.buildkit,
               buildkitImage: authority.client.buildkitImage,
+              buildNetwork: authority.buildNetwork,
               requireRunning,
               resources,
             }),
@@ -745,41 +696,12 @@ export const createDockerOperations = (state) => {
       throw fixedError("integration.images.build");
     return built;
   };
-  const buildArgumentsFor = ({
-    buildArguments,
-    builder,
-    dockerfile,
-    labels,
-    platform,
-    tag,
-  }) => {
-    const result = [
-      "build",
-      "--builder",
-      builder,
-      "--file",
-      dockerfile,
-      "--load",
-      "--network",
-      "default",
-      "--platform",
-      platformText(platform),
-      "--pull=false",
-      "--tag",
-      tag,
-    ];
-    for (const [name, value] of Object.entries(buildArguments).sort())
-      result.push("--build-arg", `${name}=${value}`);
-    for (const [name, value] of Object.entries(labels).sort())
-      result.push("--label", `${name}=${value}`);
-    result.push("-");
-    return result;
-  };
   const createBuildAuthority = async (
     client,
     policy,
     signal,
     runGeneration,
+    { buildNetwork, buildOutput },
   ) => {
     const engine =
       client.engineRequestForTesting ?? engineTransport(client.socket);
@@ -807,7 +729,12 @@ export const createDockerOperations = (state) => {
     const builder = /^[a-f0-9]{16}$/u.test(runGeneration ?? "")
       ? `agentscope-${runGeneration}`
       : `agentscope-${randomBytes(8).toString("hex")}`;
-    const run = (arguments_, input, deadline = policy.workDeadline) => {
+    const run = (
+      arguments_,
+      input,
+      deadline = policy.workDeadline,
+      output = "text",
+    ) => {
       if (
         !sameExecutable(
           buildxExecutable,
@@ -819,6 +746,7 @@ export const createDockerOperations = (state) => {
         deadline,
         environment: buildxEnvironment(client),
         input,
+        output,
         observeProcess: (diagnostic) => {
           authority.lastProcessObservation = Object.freeze({
             operationKind: authority.currentOperationKind,
@@ -838,6 +766,8 @@ export const createDockerOperations = (state) => {
     };
     const authority = {
       builder,
+      buildNetwork,
+      buildOutput,
       buildkit,
       client,
       daemon,
@@ -865,18 +795,21 @@ export const createDockerOperations = (state) => {
     );
     if (priorContainer !== undefined || priorVolume !== undefined)
       throw fixedError("integration.images.containment");
-    const priorTag = await inspectEngineObject({
-      daemon,
-      engine,
-      name: options.tag,
-      policy,
-      signal,
-      type: "images",
-    });
+    const priorTag =
+      authority.buildOutput === "image"
+        ? await inspectEngineObject({
+            daemon,
+            engine,
+            name: options.tag,
+            policy,
+            signal,
+            type: "images",
+          })
+        : undefined;
     if (priorTag !== undefined)
       throw fixedError("integration.images.containment");
     authority.resourcePreflightComplete = true;
-    authority.tagPreflightComplete = true;
+    authority.tagPreflightComplete = authority.buildOutput === "image";
     authority.requestCapable = true;
     authority.currentOperationKind = "builder-create";
     await run([
@@ -888,7 +821,7 @@ export const createDockerOperations = (state) => {
       "--driver-opt",
       `image=${client.buildkitImage}`,
       "--driver-opt",
-      "network=bridge",
+      `network=${builderNetworkFor(authority.buildNetwork)}`,
       "--platform",
       platformText(buildkit.platform),
       `unix://${client.socket.path}`,
@@ -908,19 +841,28 @@ export const createDockerOperations = (state) => {
       true,
     );
     authority.currentOperationKind = "image-build";
-    await run(
+    options.baseInput?.validate();
+    const output = await run(
       buildArgumentsFor({
         ...options,
+        baseContext: options.baseInput?.context,
+        buildNetwork: authority.buildNetwork,
+        buildOutput: authority.buildOutput,
         builder,
         platform: buildkit.platform,
       }),
       archive,
+      policy.workDeadline,
+      authority.buildOutput === "evidence-tar" ? "binary" : "text",
     );
-    const built = await inspectBuiltTag(engine, daemon, policy, signal, {
-      labels: options.labels,
-      platform: buildkit.platform,
-      tag: options.tag,
-    });
+    const built =
+      authority.buildOutput === "image"
+        ? await inspectBuiltTag(engine, daemon, policy, signal, {
+            labels: options.labels,
+            platform: buildkit.platform,
+            tag: options.tag,
+          })
+        : output;
     assertSocketCurrentFor(engine, client.socket);
     if (
       !sameDaemon(
@@ -1068,13 +1010,14 @@ export const createDockerOperations = (state) => {
           policy: reconciliationPolicy,
           resources,
         });
-      await settleBuiltTag(
-        authority,
-        options,
-        built,
-        failed,
-        reconciliationPolicy,
-      );
+      if (authority.buildOutput === "image")
+        await settleBuiltTag(
+          authority,
+          options,
+          built,
+          failed,
+          reconciliationPolicy,
+        );
       const finalDaemon = await inspectDaemon(
         engine,
         client.socket,
@@ -1087,17 +1030,6 @@ export const createDockerOperations = (state) => {
       throw fixedError("integration.images.containment");
     }
   };
-  const unavailableProcessDiagnostic = (failure) =>
-    Object.freeze({
-      observed: false,
-      exited: false,
-      signaled: false,
-      timedOut: failure?.code === "ETIMEDOUT",
-      joined: false,
-      outputBytes: 0,
-      outputTruncated: false,
-      stderrClass: "unknown",
-    });
   const captureFirstBuildFailure = (authority, failure) => {
     if (authority.firstFailureDiagnostic !== undefined) return;
     authority.firstFailureDiagnostic = Object.freeze({
@@ -1111,40 +1043,12 @@ export const createDockerOperations = (state) => {
         unavailableProcessDiagnostic(failure),
     });
   };
-  const settledBuildFailure = (authority, failure) => {
-    const diagnostic = authority.firstFailureDiagnostic;
-    const operation = [
-      "preflight",
-      "builder-create",
-      "builder-bootstrap",
-      "image-build",
-    ].includes(diagnostic?.operationKind)
-      ? diagnostic.operationKind
-      : "unknown-operation";
-    const stderrClass = [
-      "resource-conflict",
-      "build-failed",
-      "bootstrap-failed",
-      "permission-denied",
-      "unknown",
-    ].includes(diagnostic?.process?.stderrClass)
-      ? diagnostic.process.stderrClass
-      : "unknown";
-    return fixedError(
-      `integration.images.build.${operation}.${stderrClass}`,
-      failure?.code === "ETIMEDOUT",
-    );
-  };
-  const buildPhaseFailure = (error, phase, retainedCodes) =>
-    retainedCodes.includes(error?.message) ||
-    /^integration\.images\.build\.context-[a-z-]+$/u.test(error?.message)
-      ? error
-      : fixedError(`integration.images.build.${phase}`);
   const recordPreparedDockerDiagnostic = (
     client,
     authority,
     labels,
     failure,
+    outcome = "retired-failure",
   ) => {
     if (state.hasDiagnostic(client)) return;
     const resources = builderResources(authority.builder);
@@ -1184,7 +1088,7 @@ export const createDockerOperations = (state) => {
         ]),
         observedResourceDigest: observation.observedDigest,
         reconciliationReasons: authority.reconciliationReasons,
-        outcome: "retired-failure",
+        outcome,
       }),
     );
   };
@@ -1192,58 +1096,71 @@ export const createDockerOperations = (state) => {
   const preparedDockerClientDiagnostic = (client) =>
     state.readDiagnostic(client);
 
-  const buildPreparedDockerImage = async (
+  const rejectSettledBuild = (client, authority, labels, failure) => {
+    try {
+      recordPreparedDockerDiagnostic(
+        client,
+        authority,
+        labels,
+        failure,
+        "failed-settled",
+      );
+    } catch {
+      // Optional observation cannot replace the original controlling failure.
+    }
+    throw [
+      "integration.images.executable",
+      "integration.images.interrupted",
+      "integration.images.output",
+      "integration.images.timeout",
+    ].includes(failure?.message)
+      ? failure
+      : settledBuildFailure(authority, failure);
+  };
+
+  const finalizeBuildResult = (
+    authority,
+    built,
+    { retirementRequired, tag, labels },
+  ) => {
+    const { client, policy, signal } = authority;
+    if (authority.buildOutput === "image") {
+      const imageId = built.Id.replace(":", "-");
+      if (retirementRequired) state.recordPendingImage(client, tag, imageId);
+      return imageId;
+    }
+    try {
+      const check = () => {
+        if (signal?.aborted) throw fixedError("integration.images.interrupted");
+        if (performance.now() >= policy.deadline)
+          throw fixedError("integration.images.timeout", true);
+      };
+      check();
+      const artifact = readBuildArtifactTar(built);
+      check();
+      return artifact;
+    } catch (error) {
+      state.markUncertain(client);
+      recordPreparedDockerDiagnostic(client, authority, labels, error);
+      throw error;
+    }
+  };
+
+  const executePreparedBuild = async (
     client,
-    {
+    options,
+    policy,
+    archive,
+    baseInput,
+  ) => {
+    const {
       buildArguments,
-      afterBuildContextEntryForTesting,
-      context,
       dockerfile,
       labels,
-      maximumMilliseconds,
-      maximumBuildContextBytes,
-      retirementRequired = false,
+      retirementRequired,
       signal,
       tag,
-    },
-  ) => {
-    if (
-      !state.clientIsUsable(client) ||
-      typeof context !== "string" ||
-      typeof dockerfile !== "string" ||
-      !/^(?:[A-Za-z\d][A-Za-z\d._-]{0,127}\.Dockerfile|Dockerfile)$/u.test(
-        dockerfile,
-      ) ||
-      typeof tag !== "string" ||
-      !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag) ||
-      !validBuildMap(buildArguments) ||
-      !validBuildMap(labels) ||
-      typeof retirementRequired !== "boolean" ||
-      state.pendingCount(client) !== 0
-    )
-      throw fixedError("integration.images.build.input");
-    const policy = preparationPolicy([client.evidence.images[0].image], {
-      maximumPreparationMilliseconds: maximumMilliseconds,
-      teardownMilliseconds: Math.min(
-        preparationTeardownMilliseconds,
-        Math.floor(maximumMilliseconds / 4),
-      ),
-    });
-    let archive;
-    try {
-      archive = createBoundedBuildContext(context, {
-        afterEntryForTesting: afterBuildContextEntryForTesting,
-        deadline: policy.workDeadline,
-        maximumBytes:
-          maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
-        signal,
-      });
-    } catch (error) {
-      throw buildPhaseFailure(error, "context", [
-        "integration.images.interrupted",
-        "integration.images.timeout",
-      ]);
-    }
+    } = options;
     let authority;
     try {
       authority = await createBuildAuthority(
@@ -1251,6 +1168,10 @@ export const createDockerOperations = (state) => {
         policy,
         signal,
         labels["com.agentscope.integration.run"],
+        {
+          buildNetwork: options.buildNetwork,
+          buildOutput: options.buildOutput,
+        },
       );
     } catch (error) {
       throw buildPhaseFailure(error, "authority", [
@@ -1264,7 +1185,7 @@ export const createDockerOperations = (state) => {
     try {
       built = await executeBuilderBuild(
         authority,
-        { buildArguments, dockerfile, labels, tag },
+        { buildArguments, dockerfile, labels, tag, baseInput },
         archive,
       );
     } catch (error) {
@@ -1300,17 +1221,84 @@ export const createDockerOperations = (state) => {
       throw error;
     }
     if (failure !== undefined)
-      throw [
-        "integration.images.executable",
-        "integration.images.interrupted",
-        "integration.images.output",
-        "integration.images.timeout",
-      ].includes(failure?.message)
-        ? failure
-        : settledBuildFailure(authority, failure);
-    const imageId = built.Id.replace(":", "-");
-    if (retirementRequired) state.recordPendingImage(client, tag, imageId);
-    return imageId;
+      rejectSettledBuild(client, authority, labels, failure);
+    return finalizeBuildResult(authority, built, {
+      retirementRequired,
+      tag,
+      labels,
+    });
+  };
+
+  const buildPreparedDockerImage = async (
+    client,
+    {
+      baseImage,
+      buildArguments,
+      buildNetwork,
+      buildOutput,
+      afterBuildContextEntryForTesting,
+      context,
+      dockerfile,
+      labels,
+      maximumMilliseconds,
+      maximumBuildContextBytes,
+      retirementRequired = false,
+      signal,
+      tag,
+    },
+  ) => {
+    const options = {
+      baseImage,
+      buildArguments,
+      buildNetwork: selectBuildNetwork(buildNetwork),
+      buildOutput: selectBuildOutput(buildOutput),
+      afterBuildContextEntryForTesting,
+      context,
+      dockerfile,
+      labels,
+      maximumMilliseconds,
+      maximumBuildContextBytes,
+      retirementRequired,
+      signal,
+      tag,
+    };
+    if (
+      !state.clientIsUsable(client) ||
+      !validBuildInput(options) ||
+      state.pendingCount(client) !== 0 ||
+      (options.baseImage !== undefined &&
+        (options.baseImage !==
+          "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2" ||
+          options.buildNetwork !== "none"))
+    )
+      throw fixedError("integration.images.build.input");
+    state.clearDiagnostic(client);
+    const policy = imageBuildPolicy(
+      client.evidence.images[0].image,
+      options.maximumMilliseconds,
+    );
+    const archive = createBuildArchive(options.context, {
+      afterEntryForTesting: options.afterBuildContextEntryForTesting,
+      deadline: policy.workDeadline,
+      maximumBytes:
+        options.maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
+      signal: options.signal,
+    });
+    if (options.baseImage === undefined)
+      return executePreparedBuild(client, options, policy, archive, undefined);
+    return withBuildBase(
+      {
+        client,
+        context: options.context,
+        policy,
+        signal: options.signal,
+        baseImage: options.baseImage,
+      },
+      (baseInput) =>
+        executePreparedBuild(client, options, policy, archive, baseInput),
+      () => state.markUncertain(client),
+      () => state.clientIsUsable(client),
+    );
   };
 
   return Object.freeze({

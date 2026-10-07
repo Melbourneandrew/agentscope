@@ -24,6 +24,8 @@ export interface ImagePreparationResponse {
 }
 
 export interface PreparePinnedDockerImagesOptions {
+  /** Optional inherited absolute monotonic client-lifecycle boundary. */
+  deadline?: number;
   maximumPreparationMilliseconds?: number;
   teardownMilliseconds?: number;
   dockerSocket?: string;
@@ -41,10 +43,11 @@ export interface PreparePinnedDockerImagesOptions {
       environment: Readonly<Record<string, string>>;
       input?: Buffer;
       observeProcess?: (diagnostic: Readonly<Record<string, unknown>>) => void;
+      output?: "text" | "binary";
       signal?: AbortSignal;
       teardownMilliseconds: number;
     }>,
-  ) => Promise<string>;
+  ) => Promise<string | Buffer>;
   socketIdentityForTesting?: Readonly<DockerSocketIdentity>;
   engineRequestForTesting?: (
     request: ImagePreparationRequest,
@@ -210,7 +213,9 @@ export declare const createBoundedBuildContext: (
   }>,
 ) => Buffer;
 
-export declare const runOwnedImageCommandForTesting: (
+export declare const runOwnedImageCommandForTesting: <
+  Output extends "text" | "binary" = "text",
+>(
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{
@@ -218,20 +223,26 @@ export declare const runOwnedImageCommandForTesting: (
     deadline: number;
     environment?: Readonly<Record<string, string>>;
     input?: Buffer;
+    output?: Output;
     signal?: AbortSignal;
     teardownMilliseconds?: number;
     timeoutAfterOutputForTesting?: Buffer;
   }>,
-) => Promise<string>;
+) => Promise<Output extends "binary" ? Buffer : string>;
 
 export declare const readImageTimeoutSourceForTesting: (
   error: unknown,
 ) => "deadline" | "output" | undefined;
 
-export declare const buildPreparedDockerImage: (
+export declare const buildPreparedDockerImage: <
+  Output extends "image" | "evidence-tar" = "image",
+>(
   client: PreparedDockerClient,
   options: Readonly<{
     buildArguments: Readonly<Record<string, string>>;
+    buildNetwork?: "default" | "none";
+    buildOutput?: Output;
+    baseImage?: "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
     afterBuildContextEntryForTesting?: (entryCount: number) => void;
     context: string;
     dockerfile: string;
@@ -240,9 +251,9 @@ export declare const buildPreparedDockerImage: (
     maximumMilliseconds: number;
     retirementRequired?: boolean;
     signal?: AbortSignal;
-    tag: string;
+    tag?: string;
   }>,
-) => Promise<string>;
+) => Promise<Output extends "evidence-tar" ? Buffer : string>;
 
 export declare const retirePreparedDockerImage: (
   client: PreparedDockerClient,
@@ -279,6 +290,8 @@ export declare const preparedDockerClientDiagnostic: (
         outputBytes: number;
         outputTruncated: boolean;
         stderrClass: string;
+        untrustedBootstrapStage?: string;
+        untrustedBootstrapFailureFamily?: string;
       }>;
       responseBytes: number;
       responseTruncated: false;
@@ -287,7 +300,8 @@ export declare const preparedDockerClientDiagnostic: (
       expectedResourceDigest: string;
       observedResourceDigest: string;
       reconciliationReasons: Readonly<Record<string, string>>;
-      outcome: "retired-failure";
+      /** First build observation, not overall client retirement/cleanup authority. */
+      outcome: "retired-failure" | "failed-settled";
     }>
   | undefined;
 

@@ -4,8 +4,17 @@ import type {
   VerifiedHarnessMaterial,
 } from "./src/harness-material.js";
 import type { PreparedDockerClient } from "./image-preparation.mjs";
+export { prepareMockServerBootstrap } from "./mockserver-material/prepare-bootstrap.mjs";
 
 declare const tokenBrand: unique symbol;
+export declare const downloadMockServerJdkArchive: (
+  signal: AbortSignal,
+  deadline: number,
+  transport?: (
+    options: import("node:https").RequestOptions,
+    callback: (response: import("node:http").IncomingMessage) => void,
+  ) => import("node:http").ClientRequest,
+) => Promise<Buffer>;
 export type PreparedNpmHarnessMaterial = Readonly<{
   authorityKind: "authenticated-harness-material";
   authorityVersion: 1;
@@ -100,3 +109,4 @@ export declare const retirePreparedHarnessMaterial: (
 export declare const retireEmptyAuthenticatedHarnessMaterialDirectory: (
   identity: Readonly<{ dev: number; ino: number; path: string }>,
 ) => void;
+export { researchMockServerSupplier } from "./mockserver-material/prepare-supplier.mjs";

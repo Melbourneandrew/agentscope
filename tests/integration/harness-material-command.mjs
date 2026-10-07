@@ -231,14 +231,18 @@ const verifyGpg = async (root, policy) => {
 
 const [operation, root] = process.argv.slice(2);
 if (
-  !["gpg-verify", "npm-verify"].includes(operation ?? "") ||
+  !["gpg-verify", "npm-verify", "bootstrap-gpg"].includes(operation ?? "") ||
   root !== "/verify"
 )
   fail();
 const policy = readJson(resolve(root, "policy.json"));
 try {
   if (operation === "npm-verify") await verifyNpm(root, policy);
-  else await verifyGpg(root, policy);
+  else if (operation === "gpg-verify") await verifyGpg(root, policy);
+  else {
+    const { runBootstrapGpgVerification } = await import("./bootstrap-gpg.mjs");
+    await runBootstrapGpgVerification(policy.kind, execute);
+  }
 } catch {
   process.exitCode = 1;
 }

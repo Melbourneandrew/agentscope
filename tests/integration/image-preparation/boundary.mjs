@@ -14,6 +14,14 @@ import { isAbsolute } from "node:path";
 import { performance } from "node:perf_hooks";
 import { rootCertificates } from "node:tls";
 
+import {
+  classifyBuildxStderr,
+  createBuildStderrObservation,
+  selectCommandOutput,
+  serializeCommandOutput,
+} from "./process-output.mjs";
+import { selectPreparationDeadline } from "./preparation-deadline.mjs";
+
 const maximumPreparationMilliseconds = 300_000;
 export const preparationTeardownMilliseconds = 5_000;
 export const maximumResponseBytes = 1_048_576;
@@ -60,23 +68,6 @@ export const fixedError = (code, timedOut = false) => {
 };
 export const diagnosticDigest = (value) =>
   digestBytes(Buffer.from(JSON.stringify(value), "utf8"));
-const buildxStderrClassifiers = Object.freeze([
-  ["resource-conflict", /(?:already exists|existing instance)/iu],
-  ["build-failed", /(?:failed to solve|failed to build)/iu],
-  [
-    "bootstrap-failed",
-    /(?:failed to boot|bootstrap|connection refused|unavailable)/iu,
-  ],
-  ["permission-denied", /(?:permission denied|operation not permitted)/iu],
-]);
-const classifyBuildxStderr = (value) => {
-  if (typeof value !== "string" || value.length > maximumHeaderBytes)
-    return "unknown";
-  return (
-    buildxStderrClassifiers.find(([, pattern]) => pattern.test(value))?.[0] ??
-    "unknown"
-  );
-};
 export const classifyBuildxStderrForTesting = classifyBuildxStderr;
 export const boundedText = (value, maximum = 256) =>
   typeof value === "string" &&
@@ -386,11 +377,13 @@ const runOwnedCommand = async (
     environment,
     input,
     observeProcess,
+    output,
     signal,
     teardownMilliseconds,
     timeoutAfterOutputForTesting,
   },
 ) => {
+  const outputSelection = selectCommandOutput(output);
   if (process.platform === "win32" || processInspectionExecutable === undefined)
     throw fixedError("integration.images.platform");
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
@@ -413,9 +406,8 @@ const runOwnedCommand = async (
     throw fixedError("integration.images.command");
   }
   let bytes = 0;
-  const output = [];
-  const diagnosticStderr = [];
-  let diagnosticStderrBytes = 0;
+  const outputChunks = [];
+  const stderrObservation = createBuildStderrObservation();
   let outputTruncated = false;
   let failure;
   const fail = (code, timedOut = false, timeoutSource) => {
@@ -435,17 +427,13 @@ const runOwnedCommand = async (
       outputTruncated = true;
       fail("integration.images.output");
     } else if (retain) {
-      output.push(chunk);
-      applyOutputTimeoutForTesting(output, timeoutAfterOutputForTesting, fail);
-    } else if (diagnosticStderrBytes < maximumHeaderBytes) {
-      const retained = chunk.subarray(
-        0,
-        Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
+      outputChunks.push(chunk);
+      applyOutputTimeoutForTesting(
+        outputChunks,
+        timeoutAfterOutputForTesting,
+        fail,
       );
-      diagnosticStderr.push(retained);
-      diagnosticStderrBytes += retained.byteLength;
-      if (retained.byteLength !== chunk.byteLength) outputTruncated = true;
-    } else outputTruncated = true;
+    } else if (stderrObservation.consume(chunk)) outputTruncated = true;
   };
   child.stdout.on("data", (chunk) => consume(chunk, true));
   child.stderr.on("data", (chunk) => consume(chunk, false));
@@ -511,9 +499,7 @@ const runOwnedCommand = async (
       joined: state === "absent",
       outputBytes: bytes,
       outputTruncated,
-      stderrClass: classifyBuildxStderr(
-        Buffer.concat(diagnosticStderr).toString("utf8"),
-      ),
+      ...stderrObservation.snapshot(),
     });
     observeProcess?.(processDiagnostic);
     if (failure instanceof Error)
@@ -531,7 +517,7 @@ const runOwnedCommand = async (
       throw error;
     }
     if (failure !== undefined) throw failure;
-    return Buffer.concat(output).toString("utf8");
+    return serializeCommandOutput(outputChunks, outputSelection);
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
@@ -539,13 +525,16 @@ const runOwnedCommand = async (
   }
 };
 /* eslint-enable max-lines-per-function */
-const runOwnedImageCommand = (executable, arguments_, options) =>
-  runOwnedCommand(executableRecord(executable), arguments_, {
+const runOwnedImageCommand = async (executable, arguments_, options) => {
+  const output = selectCommandOutput(options.output);
+  return await runOwnedCommand(executableRecord(executable), arguments_, {
     ...options,
+    output,
     environment: options.environment ?? {},
     teardownMilliseconds:
       options.teardownMilliseconds ?? preparationTeardownMilliseconds,
   });
+};
 export const readImageProcessDiagnostic = (error) =>
   processDiagnostics.get(error);
 export const readImageTimeoutSourceForTesting = (error) =>
@@ -846,20 +835,10 @@ export const localImageRecord = (value, image) => {
 };
 
 export const preparationPolicy = (images, options) => {
-  const preparationMilliseconds =
-    options.maximumPreparationMilliseconds ?? maximumPreparationMilliseconds;
-  const teardownMilliseconds =
-    options.teardownMilliseconds ?? preparationTeardownMilliseconds;
-  if (
-    !Number.isSafeInteger(preparationMilliseconds) ||
-    preparationMilliseconds < 4 ||
-    preparationMilliseconds > maximumPreparationMilliseconds ||
-    !Number.isSafeInteger(teardownMilliseconds) ||
-    teardownMilliseconds < 1 ||
-    teardownMilliseconds > preparationTeardownMilliseconds ||
-    preparationMilliseconds <= teardownMilliseconds * 3
-  )
-    throw fixedError("integration.images.deadline");
+  const timing = selectPreparationDeadline(options, {
+    maximum: maximumPreparationMilliseconds,
+    teardown: preparationTeardownMilliseconds,
+  });
   if (
     !Array.isArray(images) ||
     images.length === 0 ||
@@ -867,14 +846,7 @@ export const preparationPolicy = (images, options) => {
     new Set(images).size !== images.length
   )
     throw fixedError("integration.images.digest");
-  const deadline = performance.now() + preparationMilliseconds;
-  return Object.freeze({
-    deadline,
-    workDeadline: deadline - teardownMilliseconds,
-    reconciliationDeadline: deadline - Math.floor(teardownMilliseconds / 2),
-    maximumPreparationMilliseconds: preparationMilliseconds,
-    teardownMilliseconds,
-  });
+  return timing;
 };
 
 export const IMAGE_PREPARATION_LIMITS = Object.freeze({

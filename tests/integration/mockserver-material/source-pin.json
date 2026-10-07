@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "evidenceScope": "source-input-only",
+  "repository": "https://github.com/mock-server/mockserver-monorepo",
+  "commit": "99005f7f6eb8397add23b2e04400f1f739c33d1f",
+  "tree": "333bec518db87837c485f2cc31b6c46ccda3994e",
+  "archive": {
+    "url": "https://codeload.github.com/mock-server/mockserver-monorepo/tar.gz/99005f7f6eb8397add23b2e04400f1f739c33d1f",
+    "bytes": 31447709,
+    "sha256": "c364e63e1461e283a3db5d5ce4546f65070ff49b737cd71c0e3999e42f24c1b2"
+  },
+  "treeReconstruction": {
+    "members": 7378,
+    "files": 5891,
+    "regularPayloadBytes": 81537112,
+    "expandedTarBytes": 86886400,
+    "memberInventorySha256": "60bd22ebd0e0f761ae4048304c40d89f3fde15709e6c63f22b5ba3cd40c5d6c8",
+    "symlinks": []
+  },
+  "buildDescriptors": [
+    {
+      "path": "LICENSE.md",
+      "mode": "100644",
+      "bytes": 11357,
+      "blob": "8dada3edaf50dbc082c9a125058f25def75e625a",
+      "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+    },
+    {
+      "path": "mockserver-ui/package-lock.json",
+      "mode": "100644",
+      "bytes": 226300,
+      "blob": "279bf6f9cc9e0df18c400c4acc9bc21d631cd4af",
+      "sha256": "090dccee77dc9c839b8bf1e5c97760e807cb99fb01126e238b762a27ffe0eea6"
+    },
+    {
+      "path": "mockserver-ui/package.json",
+      "mode": "100644",
+      "bytes": 2119,
+      "blob": "4a3acde9264e264da49985a0dea1be03ad39fbb4",
+      "sha256": "2a578f7fcb349f17135a09d6ad4e97b09e1dcbff6b09f73f5a94b13248386e19"
+    },
+    {
+      "path": "mockserver/.mvn/wrapper/maven-wrapper.properties",
+      "mode": "100644",
+      "bytes": 168,
+      "blob": "216df0589791badf4288a0cc70d685ff5da06408",
+      "sha256": "488e1b3f2e641779d4636abf9390845f901e64607261bc3c0b0bfe4fe96e6706"
+    },
+    {
+      "path": "mockserver/mockserver-core/pom.xml",
+      "mode": "100644",
+      "bytes": 66781,
+      "blob": "c54262668cf339f44c29c0ab8763ffa73accbcd8",
+      "sha256": "f1045e620382d859630baf0a00895a725fb782212416b570f47343411a5c354e"
+    },
+    {
+      "path": "mockserver/mockserver-netty/pom.xml",
+      "mode": "100644",
+      "bytes": 29088,
+      "blob": "3123e2c950942380a72afccf83f925b04a9135b6",
+      "sha256": "353ce1b27813d2ff21eb86a40d7e8a03d71258fa3fc73dea5b14f12ab5719634"
+    },
+    {
+      "path": "mockserver/pom.xml",
+      "mode": "100644",
+      "bytes": 83953,
+      "blob": "d7cdddb473b0c11dcc3602c70ff83c79a7a0f9d6",
+      "sha256": "a349f9336d90fad58ea411eb45fbcfdb1e70339c125006a95a66d63c89c3255a"
+    }
+  ],
+  "unproved": [
+    "build-tool-and-dependency-closure",
+    "compiled-java",
+    "runtime-control-isolation",
+    "service-admission"
+  ]
+}

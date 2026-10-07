@@ -3,6 +3,8 @@ export type SupervisedProcessResult = Readonly<{
   contained: boolean;
   residualWorkObserved: boolean;
   signal: NodeJS.Signals | null;
+  terminationInitiated: boolean;
+  completedWithinDeadline: boolean;
 }>;
 
 export function runSupervisedProcess(input: {

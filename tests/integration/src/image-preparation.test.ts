@@ -27,10 +27,8 @@ import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
   assertImagePreparationPlatformForTesting,
-  authenticateDockerSocketAliasForTesting,
   BUILDKIT_IMAGE,
   buildPreparedDockerImage,
-  classifyBuildxStderrForTesting,
   closePreparedDockerClient,
   createBoundedBuildContext,
   createPreparedDockerClient,
@@ -426,6 +424,7 @@ const runFixtureBuildx = async (
 
 // The simulated daemon keeps one coherent mutable lifecycle across all endpoints.
 const engineFixture = ({
+  buildArtifact,
   builderNetworkMode = "bridge",
   builderNetworks = ["bridge"],
   builderMismatch = false,
@@ -467,6 +466,7 @@ const engineFixture = ({
   wrongVolume = false,
   wrongVolumeLabels = false,
 }: {
+  buildArtifact?: Buffer;
   builderNetworkMode?: string;
   builderNetworks?: readonly string[];
   builderMismatch?: boolean;
@@ -777,10 +777,15 @@ const engineFixture = ({
   };
   return {
     buildxCalls: state.calls,
-    buildxRun: (
+    buildxRun: async (
       arguments_: readonly string[],
       runOptions: { input?: Buffer },
-    ) => runFixtureBuildx(state, arguments_, runOptions),
+    ) => {
+      const output = await runFixtureBuildx(state, arguments_, runOptions);
+      return arguments_[0] === "build" && buildArtifact !== undefined
+        ? buildArtifact
+        : output;
+    },
     request,
     requests,
   };
@@ -914,72 +919,29 @@ const removeRetainedRoot = (value: string | undefined) => {
   roots.splice(roots.indexOf(value), 1);
 };
 
-describe("canonical Docker socket authority", () => {
-  it("binds a fixed socket alias to its one canonical physical endpoint", async () => {
-    const directory = root();
-    const physicalDirectory = resolve(directory, "run");
-    const aliasDirectory = resolve(directory, "var-run");
-    mkdirSync(physicalDirectory);
-    symlinkSync(physicalDirectory, aliasDirectory);
-    const physicalSocket = resolve(physicalDirectory, "docker.sock");
-    const canonicalPhysicalSocket = resolve(
-      realpathSync(physicalDirectory),
-      "docker.sock",
-    );
-    const policySocket = resolve(aliasDirectory, "docker.sock");
-    const server = createServer();
-    await new Promise<void>((resolveListen, rejectListen) => {
-      server.once("error", rejectListen);
-      server.listen(physicalSocket, () => {
-        server.removeListener("error", rejectListen);
-        resolveListen();
-      });
-    });
-    try {
-      expect(
-        authenticateDockerSocketAliasForTesting(
-          policySocket,
-          canonicalPhysicalSocket,
-        ),
-      ).toMatchObject({ path: canonicalPhysicalSocket });
-      expect(() =>
-        authenticateDockerSocketAliasForTesting(policySocket, policySocket),
-      ).toThrow("integration.images.socket");
-    } finally {
-      await new Promise<void>((resolveClose, rejectClose) => {
-        server.close((error) => {
-          if (error === undefined) resolveClose();
-          else rejectClose(error);
-        });
-      });
-    }
-  });
-});
-
-describe("subprocess-free pinned image preparation", () => {
+describe("subprocess-free owned image preparation transport", () => {
   it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
     const engine = engineFixture();
     const registry = registryFixture();
-    let ownedRoot: string | undefined;
-    let unrelatedRoot = mkdtempSync(
-      resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
+    const prefix = resolve(
+      realpathSync("/tmp"),
+      "agentscope-image-preparation-",
     );
-    roots.push(unrelatedRoot);
+    let unrelated = mkdtempSync(prefix);
+    roots.push(unrelated);
+    let ownedRoot: string | undefined;
     const prior = process.env.HTTPS_PROXY;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
     try {
       await expect(
         preparePinnedDockerImages([image], {
           ...options(engine, registry),
-          afterPrivateRootCreatedForTesting: (value: string) => {
+          afterPrivateRootCreatedForTesting(value: string) {
             ownedRoot = value;
             roots.push(value);
-            // A separate fixture may disappear and be replaced during setup.
-            rmSync(unrelatedRoot, { recursive: true });
-            unrelatedRoot = mkdtempSync(
-              resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
-            );
-            roots.push(unrelatedRoot);
+            removeRetainedRoot(unrelated);
+            unrelated = mkdtempSync(prefix);
+            roots.push(unrelated);
           },
         }),
       ).resolves.toEqual({
@@ -1001,12 +963,17 @@ describe("subprocess-free pinned image preparation", () => {
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
       ),
     ).toBe(true);
-    expect(
-      readFileSync(resolve(ownedRoot ?? "", "docker/config.json"), "utf8"),
-    ).toBe('{"auths":{}}\n');
+    if (ownedRoot === undefined) throw new Error("missing owned private root");
+    expect(roots).toEqual([ownedRoot, unrelated]);
+    expect(readdirSync(ownedRoot).sort()).toEqual(
+      "buildx docker gitconfig home npm-cache npmrc tmp xdg".split(" "),
+    );
+    expect(readFileSync(resolve(ownedRoot, "docker/config.json"), "utf8")).toBe(
+      '{"auths":{}}\n',
+    );
     removeRetainedRoot(ownedRoot);
-    expect(existsSync(ownedRoot ?? "")).toBe(false);
-    expect(existsSync(unrelatedRoot)).toBe(true);
+    expect(existsSync(ownedRoot)).toBe(false);
+    expect(existsSync(unrelated)).toBe(true);
   });
 });
 
@@ -1793,6 +1760,32 @@ const buildContext = () => {
   return directory;
 };
 const buildTag = "agentscope-int-fixture:candidate";
+const artifactFixture = () => {
+  const bytes = Buffer.alloc(2_048);
+  bytes.write("material.json");
+  for (const [offset, width, value] of [
+    [100, 8, 0o644],
+    [108, 8, 0],
+    [116, 8, 0],
+    [124, 12, 2],
+    [136, 12, 0],
+    [329, 8, 0],
+    [337, 8, 0],
+  ] as const)
+    bytes.write(
+      `${value.toString(8).padStart(width - 1, "0")}\0`,
+      offset,
+      "ascii",
+    );
+  bytes.write("ustar\0", 257, "ascii");
+  bytes.write("00", 263, "ascii");
+  bytes[156] = 48;
+  bytes.fill(32, 148, 156);
+  const sum = bytes.subarray(0, 512).reduce((total, byte) => total + byte, 0);
+  bytes.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+  bytes.write("{}", 512);
+  return bytes;
+};
 const buildClient = (engine: ReturnType<typeof engineFixture>) => {
   const executable = executableFixture();
   return createPreparedDockerClient(
@@ -1809,63 +1802,7 @@ const buildClient = (engine: ReturnType<typeof engineFixture>) => {
   );
 };
 
-describe("bounded build-context acquisition", () => {
-  it("rejects symlink and pre-read size authority violations", () => {
-    const context = buildContext();
-    const links = root();
-    const rootLink = resolve(links, "context-link");
-    symlinkSync(context, rootLink);
-    expect(() => createBoundedBuildContext(rootLink)).toThrow(
-      "integration.images.build",
-    );
-    symlinkSync(resolve(context, "nested"), resolve(context, "nested-link"));
-    expect(() => createBoundedBuildContext(context)).toThrow(
-      "integration.images.build",
-    );
-    rmSync(resolve(context, "nested-link"));
-    writeFileSync(resolve(context, "oversized"), "");
-    truncateSync(resolve(context, "oversized"), 64 * 1024 * 1024 + 1);
-    expect(() => createBoundedBuildContext(context)).toThrow(
-      "integration.images.build",
-    );
-  });
-
-  it("rejects same-inode mutation during context acquisition", () => {
-    const context = buildContext();
-    expect(() =>
-      createBoundedBuildContext(context, {
-        afterEntryForTesting: (entryCount) => {
-          if (entryCount === 1)
-            writeFileSync(resolve(context, "Dockerfile"), "FROM invalid\n");
-        },
-      }),
-    ).toThrow("integration.images.build");
-  });
-
-  it("applies a selected bounded context ceiling without widening the default", () => {
-    const context = buildContext();
-    const archive = createBoundedBuildContext(context);
-    expect(
-      createBoundedBuildContext(context, { maximumBytes: archive.length }),
-    ).toEqual(archive);
-    expect(() =>
-      createBoundedBuildContext(context, { maximumBytes: archive.length - 1 }),
-    ).toThrow("integration.images.build");
-    expect(() =>
-      createBoundedBuildContext(context, {
-        maximumBytes:
-          IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes + 1,
-      }),
-    ).toThrow("integration.images.build");
-  });
-});
-
-describe("owned buildx process execution", () => {
-  const fixture = resolve(
-    import.meta.dirname,
-    "../fixtures/image-preparation-process.mjs",
-  );
-
+describe("owned buildx fixture readiness", () => {
   it.each([
     [undefined, "image preparation fixture readiness was not published"],
     ["not-a-pid", "image preparation fixture readiness was malformed"],
@@ -1875,6 +1812,13 @@ describe("owned buildx process execution", () => {
       writeFileSync(resolve(directory, "ready"), value, { mode: 0o600 });
     expect(() => readReadyDescendant(directory)).toThrow(message);
   });
+});
+
+describe("owned buildx process execution", () => {
+  const fixture = resolve(
+    import.meta.dirname,
+    "../fixtures/image-preparation-process.mjs",
+  );
 
   it("retains the work deadline when the readiness token does not match", async () => {
     const directory = root();
@@ -1903,42 +1847,52 @@ describe("owned buildx process execution", () => {
     );
   });
 
-  it.each([
-    ["hang-descendant", "integration.images.timeout"],
-    ["close-descendant", "integration.images.containment"],
-  ])("kills and joins the exact process group for %s", async (mode, code) => {
-    const directory = root();
-    const error = await runOwnedImageCommandForTesting(
-      executableFixture(directory),
-      [fixture],
+  it.each(
+    (["text", "binary"] as const).flatMap((output) => [
+      { mode: "hang-descendant", code: "integration.images.timeout", output },
       {
-        deadline:
-          performance.now() + (mode === "hang-descendant" ? 5_000 : 1_000),
-        environment: {
-          AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
-          AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
-        },
-        teardownMilliseconds: 250,
-        ...(mode === "hang-descendant"
-          ? {
-              timeoutAfterOutputForTesting: Buffer.from("descendant-ready\n"),
-            }
-          : {}),
+        mode: "close-descendant",
+        code: "integration.images.containment",
+        output,
       },
-    ).catch((failure: unknown) => failure);
-    if (mode === "hang-descendant") {
-      expect(error).toMatchObject({ code: "ETIMEDOUT" });
-      expect([
-        "integration.images.timeout",
-        "integration.images.containment",
-      ]).toContain((error as Error).message);
-      expect(readImageTimeoutSourceForTesting(error)).toBe("output");
-    } else expect(error).toEqual(expect.objectContaining({ message: code }));
-    const descendant = readReadyDescendant(directory);
-    expect(() => process.kill(descendant, 0)).toThrow(
-      expect.objectContaining({ code: "ESRCH" }),
-    );
-  });
+    ]),
+  )(
+    "kills and joins the exact process group %#",
+    async ({ mode, code, output }) => {
+      const directory = root();
+      const error = await runOwnedImageCommandForTesting(
+        executableFixture(directory),
+        [fixture],
+        {
+          deadline:
+            performance.now() + (mode === "hang-descendant" ? 5_000 : 1_000),
+          environment: {
+            AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
+            AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+          },
+          teardownMilliseconds: 250,
+          output,
+          ...(mode === "hang-descendant"
+            ? {
+                timeoutAfterOutputForTesting: Buffer.from("descendant-ready\n"),
+              }
+            : {}),
+        },
+      ).catch((failure: unknown) => failure);
+      if (mode === "hang-descendant") {
+        expect(error).toMatchObject({ code: "ETIMEDOUT" });
+        expect([
+          "integration.images.timeout",
+          "integration.images.containment",
+        ]).toContain((error as Error).message);
+        expect(readImageTimeoutSourceForTesting(error)).toBe("output");
+      } else expect(error).toEqual(expect.objectContaining({ message: code }));
+      const descendant = readReadyDescendant(directory);
+      expect(() => process.kill(descendant, 0)).toThrow(
+        expect.objectContaining({ code: "ESRCH" }),
+      );
+    },
+  );
 
   it("fails closed when close observation exhausts the teardown reserve", async () => {
     const directory = root();
@@ -1974,23 +1928,6 @@ describe("owned buildx process execution", () => {
       expect.objectContaining({ code: "ESRCH" }),
     );
   });
-});
-
-describe("content-free buildx failure classification", () => {
-  it.each([
-    ["builder already exists", "resource-conflict"],
-    ["failed to solve build graph", "build-failed"],
-    ["connection refused during bootstrap", "bootstrap-failed"],
-    ["operation not permitted", "permission-denied"],
-    ["provider detail that has no admitted class", "unknown"],
-    ["x".repeat(16_385), "unknown"],
-    [{ malformed: true }, "unknown"],
-  ])(
-    "classifies bounded input without retaining content %#",
-    (input, expected) => {
-      expect(classifyBuildxStderrForTesting(input)).toBe(expected);
-    },
-  );
 });
 
 // These cases share the exact builder fixture and exercise one lifecycle matrix.
@@ -2031,75 +1968,157 @@ describe("authenticated buildx consumption", () => {
     }
   });
 
-  it("sends one bounded deterministic context and verifies the built tag", async () => {
-    const context = buildContext();
-    expect(createBoundedBuildContext(context)).toEqual(
-      createBoundedBuildContext(context),
-    );
-    const engine = engineFixture({ buildTag });
-    const client = buildClient(engine);
-    try {
-      await expect(
-        buildPreparedDockerImage(client, {
+  it.each([
+    ...([undefined, "default", "none"] as const).map((buildNetwork) => ({
+      buildNetwork,
+      buildOutput: "image" as const,
+      createdAt: undefined,
+    })),
+    {
+      buildNetwork: "default" as const,
+      buildOutput: "evidence-tar" as const,
+      createdAt: undefined,
+    },
+    ...["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"].map(
+      (createdAt) => ({
+        buildNetwork: "default" as const,
+        buildOutput: "image" as const,
+        createdAt,
+      }),
+    ),
+  ])(
+    "binds selected build network/output through reconciliation %#",
+    async ({ buildNetwork, buildOutput, createdAt }) => {
+      const context = buildContext();
+      expect(createBoundedBuildContext(context)).toEqual(
+        createBoundedBuildContext(context),
+      );
+      const builderNetwork = buildNetwork === "none" ? "none" : "bridge";
+      const engine = engineFixture({
+        buildTag,
+        ...(createdAt === undefined ? {} : { createdAt }),
+        ...(buildOutput === "evidence-tar"
+          ? { buildArtifact: artifactFixture() }
+          : {}),
+        builderNetworkMode: builderNetwork,
+        builderNetworks: [builderNetwork],
+      });
+      const client = buildClient(engine);
+      try {
+        const result = await buildPreparedDockerImage(client, {
           buildArguments: { BASE_IMAGE: image },
+          ...(buildNetwork === undefined ? {} : { buildNetwork }),
+          buildOutput,
           context,
           dockerfile: "Dockerfile",
           labels: { "com.agentscope.integration": "true" },
           maximumMilliseconds: 4_000,
-          retirementRequired: true,
-          tag: buildTag,
-        }),
-      ).resolves.toBe(configDigest.replace(":", "-"));
-      expect(engine.requests.some(({ path }) => path.includes("/build?"))).toBe(
-        false,
-      );
-      const create = engine.buildxCalls.find(
-        ({ arguments_ }) => arguments_[0] === "create",
-      );
-      expect(create?.arguments_).toEqual([
-        "create",
-        "--name",
-        expect.stringMatching(/^agentscope-[a-f\d]{16}$/u),
-        "--driver",
-        "docker-container",
-        "--driver-opt",
-        `image=${image}`,
-        "--driver-opt",
-        "network=bridge",
-        "--platform",
-        "linux/amd64",
-        "unix:///var/run/docker.sock",
-      ]);
-      expect(
-        create?.arguments_.filter((argument) => argument === "--driver-opt"),
-      ).toHaveLength(2);
-      expect(create?.arguments_).not.toContain(BUILDKIT_IMAGE);
-      const build = engine.buildxCalls.find(
-        ({ arguments_ }) => arguments_[0] === "build",
-      );
-      expect(build?.arguments_).toContain("--platform");
-      expect(build?.arguments_).toContain("linux/amd64");
-      expect(build?.input?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
-        true,
-      );
-      expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
-      await expect(
-        retirePreparedDockerImage(client, {
-          deadline: performance.now() + 4_000,
-          imageId: configDigest.replace(":", "-"),
-          tag: buildTag,
-        }),
-      ).resolves.toBeUndefined();
-      expect(
-        engine.requests.some(
-          ({ method, path }) =>
-            method === "DELETE" && path.includes("/images/"),
-        ),
-      ).toBe(true);
-    } finally {
-      closePreparedDockerClient(client);
-    }
-  });
+          retirementRequired: buildOutput === "image",
+          ...(buildOutput === "image" ? { tag: buildTag } : {}),
+        });
+        expect(result).toEqual(
+          buildOutput === "image"
+            ? configDigest.replace(":", "-")
+            : Buffer.from("{}"),
+        );
+        expect(
+          engine.requests.some(({ path }) => path.includes("/build?")),
+        ).toBe(false);
+        const create = engine.buildxCalls.find(
+          ({ arguments_ }) => arguments_[0] === "create",
+        );
+        expect(create?.arguments_).toEqual([
+          "create",
+          "--name",
+          expect.stringMatching(/^agentscope-[a-f\d]{16}$/u),
+          "--driver",
+          "docker-container",
+          "--driver-opt",
+          `image=${image}`,
+          "--driver-opt",
+          `network=${builderNetwork}`,
+          "--platform",
+          "linux/amd64",
+          "unix:///var/run/docker.sock",
+        ]);
+        expect(
+          create?.arguments_.filter((argument) => argument === "--driver-opt"),
+        ).toHaveLength(2);
+        expect(create?.arguments_).not.toContain(BUILDKIT_IMAGE);
+        const build = engine.buildxCalls.find(
+          ({ arguments_ }) => arguments_[0] === "build",
+        );
+        expect(build?.arguments_).toContain("--platform");
+        expect(build?.arguments_).toContain("linux/amd64");
+        expect(
+          build?.arguments_[build.arguments_.indexOf("--network") + 1],
+        ).toBe(buildNetwork ?? "default");
+        expect(build?.arguments_.includes("--no-cache")).toBe(
+          buildNetwork === "none",
+        );
+        expect(build?.input?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
+          true,
+        );
+        expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
+        if (buildOutput === "image")
+          await expect(
+            retirePreparedDockerImage(client, {
+              deadline: performance.now() + 4_000,
+              imageId: configDigest.replace(":", "-"),
+              tag: buildTag,
+            }),
+          ).resolves.toBeUndefined();
+        expect(
+          engine.requests.some(
+            ({ method, path }) =>
+              method === "DELETE" && path.includes("/images/"),
+          ),
+        ).toBe(buildOutput === "image");
+        expect(build?.arguments_.includes("--load")).toBe(
+          buildOutput === "image",
+        );
+        expect(
+          engine.requests.some(({ path }) =>
+            path.includes(encodeURIComponent(buildTag)),
+          ),
+        ).toBe(buildOutput === "image");
+      } finally {
+        closePreparedDockerClient(client);
+      }
+    },
+  );
+
+  it.each(
+    ["buildNetwork", "buildOutput"].flatMap((property) =>
+      [null, "", "bridge", "host", {}, new String("none"), "evidence-tar"].map(
+        (value) => ({ property, value }),
+      ),
+    ),
+  )(
+    "rejects unclosed/incompatible build selection before context or mutation %#",
+    async ({ property, value }) => {
+      const engine = engineFixture({ buildTag });
+      const client = buildClient(engine);
+      const priorRequests = engine.requests.length;
+      try {
+        await expect(
+          buildPreparedDockerImage(client, {
+            buildArguments: {},
+            [property]: value,
+            context: "/unreadable-context",
+            dockerfile: "Dockerfile",
+            labels: {},
+            maximumMilliseconds: 4_000,
+            tag: buildTag,
+          }),
+        ).rejects.toThrow("integration.images.build.input");
+        expect(engine.requests).toHaveLength(priorRequests);
+        expect(engine.buildxCalls).toEqual([]);
+      } finally {
+        closePreparedDockerClient(client);
+      }
+    },
+  );
 
   it("retires the daemon authority when image deletion lacks its exact receipt", async () => {
     const engine = engineFixture({
@@ -2496,28 +2515,6 @@ describe("authenticated buildx consumption", () => {
     }).toThrow("integration.images.docker-client");
   });
 
-  it.each(["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"])(
-    "does not treat the daemon clock %s as controller authority",
-    async (createdAt) => {
-      const engine = engineFixture({ buildTag, createdAt });
-      const client = buildClient(engine);
-      try {
-        await expect(
-          buildPreparedDockerImage(client, {
-            buildArguments: { BASE_IMAGE: image },
-            context: buildContext(),
-            dockerfile: "Dockerfile",
-            labels: { "com.agentscope.integration": "true" },
-            maximumMilliseconds: 4_000,
-            tag: buildTag,
-          }),
-        ).resolves.toBe(configDigest.replace(":", "-"));
-      } finally {
-        closePreparedDockerClient(client);
-      }
-    },
-  );
-
   it.each([
     {
       buildFailure: true,
@@ -2532,63 +2529,40 @@ describe("authenticated buildx consumption", () => {
       expectRetirement: true,
       noDestructiveCleanup: true,
     },
-    {
-      builderNetworkMode: "default",
+    ...[
+      { builderNetworkMode: "default" },
+      { builderNetworkMode: "host" },
+      { builderNetworkMode: "none" },
+      {
+        builderNetworkMode: "agentscope-custom",
+        builderNetworks: ["agentscope-custom"],
+      },
+      { builderNetworks: [] },
+      { builderNetworks: ["bridge", "foreign"] },
+      { buildNetwork: "none" as const, builderNetworkMode: "bridge" },
+      {
+        buildNetwork: "none" as const,
+        builderNetworkMode: "none",
+        builderNetworks: ["bridge"],
+      },
+      {
+        buildNetwork: "none" as const,
+        builderNetworkMode: "none",
+        builderNetworks: [],
+      },
+      { builderMismatch: true },
+      { wrongMount: true },
+      { wrongVolume: true },
+      { wrongVolumeLabels: true },
+    ].map((network) => ({
+      ...network,
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
       expectRetirement: true,
       noDestructiveCleanup: true,
-    },
-    {
-      builderNetworkMode: "host",
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
-    {
-      builderNetworkMode: "none",
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
-    {
-      builderNetworkMode: "agentscope-custom",
-      builderNetworks: ["agentscope-custom"],
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
-    {
-      builderNetworks: [],
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
-    {
-      builderNetworks: ["bridge", "foreign"],
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
-    {
-      builderMismatch: true,
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-    },
+      maximumMilliseconds: undefined,
+    })),
     {
       buildFailure: false,
       cleanupLeak: true,
@@ -2604,30 +2578,6 @@ describe("authenticated buildx consumption", () => {
       expectRetirement: true,
       lateTagAfterDelete: true,
       noDestructiveCleanup: false,
-    },
-    {
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-      wrongMount: true,
-    },
-    {
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-      wrongVolume: true,
-    },
-    {
-      buildFailure: false,
-      daemonSwitch: false,
-      expected: "integration.images.containment",
-      expectRetirement: true,
-      noDestructiveCleanup: true,
-      wrongVolumeLabels: true,
     },
     {
       buildFailure: false,
@@ -2669,6 +2619,19 @@ describe("authenticated buildx consumption", () => {
       maximumMilliseconds: 400,
       noDestructiveCleanup: true,
     },
+    {
+      buildArtifact: artifactFixture(),
+      substituteAfterBuild: true,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      buildArtifact: Buffer.alloc(0),
+      expected: "integration.images.build.artifact",
+      expectRetirement: true,
+      noDestructiveCleanup: false,
+    },
   ])(
     "joins its dedicated builder on command failure or daemon substitution %#",
     async ({
@@ -2679,7 +2642,13 @@ describe("authenticated buildx consumption", () => {
       ...fixtureOptions
     }) => {
       const engine = engineFixture({ buildTag, ...fixtureOptions });
+      const buildNetwork =
+        "buildNetwork" in fixtureOptions
+          ? fixtureOptions.buildNetwork
+          : undefined;
       const client = buildClient(engine);
+      const buildOutput =
+        "buildArtifact" in fixtureOptions ? "evidence-tar" : "image";
       const privateRoot = (
         client as unknown as { privateClient: { root: string } }
       ).privateClient.root;
@@ -2691,7 +2660,9 @@ describe("authenticated buildx consumption", () => {
             dockerfile: "Dockerfile",
             labels: { "com.agentscope.integration": "true" },
             maximumMilliseconds,
-            tag: buildTag,
+            ...(buildNetwork === undefined ? {} : { buildNetwork }),
+            buildOutput,
+            ...(buildOutput === "image" ? { tag: buildTag } : {}),
           }),
         ).rejects.toThrow(expected);
         if (noDestructiveCleanup) {

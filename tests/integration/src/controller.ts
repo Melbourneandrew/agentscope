@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -18,6 +17,18 @@ import {
 } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
+import {
+  git,
+  hasCredentialGitState,
+  inferModeAndIdentity,
+  publishCredentialPreflightFailure,
+} from "./controller-host-identity.js";
+import {
+  parseMockServerResearchRequest,
+  type MockServerResearchRequest,
+} from "./mockserver-research-request.js";
+import { retainMockServerResearch } from "../mockserver-material/research-retention.mjs";
+import type { MockServerResearchObservation } from "../mockserver-material/research-stage.mjs";
 import {
   runIntegrationStages,
   settleAbortableOperation,
@@ -83,6 +94,9 @@ export type DisposableOuterHostCapability = Readonly<{
 
 type CapabilityState = {
   active: boolean;
+  researchRequest: MockServerResearchRequest;
+  sourceTree: string;
+  researchObservation?: MockServerResearchObservation;
   artifactFiles: Set<string>;
   candidateIdentities: Set<string>;
   failureEvidence: Map<
@@ -257,111 +271,24 @@ export const failureEvidenceCoverageIsExact = (
 };
 
 /* v8 ignore start -- executable capability wiring is covered by disposable-host runs */
-const supplied = (
-  environment: NodeJS.ProcessEnv,
-  names: readonly string[],
-): Readonly<Record<string, string>> =>
-  Object.freeze(
-    Object.fromEntries(
-      names.map((name) => {
-        const value = environment[name];
-        if (value === undefined || value.length < 1 || value.length > 1024)
-          throw new Error("integration.controller.disposable-host-identity");
-        return [name, value];
-      }),
-    ),
-  );
 
-const inferModeAndIdentity = (
-  environment: NodeJS.ProcessEnv,
-): {
-  identity: Readonly<Record<string, string>>;
+type ControllerBinding = {
+  binding: DisposableOuterHostBinding;
   mode: IntegrationControllerMode;
-  hostKind: DisposableOuterHostBinding["hostKind"];
-} => {
-  if (environment.AGENTSCOPE_INTEGRATION_EXECUTOR === "crabbox") {
-    const identity = supplied(environment, [
-      "CRABBOX_LEASE_ID",
-      "CRABBOX_RUN_ID",
-      "CRABBOX_SLUG",
-    ]);
-    if (
-      !/^cbx_[A-Za-z0-9_-]+$/u.test(identity.CRABBOX_LEASE_ID!) ||
-      !/^run_[A-Za-z0-9_-]+$/u.test(identity.CRABBOX_RUN_ID!) ||
-      !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/u.test(identity.CRABBOX_SLUG!)
-    )
-      throw new Error("integration.controller.disposable-host-identity");
-    return { hostKind: "crabbox", identity, mode: "crabbox" };
-  }
-  if (
-    environment.GITHUB_ACTIONS === "true" &&
-    environment.RUNNER_ENVIRONMENT === "github-hosted"
-  ) {
-    const identity = supplied(environment, [
-      "GITHUB_JOB",
-      "GITHUB_REPOSITORY",
-      "GITHUB_RUN_ATTEMPT",
-      "GITHUB_RUN_ID",
-      "GITHUB_SHA",
-      "RUNNER_NAME",
-      "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS",
-    ]);
-    if (
-      !/^\d+$/u.test(identity.GITHUB_RUN_ID!) ||
-      !/^\d+$/u.test(identity.GITHUB_RUN_ATTEMPT!) ||
-      !/^[a-f0-9]{40}$/u.test(identity.GITHUB_SHA!)
-    )
-      throw new Error("integration.controller.disposable-host-identity");
-    return {
-      hostKind: "github-hosted",
-      identity,
-      mode:
-        environment.AGENTSCOPE_INTEGRATION_MODE === "candidate"
-          ? "candidate"
-          : "lifecycle",
-    };
-  }
-  throw new Error("integration.controller.disposable-host-required");
+  researchRequest: MockServerResearchRequest;
+  sourceTree: string;
+  substrateCertificationRequest: SubstrateCertificationRequest;
 };
-
-const git = (workspaceRoot: string, arguments_: readonly string[]): string =>
-  execFileSync("/usr/bin/git", [...arguments_], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-    env: {
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_NOSYSTEM: "1",
-      LANG: "C.UTF-8",
-      PATH: "/usr/bin:/bin",
-    },
-    timeout: 30_000,
-  }).trim();
-
-const hasCredentialGitState = (workspaceRoot: string): boolean => {
-  const entries = git(workspaceRoot, ["config", "--local", "--null", "--list"])
-    .split("\0")
-    .filter(Boolean);
-  return entries.some((entry) => {
-    const newline = entry.indexOf("\n");
-    const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
-    const value = newline < 0 ? "" : entry.slice(newline + 1);
-    return (
-      /^(?:credential\.|http\.|include\.|includeif\.|url\.)/u.test(key) ||
-      key === "core.sshcommand" ||
-      /:\/\/[^/@\s]+@/u.test(value)
-    );
-  });
-};
-
 const createBinding = (
   environment: NodeJS.ProcessEnv,
   now = performance.now(),
-): {
-  binding: DisposableOuterHostBinding;
-  mode: IntegrationControllerMode;
-  substrateCertificationRequest: SubstrateCertificationRequest;
-} => {
+): ControllerBinding => {
   const { hostKind, identity, mode } = inferModeAndIdentity(environment);
+  const researchRequest = parseMockServerResearchRequest(
+    environment,
+    hostKind,
+    mode,
+  );
   if (!providerCredentialEnvironmentIsClear(environment))
     throw new Error("integration.controller.provider-credentials");
   const substrateCertificationRequest = parseSubstrateCertificationRequest(
@@ -371,6 +298,7 @@ const createBinding = (
   );
   const workspaceRoot = resolve(import.meta.dirname, "../../..");
   const workspaceRevision = git(workspaceRoot, ["rev-parse", "HEAD"]);
+  const sourceTree = git(workspaceRoot, ["rev-parse", "HEAD^{tree}"]);
   if (hostKind === "github-hosted" && workspaceRevision !== identity.GITHUB_SHA)
     throw new Error("integration.controller.workspace-revision");
   if (hasCredentialGitState(workspaceRoot))
@@ -436,6 +364,8 @@ const createBinding = (
     .digest("hex")}` as const;
   return {
     mode,
+    researchRequest,
+    sourceTree,
     substrateCertificationRequest,
     binding: Object.freeze({
       cleanupStartMonotonicMilliseconds:
@@ -486,6 +416,33 @@ export const requireDisposableOuterHostCapability =
 export const integrationStageSignal = (): AbortSignal => {
   const capability = requireDisposableOuterHostCapability();
   return capabilityStates.get(capability)!.signal;
+};
+
+export const requireMockServerResearchRequest = () => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (!["select", "prepareModelRoutes"].includes(stageContext.getStore() ?? ""))
+    throw new Error("integration.mockserver-material.research-request");
+  return state.researchRequest.kind === "supplier"
+    ? Object.freeze({
+        request: state.researchRequest,
+        sourceTree: state.sourceTree,
+      })
+    : undefined;
+};
+
+export const registerMockServerResearchObservation = (
+  observation: MockServerResearchObservation,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    stageContext.getStore() !== "prepareModelRoutes" ||
+    state.researchRequest.kind !== "supplier" ||
+    state.researchObservation !== undefined
+  )
+    throw new Error("integration.mockserver-material.research-request");
+  state.researchObservation = observation;
 };
 
 export const requireSubstrateCertificationCase = ():
@@ -1035,82 +992,9 @@ const publishSubstrateCertificationReceipt = (
   }
 };
 
-const publishCredentialPreflightFailure = (
-  environment: NodeJS.ProcessEnv,
-  error: unknown,
-): void => {
-  if (
-    !(error instanceof Error) ||
-    error.message !== "integration.controller.provider-credentials" ||
-    environment.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE !==
-      "credential-presence" ||
-    typeof environment.GITHUB_SHA !== "string" ||
-    !/^[a-f0-9]{40}$/u.test(environment.GITHUB_SHA)
-  )
-    return;
-  const record = Object.freeze({
-    certificationCase: "credential-presence",
-    certificationPredicate:
-      SUBSTRATE_CERTIFICATION_PREDICATES["credential-presence"],
-    controllerPreflightFailureVersion: 1,
-    githubSha: environment.GITHUB_SHA,
-    mutationAuthority: "not-created",
-    primaryFailure: error.message,
-  });
-  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
-  const directory = resolve(
-    import.meta.dirname,
-    "../../../artifacts/integration",
-  );
-  const target = resolve(directory, "controller-preflight-failure.json");
-  const temporary = resolve(
-    directory,
-    `.controller-preflight-failure.${process.pid}.tmp`,
-  );
-  let descriptor: number | undefined;
-  let directoryDescriptor: number | undefined;
-  try {
-    mkdirSync(directory, { recursive: true });
-    const directoryStatus = lstatSync(directory);
-    if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink())
-      throw new Error("integration.certification.preflight-evidence");
-    descriptor = openSync(
-      temporary,
-      constants.O_CREAT |
-        constants.O_EXCL |
-        constants.O_NOFOLLOW |
-        constants.O_WRONLY,
-      0o600,
-    );
-    writeFileSync(descriptor, serialized);
-    fsyncSync(descriptor);
-    closeSync(descriptor);
-    descriptor = undefined;
-    linkSync(temporary, target);
-    rmSync(temporary);
-    directoryDescriptor = openSync(directory, constants.O_RDONLY);
-    fsyncSync(directoryDescriptor);
-    const status = lstatSync(target);
-    if (
-      !status.isFile() ||
-      status.isSymbolicLink() ||
-      status.nlink !== 1 ||
-      status.size !== Buffer.byteLength(serialized, "utf8") ||
-      (status.mode & 0o7777) !== 0o600
-    )
-      throw new Error("integration.certification.preflight-evidence");
-  } catch (publicationError) {
-    rmSync(temporary, { force: true });
-    throw new Error("integration.certification.preflight-evidence", {
-      cause: publicationError,
-    });
-  } finally {
-    if (descriptor !== undefined) closeSync(descriptor);
-    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
-  }
-};
-
-export const executeIntegrationController = async (): Promise<void> => {
+export const executeIntegrationController = async (): Promise<
+  void | "mockserver-research-complete"
+> => {
   if (controllerConsumed) throw new Error("integration.controller.single-use");
   controllerConsumed = true;
   let controllerBinding: ReturnType<typeof createBinding>;
@@ -1120,10 +1004,18 @@ export const executeIntegrationController = async (): Promise<void> => {
     publishCredentialPreflightFailure(process.env, error);
     throw error;
   }
-  const { binding, mode, substrateCertificationRequest } = controllerBinding;
+  const {
+    binding,
+    mode,
+    researchRequest,
+    sourceTree,
+    substrateCertificationRequest,
+  } = controllerBinding;
   const capability = Object.freeze({ binding });
   const state: CapabilityState = {
     active: true,
+    researchRequest,
+    sourceTree,
     artifactFiles: new Set(),
     candidateIdentities: new Set(),
     failureEvidence: new Map(),
@@ -1138,8 +1030,26 @@ export const executeIntegrationController = async (): Promise<void> => {
   };
   capabilityStates.set(capability, state);
   try {
-    await capabilityContext.run(capability, async () => {
-      await runIntegrationStages(mode, stageDependencies(capability));
+    return await capabilityContext.run(capability, async () => {
+      const disposition = await runIntegrationStages(
+        mode,
+        stageDependencies(capability),
+        researchRequest.kind === "supplier" ? "mockserver-supplier" : undefined,
+      );
+      if (researchRequest.kind === "supplier") {
+        if (
+          disposition !== "mockserver-research-cleaned" ||
+          state.researchObservation === undefined
+        )
+          throw new Error("integration.mockserver-material.research-retention");
+        retainMockServerResearch({
+          ...state.researchObservation,
+          parent: resolve(binding.workspaceRoot, "artifacts/integration"),
+          deadline: binding.deadlineMonotonicMilliseconds,
+          signal: state.signal,
+        });
+        return "mockserver-research-complete" as const;
+      }
       if (substrateCertificationRequest.kind === "negative")
         throw new Error("integration.certification.unexpected-success");
       publishSubstrateCertificationReceipt(
@@ -1147,6 +1057,7 @@ export const executeIntegrationController = async (): Promise<void> => {
         substrateCertificationRequest,
         state.substrateCertificationProjection,
       );
+      return undefined;
     });
   } finally {
     state.active = false;

@@ -14,8 +14,12 @@ on:
       shard:
         description: Deterministic index/total shard selector
         required: false
-        default: 0/1
         type: string
+      mockserver_research:
+        description: Run bounded MockServer supplier research only; never scenario or certification evidence
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -42,14 +46,14 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.15.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -62,7 +66,7 @@ jobs:
           pnpm build
           pnpm test:integration
       - name: Publish checksum-bound candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: integration-candidate-${{ github.sha }}
           path: |
@@ -71,6 +75,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   hermetic-platform:
+    if: ${{ !inputs.mockserver_research }}
     name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
     needs: prepare-candidate
     runs-on: ubuntu-latest
@@ -152,6 +157,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   controlled-negative:
+    if: ${{ !inputs.mockserver_research }}
     name: Substrate rejects ${{ matrix.case }}
     needs: prepare-candidate
     runs-on: ubuntu-latest
@@ -244,6 +250,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   substrate-certification-fan-in:
+    if: ${{ !inputs.mockserver_research }}
     name: substrate-certification
     needs: hermetic-platform
     runs-on: ubuntu-latest
@@ -276,7 +283,7 @@ jobs:
           node tests/integration/verify-substrate-certification.mjs fan-in
   hermetic-integration:
     name: hermetic-integration
-    if: always()
+    if: always() && !inputs.mockserver_research
     needs:
       [
         prepare-candidate,
@@ -298,3 +305,166 @@ jobs:
           test "$PLATFORM_RESULT" = success
           test "$NEGATIVE_RESULT" = success
           test "$CERTIFICATION_RESULT" = success
+  mockserver-supplier-research:
+    name: MockServer supplier research (not certification)
+    if: github.event_name == 'workflow_dispatch' && inputs.mockserver_research
+    needs: prepare-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      AGENTSCOPE_MOCKSERVER_RESEARCH: supplier
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+    steps:
+      - name: Reject contradictory research selectors
+        env:
+          REQUEST_SCENARIO: ${{ inputs.scenario }}
+          REQUEST_SHARD: ${{ inputs.shard }}
+        run: |
+          test -z "$REQUEST_SCENARIO"
+          test -z "$REQUEST_SHARD"
+      - name: Establish job-scoped integration deadline
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
+      - name: Initialize closed npm configuration
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.npmrc"
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
+          echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace fixture code
+        run: pnpm build
+      - name: Download exact prepared candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: integration-candidate-${{ github.sha }}
+          path: artifacts/integration
+      - name: Require settled research stop and independently verified packet
+        id: research_packet
+        run: |
+          diagnostic_output() {
+            { printf '%s=%s\n' "$1" "$2" >> "${GITHUB_OUTPUT:-/dev/null}"; } 2>/dev/null || :
+          }
+          diagnostic_exit() {
+            original_status=$?
+            trap - EXIT
+            diagnostic_output shell_status "$original_status"
+            exit "$original_status"
+          }
+          trap diagnostic_exit EXIT
+          diagnostic_output shell_entered true
+          set +e
+          pnpm test:integration
+          status=$?
+          if [[ "$status" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( status <= 255 )); then
+            diagnostic_output command_status "$status"
+          fi
+          set -e
+          ( printf 'integration.mockserver-research.command-status=%s\n' "$status" ) || :
+          test "$status" -eq 3
+          ( printf 'integration.mockserver-research.verifier-enter\n' ) || :
+          node tests/integration/verify-mockserver-research.mjs
+          ( printf 'integration.mockserver-research.verifier-complete\n' ) || :
+      - name: Project closed research shell observations
+        if: always()
+        env:
+          OBSERVED_OUTCOME: ${{ steps.research_packet.outcome }}
+          OBSERVED_ENTERED: ${{ steps.research_packet.outputs.shell_entered }}
+          OBSERVED_COMMAND_STATUS: ${{ steps.research_packet.outputs.command_status }}
+          OBSERVED_SHELL_STATUS: ${{ steps.research_packet.outputs.shell_status }}
+          OBSERVED_SUPERVISOR: ${{ steps.research_packet.outputs.supervisor_observation }}
+          OBSERVED_SUPERVISOR_CODE: ${{ steps.research_packet.outputs.supervisor_code }}
+          OBSERVED_SUPERVISOR_SIGNAL: ${{ steps.research_packet.outputs.supervisor_signal }}
+          OBSERVED_CONTAINED: ${{ steps.research_packet.outputs.supervisor_contained }}
+          OBSERVED_RESIDUAL: ${{ steps.research_packet.outputs.supervisor_residual }}
+          OBSERVED_TERMINATION: ${{ steps.research_packet.outputs.supervisor_termination }}
+          OBSERVED_WITHIN_DEADLINE: ${{ steps.research_packet.outputs.supervisor_within_deadline }}
+          OBSERVED_FAILURE: ${{ steps.research_packet.outputs.controller_failure }}
+          OBSERVED_STAGE: ${{ steps.research_packet.outputs.controller_stage }}
+          OBSERVED_KIND: ${{ steps.research_packet.outputs.controller_kind }}
+          OBSERVED_CLEANUP: ${{ steps.research_packet.outputs.controller_cleanup }}
+          OBSERVED_PULL_TRIGGER: ${{ steps.research_packet.outputs.controller_pull_trigger }}
+          OBSERVED_RECONCILIATION: ${{ steps.research_packet.outputs.controller_reconciliation }}
+          OBSERVED_MATERIAL_PHASE: ${{ steps.research_packet.outputs.material_phase }}
+          OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: ${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}
+          OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: ${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}
+          OBSERVED_UNTRUSTED_BUILDER_OPERATION: ${{ steps.research_packet.outputs.untrusted_builder_operation }}
+          OBSERVED_UNTRUSTED_BUILDER_OUTCOME: ${{ steps.research_packet.outputs.untrusted_builder_outcome }}
+          OBSERVED_UNTRUSTED_BUILDER_OBSERVED: ${{ steps.research_packet.outputs.untrusted_builder_observed }}
+          OBSERVED_UNTRUSTED_BUILDER_EXITED: ${{ steps.research_packet.outputs.untrusted_builder_exited }}
+          OBSERVED_UNTRUSTED_BUILDER_SIGNALED: ${{ steps.research_packet.outputs.untrusted_builder_signaled }}
+          OBSERVED_UNTRUSTED_BUILDER_TIMED_OUT: ${{ steps.research_packet.outputs.untrusted_builder_timed_out }}
+          OBSERVED_UNTRUSTED_BUILDER_JOINED: ${{ steps.research_packet.outputs.untrusted_builder_joined }}
+          OBSERVED_UNTRUSTED_BUILDER_STDERR_CLASS: ${{ steps.research_packet.outputs.untrusted_builder_stderr_class }}
+        run: |
+          outcome=unknown
+          case "$OBSERVED_OUTCOME" in success|failure|cancelled|skipped) outcome="$OBSERVED_OUTCOME" ;; esac
+          entered=unknown
+          test "$OBSERVED_ENTERED" != true || entered=true
+          command_status=unknown
+          shell_status=unknown
+          if [[ "$OBSERVED_COMMAND_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_COMMAND_STATUS <= 255 )); then command_status="$OBSERVED_COMMAND_STATUS"; fi
+          if [[ "$OBSERVED_SHELL_STATUS" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SHELL_STATUS <= 255 )); then shell_status="$OBSERVED_SHELL_STATUS"; fi
+          observation="integration.mockserver-research.shell-observation outcome=$outcome shell_entered=$entered command_status=$command_status shell_status=$shell_status"
+          ( printf '%s\n' "$observation" ) || :
+          { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
+          supervisor=unknown; supervisor_code=unknown; supervisor_signal=unknown; contained=unknown; residual=unknown; termination=unknown; within_deadline=unknown
+          failure=unknown; stage=unknown; kind=unknown; cleanup=unknown; trigger=unknown; reconciliation=unknown
+          material_phase=unknown
+          untrusted_bootstrap_stage=unknown; untrusted_bootstrap_failure_family=unknown
+          untrusted_builder_operation=unknown; untrusted_builder_outcome=unknown; untrusted_builder_stderr_class=unknown
+          untrusted_builder_observed=unknown; untrusted_builder_exited=unknown; untrusted_builder_signaled=unknown; untrusted_builder_timed_out=unknown; untrusted_builder_joined=unknown
+          case "$OBSERVED_UNTRUSTED_BUILDER_OPERATION" in preflight|builder-create|builder-bootstrap|image-build) untrusted_builder_operation="$OBSERVED_UNTRUSTED_BUILDER_OPERATION" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_OUTCOME" in retired-failure|failed-settled) untrusted_builder_outcome="$OBSERVED_UNTRUSTED_BUILDER_OUTCOME" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_STDERR_CLASS" in resource-conflict|build-failed|bootstrap-failed|permission-denied) untrusted_builder_stderr_class="$OBSERVED_UNTRUSTED_BUILDER_STDERR_CLASS" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_OBSERVED" in true|false) untrusted_builder_observed="$OBSERVED_UNTRUSTED_BUILDER_OBSERVED" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_EXITED" in true|false) untrusted_builder_exited="$OBSERVED_UNTRUSTED_BUILDER_EXITED" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_SIGNALED" in true|false) untrusted_builder_signaled="$OBSERVED_UNTRUSTED_BUILDER_SIGNALED" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_TIMED_OUT" in true|false) untrusted_builder_timed_out="$OBSERVED_UNTRUSTED_BUILDER_TIMED_OUT" ;; esac
+          case "$OBSERVED_UNTRUSTED_BUILDER_JOINED" in true|false) untrusted_builder_joined="$OBSERVED_UNTRUSTED_BUILDER_JOINED" ;; esac
+          case "$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" in authenticate-inputs|keyrings|import-key|export-key|selected-key-file|import-selected|list-key|listing-policy|verify-signature|signature-policy|signature-recordset|signature-recordset-information|signature-recordset-rejection|signature-recordset-unknown|signature-count|signature-compliance|signature-signer|signature-algorithm|signature-hash|signature-class|signature-time|signature-key-time|checksum-policy|completed|supplier-connected-entry|supplier-connected-extract|supplier-connected-package|supplier-connected-inventory|supplier-connected-inventory-read|supplier-connected-inventory-guard|supplier-connected-inventory-internal|supplier-connected-output-create|supplier-connected-output-write|supplier-entry|supplier-extract|supplier-package|supplier-inventory|supplier-inventory-read|supplier-inventory-guard|supplier-inventory-internal|supplier-output-create|supplier-output-write) untrusted_bootstrap_stage="$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" ;; esac
+          case "$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" in none|input|filesystem|gpg-execution|listing-policy|signature-policy|checksum-policy) untrusted_bootstrap_failure_family="$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" ;; esac
+          case "$untrusted_bootstrap_stage:$untrusted_bootstrap_failure_family" in supplier-*:none) ;; supplier-*:*) untrusted_bootstrap_stage=unknown; untrusted_bootstrap_failure_family=unknown ;; esac
+          case "$OBSERVED_MATERIAL_PHASE" in research-preflight|research-client|research-inventory|research-close|bootstrap-preflight|download-source|download-maven|download-node|download-jdk|verify-archives|pinned-metadata|download-maven-key|download-maven-signature|verify-maven|verify-node|verify-jdk|retire-maven|retire-node|retire-jdk|bootstrap-cleanup|supplier-context|supplier-build|supplier-inventory|supplier-cleanup) material_phase="$OBSERVED_MATERIAL_PHASE" ;; esac
+          case "$OBSERVED_SUPERVISOR" in terminal|rejected) supervisor="$OBSERVED_SUPERVISOR" ;; esac
+          if [[ "$OBSERVED_SUPERVISOR_CODE" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SUPERVISOR_CODE <= 255 )); then supervisor_code="$OBSERVED_SUPERVISOR_CODE"; fi
+          case "$OBSERVED_SUPERVISOR_SIGNAL" in none|SIGTERM|SIGKILL|SIGINT|SIGABRT|SIGSEGV|SIGBUS|SIGILL|SIGFPE|SIGHUP|SIGQUIT|SIGPIPE) supervisor_signal="$OBSERVED_SUPERVISOR_SIGNAL" ;; esac
+          case "$OBSERVED_CONTAINED" in true|false) contained="$OBSERVED_CONTAINED" ;; esac
+          case "$OBSERVED_RESIDUAL" in true|false) residual="$OBSERVED_RESIDUAL" ;; esac
+          case "$OBSERVED_TERMINATION" in true|false) termination="$OBSERVED_TERMINATION" ;; esac
+          case "$OBSERVED_WITHIN_DEADLINE" in true|false) within_deadline="$OBSERVED_WITHIN_DEADLINE" ;; esac
+          case "$OBSERVED_FAILURE" in integration.controller.failed|integration.controller.retire-outer-host) failure="$OBSERVED_FAILURE" ;; esac
+          case "$OBSERVED_STAGE" in clean|maintainArtifacts|prepareCandidate|prepareImages|prepareModelRoutes|runScenarios|select) stage="$OBSERVED_STAGE" ;; esac
+          case "$OBSERVED_KIND" in operation-grace-unsettled|pull-outcome-unknown|preparation-failed) kind="$OBSERVED_KIND" ;; esac
+          case "$OBSERVED_CLEANUP" in none|failed|not-attempted) cleanup="$OBSERVED_CLEANUP" ;; esac
+          case "$OBSERVED_PULL_TRIGGER" in abort|timeout|transport|unexpected-status|empty-events|malformed-event|daemon-error-event) trigger="$OBSERVED_PULL_TRIGGER" ;; esac
+          case "$OBSERVED_RECONCILIATION" in completed|failed|not-attempted) reconciliation="$OBSERVED_RECONCILIATION" ;; esac
+          if [[ "$supervisor" != unknown || "$failure" != unknown || "$material_phase" != unknown || "$untrusted_bootstrap_stage" != unknown || "$untrusted_builder_operation" != unknown || "$untrusted_builder_outcome" != unknown || "$untrusted_builder_observed" != unknown ]]; then
+            observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation material_phase=$material_phase untrusted_bootstrap_stage=$untrusted_bootstrap_stage untrusted_bootstrap_failure_family=$untrusted_bootstrap_failure_family"
+            observation="$observation untrusted_builder_operation=$untrusted_builder_operation untrusted_builder_outcome=$untrusted_builder_outcome untrusted_builder_observed=$untrusted_builder_observed untrusted_builder_exited=$untrusted_builder_exited untrusted_builder_signaled=$untrusted_builder_signaled untrusted_builder_timed_out=$untrusted_builder_timed_out untrusted_builder_joined=$untrusted_builder_joined untrusted_builder_stderr_class=$untrusted_builder_stderr_class"
+            ( printf '%s\n' "$observation" ) || :
+            { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
+          fi
+      - name: Upload bounded research observations only
+        if: success() && steps.research_packet.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mockserver-supplier-research-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/integration/mockserver-research/inventory.json
+            artifacts/integration/mockserver-research/receipt.json
+          if-no-files-found: error
+          retention-days: 7
