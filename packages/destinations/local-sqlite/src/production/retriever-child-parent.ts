@@ -499,13 +499,7 @@ export const executeLocalSqliteRetrieverChild = async (
       worker.stdin?.end();
       ledger.enter(stages.workerTerminal);
       const exit = await bounded(waitForExit(worker), remaining());
-      ledger.enter(
-        !result.ok
-          ? stages.workerNegative
-          : result.evidence === undefined
-            ? stages.resultEvidence
-            : stages.workerTerminal,
-      );
+      ledger.enter(!result.ok ? stages.workerNegative : stages.workerTerminal);
       if (
         !result.ok ||
         result.evidence === undefined ||

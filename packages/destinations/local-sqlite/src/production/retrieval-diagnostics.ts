@@ -75,8 +75,8 @@ export const associateLocalSqliteRetrieval = <Value>(
     (value) => value,
     (error: unknown) => {
       ledger.capture();
-      const observation = ledger.snapshot();
-      if (observation !== undefined) observations.set(invocation, observation);
+      // The private ledger's capture initializes its first observation.
+      observations.set(invocation, ledger.snapshot()!);
       throw error;
     },
   );

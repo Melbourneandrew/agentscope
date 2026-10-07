@@ -89,6 +89,18 @@ describe("adapter-reported failure observation normalization", () => {
     watchdogJoined: true,
     leaseReleased: null,
   });
+  it("refuses observations when an ambient numeric predicate throws", () => {
+    const predicate = vi.spyOn(Number, "isInteger").mockImplementation(() => {
+      throw new Error("synthetic ambient failure");
+    });
+    try {
+      expect(() =>
+        createRetrieverFailure("unavailable", undefined, observation()),
+      ).toThrow(RetrieverContractError);
+    } finally {
+      predicate.mockRestore();
+    }
+  });
   it("copies once into a frozen branded failure and retains unavailable", async () => {
     const raw = observation();
     const result = createRetrieverFailure("unavailable", undefined, raw);

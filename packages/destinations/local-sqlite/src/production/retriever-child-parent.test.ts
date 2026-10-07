@@ -38,6 +38,27 @@ import {
 } from "./retrieval-diagnostics.js";
 
 describe("reported child settlement observations", () => {
+  it("retains unavailable lease settlement when release outlives the original reserve", async () => {
+    const result = await run("false-result", { delayRelease: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      message: "destination.local-sqlite.outcome-unknown",
+      observation: {
+        stage: 11,
+        workerJoined: true,
+        watchdogJoined: true,
+        leaseReleased: null,
+      },
+    });
+  });
+  it("preserves rejection when the caller omits its optional failure ledger", async () => {
+    const result = await run("false-result", { omitFailureLedger: true });
+    expect(result.settled).toMatchObject({
+      state: "rejected",
+      observation: undefined,
+    });
+    expect(result.lifecycleEntries).toEqual([]);
+  });
   it("retains the actual parent first worker-negative boundary when release fails", async () => {
     const result = await run("false-result", { failRelease: true });
     expect(result.settled).toMatchObject({
@@ -167,6 +188,8 @@ type AttemptOptions = Readonly<{
   abortAfterMilliseconds?: number;
   failAmend?: boolean;
   failRelease?: boolean;
+  delayRelease?: boolean;
+  omitFailureLedger?: boolean;
   throwAmend?: boolean;
   identityMissing?: boolean;
   missingWorker?: boolean;
@@ -195,6 +218,8 @@ const proveDescendantStopped = async (path: string): Promise<boolean> => {
 const run = async (state: WorkerState, options: AttemptOptions = {}) => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-retriever-child-"));
   chmodSync(root, 0o700);
+  let releaseCleanup: (() => void) | undefined;
+  let delayedRelease: Promise<unknown> | undefined;
   try {
     const lifecycle = join(root, "lifecycle");
     const workerPath = join(root, "worker.cjs");
@@ -243,6 +268,18 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
               Object.freeze({ state: "mismatch" as const }),
           }
         : {}),
+      ...(options.delayRelease === true
+        ? {
+            removeArtifactIfIdentity: () => {
+              delayedRelease = new Promise((resolve) => {
+                releaseCleanup = () => {
+                  resolve({ state: "mismatch" });
+                };
+              });
+              return delayedRelease;
+            },
+          }
+        : {}),
       ...(options.throwAmend === true
         ? {
             replaceLeaseDurably: () => {
@@ -285,7 +322,9 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         operation: "search",
         plan,
         cutoffAtMonotonicMilliseconds: cutoffAt,
-        failureLedger: ledger,
+        ...(options.omitFailureLedger === true
+          ? {}
+          : { failureLedger: ledger }),
         teardownReserveMilliseconds: 250,
         signal: controller.signal,
         ...(options.omitChildIdentity === true
@@ -320,6 +359,8 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
       if (abortTimer !== undefined) clearTimeout(abortTimer);
     }
   } finally {
+    releaseCleanup?.();
+    await delayedRelease;
     rmSync(root, { recursive: true, force: true });
   }
 };
