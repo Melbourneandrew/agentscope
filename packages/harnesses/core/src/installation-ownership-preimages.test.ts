@@ -208,7 +208,7 @@ describe("same-plan ownership comparison", () => {
     ).toBe(false);
   });
 
-  it.each([0, 501])(
+  it.each([undefined, 0, 501])(
     "retains UID %s in fresh frozen planner data",
     async (uid) => {
       const value = await fixture();
@@ -218,14 +218,23 @@ describe("same-plan ownership comparison", () => {
           throw new Error("invalid");
         },
       );
+      const legacy = {
+        exists: before.exists,
+        bytes: before.bytes,
+        digest: before.digest,
+        mode: before.mode,
+      };
       vi.spyOn(files, "inspectInstallationPreimage").mockImplementation(
         async (path, invalid) =>
           path === value.target
-            ? { ...before, uid }
+            ? uid === undefined
+              ? legacy
+              : { ...before, uid }
             : originalInspect(path, invalid),
       );
       const planner = vi.fn((target: HarnessTargetInspection) => {
         expect(target.uid).toBe(uid);
+        if (uid === undefined) expect(target).not.toHaveProperty("uid");
         expect(Object.isFrozen(target)).toBe(true);
         return { kind: "unchanged" as const };
       });
