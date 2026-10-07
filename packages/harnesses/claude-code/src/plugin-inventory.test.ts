@@ -397,11 +397,10 @@ describe("Claude Code bounded scoped plugin observations", () => {
     });
   });
 
-  it("rejects duplicate scopes and contradictory consulted paths", () => {
+  it("rejects duplicate scoped paths and contradictory consulted paths", () => {
     const layer = emptyInventory().settingsLayers[0]!;
     for (const duplicate of [
       layer,
-      { ...layer, targetPath: targetPathByScope.project },
       { ...layer, scope: "project" as const, targetDigest: "1".repeat(64) },
     ]) {
       const inventory = {
@@ -413,6 +412,15 @@ describe("Claude Code bounded scoped plugin observations", () => {
         status: "ambiguous",
       });
     }
+    expect(
+      parsePluginInventory({
+        ...emptyInventory(),
+        settingsLayers: [
+          layer,
+          { ...layer, targetPath: targetPathByScope.project },
+        ],
+      })?.settingsLayers,
+    ).toHaveLength(2);
   });
 
   it.each(["manifestName", "manifestVersion"] as const)(
@@ -470,8 +478,10 @@ describe("Claude Code bounded scoped plugin observations", () => {
       expect(parsePluginInventory(inventoryFor(hostile))).toBeUndefined();
     expect(effects).toBe(0);
   });
+});
 
-  it("defensively refuses duplicate scopes at the private overlap boundary", () => {
+describe("Claude private overlap duplicate-row defense", () => {
+  it("defensively refuses duplicate scoped paths at the private overlap boundary", () => {
     const inventory = inventoryFor(orphanPlugin("ordinary"));
     expect(
       inspectParsedPluginOverlap({

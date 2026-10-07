@@ -1066,7 +1066,10 @@ export const createClaudeCodeInstallationPlanner = (
         (overlap.effectiveScope !== "user" &&
           overlap.effectiveScope !== "project") ||
         overlap.targetPath !== targetPath ||
-        overlap.targetDigest !== digest)
+        overlap.targetDigest !== digest ||
+        (settings.enabledPlugins as Record<string, unknown> | undefined)?.[
+          CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID
+        ] !== true)
     )
       return { kind: "conflict" };
     if (operation === "migrate" && overlap.status === "conflict")
