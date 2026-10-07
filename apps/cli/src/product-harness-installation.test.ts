@@ -418,6 +418,59 @@ describe("local loading remains in the same Core plan", () => {
   });
 });
 
+describe("alternate-version snapshots stay in the same Core plan", () => {
+  it("owns alternate-version snapshots and binds every consulted root before selecting configuration", async () => {
+    const value = await withElection();
+    if (value.sourceInput.harness !== "claude-code")
+      throw new Error("fixture.harness");
+    const parentPath = join(value.root, "versions"),
+      version = join(parentPath, "v9");
+    const versionRoots = [{ parentPath, paths: [version] }];
+    const candidate = value.sourceInput.cacheElections![0]!.candidates[0]!;
+    const input = createProductHarnessInstallationInput({
+      ...value.sourceInput,
+      cacheElections: [
+        {
+          candidates: [
+            {
+              ...candidate,
+              loading: {
+                paths: [value.paths[0]!],
+                selectedPath: version,
+                versionRoots,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(input.directoryPaths).toEqual([
+      value.paths[0]!,
+      parentPath,
+      version,
+    ]);
+    versionRoots[0]!.paths.splice(0);
+    versionRoots[0]!.parentPath = join(value.root, "substituted");
+    const directories = [
+      {
+        directoryPath: value.paths[0]!,
+        exists: true,
+        mode: 0o755,
+        entries: [],
+      },
+      { directoryPath: parentPath, exists: true, mode: 0o755, entries: ["v9"] },
+      { directoryPath: version, exists: true, mode: 0o755, entries: ["hooks"] },
+    ];
+    expect(
+      input.planner(value.configurationInspected, directories),
+    ).toMatchObject({ kind: "replace" });
+    directories[1]!.entries = ["substituted"];
+    expect(() =>
+      input.planner(value.configurationInspected, directories),
+    ).toThrow("plugin-inventory-unavailable");
+  });
+});
+
 describe("seed loading remains in the same Core plan", () => {
   it("snapshots seed loading hints and refuses a changed loading route before configuration is admitted", async () => {
     const value = await withElection();

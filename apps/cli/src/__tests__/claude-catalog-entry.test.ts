@@ -89,6 +89,33 @@ describe("pinned Claude whole catalog entries", () => {
   );
 });
 
+describe("pinned monitor and bundle declarations", () => {
+  it("preserves skill monitor triggers but rejects an empty skill suffix", () => {
+    const monitor = { name: "watch", command: "watch", description: "watch" };
+    expect(
+      normalize({ monitors: [{ ...monitor, when: "on-skill-invoke:build" }] })
+        ?.monitors,
+    ).toEqual([{ ...monitor, when: "on-skill-invoke:build" }]);
+    expect(
+      normalize({ monitors: [{ ...monitor, when: "on-skill-invoke:" }] }),
+    ).toEqual(stub);
+  });
+  it.each([
+    "./server.mcpb",
+    "./server.dxt",
+    "https://example.test/server.mcpb",
+    "https://example.test/server.dxt",
+  ])(
+    "retains bundle declaration %s without admitting another extension",
+    (path) => {
+      expect(normalize({ mcpServers: path })?.mcpServers).toBe(path);
+      expect(
+        normalize({ mcpServers: path.replace(/\.(mcpb|dxt)$/, ".zip") }),
+      ).toEqual(stub);
+    },
+  );
+});
+
 describe("pinned component metadata projection", () => {
   it("normalizes every metadata/component family without extra eligibility rules", () => {
     const result = normalize({

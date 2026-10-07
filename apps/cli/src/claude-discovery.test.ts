@@ -20,6 +20,7 @@ import {
   captureClaudeEnvironment,
   claudePluginSeedDirectories,
   selectClaudePluginLoadingPath,
+  claudeMarketplaceLoadingSource,
   type ClaudeDiscoveryPolicy,
 } from "./claude-discovery.js";
 import {
@@ -252,6 +253,27 @@ describe("pinned Claude seed directory controls", () => {
   });
 });
 
+describe("marketplace loading refuses incomplete declarations", () => {
+  it.each([
+    { entry: { source: "./plugin" }, source: { source: "github" } },
+    {
+      entry: { name: "plugin", source: "./plugin" },
+      source: { source: "file" },
+    },
+    {
+      entry: { name: "plugin", source: "./plugin" },
+      source: { source: "directory" },
+    },
+  ])(
+    "does not fabricate a named entry or local path from %j",
+    ({ entry, source }) => {
+      expect(() =>
+        claudeMarketplaceLoadingSource(entry, source, "/catalog"),
+      ).toThrow("cli.harness.plugin-inventory-unavailable");
+    },
+  );
+});
+
 describe("alternate seed version selection from Core snapshots", () => {
   const inspect = (directoryPath: string, entries: readonly string[]) => ({
     directoryPath,
@@ -293,6 +315,14 @@ describe("alternate seed version selection from Core snapshots", () => {
     ];
     expect(() =>
       selectClaudePluginLoadingPath([cache], observed, roots),
+    ).toThrow("plugin-inventory-unavailable");
+    // Equal cardinality must not make a substituted child authoritative.
+    expect(() =>
+      selectClaudePluginLoadingPath(
+        [cache],
+        [observed[0]!, inspect(parentPath, ["v10"]), inspect(other, ["hooks"])],
+        roots,
+      ),
     ).toThrow("plugin-inventory-unavailable");
     expect(() =>
       selectClaudePluginLoadingPath(

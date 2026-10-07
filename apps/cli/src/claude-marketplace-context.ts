@@ -128,21 +128,6 @@ export const selectClaudeMarketplaceEntry = (
   });
 };
 
-export const readClaudeMarketplaceEntry = async (
-  pluginsRoot: string,
-  id: string,
-  retainReadGuard: (guard: ProductHarnessReadGuard) => void,
-) => {
-  const parts = id.split("@");
-  if (parts.length !== 2 || parts.some((part) => part.length === 0))
-    throw unavailable();
-  const [name, market] = parts as [string, string];
-  return selectClaudeMarketplaceEntry(
-    await readClaudeMarketplaceCatalog(pluginsRoot, market, retainReadGuard),
-    name,
-  );
-};
-
 // Resolve before registry/cache election. Original settings IDs still occupy
 // native deduplication slots, even when disabled; no cache is relabelled.
 export const collectClaudeMarketplaceLoads = async (

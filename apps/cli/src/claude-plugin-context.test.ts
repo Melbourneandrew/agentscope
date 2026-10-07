@@ -2,7 +2,12 @@ import { mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
-import { inspectClaudeCodePluginOverlap } from "@agentscope/harness-claude-code";
+import {
+  inspectClaudeCodePluginOverlap,
+  CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
+  CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST,
+  CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
+} from "@agentscope/harness-claude-code";
 
 import {
   readClaudePluginContext,
@@ -191,6 +196,32 @@ describe("canonical settings routes remain preliminary observations", () => {
 });
 
 describe("managed settings preserve individual consulted preimages", () => {
+  it("retains ignored managed subdirectories as existence guards, not settings layers", async () => {
+    const value = await cachedContext();
+    const ignored = join(value.root, "ignored-managed-directory");
+    vi.spyOn(managed, "discoverClaudeManagedSettings").mockResolvedValue({
+      paths: [],
+      ignoredDirectories: [ignored],
+      selection: {
+        directoryPath: join(value.root, "managed-settings.d"),
+        exists: true,
+        entries: ["ignored-managed-directory"],
+      },
+    });
+    const context = await value.read();
+    expect(context.settingsDirectorySelections).toContainEqual({
+      directoryPath: ignored,
+      exists: true,
+    });
+    expect(
+      context.pluginInventory.settingsLayers.some(
+        (layer) => layer.targetPath === ignored,
+      ),
+    ).toBe(false);
+    expect(
+      context.readGuards.some((guard) => guard.targetPath === ignored),
+    ).toBe(false);
+  });
   it("retains cwd and candidate-root local layers as separate guarded inputs", async () => {
     const value = await cachedContext();
     const canonicalRoot = join(value.root, "canonical");
@@ -601,6 +632,75 @@ describe("existing catalog name before rename metadata", () => {
       ).toMatchObject([{ pluginId: "ordinary@market", hookEvents: ["Stop"] }]);
     },
   );
+});
+
+describe("synthetic official exporter classification", () => {
+  it("classifies only the exact official reader observations, without treating a digest as runtime admission", async () => {
+    const value = await cachedContext();
+    const id = CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID;
+    await writeFile(
+      join(value.home, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { [id]: true } }),
+    );
+    await writeFile(
+      join(value.home, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: { [id]: [{ scope: "user", installPath: value.plugin }] },
+      }),
+    );
+    await writeFile(
+      join(value.home, ".claude", "plugins", "known_marketplaces.json"),
+      JSON.stringify({
+        "claude-plugins-official": {
+          source: {
+            source: "github",
+            repo: "anthropics/claude-plugins-official",
+          },
+          installLocation: value.catalog,
+        },
+      }),
+    );
+    await writeFile(
+      join(value.catalog, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({
+        plugins: [{ name: "langfuse-observability", source: "./ordinary" }],
+      }),
+    );
+    // Synthetic first-party reader outputs test the curated classification only.
+    vi.spyOn(readers, "readClaudePluginManifest").mockResolvedValue({
+      guard: {
+        targetPath: join(value.plugin, ".claude-plugin", "plugin.json"),
+        exists: true,
+        mode: 0o600,
+        digest: CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST.slice(7),
+      },
+      manifestName: "langfuse-observability",
+      manifestVersion: "1.0.0",
+      hasDeclaredHooks: false,
+      hooksDeclarationJson: null,
+    });
+    const hookReader = vi.spyOn(readers, "readClaudePluginHooks");
+    const observation = {
+      hookEvents: ["Stop", "SessionEnd"],
+      hooksDigest: CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
+      directTraceExporter: null,
+      readGuards: [],
+    } as const;
+    hookReader.mockResolvedValue(observation);
+    expect(
+      (await value.read()).pluginInventory.installedPlugins[0]
+        ?.directTraceExporter,
+    ).toBe(true);
+    hookReader.mockResolvedValue({
+      ...observation,
+      hookEvents: ["Stop", "PreToolUse"],
+    });
+    expect(
+      (await value.read()).pluginInventory.installedPlugins[0]
+        ?.directTraceExporter,
+    ).toBeNull();
+  });
 });
 
 describe("recorded object-source plugin loading", () => {

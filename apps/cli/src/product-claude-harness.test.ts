@@ -31,7 +31,7 @@ const nativeIdentity = {
   sha256: createHash("sha256").update(nativeBytes).digest("hex"),
 };
 
-const claudeFixture = async (override?: string) => {
+const claudeFixture = async (override?: string, absentRealHome = false) => {
   const value = await fixture();
   const bin = dirname(value.codexExecutables[0]!);
   const claudePath = join(bin, "claude");
@@ -49,7 +49,9 @@ const claudeFixture = async (override?: string) => {
     },
     environment,
     home: value.home,
-    homeDirectory: value.vendorHome,
+    homeDirectory: absentRealHome
+      ? join(value.vendorHome, "absent-home")
+      : value.vendorHome,
     projectDirectory: value.vendorHome,
     installationFactory: createProductHarnessInstallationInput,
     machineEntryPath: value.machineEntryPath,
@@ -194,6 +196,29 @@ describe("ordinary CLI registry exposes Codex and Claude independently", () => {
       });
     },
   );
+});
+
+describe("ordinary Claude explicit-profile routing", () => {
+  it("does not invent a canonical real-home election when an explicit profile remains observable", async () => {
+    const value = await claudeFixture(".claude", true);
+    await mkdir(join(value.vendorHome, ".git"));
+    await mkdir(join(value.vendorHome, ".claude"));
+    await writeFile(join(value.vendorHome, ".claude", "settings.json"), "{}");
+    const adapter = value.input.adapters!.find(
+      (entry) => entry.commandName === "claude-code",
+    )!;
+    const plan = await adapter.createInstallationInput("install");
+    expect(plan.targetPaths).toContain(
+      join(value.vendorHome, ".claude", "settings.json"),
+    );
+    expect(plan.directoryPaths).toContain(join(value.vendorHome, ".git"));
+    expect(await readdir(join(value.vendorHome, ".claude"))).toEqual([
+      "settings.json",
+    ]);
+    expect((await lstat(join(value.vendorHome, ".git"))).isDirectory()).toBe(
+      true,
+    );
+  });
 });
 
 describe("ordinary Claude CLI owned lifecycle", () => {
