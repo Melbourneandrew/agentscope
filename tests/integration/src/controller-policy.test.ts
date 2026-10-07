@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
@@ -42,6 +43,49 @@ const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
   };
+describe("integration controller policy", () => {
+  it("requires the exact private control mount for ordinary and TUI consumers", () => {
+    const source = readIntegration("immutable-candidate-authority.mjs");
+    const start = source.indexOf("const selectedControlMountMatches =");
+    const end = source.indexOf(
+      "\nexport const validateImmutableScenarioContainer",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const matches = runInNewContext(
+      `${source.slice(start, end)}; selectedControlMountMatches`,
+    ) as (container: unknown, volume: unknown, handoff: unknown) => boolean;
+    const volume = {
+      name: "agentscope-int-0123456789abcdef-control",
+      mountpoint: "/private/volume",
+    };
+    const mount = {
+      Type: "volume",
+      Name: volume.name,
+      Source: volume.mountpoint,
+      Destination: "/control",
+      RW: true,
+    };
+    for (const scenarioId of [
+      "fixture-process-smoke",
+      "codex-tui-trace-smoke",
+    ]) {
+      const handoff = { runId: "0123456789abcdef", scenarioId };
+      expect(matches({ Mounts: [mount] }, volume, handoff)).toBe(true);
+      for (const mounts of [
+        [],
+        [mount, mount],
+        [{ ...mount, RW: false }],
+        [{ ...mount, Name: "substituted" }],
+        [{ ...mount, Destination: "/candidate" }],
+        [{ ...mount, Source: "/other" }],
+      ])
+        expect(matches({ Mounts: mounts }, volume, handoff)).toBe(false);
+      expect(matches({ Mounts: [mount] }, undefined, handoff)).toBe(false);
+    }
+  });
+});
 describe("integration controller policy", () => {
   it("exposes one integration command and no public stage aliases", () => {
     const root = manifest("package.json");
@@ -93,14 +137,8 @@ describe("integration controller policy", () => {
   });
 
   it("keeps external-material verification inside the selected disposable daemon", () => {
-    const material = readFileSync(
-      resolve(workspaceRoot, "tests/integration/harness-material.mjs"),
-      "utf8",
-    );
-    const command = readFileSync(
-      resolve(workspaceRoot, "tests/integration/harness-material-command.mjs"),
-      "utf8",
-    );
+    const material = readIntegration("harness-material.mjs");
+    const command = readIntegration("harness-material-command.mjs");
     expect(material).toContain("buildPreparedDockerImage(client");
     expect(material).toContain("retirePreparedDockerImage(client");
     expect(material).toContain('RUN --network=${operation === "gpg-verify"');
@@ -115,10 +153,7 @@ describe("integration controller policy", () => {
   });
 
   it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/clean.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("clean.mjs");
     expect(source).toContain(
       '"current-images.json": IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes',
     );
@@ -286,6 +321,7 @@ describe("integration cleanup authority", () => {
 
   it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
     const scenario = readIntegration("codex-pty-scenario.mjs");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const authority = readIntegration("immutable-candidate-authority.mjs");
     const runner = readIntegration("runner.mjs");
     const outer = readIntegration("run-scenarios.mjs");
@@ -326,7 +362,7 @@ describe("integration cleanup authority", () => {
       "hook-accepted-without-trace",
       "hook-operational-unclassified",
     ]) {
-      expect(scenario).toContain(`"${phase}"`);
+      expect(diagnostic).toContain(`"${phase}"`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
     expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
@@ -342,7 +378,6 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
     expect(scenario).toContain("classifyCodexTraceFailureHint(");
     expect(scenario).toContain("classifyCodexCollectedChildFailure(");
-    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const search = diagnostic.indexOf(
       "codexTraceSearchChildFailureCategory(observation)",
     );
@@ -654,7 +689,9 @@ describe("Codex interactive diagnostic order", () => {
         (match) => match[1],
       );
     };
-    expect(phases(scenario)).toEqual(expected);
+    expect(scenario).toContain(
+      '  interactivePhases,\n  classifyCodexCollectedChildFailure,\n} from "./codex-trace-child-diagnostics.mjs";',
+    );
     expect(phases(diagnostic)).toEqual(expected);
     expect(runner).toContain(
       'import { interactivePhases } from "./codex-trace-child-diagnostics.mjs";',
@@ -685,6 +722,7 @@ describe("Codex interactive diagnostic order", () => {
     );
     const terminalLedgerRead = scenario.indexOf(
       "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+      scenario.indexOf("const waitForCodexTurnTerminal ="),
     );
     const terminalDeadlinePrecheck = scenario.lastIndexOf(
       "if (bootNow() >= traceDeadline)",
@@ -844,10 +882,7 @@ describe("integration workflow policy", () => {
     for (const certificationCase of SUBSTRATE_CERTIFICATION_CASES)
       expect(workflow).toContain(`          - ${certificationCase}`);
     const scenarios = readIntegration("run-scenarios.mjs");
-    const exactFile = readFileSync(
-      resolve(workspaceRoot, "tests/integration/exact-file.mjs"),
-      "utf8",
-    );
+    const exactFile = readIntegration("exact-file.mjs");
     const finalized = scenarios.indexOf(
       "finalizeControllerFailureEvidence(plan",
     );

@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-4dab76f890720284c2e1ccfaefb92e6c7a4bb1aa4bef292a93645e9a61a53d8d",
+  "manifestIdentity": "sha256-f67b6844c2bffcd347b06d756af6f2b017e333939e52117025258639339e17a5",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -77,7 +77,7 @@
       "executionMode": "headless",
       "outputContract": "jsonl",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -96,7 +96,7 @@
       },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
+        "sha256": "0aba8a8fb2a4dcf3ec6e71fa8a90dfa9bf4340e9d0d8ead246affa7c9d242b99"
       },
       "runtimeArtifacts": [],
       "terminalInputBase64": "AA==",
@@ -113,7 +113,7 @@
       "executionMode": "interactive",
       "outputContract": "semantic-pty",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -132,7 +132,7 @@
       },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
+        "sha256": "0aba8a8fb2a4dcf3ec6e71fa8a90dfa9bf4340e9d0d8ead246affa7c9d242b99"
       },
       "runtimeArtifacts": [],
       "terminalInputBase64": "cnVuCg==",
@@ -157,15 +157,15 @@
       "destinations": ["local-sqlite"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "11a84cfc30b1396e58c0fc95c04d88955d9198075cb31377bee50dd1282d601f"
+        "sha256": "f7790de4c3611c9383799bab0182e1f97617a48a7a0d2b337d26853007ff8b00"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "120adf5211485e9a8af63db214c9be6bfd7681e1abcd2ab5a7af23b2941bc966"
+        "sha256": "3fdb27119aa983bed66af2bb34f8c9292378725bf1229591c053dc3497bb6de1"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "73c120ef164dc77f4801d80f3c05fb4db2bb518b981a385350aa17cfa60950d8"
+        "sha256": "46ae7601ca0e767008fcf760c3c05ff200f4a35c44c221e2cc235c83554f565f"
       },
       "runtimeArtifacts": [
         {
@@ -179,18 +179,10 @@
         {
           "source": {
             "kind": "integration",
-            "path": "gate-mockserver.mjs"
-          },
-          "destination": "gate-mockserver.mjs",
-          "sha256": "497b084d9831fc964c8aa4c1f611095e970497cd55e6ea64780859f1bfb96246"
-        },
-        {
-          "source": {
-            "kind": "integration",
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "9cf29df9daf40920d177b56999aa30c48ff5c616c9f6952ae4d099e048017b2a"
+          "sha256": "25fc45764c02d25fdfe8a070abe1f09324753a9e9d8a0897c358cac2ae496d43"
         },
         {
           "source": {

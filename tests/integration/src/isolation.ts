@@ -1252,10 +1252,7 @@ export const createIsolationPlan = (input: {
     imageTag: `${prefix}:candidate`,
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
-    controlVolumeName:
-      input.scenario.scenarioId === "codex-tui-trace-smoke"
-        ? `${prefix}-control`
-        : null,
+    controlVolumeName: `${prefix}-control`,
     collectorName: `${prefix}-collector`,
     retrievalName: `${prefix}-retrieval`,
     mockServerName: `${prefix}-mockserver`,

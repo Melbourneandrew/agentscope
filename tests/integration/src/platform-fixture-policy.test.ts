@@ -1,5 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 
 // These are deliberately private integration modules, not package APIs.
 // @ts-expect-error no declaration file is published for this private module
@@ -38,6 +41,81 @@ const scenario = {
   scenarioId,
   modelRoutes: ["openai-responses", "anthropic-messages"],
 };
+describe("ordinary upstream observations remain provisional", () => {
+  it("uses unauthenticated upstream readiness and observes exact sent bodies without privileged retrieval", async () => {
+    const source = readFileSync(
+      resolve(import.meta.dirname, "../platform-fixture.mjs"),
+      "utf8",
+    );
+    expect(source).toContain("await observeMockServerCandidateTraffic({");
+    const controlSource = readFileSync(
+      resolve(import.meta.dirname, "../mockserver-control.mjs"),
+      "utf8",
+    );
+    expect(controlSource).toContain(
+      'fetch("http://mockserver:1080/mockserver/ready",',
+    );
+    expect(controlSource).toContain("16 - 4 - 4 - modelRequestCount");
+    expect(source).not.toContain("ACTIVEXPECTATIONS");
+    expect(source).not.toContain("type=REQUESTS");
+    const start = source.indexOf("const runModels = async () => {");
+    const end = source.indexOf("\nconst representative =", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const sent: { url: URL; method: string; body: string; expected: number }[] =
+      [];
+    const run = runInNewContext(`${source.slice(start, end)}; runModels`, {
+      URL,
+      scenario,
+      routeFixture: {
+        routes: routeFixture.routes.map((route) => ({
+          ...route,
+          responseBody: { ok: true },
+        })),
+      },
+      modelEndpoint: "http://mockserver:1080",
+      mockTraffic: [],
+      bootNow: () => 0,
+      bootDeadline: 100,
+      recordMockTraffic: () => undefined,
+      requestJson: (
+        input: string | URL,
+        options: { method?: string; body?: string } = {},
+        expected: number,
+      ) => {
+        sent.push({
+          url: new URL(input),
+          method: options.method ?? "GET",
+          body: options.body ?? "",
+          expected,
+        });
+        return { status: expected, json: () => Promise.resolve({ ok: true }) };
+      },
+    }) as () => Promise<unknown[]>;
+    const observed = await run();
+    expect(observed).toEqual(
+      sent.map(({ url, method, body }) => ({
+        method,
+        path: url.pathname,
+        body,
+      })),
+    );
+    expect(sent.map(({ expected }) => expected)).toEqual([200, 200, 404]);
+    expect(observed).toEqual([
+      {
+        method: "POST",
+        path: "/v1/responses",
+        body: JSON.stringify(routeFixture.routes[0]!.requestBody),
+      },
+      {
+        method: "POST",
+        path: "/v1/messages",
+        body: JSON.stringify(routeFixture.routes[1]!.requestBody),
+      },
+      { method: "GET", path: "/agentscope-unmatched", body: "" },
+    ]);
+  });
+});
 const destinationBodyBytes = Buffer.byteLength(
   JSON.stringify({
     resourceSpans: [

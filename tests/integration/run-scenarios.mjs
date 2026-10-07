@@ -67,6 +67,16 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
 import { codexResearchDependencies } from "./codex-pty-research.mjs";
 import { createCodexFailureResearchRecord } from "./codex-trace-child-diagnostics.mjs";
+import { prepareMockServerService } from "./mockserver-material/prepare-supplier.mjs";
+import {
+  assertMockServerFinalLedger,
+  createMockServerControlMaterial,
+  openMockServerControl,
+  projectMockServerRequests,
+  readMockServerFinalLedger,
+  snapshotMockServerTraffic,
+  verifyMockServerControlBoundary,
+} from "./mockserver-control.mjs";
 import {
   compileImmutableCandidateHandoff,
   decodeInteractiveFailureExitCode,
@@ -198,6 +208,8 @@ const evidenceById = new Map(
   manifest.evidence.map((evidence) => [evidence.evidenceId, evidence]),
 );
 const preparedHarnessMaterials = new Map();
+const mockServerControls = new Map();
+const mockServerBuiltImages = new Map();
 const admissionMaterialRecords = new WeakMap();
 const admissionTerminalRecords = new WeakMap();
 configureRealHarnessAdmissionSources(
@@ -336,11 +348,9 @@ const stageEsmPackageBoundary = (context) => {
 const stageBuildContext = (plan) => {
   const runContexts = resolve(artifactsRoot, "contexts", plan.runId);
   const context = resolve(runContexts, "scenario");
-  const mockServerContext = resolve(runContexts, "mockserver");
   rmSync(runContexts, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
   mkdirSync(resolve(context, "runtime"), { recursive: true });
-  mkdirSync(mockServerContext, { recursive: true });
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
@@ -368,6 +378,8 @@ const stageBuildContext = (plan) => {
       "codex-pty-research.mjs",
       "codex-trace-child-diagnostics.mjs",
       "selected-runtime-files.mjs",
+      "mockserver-control.mjs",
+      "mockserver-final-ledger.mjs",
     ].map((name) => [name, resolve(integrationRoot, name)]),
     [
       "scenario-process.mjs",
@@ -378,25 +390,19 @@ const stageBuildContext = (plan) => {
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
     ],
-    ["dist/canonical.js", resolve(integrationRoot, "dist/canonical.js")],
-    [
+    ...[
+      "dist/canonical.js",
       "dist/interactive-pty-actions.js",
-      resolve(integrationRoot, "dist/interactive-pty-actions.js"),
-    ],
-    [
       "fixtures/substrate-negative-process.mjs",
-      resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
-    ],
-    [
-      "scenario-oracle.mjs",
-      resolve(integrationRoot, scenario.scenarioOracle.path),
-      scenario.scenarioOracle.sha256,
-    ],
-    [
-      "scenario-adapter.mjs",
-      resolve(integrationRoot, scenario.fixtureAdapter.path),
-      scenario.fixtureAdapter.sha256,
-    ],
+    ].map((name) => [name, resolve(integrationRoot, name)]),
+    ...[
+      ["scenario-oracle.mjs", scenario.scenarioOracle],
+      ["scenario-adapter.mjs", scenario.fixtureAdapter],
+    ].map(([name, source]) => [
+      name,
+      resolve(integrationRoot, source.path),
+      source.sha256,
+    ]),
     [
       "testkit/platform-fixture.js",
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
@@ -405,18 +411,11 @@ const stageBuildContext = (plan) => {
       "capability-manifest.json",
       resolve(integrationRoot, "capability-manifest.json"),
     ],
-    [
-      "current-selection.json",
-      resolve(artifactsRoot, "current-selection.json"),
-    ],
-    [
-      "current-model-routes.json",
-      resolve(artifactsRoot, "current-model-routes.json"),
-    ],
-    [
-      "prepared/current-candidate.json",
-      resolve(artifactsRoot, "current-candidate.json"),
-    ],
+    ...[
+      ["current-selection.json", "current-selection.json"],
+      ["current-model-routes.json", "current-model-routes.json"],
+      ["prepared/current-candidate.json", "current-candidate.json"],
+    ].map(([target, name]) => [target, resolve(artifactsRoot, name)]),
   ];
   for (const file of selectedRuntimeFiles) {
     if (sources.some(([destination]) => destination === file)) continue;
@@ -543,7 +542,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs codex-trace-child-diagnostics.mjs selected-runtime-files.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs codex-trace-child-diagnostics.mjs selected-runtime-files.mjs mockserver-control.mjs mockserver-final-ledger.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
@@ -561,55 +560,24 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
-  if (gateCapableMockServer) {
-    const gateSource = resolve(context, "runtime/gate-mockserver.mjs");
-    const gateStatus = lstatSync(gateSource);
-    if (!gateStatus.isFile() || gateStatus.isSymbolicLink())
-      throw new Error("integration.isolation.context");
-    cpSync(gateSource, resolve(mockServerContext, "gate-mockserver.mjs"), {
-      errorOnExist: true,
-      force: false,
-    });
-    writeFileSync(
-      resolve(mockServerContext, "MockServer.Dockerfile"),
-      [
-        "ARG MOCKSERVER_IMAGE",
-        "FROM ${MOCKSERVER_IMAGE}",
-        "WORKDIR /opt/agentscope",
-        "COPY --chmod=0555 gate-mockserver.mjs ./gate-mockserver.mjs",
-        "USER node",
-        'CMD ["node", "/opt/agentscope/gate-mockserver.mjs"]',
-        "",
-      ].join("\n"),
-    );
-  } else {
-    writeFileSync(
-      resolve(mockServerContext, "mockserver-initialization.json"),
-      `${JSON.stringify(
-        scenario.modelRoutes.map((routeId) => {
-          const index = modelRoutes.routeIds.indexOf(routeId);
-          if (
-            index < 0 ||
-            modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
-            modelRoutes.mockServerInitialization[index] === undefined
-          )
-            throw new Error("integration.isolation.context");
-          return modelRoutes.mockServerInitialization[index];
-        }),
-        undefined,
-        2,
-      )}\n`,
-    );
-    writeFileSync(
-      resolve(mockServerContext, "MockServer.Dockerfile"),
-      [
-        "ARG MOCKSERVER_IMAGE",
-        "FROM ${MOCKSERVER_IMAGE}",
-        "COPY mockserver-initialization.json /config/expectations.json",
-        "",
-      ].join("\n"),
-    );
-  }
+  const material = createMockServerControlMaterial(plan.runId);
+  const expectations = Buffer.from(
+    `${JSON.stringify(
+      gateCapableMockServer
+        ? []
+        : scenario.modelRoutes.map((routeId) => {
+            const index = modelRoutes.routeIds.indexOf(routeId);
+            if (
+              index < 0 ||
+              modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+              modelRoutes.mockServerInitialization[index] === undefined
+            )
+              throw new Error("integration.isolation.context");
+            return modelRoutes.mockServerInitialization[index];
+          }),
+    )}\n`,
+  );
+  mockServerControls.set(plan.runId, { material, expectations });
   return Object.freeze({
     context,
     requiresHarnessBuildContextBound: harnessMaterial !== undefined,
@@ -649,8 +617,7 @@ const assertContainer = async (
     ? container.Config.Env
     : [];
   const expectedControlVolume =
-    plan.scenarioId === "codex-tui-trace-smoke" &&
-    (name === plan.scenarioName || name === plan.mockServerName)
+    name === plan.scenarioName || name === plan.mockServerName
       ? controlVolumeIdentities.get(plan.runId)
       : undefined;
   const expectedControlMount =
@@ -789,6 +756,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const fixtureTrafficObservations = new Map();
 const scenarioContainerIdentities = new Map();
 const mockServerContainerIdentities = new Map();
 const controlVolumeIdentities = new Map();
@@ -892,17 +860,21 @@ const captureFixtureResult = (output, plan) => {
   if (resultLine === undefined) return false;
   if (resultLine.length > 1024 * 1024)
     throw new Error("integration.isolation.fixture-result");
+  const decoded = JSON.parse(
+    Buffer.from(
+      resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
+      "base64url",
+    ).toString("utf8"),
+  );
+  const traffic = snapshotMockServerTraffic(
+    decoded.mockServerTraffic,
+    plan.runId,
+  );
+  delete decoded.mockServerTraffic;
+  fixtureTrafficObservations.set(plan.runId, traffic);
   fixtureResults.set(
     plan.runId,
-    sanitizeFixtureResult(
-      JSON.parse(
-        Buffer.from(
-          resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
-          "base64url",
-        ).toString("utf8"),
-      ),
-      plan.scenarioId,
-    ),
+    sanitizeFixtureResult(decoded, plan.scenarioId),
   );
   return true;
 };
@@ -1392,27 +1364,34 @@ const buildImage = async (plan, signal) => {
 };
 const buildMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
-  const mockServerContext = resolve(
-    artifactsRoot,
-    "contexts",
-    plan.runId,
-    "mockserver",
-  );
-  return buildPreparedDockerImage(preparedDockerClient, {
-    buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
-    context: mockServerContext,
-    dockerfile: "MockServer.Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": plan.runId,
+  const control = mockServerControls.get(plan.runId);
+  if (control === undefined) throw new Error("integration.isolation.context");
+  const built = await prepareMockServerService(
+    {
+      dockerClient: preparedDockerClient,
+      privateRoot: capability.binding.privateStorage.root,
+      runId: plan.runId,
+      deadline:
+        performance.now() +
+        remainingIntegrationOperationMilliseconds(
+          Math.min(
+            scenarioTimeoutMilliseconds,
+            IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+          ),
+        ),
+      signal,
     },
-    maximumMilliseconds: Math.min(
-      scenarioTimeoutMilliseconds,
-      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
-    ),
-    signal,
-    tag: plan.mockServerImageTag,
-  });
+    {
+      ...control.material,
+      expectations: control.expectations,
+      tag: plan.mockServerImageTag,
+    },
+  );
+  mockServerBuiltImages.set(
+    plan.runId,
+    built.imageId.replace("sha256-", "sha256:"),
+  );
+  return built.imageId;
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -1473,7 +1452,6 @@ const exactControlVolumePresent = async (name, signal) => {
 const createControlVolume = async (plan, signal) => {
   const name = plan.controlVolumeName;
   if (
-    plan.scenarioId !== "codex-tui-trace-smoke" ||
     name !== `agentscope-int-${plan.runId}-control` ||
     controlVolumeIdentities.has(plan.runId)
   )
@@ -1508,10 +1486,7 @@ const createControlVolume = async (plan, signal) => {
 };
 const assertControlVolumeCurrent = async (plan, signal) => {
   const expected = controlVolumeIdentities.get(plan.runId);
-  if (
-    expected?.name !== plan.controlVolumeName ||
-    plan.scenarioId !== "codex-tui-trace-smoke"
-  )
+  if (expected?.name !== plan.controlVolumeName)
     throw new Error("integration.isolation.control-volume");
   try {
     const current = await inspectControlVolume(expected.name, signal);
@@ -1527,30 +1502,31 @@ const assertControlVolumeCurrent = async (plan, signal) => {
     throw error;
   }
 };
-const startCollector = async (plan, signal) => {
+const startDestinationSidecar = async (plan, signal, mode) => {
+  if (mode !== "ingestion" && mode !== "retrieval")
+    throw new Error("integration.isolation.context");
+  const kind = mode === "ingestion" ? "collector" : "retrieval";
   await dockerWithSignal(
     [
       "create",
       "--platform",
       canonicalImagePlatform,
       "--name",
-      plan.collectorName,
+      plan[`${kind}Name`],
       ...labelArguments(plan),
       "--network",
       plan.networkName,
       "--network-alias",
-      "collector",
+      kind,
       "--read-only",
       "--cap-drop",
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...sidecarResourceArguments(
-        ISOLATION_EXECUTOR_LIMITS.containers.collector,
-      ),
+      ...sidecarResourceArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
       "--user",
       "1000:1000",
-      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.collector),
+      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
       "--env",
       `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
       "--env",
@@ -1558,72 +1534,28 @@ const startCollector = async (plan, signal) => {
       plan.imageTag,
       "node",
       "/opt/agentscope/destination-server.mjs",
-      "ingestion",
+      mode,
     ],
     signal,
     { mutationCapable: true },
   );
   await assertContainer(
     plan,
-    plan.collectorName,
-    ISOLATION_EXECUTOR_LIMITS.containers.collector,
+    plan[`${kind}Name`],
+    ISOLATION_EXECUTOR_LIMITS.containers[kind],
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.collectorName], signal, {
+  await dockerWithSignal(["start", plan[`${kind}Name`]], signal, {
     mutationCapable: true,
   });
 };
-const startRetrieval = async (plan, signal) => {
-  await dockerWithSignal(
-    [
-      "create",
-      "--platform",
-      canonicalImagePlatform,
-      "--name",
-      plan.retrievalName,
-      ...labelArguments(plan),
-      "--network",
-      plan.networkName,
-      "--network-alias",
-      "retrieval",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      ...sidecarResourceArguments(
-        ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
-      ),
-      "--user",
-      "1000:1000",
-      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.retrieval),
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
-      plan.imageTag,
-      "node",
-      "/opt/agentscope/destination-server.mjs",
-      "retrieval",
-    ],
-    signal,
-    { mutationCapable: true },
-  );
-  await assertContainer(
-    plan,
-    plan.retrievalName,
-    ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
-    signal,
-    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
-  );
-  await dockerWithSignal(["start", plan.retrievalName], signal, {
-    mutationCapable: true,
-  });
-};
+const startCollector = (plan, signal) =>
+  startDestinationSidecar(plan, signal, "ingestion");
+const startRetrieval = (plan, signal) =>
+  startDestinationSidecar(plan, signal, "retrieval");
 const startMockServer = async (plan, signal) => {
-  const gateCapable = plan.scenarioId === "codex-tui-trace-smoke";
-  if (gateCapable) await assertControlVolumeCurrent(plan, signal);
+  await assertControlVolumeCurrent(plan, signal);
   await dockerWithSignal(
     [
       "create",
@@ -1641,23 +1573,26 @@ const startMockServer = async (plan, signal) => {
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...(gateCapable
-        ? [
-            "--user",
-            "0:0",
-            "--mount",
-            `type=volume,source=${plan.controlVolumeName},target=/control`,
-          ]
-        : []),
+      "--user",
+      "0:0",
+      "--mount",
+      `type=volume,source=${plan.controlVolumeName},target=/control`,
       ...sidecarResourceArguments(
         ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
       ),
       ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.mockServer, false),
-      "--env",
-      "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
-      "--env",
-      "MOCKSERVER_LOG_LEVEL=WARN",
-      plan.mockServerImageTag,
+      ...[
+        "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
+        "MOCKSERVER_LOG_LEVEL=WARN",
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_REQUIRED=true",
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_JWK_SOURCE=/control/private/control-jwks.json",
+        `MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_EXPECTED_AUDIENCE=agentscope:${plan.runId}`,
+        `MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_MATCHING_CLAIMS=runId=${plan.runId}`,
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_REQUIRED_CLAIMS=runId",
+        "MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK=true",
+        "MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH=/control/private/requests.json",
+      ].flatMap((value) => ["--env", value]),
+      mockServerBuiltImages.get(plan.runId),
     ],
     signal,
     { mutationCapable: true },
@@ -1671,11 +1606,27 @@ const startMockServer = async (plan, signal) => {
   await dockerWithSignal(["start", plan.mockServerName], signal, {
     mutationCapable: true,
   });
+  const inspected = JSON.parse(
+    (await dockerWithSignal(["container", "inspect", containerId], signal))
+      .stdout,
+  );
+  const server =
+    Array.isArray(inspected) && inspected.length === 1
+      ? inspected[0]
+      : undefined;
+  if (server?.Image !== mockServerBuiltImages.get(plan.runId))
+    throw new Error("integration.isolation.mockserver-image");
+  const network = server.NetworkSettings?.Networks?.[plan.networkName];
+  if (
+    !/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(network?.IPAddress ?? "") ||
+    Object.keys(server.NetworkSettings.Networks).length !== 1
+  )
+    throw new Error("integration.isolation.mockserver-network");
+  mockServerControls.get(plan.runId).host = network.IPAddress;
   mockServerContainerIdentities.set(plan.runId, containerId);
 };
 // eslint-disable-next-line complexity -- exact closed container terminal witness
 const joinMockServer = async (plan, signal) => {
-  if (plan.scenarioId !== "codex-tui-trace-smoke") return;
   const containerId = mockServerContainerIdentities.get(plan.runId);
   const deadline = mockServerJoinDeadlines.get(plan.runId);
   if (!/^[a-f0-9]{64}$/u.test(containerId ?? "") || !Number.isFinite(deadline))
@@ -1684,6 +1635,18 @@ const joinMockServer = async (plan, signal) => {
   if (remaining <= 0)
     throw new Error("integration.isolation.mockserver-terminal");
   const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+  await assertControlVolumeCurrent(plan, joinSignal);
+  const authority = mockServerControls.get(plan.runId);
+  const control = openMockServerControl({
+    runId: plan.runId,
+    host: authority?.host,
+    deadline,
+    now: linuxBootMonotonicMilliseconds,
+    material: authority?.material,
+  });
+  await verifyMockServerControlBoundary(control);
+  if ((await control.stop()).status !== 200)
+    throw new Error("integration.isolation.mockserver-terminal");
   const waited = await dockerWithSignal(
     ["container", "wait", containerId],
     joinSignal,
@@ -1725,6 +1688,46 @@ const joinMockServer = async (plan, signal) => {
     )
   )
     throw new Error("integration.isolation.mockserver-terminal");
+  const ledgerDirectory = resolve(
+    artifactsRoot,
+    "contexts",
+    plan.runId,
+    "final-ledger",
+  );
+  mkdirSync(ledgerDirectory, { mode: 0o700 });
+  for (const name of ["requests.json", "requests.complete"])
+    await dockerWithSignal(
+      [
+        "cp",
+        `${containerId}:/control/private/${name}`,
+        resolve(ledgerDirectory, name),
+      ],
+      joinSignal,
+      { terminal: true, mutationCapable: true },
+    );
+  const ledger = projectMockServerRequests(
+    readMockServerFinalLedger({
+      directory: ledgerDirectory,
+      deadline,
+      now: linuxBootMonotonicMilliseconds,
+    }),
+  );
+  assertMockServerFinalLedger(
+    ledger,
+    fixtureResults.get(plan.runId),
+    modelRoutes,
+    manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId),
+    {
+      traffic: {
+        runId: plan.runId,
+        entries: [
+          ...(fixtureTrafficObservations.get(plan.runId)?.entries ?? []),
+          ...control.snapshot().entries,
+        ],
+      },
+      runId: plan.runId,
+    },
+  );
 };
 const createScenarioContainer = async (
   plan,
@@ -1760,36 +1763,23 @@ const createScenarioContainer = async (
             "--mount",
             `type=volume,source=${plan.controlVolumeName},target=/control`,
           ]),
-      "--env",
-      `HOME=${SCENARIO_HOME}`,
-      "--env",
-      "XDG_CONFIG_HOME=/harness-home",
-      "--env",
-      "HARNESS_HOME=/harness-home",
-      "--env",
-      "AGENTSCOPE_HOME=/agentscope-home",
-      "--env",
-      "AGENTSCOPE_WORKTREE=/worktree",
-      "--env",
-      "AGENTSCOPE_LEDGER=/ledger",
-      "--env",
-      "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
-      "--env",
-      "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_INGESTION_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
-      "--env",
-      "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
-      "--env",
-      `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
-      "--env",
-      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ...[
+        `HOME=${SCENARIO_HOME}`,
+        "XDG_CONFIG_HOME=/harness-home",
+        "HARNESS_HOME=/harness-home",
+        "AGENTSCOPE_HOME=/agentscope-home",
+        "AGENTSCOPE_WORKTREE=/worktree",
+        "AGENTSCOPE_LEDGER=/ledger",
+        "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
+        "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
+        "AGENTSCOPE_INGESTION_URL=http://collector:4318",
+        "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
+        "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
+        `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+        `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
+        `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
+        `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ].flatMap((value) => ["--env", value]),
       ...testModeArguments,
       ...certificationArguments,
       plan.imageTag,
@@ -2794,7 +2784,10 @@ try {
         finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
       );
       publishControllerFailureManifest(identities);
-      for (const plan of plans) fixtureResults.delete(plan.runId);
+      for (const plan of plans) {
+        fixtureResults.delete(plan.runId);
+        fixtureTrafficObservations.delete(plan.runId);
+      }
     } catch {
       // The original controller failure remains primary. The workflow's
       // always-run exact verifier independently fails if evidence is absent.

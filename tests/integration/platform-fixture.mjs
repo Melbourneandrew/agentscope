@@ -8,6 +8,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  observeMockServerCandidateTraffic,
+  mockServerTrafficRow,
+  snapshotMockServerTraffic,
+  readMockServerBootClock,
+} from "./mockserver-control.mjs";
 
 import { FIXTURE_LIFECYCLE_PHASES } from "./testkit/platform-fixture.js";
 import {
@@ -43,6 +49,19 @@ const harnessHome = required("HARNESS_HOME");
 const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
 const ledgerHome = required("AGENTSCOPE_LEDGER");
+const integrationRunId = required("AGENTSCOPE_INTEGRATION_RUN_ID");
+const mockTraffic = [];
+const bootDeadline = Number(required("AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS"));
+const bootNow = readMockServerBootClock;
+const recordMockTraffic = (method, path, role, status, body = "") => {
+  if (
+    !Number.isFinite(bootDeadline) ||
+    bootNow() >= bootDeadline ||
+    mockTraffic.length >= 12
+  )
+    throw new Error("integration.fixture.service");
+  mockTraffic.push(mockServerTrafficRow(method, path, role, status, body));
+};
 const routeFixture = JSON.parse(
   readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
 );
@@ -133,8 +152,21 @@ let partial = {
     retrieval: [],
   },
 };
+const trafficEvidence = (evidence) => ({
+  ...evidence,
+  mockServerTraffic: snapshotMockServerTraffic(
+    { runId: integrationRunId, entries: mockTraffic },
+    integrationRunId,
+  ),
+});
+const writeStdout = (value) =>
+  new Promise((resolve, reject) => {
+    process.stdout.write(value, (error) =>
+      error === undefined || error === null ? resolve() : reject(error),
+    );
+  });
 const emitEvidence = (resultStatus) => {
-  const evidence = {
+  const evidence = trafficEvidence({
     evidenceVersion: 1,
     resultStatus,
     scenarioId,
@@ -142,7 +174,7 @@ const emitEvidence = (resultStatus) => {
     lifecycle: [...observedLifecycle],
     certificationReadiness,
     ...partial,
-  };
+  });
   if (!interactive)
     console.log(
       `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
@@ -152,20 +184,12 @@ const emitEvidence = (resultStatus) => {
 emitEvidence("partial");
 if (substrateCertificationCase === "false-success") {
   if (interactive) throw new Error("integration.fixture.execution-mode");
-  await new Promise((resolve, reject) => {
-    process.stdout.write("", (error) =>
-      error === undefined || error === null ? resolve() : reject(error),
-    );
-  });
+  await writeStdout("");
   process.exit(0);
 }
 if (substrateCertificationCase === "unbounded-output") {
   if (interactive) throw new Error("integration.fixture.execution-mode");
-  await new Promise((resolve, reject) => {
-    process.stdout.write("X".repeat(1024 * 1024 + 1), (error) =>
-      error === undefined || error === null ? resolve() : reject(error),
-    );
-  });
+  await writeStdout("X".repeat(1024 * 1024 + 1));
   process.exit(0);
 }
 const recordLifecycle = (phase, publish = true) => {
@@ -205,12 +229,16 @@ const waitFor = async (url, options) => {
 
 for (const path of [harnessHome, agentscopeHome, worktree, ledgerHome])
   mkdirSync(path, { recursive: true });
+// Reserve four final controller requests, four candidate denials and every model
+// row BEFORE readiness. A transport-uncertain attempt is failure, never a retry.
+mockTraffic.push(
+  ...(await observeMockServerCandidateTraffic({
+    runId: integrationRunId,
+    modelRequestCount: scenario.modelRoutes.length + 1,
+    deadline: bootDeadline,
+  })),
+);
 await Promise.all([
-  waitFor(`${modelEndpoint}/mockserver/retrieve?type=ACTIVE_EXPECTATIONS`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }),
   waitFor(`${ingestionEndpoint}/health`),
   waitFor(`${retrievalEndpoint}/health`),
 ]);
@@ -227,6 +255,9 @@ if (substrateCertificationCase !== "missing-hook") {
 // This test-family module owns stimuli and expected results. The scenario
 // adapter below receives only native observations and cannot author a pass.
 const runModels = async () => {
+  const observations = [];
+  if (scenario.modelRoutes.length > 15)
+    throw new Error("integration.fixture.model-route");
   for (const routeId of scenario.modelRoutes) {
     const route = routeFixture.routes.find(
       (candidate) => candidate.routeId === routeId,
@@ -235,12 +266,15 @@ const runModels = async () => {
     const url = new URL(route.path, modelEndpoint);
     for (const [name, value] of Object.entries(route.query ?? {}))
       url.searchParams.set(name, value);
+    const body = JSON.stringify(route.requestBody);
+    if (mockTraffic.length >= 12 || bootNow() >= bootDeadline)
+      throw new Error("integration.fixture.service");
     const response = await requestJson(
       url,
       {
         method: route.method,
         headers: route.headers,
-        body: JSON.stringify(route.requestBody),
+        body,
       },
       200,
     );
@@ -249,17 +283,24 @@ const runModels = async () => {
       JSON.stringify(route.responseBody)
     )
       throw new Error("integration.fixture.model-response");
+    recordMockTraffic(
+      route.method,
+      url.pathname,
+      "data-plane",
+      response.status,
+      body,
+    );
+    observations.push({ method: route.method, path: url.pathname, body });
   }
+  if (mockTraffic.length >= 12 || bootNow() >= bootDeadline)
+    throw new Error("integration.fixture.service");
   await requestJson(`${modelEndpoint}/agentscope-unmatched`, {}, 404);
-  return requestJson(
-    `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    },
-    200,
-  ).then((response) => response.json());
+  recordMockTraffic("GET", "/agentscope-unmatched", "data-plane", 404);
+  observations.push({ method: "GET", path: "/agentscope-unmatched", body: "" });
+  // Client-side native observations are provisional, not server ledger authority.
+  // The outer controller independently binds every final upstream wire request
+  // after stop/join before this fixture's result can become accepted evidence.
+  return observations;
 };
 
 const representative = PROCESS_FIXTURE_STIMULUS.representative;
@@ -267,6 +308,7 @@ const authHeaders = Object.freeze({
   authorization: "Bearer DUMMY_DESTINATION_KEY",
   "content-type": "application/json",
 });
+const postOptions = (headers, body) => ({ method: "POST", headers, body });
 const runExports = async () => {
   const body = JSON.stringify({
     resourceSpans: [{ scopeSpans: [{ spans: [representative] }] }],
@@ -274,7 +316,7 @@ const runExports = async () => {
   for (const path of ["/v1/traces", "/api/public/ingestion"])
     await requestJson(
       `${ingestionEndpoint}${path}`,
-      { method: "POST", headers: authHeaders, body },
+      postOptions(authHeaders, body),
       202,
     );
   for (const [fault, expectedStatus] of [
@@ -289,7 +331,7 @@ const runExports = async () => {
         : { ...authHeaders, "x-agentscope-fault": fault };
     const response = await requestJson(
       `${ingestionEndpoint}/v1/traces`,
-      { method: "POST", headers, body },
+      postOptions(headers, body),
       expectedStatus,
     );
     if (fault === "malformed") {
@@ -303,36 +345,27 @@ const runExports = async () => {
   }
   await requestJson(
     `${ingestionEndpoint}/v1/traces`,
-    { method: "POST", headers: authHeaders, body: "x".repeat(1024 * 1024 + 1) },
+    postOptions(authHeaders, "x".repeat(1024 * 1024 + 1)),
     413,
   );
-  return Promise.all([
-    requestJson(`${ingestionEndpoint}/ledger`, {}, 200).then((response) =>
-      response.json(),
+  return Promise.all(
+    ["/ledger", "/observations"].map((path) =>
+      requestJson(`${ingestionEndpoint}${path}`, {}, 200).then((response) =>
+        response.json(),
+      ),
     ),
-    requestJson(`${ingestionEndpoint}/observations`, {}, 200).then((response) =>
-      response.json(),
-    ),
-  ]);
+  );
 };
 
 const runRetrieval = async () => {
   await requestJson(
     `${retrievalEndpoint}/seed`,
-    {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify(representative),
-    },
+    postOptions(authHeaders, JSON.stringify(representative)),
     201,
   );
   const search = await requestJson(
     `${retrievalEndpoint}/search`,
-    {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify({ branch: "main" }),
-    },
+    postOptions(authHeaders, JSON.stringify({ branch: "main" })),
     200,
   );
   if ((await search.json()).traces?.[0]?.traceId !== representative.traceId)
@@ -346,11 +379,7 @@ const runRetrieval = async () => {
     throw new Error("integration.fixture.get");
   await requestJson(
     `${retrievalEndpoint}/search`,
-    {
-      method: "POST",
-      headers: { ...authHeaders, "x-agentscope-fault": "unavailable" },
-      body: "{}",
-    },
+    postOptions({ ...authHeaders, "x-agentscope-fault": "unavailable" }, "{}"),
     503,
   );
   return requestJson(`${retrievalEndpoint}/ledger`, {}, 200).then((response) =>
@@ -451,9 +480,9 @@ writeFileSync(
   join(ledgerHome, "fixture-lifecycle.json"),
   `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
 );
-const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
-  "base64url",
-);
+const encodedEvidence = Buffer.from(
+  JSON.stringify(trafficEvidence(evidence)),
+).toString("base64url");
 writeFileSync(
   join(ledgerHome, "fixture-result.json"),
   `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
@@ -461,11 +490,7 @@ writeFileSync(
 );
 if (interactive) {
   interactiveFailurePhase = "completion";
-  await new Promise((resolve, reject) => {
-    process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n", (error) =>
-      error === undefined || error === null ? resolve() : reject(error),
-    );
-  });
+  await writeStdout("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n");
   process.stdin.destroy();
   process.exit(0);
 } else console.log(`AGENTSCOPE_FIXTURE_RESULT=${encodedEvidence}`);

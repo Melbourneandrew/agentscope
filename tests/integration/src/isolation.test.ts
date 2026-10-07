@@ -75,7 +75,13 @@ const planFor = (
       candidate.executionMode === executionMode &&
       candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
-  return createIsolationPlan({
+  return planForScenario(scenario, token);
+};
+const planForScenario = (
+  scenario: (typeof manifest.scenarios)[number],
+  token: string,
+) =>
+  createIsolationPlan({
     scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
@@ -92,7 +98,6 @@ const planFor = (
     maximumParallelScenarios: 2,
     scenarioTimeoutMilliseconds: 300_000,
   });
-};
 
 const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   policyVersion: 1,
@@ -864,33 +869,16 @@ describe("scenario isolation", () => {
     expect(() => planFor("not-a-token")).toThrow("integration.isolation.plan");
   });
 
-  it("reserves a control volume only for the real Codex gate scenario", () => {
+  it("reserves a private control volume for every upstream service consumer", () => {
     const ordinary = planFor("0123456789abcdef");
     const scenario = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
     if (scenario === undefined) throw new Error("integration.test.scenario");
-    const codex = createIsolationPlan({
-      scenario,
-      manifestIdentity: manifest.manifestIdentity,
-      candidate,
-      runToken: "0123456789abcdef",
-      baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
-      mockServerImageIdentity: preparedIdentityFor(
-        scenario.mockServerImage,
-        "b",
-      ),
-      selection: {
-        selectionVersion: 2,
-        manifestIdentity: manifest.manifestIdentity,
-        mode: "scenario",
-        selector: { scenarioId: scenario.scenarioId },
-        scenarioIds: [scenario.scenarioId],
-      },
-      maximumParallelScenarios: 2,
-      scenarioTimeoutMilliseconds: 300_000,
-    });
-    expect(ordinary.controlVolumeName).toBeNull();
+    const codex = planForScenario(scenario, "0123456789abcdef");
+    expect(ordinary.controlVolumeName).toBe(
+      "agentscope-int-0123456789abcdef-control",
+    );
     expect(codex.controlVolumeName).toBe(
       "agentscope-int-0123456789abcdef-control",
     );
@@ -923,6 +911,7 @@ describe("scenario isolation", () => {
       "build",
       "build-mockserver",
       "network",
+      "control-volume",
       "collector",
       "retrieval",
       "mockserver",
@@ -933,6 +922,7 @@ describe("scenario isolation", () => {
       "container:agentscope-int-0123456789abcdef-retrieval",
       "container:agentscope-int-0123456789abcdef-mockserver",
       "remove-network:agentscope-int-0123456789abcdef-network",
+      "remove-control-volume:agentscope-int-0123456789abcdef-control",
       "image:agentscope-int-0123456789abcdef:candidate",
       "image:agentscope-int-0123456789abcdef:mockserver",
       "context:0123456789abcdef",
