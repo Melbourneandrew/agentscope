@@ -169,7 +169,10 @@ await build({
       JSON.stringify(coordinatorProgram),
   },
   entryPoints: [new URL("src/bin/agentscope.ts", import.meta.url).pathname],
-  external: ["../internal/agentscope-product-harness-installation.js"],
+  external: [
+    "../internal/agentscope-product-harness-installation.js",
+    "../internal/directory-runtime/loader/owned-loader.mjs",
+  ],
   format: "esm",
   minify: false,
   outfile: `${packageRoot}dist/bin/agentscope.js`,

@@ -10,14 +10,12 @@ import { verifyDirectoryArtifact } from "../../../packages/harnesses/core/native
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 export const relocateDirectoryLoader = (source) => {
-  const original =
-    'const ownedLoaderPath = "./directory-runtime/loader/owned-loader.mjs";';
+  const original = 'import("./directory-runtime/loader/owned-loader.mjs")';
   assert.equal(typeof source, "string");
   assert.equal(source.split(original).length, 2);
-  assert.equal(source.split("await import(ownedLoaderPath)").length, 2);
   return source.replace(
     original,
-    'const ownedLoaderPath = "../internal/directory-runtime/loader/owned-loader.mjs";',
+    'import("../internal/directory-runtime/loader/owned-loader.mjs")',
   );
 };
 

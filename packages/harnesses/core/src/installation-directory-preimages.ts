@@ -47,8 +47,8 @@ const nativeObservation = async (
   // initialization. File-only plans do not require a directory native tuple.
   // The compiler-free build supplies this exact runtime asset after TS emit;
   // retain only this fixed specifier, and validate the unknown export below.
-  const ownedLoaderPath = "./directory-runtime/loader/owned-loader.mjs";
-  const module: unknown = await import(ownedLoaderPath);
+  const module: unknown =
+    await import("./directory-runtime/loader/owned-loader.mjs");
   // This namespace comes only from the fixed artifact-bound module import, not
   // caller/native DTO data. Read its own data export without invoking getters.
   const load: unknown = Object.getOwnPropertyDescriptor(

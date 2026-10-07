@@ -117,9 +117,8 @@ describe("fixed public-bin directory loader relocation", () => {
     ) + "\n;relocateDirectoryLoader;",
     { assert },
   ) as (source: string) => string;
-  const declaration =
-    'const ownedLoaderPath = "./directory-runtime/loader/owned-loader.mjs";';
-  const input = `${declaration}\nconst module = await import(ownedLoaderPath);`;
+  const expression = 'import("./directory-runtime/loader/owned-loader.mjs")';
+  const input = `const module = await ${expression};`;
   it("relocates only the one fixed specifier beside the single copied closure", () => {
     const output = relocate(input);
     expect(output).toBe(
@@ -142,12 +141,12 @@ describe("fixed public-bin directory loader relocation", () => {
     (kind) => {
       const value =
         kind === "missing"
-          ? input.replace(declaration, "")
+          ? input.replace(expression, "undefined")
           : kind === "repeated"
-            ? `${input}\n${declaration}`
+            ? `${input}\n${expression}`
             : kind === "wrong"
               ? input.replace("./directory-runtime", "./other-runtime")
-              : declaration;
+              : 'const module = "./directory-runtime/loader/owned-loader.mjs";';
       expect(() => relocate(value)).toThrow();
     },
   );

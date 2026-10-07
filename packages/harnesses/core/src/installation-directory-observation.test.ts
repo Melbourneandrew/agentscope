@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as directoryPreimages from "./installation-directory-preimages.js";
 
 const roots: string[] = [];
-// Vite's source-root URL for the fixed runtime-only asset (absent until emit).
+// Vite normalizes the exact relative import to this source-root virtual URL.
+// The compiler-free runtime asset is intentionally absent from the source tree.
 const loaderPath = "/src/directory-runtime/loader/owned-loader.mjs";
 const fixture = async () => {
   const root = await realpath(
@@ -43,7 +44,8 @@ describe("fixed loader namespace and untrusted native data", () => {
     const load = vi.fn(() => ({ observeDirectory: observe }));
     vi.stubGlobal("__AGENTSCOPE_DIRECTORY_MANIFEST_SHA256__", "a".repeat(64));
     vi.doMock(loaderPath, () => ({ loadDirectoryPrimitive: load }));
-    const namespace: unknown = await import(loaderPath);
+    const namespace: unknown =
+      await import("./directory-runtime/loader/owned-loader.mjs");
     expect(
       Object.getOwnPropertyDescriptor(namespace, "loadDirectoryPrimitive")
         ?.value,
@@ -99,7 +101,8 @@ describe("fixed loader namespace and untrusted native data", () => {
       const loadExpected = !["missing", "nonfunction", "getter"].includes(kind);
       if (loadExpected) exports.loadDirectoryPrimitive = load;
       vi.doMock(loaderPath, () => exports);
-      const namespace: unknown = await import(loaderPath);
+      const namespace: unknown =
+        await import("./directory-runtime/loader/owned-loader.mjs");
       const descriptor = Object.getOwnPropertyDescriptor(
         namespace,
         "loadDirectoryPrimitive",
