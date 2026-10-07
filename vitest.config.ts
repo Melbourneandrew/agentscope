@@ -31,7 +31,13 @@ export default defineConfig({
       "src/**/__tests__/**/*.{ts,tsx}",
       "scripts/__tests__/**/*.test.mjs",
     ],
-    exclude: ["**/dist/**", "**/node_modules/**"],
+    exclude: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "src/__tests__/claude-plugin-context-fixture.ts",
+      "src/__tests__/product-harness-fixture.ts",
+      "src/__tests__/product-installation-fixture.ts",
+    ],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
