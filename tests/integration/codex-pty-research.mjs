@@ -1,3 +1,141 @@
+// This observer retains only the first fixed seal failure. It neither settles
+// a request nor changes its signal, socket, error, or deadline authority.
+export const createCodexModelControlRequest = ({
+  httpRequest,
+  agent,
+  headers,
+  socketPath,
+  deadline,
+  gateCutoff,
+  now,
+  observe,
+}) => {
+  let firstFailure;
+  return (path, method, value, signal) => {
+    const record = (hint) => {
+      if (path !== "/seal" || firstFailure !== undefined) return;
+      firstFailure = hint;
+      try {
+        observe?.(hint);
+      } catch {
+        /* Research cannot replace failure. */
+      }
+    };
+    const operationDeadline =
+      path === "/seal" || path === "/deny"
+        ? deadline()
+        : (gateCutoff() ?? deadline());
+    const operationRemaining = Math.floor(operationDeadline - now());
+    if (operationRemaining <= 0) {
+      record("seal-deadline");
+      throw new Error("integration.codex.model-gate-deadline");
+    }
+    const boundedSignal = AbortSignal.timeout(operationRemaining);
+    const selectedSignal =
+      signal === undefined
+        ? boundedSignal
+        : AbortSignal.any([signal, boundedSignal]);
+    return new Promise((resolve, reject) => {
+      const body = value === undefined ? undefined : JSON.stringify(value);
+      const request = httpRequest(
+        {
+          agent,
+          headers:
+            body === undefined
+              ? headers
+              : { ...headers, "content-length": Buffer.byteLength(body) },
+          method,
+          path,
+          signal: selectedSignal,
+          socketPath,
+        },
+        (response) => {
+          const chunks = [];
+          let bytes = 0;
+          response.once("aborted", () => record("seal-response-aborted"));
+          response.on("data", (chunk) => {
+            bytes += chunk.length;
+            if (bytes > 64 * 1024) {
+              record("seal-response-limit");
+              request.destroy();
+            } else chunks.push(Buffer.from(chunk));
+          });
+          response.once("end", () => {
+            try {
+              if (response.statusCode !== 200) {
+                record("seal-http-status");
+                throw new Error("integration.codex.model-gate");
+              }
+              const decoded = JSON.parse(
+                new TextDecoder("utf-8", { fatal: true }).decode(
+                  Buffer.concat(chunks, bytes),
+                ),
+              );
+              resolve(decoded);
+            } catch {
+              record("seal-response-decode");
+              reject(new Error("integration.codex.model-gate"));
+            }
+          });
+        },
+      );
+      request.once("error", () => {
+        record(
+          selectedSignal.aborted ? "seal-signal-aborted" : "seal-transport",
+        );
+        reject(new Error("integration.codex.model-gate"));
+      });
+      request.end(body);
+    });
+  };
+};
+
+export const codexGateResearchHints = Object.freeze([
+  "arm-log-unavailable",
+  "arm-log-invalid",
+  "arm-hook-unseen",
+  "arm-hook-open",
+  "arm-hook-completed",
+  "arm-deadline",
+  "arm-clock",
+  "arm-phase",
+  "arm-hook-log",
+  "arm-hook-lifecycle",
+  "arm-hook-mediation",
+  "arm-session-missing",
+  "arm-control",
+  "arm-child",
+  "arm-filesystem",
+  "arm-other",
+  "seal-deadline",
+  "seal-request",
+  "response-shape",
+  "receipt-shape",
+  "cutoff-unsettled",
+  "state",
+  "connection-count",
+  "connection-shape",
+  "admission",
+  "connection-open",
+  "generation",
+  "parser-outcome",
+  "parser-open",
+  "raw-rejected",
+  "transport-bytes",
+  "ledger-count",
+  "parser-failures",
+  "mutation-generation",
+  "identity",
+  "ledger-shape",
+  "other",
+  "seal-transport",
+  "seal-signal-aborted",
+  "seal-http-status",
+  "seal-response-decode",
+  "seal-response-limit",
+  "seal-response-aborted",
+]);
+
 const reconciliationHints = Object.freeze({
   authority: "arm-pty-authority",
   observer: "arm-pty-observer",

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import {
+  codexGateResearchHints,
   codexPtyResearchHints,
   validUntrustedCodexPtyReceipt,
 } from "./codex-pty-research.mjs";
@@ -857,45 +858,7 @@ export const extractUntrustedCodexConfigHint = (output) => {
   return stage;
 };
 
-export const codexGateResearchHints = Object.freeze([
-  "arm-log-unavailable",
-  "arm-log-invalid",
-  "arm-hook-unseen",
-  "arm-hook-open",
-  "arm-hook-completed",
-  "arm-deadline",
-  "arm-clock",
-  "arm-phase",
-  "arm-hook-log",
-  "arm-hook-lifecycle",
-  "arm-hook-mediation",
-  "arm-session-missing",
-  "arm-control",
-  "arm-child",
-  "arm-filesystem",
-  "arm-other",
-  "seal-deadline",
-  "seal-request",
-  "response-shape",
-  "receipt-shape",
-  "cutoff-unsettled",
-  "state",
-  "connection-count",
-  "connection-shape",
-  "admission",
-  "connection-open",
-  "generation",
-  "parser-outcome",
-  "parser-open",
-  "raw-rejected",
-  "transport-bytes",
-  "ledger-count",
-  "parser-failures",
-  "mutation-generation",
-  "identity",
-  "ledger-shape",
-  "other",
-]);
+export { codexGateResearchHints } from "./codex-pty-research.mjs";
 
 export {
   codexArmPtyResearchHint,

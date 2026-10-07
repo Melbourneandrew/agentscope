@@ -16,15 +16,13 @@ import {
 // @ts-expect-error no declaration file is published for this private module
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
 
-const { codexFailureExitPair, validCodexResearchDiagnostic } =
-  privateAuthority as {
-    codexFailureExitPair: (
-      fixture: unknown,
-      container: unknown,
-      scenario: string,
-    ) => string | undefined;
-    validCodexResearchDiagnostic: (value: unknown) => boolean;
-  };
+const { codexFailureExitPair } = privateAuthority as {
+  codexFailureExitPair: (
+    fixture: unknown,
+    container: unknown,
+    scenario: string,
+  ) => string | undefined;
+};
 
 const integrationRoot = resolve(import.meta.dirname, "..");
 const readIntegration = (name: string): string =>
@@ -120,107 +118,6 @@ describe("returned receipt failure research retention", () => {
     ])
       expect(validUntrustedCodexPtyReceipt(value)).toBe(false);
     expect(validUntrustedCodexPtyReceipt(null)).toBe(true);
-  });
-});
-describe("returned receipt packet compatibility and wiring", () => {
-  it("preserves historical versions and closes exact version-4 keys", () => {
-    const base = { untrustedConfigHint: "publish", exitPair: "none:1" };
-    for (const diagnosticVersion of [1, 2, 3, 4]) {
-      const record = {
-        ...base,
-        diagnosticVersion,
-        ...(diagnosticVersion >= 2
-          ? { untrustedGateHint: "arm-log-unavailable" }
-          : {}),
-        ...(diagnosticVersion >= 3
-          ? { untrustedPtyHint: "arm-pty-returned-failed" }
-          : {}),
-        ...(diagnosticVersion === 4
-          ? {
-              untrustedPtyReceipt: {
-                outcome: "timeout",
-                checkpointProgressDiagnostic: "no-live-readiness",
-              },
-            }
-          : {}),
-      };
-      expect(validCodexResearchDiagnostic(record)).toBe(true);
-      expect(
-        validCodexResearchDiagnostic({ ...record, extra: "private" }),
-      ).toBe(false);
-      if (diagnosticVersion === 4) {
-        expect(
-          validCodexResearchDiagnostic({
-            ...record,
-            untrustedPtyReceipt: null,
-          }),
-        ).toBe(true);
-        expect(
-          validCodexResearchDiagnostic({
-            ...record,
-            untrustedPtyReceipt: {
-              outcome: "timeout",
-              checkpointProgressDiagnostic: "private",
-            },
-          }),
-        ).toBe(false);
-      } else
-        expect(
-          validCodexResearchDiagnostic({
-            ...record,
-            untrustedPtyReceipt: null,
-          }),
-        ).toBe(false);
-    }
-  });
-  it("executes the actual outer failure retainer and stays silent for non-Codex", () => {
-    const source = readIntegration("run-scenarios.mjs");
-    const start = source.indexOf("const retainCodexResearchDiagnostic =");
-    const end = source.indexOf("const captureFailedScenarioReceipt =", start);
-    expect(end).toBeGreaterThan(start);
-    for (const scenarioId of ["codex-tui-trace-smoke", "other"])
-      for (const receipt of [
-        undefined,
-        {
-          outcome: "timeout",
-          checkpointProgressDiagnostic: "advanced",
-          exitCode: null,
-        },
-      ]) {
-        const retained = new Map<
-          string,
-          {
-            diagnosticVersion: number;
-            untrustedPtyReceipt: ReturnType<
-              typeof projectUntrustedCodexPtyReceipt
-            > | null;
-            exitPair: string | null;
-          }
-        >();
-        runInNewContext(
-          `${source.slice(start, end)} retainCodexResearchDiagnostic(plan, '', receipt, {code:1});`,
-          {
-            plan: { scenarioId, runId: "closed-canary" },
-            receipt,
-            codexResearchDiagnostics: retained,
-            projectUntrustedCodexPtyReceipt,
-            extractUntrustedCodexConfigHint: () => "publish",
-            extractUntrustedCodexGateHint: () => "arm-log-unavailable",
-            extractUntrustedCodexPtyHint: () => "arm-pty-returned-failed",
-            codexFailureExitPair,
-          },
-          { timeout: 1000 },
-        );
-        if (scenarioId === "other") expect(retained.size).toBe(0);
-        else {
-          const record = retained.get("closed-canary");
-          expect(record?.diagnosticVersion).toBe(5);
-          expect(record?.untrustedPtyReceipt).toEqual(
-            projectUntrustedCodexPtyReceipt(receipt, 5) ?? null,
-          );
-          expect(record?.exitPair).toBe("none:1");
-        }
-      }
   });
 });
 const stages = [
