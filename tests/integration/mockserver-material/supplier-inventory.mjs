@@ -39,13 +39,15 @@ const regular = (status) =>
   Number.isSafeInteger(status.size) &&
   status.size >= 0 &&
   status.size <= maximumFileBytes;
-const directory = (path) => {
+const directory = (path, archivedSource = false) => {
   const status = lstatSync(path);
   if (
     !status.isDirectory() ||
     status.isSymbolicLink() ||
     status.uid !== process.getuid?.() ||
-    ![0o700, 0o755].includes(status.mode & 0o7777)
+    !(archivedSource
+      ? (status.mode & 0o7777) === 0o775
+      : [0o700, 0o755].includes(status.mode & 0o7777))
   )
     fail();
   return status;
@@ -151,7 +153,11 @@ export const inventoryMockServerSupplier = (root) => {
   // Check every ancestor; O_NOFOLLOW alone would not protect intermediate links.
   const parts = artifact.split("/");
   for (let index = 1; index < parts.length; index += 1)
-    directory(resolve(root, ...parts.slice(0, index)));
+    directory(
+      resolve(root, ...parts.slice(0, index)),
+      // Only these two fixed source ancestors inherit the pinned TAR's mode.
+      index === 2 || index === 3,
+    );
   const jar = {
     path: artifact,
     type: "file",

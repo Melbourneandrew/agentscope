@@ -29,6 +29,11 @@ const fixture = () => {
     "source/mockserver/mockserver-netty/target",
   ])
     mkdirSync(resolve(root, path), { recursive: true, mode: 0o700 });
+  for (const path of [
+    "source/mockserver",
+    "source/mockserver/mockserver-netty",
+  ])
+    chmodSync(resolve(root, path), 0o775);
   writeFileSync(resolve(root, jar), "synthetic-jar", { mode: 0o644 });
   writeFileSync(
     resolve(root, "maven-repository/org/example/a.jar"),
@@ -103,6 +108,31 @@ describe("supplier cache/JAR observations (not dependency authentication)", () =
         "supplier-inventory",
       );
     }
+  });
+  it.each(["source/mockserver", "source/mockserver/mockserver-netty"])(
+    "requires the pinned source directory mode only at %s",
+    (path) => {
+      for (const mode of [0o700, 0o755, 0o777, 0o2775]) {
+        const root = fixture();
+        chmodSync(resolve(root, path), mode);
+        expect(() => inventoryMockServerSupplier(root)).toThrow(
+          "supplier-inventory",
+        );
+      }
+    },
+  );
+  it.each([
+    ".",
+    "source",
+    "source/mockserver/mockserver-netty/target",
+    "maven-repository",
+    "npm-cache",
+  ])("does not admit source mode at generic directory %s", (path) => {
+    const root = fixture();
+    chmodSync(resolve(root, path), 0o775);
+    expect(() => inventoryMockServerSupplier(root)).toThrow(
+      "supplier-inventory",
+    );
   });
   it("rejects missing caches and absent/empty artifacts", () => {
     for (const missing of ["npm-cache", jar, "empty"]) {
