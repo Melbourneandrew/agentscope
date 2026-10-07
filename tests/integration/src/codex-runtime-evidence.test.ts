@@ -187,6 +187,7 @@ describe("Codex bounded native ledgers", () => {
       [`${sessionStart}${stop}${start("SessionEnd")}`, "session-end-active"],
       [`${sessionStart}${stop}${sessionEnd}`, "session-end-completed"],
       [stop, "stop-completed"],
+      [`${stop}${sessionStart}`, "stop-completed"],
       [`${stop}${sessionStart}${sessionEnd}`, "session-end-completed"],
     ] as const) {
       expect(classifyCodexShutdownLogSource(source)).toBe(expected);
@@ -250,6 +251,7 @@ describe("Codex bounded native ledgers", () => {
           [sessionStart, "stop-unseen"],
           [`${sessionStart}${start("Stop")}`, "stop-active"],
           [`${sessionStart}${stop}`, "stop-completed"],
+          [`${stop}${sessionStart}`, "stop-completed"],
           [
             `${sessionStart}${stop}${start("SessionEnd")}`,
             "session-end-active",
@@ -261,7 +263,6 @@ describe("Codex bounded native ledgers", () => {
         }
         for (const source of [
           `${sessionStart}${sessionEnd}`,
-          `${stop}${sessionStart}`,
           `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
           `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
           `${sessionStart}${start("Stop")}${close("Stop").replace('"completed"', '"timeout"')}`,
