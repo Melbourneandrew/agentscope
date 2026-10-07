@@ -16,6 +16,8 @@ export const purePolicyFiles = Object.freeze([
   "nx-cache-diagnostics.test.mjs",
   "packed-cli-retrieval-diagnostics.test.mjs",
   "release-lane-substrate.test.mjs",
+  "release-production-recorder.test.mjs",
+  "release-stage-result.test.mjs",
   "restricted-import-policy.test.mjs",
   "workspace-cleanup-fixture.test.mjs",
   "workspace-dependency-policy.test.mjs",
