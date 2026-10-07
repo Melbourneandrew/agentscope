@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
+import { verifyInstalledNativeArtifacts } from "./scripts/directory-artifact.mjs";
 import {
   runTraceSearchUntilAvailable,
   traceGetFailureSummary,
@@ -1055,7 +1056,6 @@ setTimeout(() => process.exit(3), 10_000).unref();
   );
   const installedRoot = join(installRoot, "node_modules/agentscope-cli");
   const installedFiles = regularFiles(installedRoot);
-  const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
   assert.deepEqual(regularFiles(join(installedRoot, "dist/bin/migrations")), [
     "0001-initialize.sql",
     "0002-retrieval-indexes.sql",
@@ -1074,45 +1074,18 @@ setTimeout(() => process.exit(3), 10_000).unref();
       "retriever-child.js",
     ],
   );
-  const supportManifestPath = join(
-    candidateRoot,
-    "records/support-manifest.json",
+  const permittedNative = await verifyInstalledNativeArtifacts(
+    installedRoot,
+    regularFiles,
   );
-  const supportManifestBytes = readFileSync(supportManifestPath);
-  assert.equal(
-    createHash("sha256").update(supportManifestBytes).digest("hex"),
-    "587e01fac592f3989b05d634fd8a5a03f1d72bebef3c83da0a22b0ca18d1ff76",
-  );
-  const supportManifest = JSON.parse(supportManifestBytes);
-  assert.equal(
-    supportManifest.disposition,
-    "proposed-unpublished-execution-eligible",
-  );
-  assert.equal(supportManifest.nativeBinaries.length, 1);
-  assert.equal(supportManifest.supportedPlatforms.length, 1);
-  const declaredCandidateFiles = supportManifest.artifactFiles
-    .map(({ relativePath }) => relativePath)
-    .concat("records/support-manifest.json")
-    .sort();
-  assert.deepEqual(regularFiles(candidateRoot), declaredCandidateFiles);
-  for (const artifact of supportManifest.artifactFiles) {
-    const bytes = readFileSync(join(candidateRoot, artifact.relativePath));
-    assert.equal(bytes.length, artifact.bytes);
-    assert.equal(
-      `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-      artifact.digest,
-    );
-  }
-  const permittedNative =
-    "dist/internal/local-sqlite/native/node127-linux-x64-glibc/agentscope_sqlite.node";
   assert.deepEqual(
-    installedFiles.filter((file) => file.endsWith(".node")),
-    [permittedNative],
+    installedFiles.filter((file) => file.endsWith(".node")).sort(),
+    permittedNative,
   );
   assert.equal(
     installedFiles.some(
       (file) =>
-        file !== permittedNative &&
+        !permittedNative.includes(file) &&
         /(?:^|\/)(?:binding\.gyp|build|prebuilds?|src)(?:\/|$)/u.test(file),
     ),
     false,

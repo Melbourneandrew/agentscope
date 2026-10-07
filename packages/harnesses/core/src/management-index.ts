@@ -21,6 +21,7 @@ export type {
   HarnessRegistry,
 } from "./types.js";
 export type {
+  HarnessDirectoryInspection,
   HarnessInstallationPlanInput,
   HarnessInstallationPlanner,
   HarnessInstallationResult,

@@ -9,6 +9,25 @@ import {
   unlink,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  inspectInstallationInput,
+  type HarnessInstallationPlanInput,
+  type HarnessInstallationPlanner,
+  type HarnessTargetDecision,
+} from "./installation-input.js";
+export type {
+  HarnessDirectoryInspection,
+  HarnessInstallationPlanInput,
+  HarnessInstallationPlanner,
+  HarnessTargetDecision,
+  HarnessTargetInspection,
+} from "./installation-input.js";
+import {
+  inspectDirectoryPreimage,
+  directoryPreimageMatches,
+  directoryInspection,
+  type DirectoryPreimage,
+} from "./installation-directory-preimages.js";
 
 import {
   inspectInstallationPreimage,
@@ -35,37 +54,6 @@ const typedArrayByteLength: unknown = Reflect.get(
   "get",
 );
 const typedArraySlice: unknown = Reflect.get(Uint8Array.prototype, "slice");
-
-export type HarnessTargetInspection = Readonly<{
-  targetPath: string;
-  exists: boolean;
-  bytes: Uint8Array | null;
-  digest: string;
-  mode: number | null;
-}>;
-
-export type HarnessTargetDecision =
-  | Readonly<{ kind: "unchanged" }>
-  | Readonly<{ kind: "replace"; bytes: Uint8Array; mode?: 0o600 | 0o700 }>
-  | Readonly<{
-      kind: "replace-overlap";
-      bytes: Uint8Array;
-      mode?: 0o600 | 0o700;
-    }>
-  | Readonly<{ kind: "remove" }>
-  | Readonly<{ kind: "conflict" }>
-  | Readonly<{ kind: "unsupported" }>;
-
-export type HarnessInstallationPlanner = (
-  target: HarnessTargetInspection,
-) => HarnessTargetDecision;
-
-export type HarnessInstallationPlanInput = Readonly<{
-  manifestPath: string;
-  operation: "install" | "migrate" | "uninstall";
-  targetPaths: readonly string[];
-  planner: HarnessInstallationPlanner;
-}>;
 
 export type HarnessInstallationDisposition =
   | "ready"
@@ -147,6 +135,7 @@ const plans = new WeakMap<
     disposition: HarnessInstallationDisposition;
     state?: PlanState;
     preimages: readonly InspectedPreimage[];
+    directories: readonly DirectoryPreimage[];
   }>
 >();
 const consumedPlans = new WeakSet<object>();
@@ -231,43 +220,6 @@ const hash = (bytes: Uint8Array): string =>
 
 const emptyDigest = hash(new Uint8Array());
 
-const plainDataArray = (
-  value: unknown,
-  maximum: number,
-): readonly unknown[] | undefined => {
-  if (!Array.isArray(value)) return undefined;
-  try {
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-    /* v8 ignore next 3 -- native arrays always have an own data length; the
-       fallback retains totality against a host-runtime invariant failure. */
-    const length =
-      lengthDescriptor && "value" in lengthDescriptor
-        ? (lengthDescriptor.value as unknown)
-        : undefined;
-    if (
-      typeof length !== "number" ||
-      !Number.isSafeInteger(length) ||
-      length < 1 ||
-      length > maximum ||
-      Reflect.ownKeys(descriptors).length !== length + 1 ||
-      Reflect.ownKeys(descriptors).some((key) => typeof key === "symbol")
-    )
-      return undefined;
-    const output: unknown[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const descriptor = descriptors[String(index)];
-      /* v8 ignore next -- exact native array key cardinality above proves the
-         indexed own data descriptor exists. */
-      if (!descriptor || !("value" in descriptor)) return undefined;
-      output.push(descriptor.value as unknown);
-    }
-    return Object.freeze(output);
-  } catch {
-    return undefined;
-  }
-};
-
 const copyBytes = (value: unknown): Uint8Array | undefined => {
   try {
     if (
@@ -317,67 +269,14 @@ const copyBytes = (value: unknown): Uint8Array | undefined => {
 
 const exactInput = async (
   input: HarnessInstallationPlanInput,
-): Promise<
-  Readonly<{
-    manifestPath: string;
-    operation: HarnessInstallationPlanInput["operation"];
-    targetPaths: readonly string[];
-    planner: HarnessInstallationPlanner;
-  }>
-> => {
+): ReturnType<typeof inspectInstallationInput> => {
   try {
-    if (
-      typeof input !== "object" ||
-      input === null ||
-      Array.isArray(input) ||
-      Object.getPrototypeOf(input) !== Object.prototype
-    )
-      return invalid();
-    const descriptors = Object.getOwnPropertyDescriptors(input);
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      Object.keys(descriptors).sort().join("\0") !==
-        "manifestPath\0operation\0planner\0targetPaths" ||
-      Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-    )
-      return invalid();
-    const manifestPath = descriptors.manifestPath.value as unknown;
-    const operation = descriptors.operation?.value as unknown;
-    const targetPathsInput = descriptors.targetPaths.value as unknown;
-    const planner = descriptors.planner.value as unknown;
-    const targetPathValues = plainDataArray(targetPathsInput, MAXIMUM_TARGETS);
-    if (
-      typeof manifestPath !== "string" ||
-      !isCanonicalAbsolutePath(manifestPath) ||
-      !["install", "migrate", "uninstall"].includes(String(operation)) ||
-      typeof planner !== "function" ||
-      !targetPathValues
-    )
-      return invalid();
-    const canonicalManifestPath = await canonicalFilesystemPath(manifestPath);
-    const targetPaths = await Promise.all(
-      targetPathValues.map(async (value) => {
-        if (typeof value !== "string" || !isCanonicalAbsolutePath(value))
-          return invalid();
-        const canonicalTargetPath = await canonicalFilesystemPath(value);
-        if (
-          pathIdentity(canonicalTargetPath) ===
-          pathIdentity(canonicalManifestPath)
-        )
-          return invalid();
-        return canonicalTargetPath;
-      }),
-    );
-    if (
-      new Set(targetPaths.map(pathIdentity)).size !== targetPaths.length ||
-      !pathsAvoidOwnershipRecords(canonicalManifestPath, targetPaths)
-    )
-      return invalid();
-    return Object.freeze({
-      manifestPath: canonicalManifestPath,
-      operation: operation as HarnessInstallationPlanInput["operation"],
-      targetPaths: Object.freeze(targetPaths),
-      planner: planner as HarnessInstallationPlanner,
+    return await inspectInstallationInput(input, {
+      canonical: canonicalFilesystemPath,
+      canonicalSpelling: isCanonicalAbsolutePath,
+      identity: pathIdentity,
+      avoidsOwnership: pathsAvoidOwnershipRecords,
+      invalid,
     });
   } catch (error) {
     if (error instanceof HarnessInstallationError) return invalid();
@@ -392,6 +291,7 @@ const safeDecision = (
   planner: HarnessInstallationPlanner,
   targetPath: string,
   before: FileSnapshot,
+  directories: readonly DirectoryPreimage[],
 ): HarnessTargetDecision => {
   const input = Object.freeze({
     targetPath,
@@ -402,7 +302,7 @@ const safeDecision = (
   });
   let decision: unknown;
   try {
-    decision = planner(input);
+    decision = planner(input, directoryInspection(directories));
   } catch {
     return invalid();
   }
@@ -456,12 +356,19 @@ const publicPlan = (
   targetCount: number,
   changedTargetCount: number,
   state?: PlanState,
-  preimages: readonly InspectedPreimage[] = [],
+  observations: Readonly<{
+    preimages: readonly InspectedPreimage[];
+    directories: readonly DirectoryPreimage[];
+  }> = { preimages: [], directories: [] },
 ): HarnessInstallationPlan => {
   const plan = Object.freeze({ disposition, targetCount, changedTargetCount });
   plans.set(
     plan,
-    Object.freeze({ disposition, preimages, ...(state ? { state } : {}) }),
+    Object.freeze({
+      disposition,
+      ...observations,
+      ...(state ? { state } : {}),
+    }),
   );
   return plan as HarnessInstallationPlan;
 };
@@ -496,7 +403,19 @@ export const inspectHarnessInstallation = async (
     for (const targetPath of parsed.targetPaths) {
       const before = await inspectFile(targetPath);
       preimages.push(Object.freeze({ targetPath, before }));
-      const decision = safeDecision(parsed.planner, targetPath, before);
+    }
+    const directories: DirectoryPreimage[] = [];
+    for (const directoryPath of parsed.directoryPaths)
+      directories.push(
+        await inspectDirectoryPreimage(directoryPath, pathIdentity),
+      );
+    for (const { targetPath, before } of preimages) {
+      const decision = safeDecision(
+        parsed.planner,
+        targetPath,
+        before,
+        directories,
+      );
       if (decision.kind === "conflict")
         return publicPlan("conflict", parsed.targetPaths.length, 0);
       if (decision.kind === "unsupported")
@@ -532,7 +451,10 @@ export const inspectHarnessInstallation = async (
         parsed.targetPaths.length,
         0,
         undefined,
-        Object.freeze(preimages),
+        Object.freeze({
+          preimages: Object.freeze(preimages),
+          directories: Object.freeze(directories),
+        }),
       );
     const transactionId = randomBytes(16).toString("hex");
     /* v8 ignore next -- new plans choose this 128-bit token only after caller
@@ -546,6 +468,7 @@ export const inspectHarnessInstallation = async (
           beforeExists: target.before.exists,
           afterExists: target.after.exists,
         })),
+        parsed.directoryPaths,
       )
     )
       return publicPlan("invalid", parsed.targetPaths.length, 0);
@@ -559,7 +482,10 @@ export const inspectHarnessInstallation = async (
       parsed.targetPaths.length,
       targets.length,
       state,
-      Object.freeze(preimages),
+      Object.freeze({
+        preimages: Object.freeze(preimages),
+        directories: Object.freeze(directories),
+      }),
     );
   } catch (error) {
     return publicPlan(
@@ -622,9 +548,12 @@ const transactionPathsAreDisjoint = (
     beforeExists: boolean;
     afterExists: boolean;
   }>[],
+  directoryPaths: readonly string[] = [],
 ): boolean => {
   const targetPaths = new Set(
-    targets.map((target) => pathIdentity(target.targetPath)),
+    [...targets.map((target) => target.targetPath), ...directoryPaths].map(
+      pathIdentity,
+    ),
   );
   const artifacts = [
     `${manifestPath}.${transactionId}.tmp`,
@@ -1109,6 +1038,14 @@ export const applyHarnessInstallation = async (
   consumedPlans.add(plan);
   let manifest: TransactionManifest | undefined;
   try {
+    for (const before of registered.directories) {
+      const current = await inspectDirectoryPreimage(
+        before.directoryPath,
+        pathIdentity,
+      );
+      if (!directoryPreimageMatches(before, current))
+        return result(false, "conflict", 0);
+    }
     for (const preimage of registered.preimages) {
       const current = await inspectFile(preimage.targetPath);
       if (

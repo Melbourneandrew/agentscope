@@ -2,6 +2,10 @@ import { cp, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
+import {
+  directoryLoaderBinPlugin,
+  stageDirectoryArtifact,
+} from "./scripts/directory-artifact.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const manifest = JSON.parse(
@@ -9,6 +13,7 @@ const manifest = JSON.parse(
 );
 
 await rm(new URL("dist", import.meta.url), { force: true, recursive: true });
+await stageDirectoryArtifact();
 const coordinatorBuild = await build({
   bundle: true,
   entryPoints: [
@@ -164,10 +169,14 @@ await build({
       JSON.stringify(coordinatorProgram),
   },
   entryPoints: [new URL("src/bin/agentscope.ts", import.meta.url).pathname],
-  external: ["../internal/agentscope-product-harness-installation.js"],
+  external: [
+    "../internal/agentscope-product-harness-installation.js",
+    "../internal/directory-runtime/loader/owned-loader.mjs",
+  ],
   format: "esm",
   minify: false,
   outfile: `${packageRoot}dist/bin/agentscope.js`,
+  plugins: [await directoryLoaderBinPlugin()],
   platform: "node",
   sourcemap: false,
   target: "node22",

@@ -32,7 +32,7 @@
     }
   },
   "scripts": {
-    "build": "node ../../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node --unhandled-rejections=strict verify-artifact.mjs",
+    "build": "node ../../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node native-directory/build.mjs && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "vitest run --config ../../../vitest.config.ts",

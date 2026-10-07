@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "capability": "installation-directory",
+  "nodeApiVersion": 8,
+  "artifactFiles": [
+    {
+      "relativePath": "loader/owned-loader.mjs",
+      "bytes": 10528,
+      "digest": "sha256:083a8f492dbe1460c89104df7c440f92b612296b35d53e61e8412955173e8e80"
+    },
+    {
+      "relativePath": "native/napi8-darwin-arm64/directory.node",
+      "bytes": 51680,
+      "digest": "sha256:3697db5a055a8f8c810ea797b479d0ee4ace6a22d7bfcb289140ae9fcbbcb16c"
+    },
+    {
+      "relativePath": "native/napi8-linux-x64-glibc/directory.node",
+      "bytes": 16656,
+      "digest": "sha256:909685d906cba53b31079dee3c58edb71bcac94cfb9aae382c46dbb804981f9b"
+    },
+    {
+      "relativePath": "notices/node-MIT.txt",
+      "bytes": 142077,
+      "digest": "sha256:de8f7d08b164a5b05d815cefdcdb332d38846379649b53956071522f63a5e777"
+    },
+    {
+      "relativePath": "records/provenance.json",
+      "bytes": 1099,
+      "digest": "sha256:606a093a1200c044683c879b5444cf8af4214278528279c9712bc10040eaf5d7"
+    },
+    {
+      "relativePath": "records/release-materials.json",
+      "bytes": 63506,
+      "digest": "sha256:1bf5e18673f53f5fb640df6b4a7e36e3bf894a51eb4b2e283472c0474caa330d"
+    },
+    {
+      "relativePath": "records/sbom.spdx.json",
+      "bytes": 1229,
+      "digest": "sha256:3b5f4d88db4c285de20bd3f593d7f65b0d0645ffcbf81ae3dd3b47cfb637af36"
+    }
+  ],
+  "nativeBinaries": [
+    {
+      "platform": "linux",
+      "architecture": "x64",
+      "minimumOsVersion": "5.15",
+      "libcFamily": "glibc",
+      "minimumLibcVersion": "2.34",
+      "admittedNodeMajors": [22],
+      "relativePath": "native/napi8-linux-x64-glibc/directory.node"
+    },
+    {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "minimumOsVersion": "11.0",
+      "libcFamily": null,
+      "minimumLibcVersion": null,
+      "admittedNodeMajors": [22],
+      "relativePath": "native/napi8-darwin-arm64/directory.node"
+    }
+  ]
+}

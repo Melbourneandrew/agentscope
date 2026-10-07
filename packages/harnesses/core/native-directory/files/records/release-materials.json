@@ -1,0 +1,1138 @@
+{
+  "schemaVersion": 1,
+  "capability": "installation-directory",
+  "disposition": "proposed-unpublished-execution-eligible",
+  "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+  "sourceTree": "6165479a49f4d4bb5febdcc3a365d9950ddb2243",
+  "candidateRunId": "37546616926",
+  "headerArtifactId": 11450184545,
+  "headerArchiveDigest": "sha256:ec82ad31e7d07943ecc6db79714d0c8245eff8aeb91e73b95680e5aec3478b96",
+  "candidates": [
+    {
+      "artifactId": 11449969704,
+      "archiveDigest": "sha256:0677d2b6b3f8eb9625d6e9e97f1a623d7c34308e145733d29c0a7813af09a0af",
+      "observedRecordDigest": "sha256:2d751ae13e4f6f7e9985ddc0ce6abdb1a12fc88b2a4744e92c78178950bdca06",
+      "relativePath": "native/napi8-linux-x64-glibc/directory.node",
+      "observation": {
+        "schemaVersion": 1,
+        "disposition": "unadmitted-candidate",
+        "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+        "runId": "37546616926",
+        "profile": {
+          "platform": "linux",
+          "architecture": "x64",
+          "minimumOsVersion": "5.15",
+          "libcFamily": "glibc",
+          "minimumLibcVersion": "2.34",
+          "admittedNodeMajors": [22]
+        },
+        "primitiveSourceDigest": "sha256:49f8170f3564584150ea6827d98ca10479537ab5fa329e17086dbc60515be816",
+        "driverSourceDigest": "sha256:1fae262de16f013705b7fc6e3320fd8210b7eccbf36a341a8e80de82ae180bbc",
+        "workflowSourceDigest": "sha256:515a5b1025b4687f54413f3c46ca0484907cf5185ba2e65e5e75112bbc4bb4fa",
+        "material": {
+          "kind": "pinned-node-image",
+          "schemaVersion": 1,
+          "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+          "runId": "37546616926",
+          "imageProof": {
+            "sourceIndex": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+            "selectedManifest": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+            "selectedManifestBytes": 2493,
+            "configDigest": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+            "configBytes": 6629,
+            "rawIndexGzipBase64": "H4sIAAAAAAACE+2Y224bRwyG30W9rC3PcE4cPUfQi9ZFwSE58cbWriDJTtog716uD2mSBq6NSgkCGAIEjaRZcnn45ue+X6xpHLru9rvF6rf3CxrHaU/7YRpt/X7B03opE1/qdjn1PvBAV6fDml7rbtlod9G2+nZJW75YrBa0lhwXJ4tp+3o5bXTkadzTMOp2t7zdMW/QpQy2d29/310QpLxKFYVd5Fiq6yXXULLUVjy7TrVLy9mzUMi5eqgUHEopLUERxFxdov80ONJazVy7Hq5kQ3x5KrrZrdo0Xb6dtuvHtvNWaa9im8FBOnV46uEVwMq8DvXXx3Zu9WbYWQhtq6hn5Fqj+taREsbQe5EoFYuqOibJFWJ47HK76XrL801c7Pfm+/nZ+dnrYX9x3ZaWnvOzcRJ9szs/u8vT6bxc2u8/PdX0CuD87CkBud5efebE7MF9cdw68sedL49d4sY+3gUGYPHhZPFlObSWMUR2lm8iq4LGKDVml1P2VMCT9Ii151aDlIYNIXXH3bdYkYHn+lurDPTqz80cMNpsrga+Lefzs5tRlhMP9548lP3yxv/8ZmcunSw2V7Tvcwys8OeiHvbK++utflrc1hWLq2G8fjd7vxv+sh8h1vDh5BCtM3t4v2WrXbcWwH93zAFC9FU7+/uQ7fdm7vY2Th9i9LVMOfDeUU0ihaBH39WhNoHuMlcXIgnayytbYxeMVbEDJU6ullY59WNl6nq8HKe340OuHpYfs4UR/meytusAN+XZpJOatHqffAhE4tCTy5o7SiOG4rylKYTgWwjMMbqSGhZfHVD0KcJtwL4h6cJMOgcr719IdxTSIViH1oASoOTcSvcE6F3nZOdhQVFQcXY/vuSY5lWtPqJ1vaLkFMvRSHcXmX84Z7ig7UDj7LuV/afYS4fqpCeB7wAROwT4uEThBL4aWSW45lLMGs0zMv/Evg7qrXcZU+vEWk3QaCreV+g9UNYfGXw53uDzwYeY7EAwijERdkrqLV1ZYm4pZSQ7KnqIQVNPXYG5xRyJjJXQJEL/xhIvvnJhFesqphfwHQV8JtqRqUgrJADSu2tkwsW0gsOc0IR/5IKoCUOTgq5SM9FPAQRnrZOPCL4vJd5n6MMDo+++l56EvgPE7BDoi7FpMmPSul3Wp9SxAmIxGQiNKpoe5aQmMkMskgqZy06FrUC7GLD5h0XfZsM5Xumz0RcCmOK1Hi1aIBU7txTmwEBDrEFdVMureDQCFmHATGTZBepclSyj3xp9HlaxrGJ4Qd9R0BeDzUcEVcFaxFKPVhqRmiTtNg+oZgKuWAkzWjO5ZpkpvSubijCdwf5Y/fNJeX99vk2Hap8n0e4AYToE7Wo21vlIJZm6y2aiJQ2+SMbMpZRuROZoE3Z2zocayRiNXUiUrIObiz8s7XahunfPZp0LYEK4Z58MaIUdsPd+fiohXH0picG53EyeEzqLUFM7HdQlb2Nv6pDDd5hvQ1z5lyd5x2Fdt8MtVkgcvBZK1sc95MgYoubi0UqlcfaOlFpB0KIt2DIIl6RQfTpW93ws7qM8yXu4+pM4d4AQHWSgtTkr2OAKyVN0wtgdpaxavHHP3qzsWqmxFIpqECxkb15sNMtFQLJ8T879/mTbwyj67hPDO77QNf3yUMXw4W8oaod5ChkAAA==",
+            "rawManifestGzipBase64": "H4sIAAAAAAACE72WUW8bNwzH3/spAu+xzZmSKErK5yj2sGEYKIqyr4l9hs9J0Rb97qMv6brBA5KX+eWA0x2p/4+kSH17d3OzmmWrO/5Vj/M47Vd3N/7DeXWnbeSPXw5qKys+HB5G4ZP9sH7at2GScRh3vNFhx/ux63wantz7T7PZL8Yy7fu4Mctv9vZ2Z89m/3Jlxm3c2AZny3nLPtIdu6rsexanmnIm6tlDKExQmZ0Exgw5eXCZGbRjLg4AVFIJ2rKvPxzP49ezICJfbOH7ovyBv1ggbPX35Z9n/W8nWMwNYDjx8f3m63h42eu/MDo4zDGwmvggoC6FCMBFIvgkQaV39b2z1AalplxYfPdNKLTGTOGn6xcQzFgwOrcsf//wvwNQIwRXEwWqlYOpbcVRdRErI3I1sOw4haTOpeolBXKUhEkZfQh4AeARzASvBnCOcE8W0V6KQg6pN5d75OproMC95+bEeW0hJVdKPwOn3DNUjFkgXgAQolVahGsBOCVDsLBatJE9eWasgr2kWLSoYBL0orHWELzrAD5kF0vCgCi11MsMOBcKBsKrEQA06SE0X8RHq5eGwhibuuhNhtcIsWYoEaGWmHNskrBAI+9qqP7yEBhovpZ4FJNSKGh1SJ0baOjsuRUhJfBekSl3IA4kNfiWwVMKHJmz9SdJF+IjhUIuxGsBFOGMUrpPoC366LGVngtiMNG9uyKIEaxLQXJEJYceu9WaNVYXc3TtAsBZDildrwNVYs0SpVRHrpFIsj7ZUuRWpYhVTc5VqXrUjCC+stMGiRJkKSj5soVietZuzz+WgcD7/XRadM4/55lMu6FNcm9Cp95HGfnhdlE/D5XnbT3q54GPsl1Id9Y1foyc6bgZpoPubdKdeNzbqHmhNjMdLvhiyU3AyiwV6IlKSNRsFDiBzqW3SuSkWXVRcb5wgNxSqtGnZlOxQOS3bbvn3ZKT+jg+tAPL/W3Tw3xXp+n+83TcvepEjsonbWcXHny8hXwL7qODO7DzTb+9an/Up/Hl7rGygy+Wm4Lqas8cM4ZuLdrqMidVBeFGxWN41ek8PR5lwdqeTkazXm/G0/ax2iVjt95PTT/N6+cU3p7fBvv6y1s3v/N+/eboPB4f/qniLOGldM5K/ly0vOrk6e/b2cr71fm28u77X0Rbpcu9CQAA",
+            "platform": {
+              "docker": "linux/amd64",
+              "os": "linux",
+              "architecture": "amd64",
+              "variant": ""
+            }
+          },
+          "headerFiles": [
+            {
+              "name": "js_native_api.h",
+              "bytes": 32028,
+              "digest": "sha256:048b4efdcd823f30afd323d61c8aba5be285077f9d790feb52a6fa6382df2541"
+            },
+            {
+              "name": "js_native_api_types.h",
+              "bytes": 7033,
+              "digest": "sha256:0410c31e227f81e2981363c4d543f4832ac3df785343ec64cee621742ff8a034"
+            },
+            {
+              "name": "node_api.h",
+              "bytes": 10592,
+              "digest": "sha256:d14db85d16f182045c42745a6e44b96e932dfe6e3bfcaac7a1096fae8412c579"
+            },
+            {
+              "name": "node_api_types.h",
+              "bytes": 1603,
+              "digest": "sha256:8d5d854088d5725fec9775510e0aeeeb790a41ad083c49bb721d950b86e6bd61"
+            }
+          ],
+          "license": {
+            "bytes": 142077,
+            "digest": "sha256:de8f7d08b164a5b05d815cefdcdb332d38846379649b53956071522f63a5e777"
+          },
+          "compiler": {
+            "path": "/usr/bin/x86_64-linux-gnu-gcc-12",
+            "bytes": 1301496,
+            "digest": "sha256:75e997ec62297a6484f491bae28ab0ccb489daba23e398fd10fe68e9e6f0def8"
+          }
+        },
+        "inputs": [
+          {
+            "path": "/__w/agentscope/agentscope/artifacts/directory-native/headers/js_native_api.h",
+            "bytes": 32028,
+            "digest": "sha256:048b4efdcd823f30afd323d61c8aba5be285077f9d790feb52a6fa6382df2541"
+          },
+          {
+            "path": "/__w/agentscope/agentscope/artifacts/directory-native/headers/js_native_api_types.h",
+            "bytes": 7033,
+            "digest": "sha256:0410c31e227f81e2981363c4d543f4832ac3df785343ec64cee621742ff8a034"
+          },
+          {
+            "path": "/__w/agentscope/agentscope/artifacts/directory-native/headers/node_api.h",
+            "bytes": 10592,
+            "digest": "sha256:d14db85d16f182045c42745a6e44b96e932dfe6e3bfcaac7a1096fae8412c579"
+          },
+          {
+            "path": "/__w/agentscope/agentscope/artifacts/directory-native/headers/node_api_types.h",
+            "bytes": 1603,
+            "digest": "sha256:8d5d854088d5725fec9775510e0aeeeb790a41ad083c49bb721d950b86e6bd61"
+          },
+          {
+            "path": "/__w/agentscope/agentscope/packages/harnesses/core/native-directory/primitive.c",
+            "bytes": 4499,
+            "digest": "sha256:49f8170f3564584150ea6827d98ca10479537ab5fa329e17086dbc60515be816"
+          },
+          {
+            "path": "/usr/include/asm-generic/errno-base.h",
+            "bytes": 1612,
+            "digest": "sha256:2c148e92b8318deeb767fabd60822113e575ee664ff09a1873aed8f7a495793c"
+          },
+          {
+            "path": "/usr/include/asm-generic/errno.h",
+            "bytes": 5648,
+            "digest": "sha256:fb7b5a504015f3a9074c641e7371b250d867d751d90e4a22a8ac17fced3d50af"
+          },
+          {
+            "path": "/usr/include/dirent.h",
+            "bytes": 12617,
+            "digest": "sha256:7c24a1339f41ccd4614b274411f39a95aa02e25d8811c4993cba07368e87c1cc"
+          },
+          {
+            "path": "/usr/include/errno.h",
+            "bytes": 1679,
+            "digest": "sha256:c46073c84e5396855c6861272a8b02e352bb20d658bbfc12690e483a4be73053"
+          },
+          {
+            "path": "/usr/include/fcntl.h",
+            "bytes": 10126,
+            "digest": "sha256:5e6b12d71c0d8fabb5ab7ee9ba9f1e1eb6b19bef0e5e7938f1da68c28ab8044d"
+          },
+          {
+            "path": "/usr/include/features-time64.h",
+            "bytes": 1409,
+            "digest": "sha256:f204758482abaeaf9a9c49f0054c1ac19c5804c82b6d4d249ae0329ec293c973"
+          },
+          {
+            "path": "/usr/include/features.h",
+            "bytes": 18047,
+            "digest": "sha256:a43c1fcf40f4585ab05a92a262d06417e4711474b2a2d6b3205f15cc2a7a07eb"
+          },
+          {
+            "path": "/usr/include/limits.h",
+            "bytes": 5706,
+            "digest": "sha256:4070487bfbbec86cbfc6ae40be4da72690289884d68a918a452868654f98bdf8"
+          },
+          {
+            "path": "/usr/include/linux/errno.h",
+            "bytes": 23,
+            "digest": "sha256:a47fb2f49bce0546a1e88805cec954338abb1b2ac87de042166e8e3a74b23261"
+          },
+          {
+            "path": "/usr/include/linux/limits.h",
+            "bytes": 937,
+            "digest": "sha256:567dbb4893d20bb986996f0a8b8f774b02ca6cb7df8e4b642895eade7e7ffcd9"
+          },
+          {
+            "path": "/usr/include/stdc-predef.h",
+            "bytes": 2462,
+            "digest": "sha256:cb08cd5d4cc059a90833ac48a284d25016e8d56ded8ad4cd98d8ac59cc5053f3"
+          },
+          {
+            "path": "/usr/include/stdint.h",
+            "bytes": 8474,
+            "digest": "sha256:a567a56d54e996630104afc1716d853a76230cb7e113f2b0548f6488f31777c9"
+          },
+          {
+            "path": "/usr/include/stdlib.h",
+            "bytes": 36827,
+            "digest": "sha256:2b535c0953b3441ef72729d09e83d98d22f87ca68f8b0e8f85d2fd2285afbc91"
+          },
+          {
+            "path": "/usr/include/string.h",
+            "bytes": 19460,
+            "digest": "sha256:aa84f9ec0e15576219ff099be4ed2bd8ec5e23122a89f1d223bfbc3335f851fa"
+          },
+          {
+            "path": "/usr/include/unistd.h",
+            "bytes": 44967,
+            "digest": "sha256:99eb4050035a1a816090762770f0843c728666745d7e727e64dc347d8a99ac28"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/asm/errno.h",
+            "bytes": 31,
+            "digest": "sha256:4ee384515a4325315992e61dd957f0fa91f3858fe7c079de59f56edded51de86"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/confname.h",
+            "bytes": 23828,
+            "digest": "sha256:0068cb27071eabd3c685b1d1a376ea15fb1019fbc8696b4b4daa5dbd9f0739a3"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/dirent.h",
+            "bytes": 1771,
+            "digest": "sha256:07eaa0d768087ca6092ce725353315c2e326a2b169ddcda47b0233650bb67d71"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/dirent_ext.h",
+            "bytes": 1275,
+            "digest": "sha256:9fd56b3bc032f4604e544e838e8dd0a5413e52df757e7362bd6cd8dafeb434b0"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/endian.h",
+            "bytes": 1905,
+            "digest": "sha256:5d71d0f214a8c1e97e062746d5ecebc941940852d8fda981cb0fc0df1e1137de"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/endianness.h",
+            "bytes": 273,
+            "digest": "sha256:659a7060004eda113671a38852c4d1e9cb97a35932bcd1d8540f98c09c180747"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/environments.h",
+            "bytes": 3791,
+            "digest": "sha256:249abc392c28bd688725232e5b43bde89b9c0910b1331361083ec2225f056da5"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/errno.h",
+            "bytes": 1426,
+            "digest": "sha256:082689a9803a076e0829a09499695ae7f1a2589a3a9c2a7872bdb675dbc47736"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/fcntl-linux.h",
+            "bytes": 14992,
+            "digest": "sha256:4b48b82929efc51b32adf721c7898810c524b53b211e0126554c07aff2965b23"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/fcntl.h",
+            "bytes": 2246,
+            "digest": "sha256:42f9d5cd3449128060a96de7416b139ce1dab58820990d797155fae78df17e07"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/floatn-common.h",
+            "bytes": 10325,
+            "digest": "sha256:34470310bc42f4ed4a8790ca3f33d1a11878a583561d51ad324ef5fb925d5493"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/floatn.h",
+            "bytes": 4508,
+            "digest": "sha256:3d4345a5968836e9223ecb41753075921bedbfd20785b13bee4482dee7c7bbc5"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/getopt_core.h",
+            "bytes": 3667,
+            "digest": "sha256:f4a2574f7eff03ecfe11c93b2bb4c158aa8becad327af9e78410c18e94c744a3"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/getopt_posix.h",
+            "bytes": 1810,
+            "digest": "sha256:aa9422018c9f6eedb4a55253dd58e3c765ffa341b661680987c55bcf1c0cbb5c"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/libc-header-start.h",
+            "bytes": 4286,
+            "digest": "sha256:2f1c081f8d5940640addc9daaf9552f65e38f86eac744e6d7c76bddb0f7969f2"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/local_lim.h",
+            "bytes": 3176,
+            "digest": "sha256:72d82bbb66d229c701cd16504be7afcad0ab03245b64a9ce02ed95b2903efe6e"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/long-double.h",
+            "bytes": 970,
+            "digest": "sha256:de8ef43fbb73a2525346914ce91fd9e72bb5c1040ae2ac739569001220e2da8d"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/posix1_lim.h",
+            "bytes": 5189,
+            "digest": "sha256:7bb8888306ba4a0380673923d8c63aa390cb6a6da2e48fae2ee983100a9c0fd5"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/posix2_lim.h",
+            "bytes": 2867,
+            "digest": "sha256:c1b78d3c9d83cb3f5600c73c46b1886a007aac5925c0132285b616ae0733e1e5"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/posix_opt.h",
+            "bytes": 5913,
+            "digest": "sha256:02a14a03f287ea64ca842f8563f132dfc9540cf119b8c6698ae5caf22d32b716"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/pthread_stack_min-dynamic.h",
+            "bytes": 1214,
+            "digest": "sha256:a3ad1fe86b237d2ffd3859f7f843d9e3c537e58a5b850ea81f76d5474a775108"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/pthread_stack_min.h",
+            "bytes": 951,
+            "digest": "sha256:da2421da57529906a893eecac72cb3d8d518e3d8d0867aed0dd28475fbf849e6"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/stat.h",
+            "bytes": 2231,
+            "digest": "sha256:370f651b34008005ed1593686f7c3926d0cb0d68c7e6d1357d3096289e19183e"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/stdint-intn.h",
+            "bytes": 1037,
+            "digest": "sha256:00bbb23940989e9914d221eb95444b22aeda733bd5c484a4a776369a3794f47e"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/stdint-uintn.h",
+            "bytes": 1049,
+            "digest": "sha256:5fe89b4abead871f23aa69fc36313bdb3f5ff0cb22002a6dd76396dbbc76ddd0"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/stdlib-bsearch.h",
+            "bytes": 1557,
+            "digest": "sha256:572978254a11b94072ed52e79ee44002986aa3c0f8a2920998c7be71e8759b6d"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/stdlib-float.h",
+            "bytes": 1115,
+            "digest": "sha256:faebddeba7d6c6445116de3b4f0c6d2a672eebf399d2d7709eb6132ec5f449a4"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/struct_stat.h",
+            "bytes": 6190,
+            "digest": "sha256:7ee08b609ac74bc08807535abe0a19767b0bb383d14e89e89af1d26e8497df87"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/time64.h",
+            "bytes": 1340,
+            "digest": "sha256:5f423dcbb2c2969085506456ff16788d8d7d0a430d994fc18fec4780e68dba39"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/timesize.h",
+            "bytes": 1109,
+            "digest": "sha256:b675674807d56aa8b0c97ce136e70bfc27bf49c72ec49f4de9f273202604c0ef"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/types.h",
+            "bytes": 8806,
+            "digest": "sha256:cd152b6a5b70db5ff301e428b13e7a02d64dde93c4ae0a7879378dc04fd4fbcd"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/types/__locale_t.h",
+            "bytes": 1661,
+            "digest": "sha256:1676792ec98d138a17d4dfd730bf5956c4a8fe1b14ffd8b852b8dbe766ffe994"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/types/locale_t.h",
+            "bytes": 983,
+            "digest": "sha256:59fddb68b7159ea419f3d02c46919ead67366ef6fa4b3cf17ecaea260e3fe99f"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/types/struct_timespec.h",
+            "bytes": 867,
+            "digest": "sha256:8e7e964087b9c7638be2b5fb0fa01ceab43e4af8393b805b54ac2bd8642a1b98"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/types/time_t.h",
+            "bytes": 203,
+            "digest": "sha256:721a557cff3ed308c69719a44ba8f7cd9536f6c602fb8f1b1eea8ed6749ee37d"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/typesizes.h",
+            "bytes": 3737,
+            "digest": "sha256:5663fc72923363ef9bffe3fbbafa3ca9b94da2d5aadae781dd6f6da5e435a9c6"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/unistd_ext.h",
+            "bytes": 2035,
+            "digest": "sha256:92b8da4b1c6300b92a0299c8ed2fc8e25abc2ab84e49d059e7300ceac3c637aa"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/waitflags.h",
+            "bytes": 1697,
+            "digest": "sha256:5204411d9432b7e7b78b8fe47ce9174993993a379ab43cab6abc47e96102d34c"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/waitstatus.h",
+            "bytes": 2287,
+            "digest": "sha256:a4e9c193464360e511538f317c395cbd06807b30d232cb155c2177eee9f0a345"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/wchar.h",
+            "bytes": 1906,
+            "digest": "sha256:4cfde8b3acac291351db57b9ef5ad7a624b58d45c8b31c9dc7ebc36ab6a7dfe0"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/bits/wordsize.h",
+            "bytes": 398,
+            "digest": "sha256:948177c0fc84c4746588f62252029880ec4c6f88b743ba55d952f980303ebfbb"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/gnu/stubs-64.h",
+            "bytes": 481,
+            "digest": "sha256:0b6ab3e2ed3ba79b30fe6ba81a68fc41f57965b8d56662763633431b703c9289"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/gnu/stubs.h",
+            "bytes": 384,
+            "digest": "sha256:ef444295a0a9e8f5c40918399a00cc91ba0bd79774110cdf6e652baa6cfadb2e"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/sys/cdefs.h",
+            "bytes": 26665,
+            "digest": "sha256:6b6f6ebc94fed6ad6cee59558f803c3d436ca97f0a4fcc72a9a30cfef99ca87c"
+          },
+          {
+            "path": "/usr/include/x86_64-linux-gnu/sys/stat.h",
+            "bytes": 13767,
+            "digest": "sha256:a20cea5838b1e02a2ba679bd84b72e0aaa61cccca5c718160e3cc09ea2556660"
+          },
+          {
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/12/include/limits.h",
+            "bytes": 6355,
+            "digest": "sha256:c77dc1f3c14d43ce826f1f4e5d3d9683e92c4ae07d398003d553bd6a06cc4d74"
+          },
+          {
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/12/include/stdbool.h",
+            "bytes": 1501,
+            "digest": "sha256:7f5de1e983dece54634d1b05b669ea49133f435a3d50c13f92ee43f2a4ac3905"
+          },
+          {
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/12/include/stddef.h",
+            "bytes": 13275,
+            "digest": "sha256:192c28ec66b877fbfdceb84b28aceda2577e5dd46e32370f0c27be10dc0291ad"
+          },
+          {
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/12/include/stdint.h",
+            "bytes": 328,
+            "digest": "sha256:86a7914ab7d6a18465a6fb9a7b54f945cad604fdbf3ca0d10e4e0254e0037911"
+          },
+          {
+            "path": "/usr/lib/gcc/x86_64-linux-gnu/12/include/syslimits.h",
+            "bytes": 330,
+            "digest": "sha256:22dd0ab81baadd5a8d455b445855f341d419c7b0267beca235de00b7ec78e529"
+          }
+        ],
+        "compilerArguments": [
+          "-std=c11",
+          "-O2",
+          "-fPIC",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-I",
+          "/__w/agentscope/agentscope/artifacts/directory-native/headers",
+          "-shared",
+          "/__w/agentscope/agentscope/packages/harnesses/core/native-directory/primitive.c",
+          "-o",
+          "/__w/agentscope/agentscope/artifacts/directory-native/linux-x64/directory.node"
+        ],
+        "binary": {
+          "bytes": 16656,
+          "digest": "sha256:909685d906cba53b31079dee3c58edb71bcac94cfb9aae382c46dbb804981f9b"
+        },
+        "staticInspectionDigest": "sha256:d8cbd08185e4d96b8ab3aa807f2d93dcdb32771cbf07c6cb635debfee8e6bcc0",
+        "staticFacts": {
+          "format": "ELF",
+          "dependencies": ["libc.so.6"],
+          "glibcVersions": ["2.14", "2.2", "2.33", "2.4"],
+          "minimumOsVersion": null
+        },
+        "componentProof": "passed",
+        "elapsedMilliseconds": 112
+      }
+    },
+    {
+      "artifactId": 11450488197,
+      "archiveDigest": "sha256:ed0dea522a42dc5478dc6fc5a08b7d15b8d67a5a368372ee5901d43947c95a7d",
+      "observedRecordDigest": "sha256:7b9d2d34ed962b4280bcb940b0a893cd91dd68cc1ae60f3bf7cff4cf2142b560",
+      "relativePath": "native/napi8-darwin-arm64/directory.node",
+      "observation": {
+        "schemaVersion": 1,
+        "disposition": "unadmitted-candidate",
+        "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+        "runId": "37546616926",
+        "profile": {
+          "platform": "darwin",
+          "architecture": "arm64",
+          "minimumOsVersion": "11.0",
+          "libcFamily": null,
+          "minimumLibcVersion": null,
+          "admittedNodeMajors": [22]
+        },
+        "primitiveSourceDigest": "sha256:49f8170f3564584150ea6827d98ca10479537ab5fa329e17086dbc60515be816",
+        "driverSourceDigest": "sha256:1fae262de16f013705b7fc6e3320fd8210b7eccbf36a341a8e80de82ae180bbc",
+        "workflowSourceDigest": "sha256:515a5b1025b4687f54413f3c46ca0484907cf5185ba2e65e5e75112bbc4bb4fa",
+        "material": {
+          "kind": "apple-sealed-xcode",
+          "schemaVersion": 1,
+          "sourceCommit": "d18aa9bdef9e65e6898d155b7152054cac962d6d",
+          "runId": "37546616926",
+          "imageProof": {
+            "sourceIndex": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+            "selectedManifest": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+            "selectedManifestBytes": 2493,
+            "configDigest": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+            "configBytes": 6629,
+            "rawIndexGzipBase64": "H4sIAAAAAAACE+2Y224bRwyG30W9rC3PcE4cPUfQi9ZFwSE58cbWriDJTtog716uD2mSBq6NSgkCGAIEjaRZcnn45ue+X6xpHLru9rvF6rf3CxrHaU/7YRpt/X7B03opE1/qdjn1PvBAV6fDml7rbtlod9G2+nZJW75YrBa0lhwXJ4tp+3o5bXTkadzTMOp2t7zdMW/QpQy2d29/310QpLxKFYVd5Fiq6yXXULLUVjy7TrVLy9mzUMi5eqgUHEopLUERxFxdov80ONJazVy7Hq5kQ3x5KrrZrdo0Xb6dtuvHtvNWaa9im8FBOnV46uEVwMq8DvXXx3Zu9WbYWQhtq6hn5Fqj+taREsbQe5EoFYuqOibJFWJ47HK76XrL801c7Pfm+/nZ+dnrYX9x3ZaWnvOzcRJ9szs/u8vT6bxc2u8/PdX0CuD87CkBud5efebE7MF9cdw68sedL49d4sY+3gUGYPHhZPFlObSWMUR2lm8iq4LGKDVml1P2VMCT9Ii151aDlIYNIXXH3bdYkYHn+lurDPTqz80cMNpsrga+Lefzs5tRlhMP9548lP3yxv/8ZmcunSw2V7Tvcwys8OeiHvbK++utflrc1hWLq2G8fjd7vxv+sh8h1vDh5BCtM3t4v2WrXbcWwH93zAFC9FU7+/uQ7fdm7vY2Th9i9LVMOfDeUU0ihaBH39WhNoHuMlcXIgnayytbYxeMVbEDJU6ullY59WNl6nq8HKe340OuHpYfs4UR/meytusAN+XZpJOatHqffAhE4tCTy5o7SiOG4rylKYTgWwjMMbqSGhZfHVD0KcJtwL4h6cJMOgcr719IdxTSIViH1oASoOTcSvcE6F3nZOdhQVFQcXY/vuSY5lWtPqJ1vaLkFMvRSHcXmX84Z7ig7UDj7LuV/afYS4fqpCeB7wAROwT4uEThBL4aWSW45lLMGs0zMv/Evg7qrXcZU+vEWk3QaCreV+g9UNYfGXw53uDzwYeY7EAwijERdkrqLV1ZYm4pZSQ7KnqIQVNPXYG5xRyJjJXQJEL/xhIvvnJhFesqphfwHQV8JtqRqUgrJADSu2tkwsW0gsOc0IR/5IKoCUOTgq5SM9FPAQRnrZOPCL4vJd5n6MMDo+++l56EvgPE7BDoi7FpMmPSul3Wp9SxAmIxGQiNKpoe5aQmMkMskgqZy06FrUC7GLD5h0XfZsM5Xumz0RcCmOK1Hi1aIBU7txTmwEBDrEFdVMureDQCFmHATGTZBepclSyj3xp9HlaxrGJ4Qd9R0BeDzUcEVcFaxFKPVhqRmiTtNg+oZgKuWAkzWjO5ZpkpvSubijCdwf5Y/fNJeX99vk2Hap8n0e4AYToE7Wo21vlIJZm6y2aiJQ2+SMbMpZRuROZoE3Z2zocayRiNXUiUrIObiz8s7XahunfPZp0LYEK4Z58MaIUdsPd+fiohXH0picG53EyeEzqLUFM7HdQlb2Nv6pDDd5hvQ1z5lyd5x2Fdt8MtVkgcvBZK1sc95MgYoubi0UqlcfaOlFpB0KIt2DIIl6RQfTpW93ws7qM8yXu4+pM4d4AQHWSgtTkr2OAKyVN0wtgdpaxavHHP3qzsWqmxFIpqECxkb15sNMtFQLJ8T879/mTbwyj67hPDO77QNf3yUMXw4W8oaod5ChkAAA==",
+            "rawManifestGzipBase64": "H4sIAAAAAAACE72WUW8bNwzH3/spAu+xzZmSKErK5yj2sGEYKIqyr4l9hs9J0Rb97qMv6brBA5KX+eWA0x2p/4+kSH17d3OzmmWrO/5Vj/M47Vd3N/7DeXWnbeSPXw5qKys+HB5G4ZP9sH7at2GScRh3vNFhx/ux63wantz7T7PZL8Yy7fu4Mctv9vZ2Z89m/3Jlxm3c2AZny3nLPtIdu6rsexanmnIm6tlDKExQmZ0Exgw5eXCZGbRjLg4AVFIJ2rKvPxzP49ezICJfbOH7ovyBv1ggbPX35Z9n/W8nWMwNYDjx8f3m63h42eu/MDo4zDGwmvggoC6FCMBFIvgkQaV39b2z1AalplxYfPdNKLTGTOGn6xcQzFgwOrcsf//wvwNQIwRXEwWqlYOpbcVRdRErI3I1sOw4haTOpeolBXKUhEkZfQh4AeARzASvBnCOcE8W0V6KQg6pN5d75OproMC95+bEeW0hJVdKPwOn3DNUjFkgXgAQolVahGsBOCVDsLBatJE9eWasgr2kWLSoYBL0orHWELzrAD5kF0vCgCi11MsMOBcKBsKrEQA06SE0X8RHq5eGwhibuuhNhtcIsWYoEaGWmHNskrBAI+9qqP7yEBhovpZ4FJNSKGh1SJ0baOjsuRUhJfBekSl3IA4kNfiWwVMKHJmz9SdJF+IjhUIuxGsBFOGMUrpPoC366LGVngtiMNG9uyKIEaxLQXJEJYceu9WaNVYXc3TtAsBZDildrwNVYs0SpVRHrpFIsj7ZUuRWpYhVTc5VqXrUjCC+stMGiRJkKSj5soVietZuzz+WgcD7/XRadM4/55lMu6FNcm9Cp95HGfnhdlE/D5XnbT3q54GPsl1Id9Y1foyc6bgZpoPubdKdeNzbqHmhNjMdLvhiyU3AyiwV6IlKSNRsFDiBzqW3SuSkWXVRcb5wgNxSqtGnZlOxQOS3bbvn3ZKT+jg+tAPL/W3Tw3xXp+n+83TcvepEjsonbWcXHny8hXwL7qODO7DzTb+9an/Up/Hl7rGygy+Wm4Lqas8cM4ZuLdrqMidVBeFGxWN41ek8PR5lwdqeTkazXm/G0/ax2iVjt95PTT/N6+cU3p7fBvv6y1s3v/N+/eboPB4f/qniLOGldM5K/ly0vOrk6e/b2cr71fm28u77X0Rbpcu9CQAA",
+            "platform": {
+              "docker": "linux/amd64",
+              "os": "linux",
+              "architecture": "amd64",
+              "variant": ""
+            }
+          },
+          "headerFiles": [
+            {
+              "name": "js_native_api.h",
+              "bytes": 32028,
+              "digest": "sha256:048b4efdcd823f30afd323d61c8aba5be285077f9d790feb52a6fa6382df2541"
+            },
+            {
+              "name": "js_native_api_types.h",
+              "bytes": 7033,
+              "digest": "sha256:0410c31e227f81e2981363c4d543f4832ac3df785343ec64cee621742ff8a034"
+            },
+            {
+              "name": "node_api.h",
+              "bytes": 10592,
+              "digest": "sha256:d14db85d16f182045c42745a6e44b96e932dfe6e3bfcaac7a1096fae8412c579"
+            },
+            {
+              "name": "node_api_types.h",
+              "bytes": 1603,
+              "digest": "sha256:8d5d854088d5725fec9775510e0aeeeb790a41ad083c49bb721d950b86e6bd61"
+            }
+          ],
+          "license": {
+            "bytes": 142077,
+            "digest": "sha256:de8f7d08b164a5b05d815cefdcdb332d38846379649b53956071522f63a5e777"
+          },
+          "xcodePath": "/Applications/Xcode_16.2.app",
+          "appleSealVerified": true,
+          "resourceSeal": {
+            "bytes": 27446666,
+            "digest": "sha256:ee241a95bf4b67e75503ef843275fa27102eaf1a47c7c2325b1f8c92c4780a16"
+          },
+          "compiler": {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+            "bytes": 257149376,
+            "digest": "sha256:60468f3efd513d53f6ce581ec8d00595855ebf5a31a496d685b91c104aee1ca0"
+          },
+          "linker": {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld",
+            "bytes": 3853152,
+            "digest": "sha256:d689fc53a389c2931b5a9868a718e63b936ac784cb354ed89c2ebabfbe2446da"
+          },
+          "sdkPath": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+          "sdkSettings": {
+            "bytes": 6806,
+            "digest": "sha256:2fa5c0ce1bbcd261b132b572b1a9eece3b5905b04640a44deae1a6a8812928fb"
+          }
+        },
+        "inputs": [
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/Availability.h",
+            "bytes": 22393,
+            "digest": "sha256:decf4223c11786b9f58c38d25310c589b0d5b729b2935241b449e86d1e11d564"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternal.h",
+            "bytes": 26340,
+            "digest": "sha256:3f01189962d5ee67052f99b632de1b2baeb5b91108b7710e49eca048384886f5"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityInternalLegacy.h",
+            "bytes": 414503,
+            "digest": "sha256:c870957de1ab12b504c5d3d54f894630dee0aac25acd29946438aa6729005a31"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/AvailabilityVersions.h",
+            "bytes": 25537,
+            "digest": "sha256:0129b320f26d20f1bdd85923a684624715051fecf01e96cf8530779a88108f85"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_abort.h",
+            "bytes": 1115,
+            "digest": "sha256:445911487358c4f484941f4442e3c9fba7c1b0893ca68db702d7c4fff583d84b"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_ctermid.h",
+            "bytes": 1128,
+            "digest": "sha256:cbafbb83df2846ca1aac501eef0a40353be2a6653348cd4bbc5b3bb7e60f56aa"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_stdlib.h",
+            "bytes": 15028,
+            "digest": "sha256:0be5d3a6c58a7017d93f9975f57872bd69d3a2f20a47fe0310e863dcd5a40ef6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_string.h",
+            "bytes": 7483,
+            "digest": "sha256:95b2e55a72e93ad953fe68c5a2c77e5af9faf4ced1f127ea85374ca6fe3cc263"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types.h",
+            "bytes": 2237,
+            "digest": "sha256:095b99208cc0d01305288840e0a46f633130e9ebe9beaf2ee212197170293689"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_intmax_t.h",
+            "bytes": 1579,
+            "digest": "sha256:215f90a4efdca4991735be55a1ff701964dde07d8b4a8382ec8ed41ecbf5f115"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint16_t.h",
+            "bytes": 1417,
+            "digest": "sha256:adf29323b0ecb87cbc43ac3ff25c096de7a214ceb90007c2828616151c66ad37"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint32_t.h",
+            "bytes": 1415,
+            "digest": "sha256:951131475ec815813c8ff40d5e875029cd968334fd3a42d5a65fbe7851d1718c"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint64_t.h",
+            "bytes": 1421,
+            "digest": "sha256:a5692cddb9c42d1b55ebcd6fa445b212c4b0c46db4583aaf3293ed6386d3d0d6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uint8_t.h",
+            "bytes": 1412,
+            "digest": "sha256:0a5c0353c8410f5e502db7971d987ac83a9ec3148905f10984c78152f541de68"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/_types/_uintmax_t.h",
+            "bytes": 1606,
+            "digest": "sha256:0b154b16a3945edff78f00321d90a662d522e197c08e7de3b68f0ea44ae0d042"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/_limits.h",
+            "bytes": 318,
+            "digest": "sha256:b64325f6b5aba08a361b7b8e537df3d8d193538c1d6329a4c4a7e72f5aa63478"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/_mcontext.h",
+            "bytes": 2963,
+            "digest": "sha256:6af56aec1a82613dbd54b09d95eaf96fa7b9443a4cf4c7e9ba689f6de6047186"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/_types.h",
+            "bytes": 4470,
+            "digest": "sha256:4f0bde85f9a41cc7d30fff22ebd7e8f4eb206a55a926eda012a2e7481e3524fa"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/limits.h",
+            "bytes": 5699,
+            "digest": "sha256:59fea4e9435607efb7bef02a226e05202b236e8434518bb130fc9aa0932ebdb8"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/signal.h",
+            "bytes": 393,
+            "digest": "sha256:de0bc923b92bd88f3bd8bcd38b20f8123277732d7d3309cb2a5bdc60bb4dd8c6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/arm/types.h",
+            "bytes": 4135,
+            "digest": "sha256:b9eccd5a3feb3a62e22e42936656c8822e7e3e8708d759b1512deee05f682f0d"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/dirent.h",
+            "bytes": 7108,
+            "digest": "sha256:69196ad71af60af07041f3adc1e06b3d31420dee993b8eab1edf3fde6aaedb5e"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/errno.h",
+            "bytes": 1003,
+            "digest": "sha256:ff95a158e0799dcf0622e83882e64d88f1783b98a91d9b206bcba2a12f8425e6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/fcntl.h",
+            "bytes": 1002,
+            "digest": "sha256:289f3be20c07d8eae5589f43994cfdb5fb33b3b099a6aee67f63e00d90039a8f"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/limits.h",
+            "bytes": 5910,
+            "digest": "sha256:4e09d7a2307887fe787c65e31d63747720c4d462b7ba3bf8f45e401d74f0b246"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/mach/arm/_structs.h",
+            "bytes": 30449,
+            "digest": "sha256:0ddb1b36c49814ff9584357f0777145dba907e984c8a1194d2f1896044675134"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/mach/machine/_structs.h",
+            "bytes": 1633,
+            "digest": "sha256:410350f04225bf139bd89f1a99418a55734e4ab2101bb93dc301f790a130f59c"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/_mcontext.h",
+            "bytes": 1630,
+            "digest": "sha256:9d3425653d2a1623d785dee4601c3c00e05f4797d7e840b00f17d529f8c6c51e"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/_types.h",
+            "bytes": 1614,
+            "digest": "sha256:f27264f8fdec9f164b4fc2b556f666ed7c5c0e5b88fd9f23db0b731ffa6cf864"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/limits.h",
+            "bytes": 511,
+            "digest": "sha256:50345f1ab843fca787a38c552a84177e678d79dab86e714434f94f2546839357"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/signal.h",
+            "bytes": 1614,
+            "digest": "sha256:09b1798034cf3b5217df3e415d6053df9c2e16b858036fc11888e63f4493f53f"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/machine/types.h",
+            "bytes": 1675,
+            "digest": "sha256:76e7c59451d996fe674a6fc7e518366609a95875c9b9aec9fd590a3ac138dddd"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/malloc/_malloc.h",
+            "bytes": 3428,
+            "digest": "sha256:28b33ab4f20da030c11fd248d8a340c1af80d18d0c331c8248fd4da677760949"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/malloc/_ptrcheck.h",
+            "bytes": 1459,
+            "digest": "sha256:d3c4e809117b24467e9313cc348c0495aad8780cea6bf58177743b9be09c3591"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_common.h",
+            "bytes": 1447,
+            "digest": "sha256:997b924af11bcfe37938026ec342d9ae4e0ae60b5b6a72f9afe65a55cc9425d5"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/secure/_string.h",
+            "bytes": 5479,
+            "digest": "sha256:9e5e21cf8ed67d864794468e71bc2019e5c4126d9d7777d3c3bf4f4496ecd462"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/stdint.h",
+            "bytes": 5556,
+            "digest": "sha256:9d070aad02d9f2ba1f2248d093b4194b62cf8d363778c737d1110f4736e5ed3c"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/stdlib.h",
+            "bytes": 2980,
+            "digest": "sha256:7995a2df951dd1fdbd9fd4ec38900b79ef1797655ff239728fdbac56bb9bd7ff"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/string.h",
+            "bytes": 2975,
+            "digest": "sha256:4b1b9c05bfe370d423d7a6bf9e74b189bcc7f59c1cd97f23d6d94f2f3df6a4bc"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_posix_availability.h",
+            "bytes": 2905,
+            "digest": "sha256:452bff9ae32655a49b65802e29b21c67a546be1446553f908ef9850a694746bd"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_pthread/_pthread_attr_t.h",
+            "bytes": 1522,
+            "digest": "sha256:987973d4e4f0c84a929fb1288755637453d88bf1410b778f81b2550ea4ad211c"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_pthread/_pthread_types.h",
+            "bytes": 3855,
+            "digest": "sha256:741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_symbol_aliasing.h",
+            "bytes": 37247,
+            "digest": "sha256:f58a9ca7ec80ad2bfa920749f315070e88e132ed348ed86d06f2a5dc4b1d5781"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types.h",
+            "bytes": 4133,
+            "digest": "sha256:863c4f07045775002b63b7e616742d9f746e4a02da4441442d8fe1138bbd0ff9"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_blkcnt_t.h",
+            "bytes": 1476,
+            "digest": "sha256:3526cf25ca7734bf6bc945c9483727b8c1ab3fde5ad8fb23acad7489e231330d"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_blksize_t.h",
+            "bytes": 1482,
+            "digest": "sha256:4331ba446f9b5930e5da1dc065c97e258672ed0cbec5b3f0816c228fd0198955"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_dev_t.h",
+            "bytes": 1481,
+            "digest": "sha256:4ba3d19759544b9f7bf424d2a16a518ff586e31ed968d525440e678cfbb07a5d"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_gid_t.h",
+            "bytes": 1438,
+            "digest": "sha256:e687ad58c03701c132a02ebf20699c8cacfd34c3a67271bd2a415a5a8e4a9ea7"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_id_t.h",
+            "bytes": 1494,
+            "digest": "sha256:fb7255c9872e2a805c206796326e21d47146e22c93c09752126d7166bdaba5e5"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_ino_t.h",
+            "bytes": 1488,
+            "digest": "sha256:1e067108b372f2c81cfcad28413d6c0d2b9ef21d34fab740c3c8af059deadfea"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int16_t.h",
+            "bytes": 1417,
+            "digest": "sha256:e40d40ad59c6dc98577b2c7cfdba1121ebfee17b29e093cbd10b7936df496d8e"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int32_t.h",
+            "bytes": 1417,
+            "digest": "sha256:77127195e57f1690402377ddd72e3dcda684ddf591346f08ef4772dddcbbc281"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int64_t.h",
+            "bytes": 1417,
+            "digest": "sha256:a2427b34e5e83996bd28d83cec920cf3b82a366af90e767234557bd11fa33a18"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_int8_t.h",
+            "bytes": 1411,
+            "digest": "sha256:607f6beede0251eb801e763493df26fd45d46eb951e4ff9cac17f1ac951b8cc0"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_intptr_t.h",
+            "bytes": 1479,
+            "digest": "sha256:b2a7ba9b9b2d357d75e59114874658f893b23ea6d1357815b027d8189075daba"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_mode_t.h",
+            "bytes": 1465,
+            "digest": "sha256:7c4261bde41387fc23aefe5dee1e6298ae6b6f5592bca51947fdd9736e0640a6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_nlink_t.h",
+            "bytes": 1483,
+            "digest": "sha256:7cc46bfc5d0f4238c735ff28bb1a8dcefc26d1f0e52b7098a5c89e68bf87288a"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_null.h",
+            "bytes": 1724,
+            "digest": "sha256:3e021525d2a711070e9c78ea2791e020ef6105c51121d8496d617f89a83d2f92"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_o_dsync.h",
+            "bytes": 1441,
+            "digest": "sha256:47e59afa1ca0d9beeb20835cbf44ea9d6dddc5bd12822ca35c5c0fc21dd45c49"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_o_sync.h",
+            "bytes": 1439,
+            "digest": "sha256:76de975c1a6a1c621851079934547a628665d15049a451dc6c7e2ddec779f1b0"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_off_t.h",
+            "bytes": 1460,
+            "digest": "sha256:7b07626d71084f1b3220e045089f54fd30f4d736be9cd0449042c5fe411fc569"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_pid_t.h",
+            "bytes": 1458,
+            "digest": "sha256:052a6dbbec8e30623c2d33dd373992f6c5d0c57c57ed4949d2b48c4ab0976487"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_posix_vdisable.h",
+            "bytes": 1433,
+            "digest": "sha256:f32872a8af4cfb71be9ca5bcd356241badadceba195d55907129425bc239c222"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_s_ifmt.h",
+            "bytes": 3677,
+            "digest": "sha256:95154f4d16869867b303c173ed569ab17957fedb98ce7140583df75bcca2bd9e"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_seek_set.h",
+            "bytes": 2123,
+            "digest": "sha256:353b2276ef8132f625b1b780e7593a43183fbf054c1bc906c0515f89dad335c8"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_sigaltstack.h",
+            "bytes": 1992,
+            "digest": "sha256:2bc87d34186fe6524fe89fa1e2d878462c6688134d03880b8bfa1486db297687"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_sigset_t.h",
+            "bytes": 1483,
+            "digest": "sha256:df99c73ecdbde1fcb3a4a22169871e036240452472b8ea70f287456d42593972"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_size_t.h",
+            "bytes": 1775,
+            "digest": "sha256:3e1bcf6c23ad00e0fe2b5a4683e687299baf51cf26b0a4ebc73db6140378acc2"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_ssize_t.h",
+            "bytes": 1473,
+            "digest": "sha256:58eb3bdea24b27e6b5fb45e203e476faf2510b5c0aa81a0b45c17b528aa9c192"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_time_t.h",
+            "bytes": 1468,
+            "digest": "sha256:c0a28cdc5c9c8cf99abea53556895bd8001a6cb13ae6ca9f366955500678b35a"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_timespec.h",
+            "bytes": 1552,
+            "digest": "sha256:3314f260a6b3ce09c02df185ba2253577b2a268dac05d3cad55f76bb3e8019e8"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_timeval.h",
+            "bytes": 1667,
+            "digest": "sha256:f723018fec267200e915777897515b5d7ed20901bcb294873f94b1d835f9ae45"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int16_t.h",
+            "bytes": 1433,
+            "digest": "sha256:9dabbd8280c28416a5ba115355678d2540588df1a7251bd9b4a13e30c309a71b"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int32_t.h",
+            "bytes": 1425,
+            "digest": "sha256:196cba7a865c086bba457758d3b2605a4c1299c54a758366b7d420a585895f1d"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int64_t.h",
+            "bytes": 1425,
+            "digest": "sha256:d096eee54a5acc2c3cd5cf71256d69198ada8f8d82cdb0a717bc8ed65650ad93"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_u_int8_t.h",
+            "bytes": 1421,
+            "digest": "sha256:7505dbbdf3ecca2b8e585871ad81c0e67a3cb63c97c47abe73fe262e071a3ebb"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_ucontext.h",
+            "bytes": 2466,
+            "digest": "sha256:d67fecbd5fba1fc876b41b0a69ff080e3d47c9884f3ea4012f8a334ffda62681"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_uid_t.h",
+            "bytes": 1458,
+            "digest": "sha256:d2140a65a17943a857381757c0b73a920f35ade41dc9809437c168be457c276a"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_uintptr_t.h",
+            "bytes": 1534,
+            "digest": "sha256:f435cf25e4f06dace9c1884c066392bafd204c6d71f16696e71acde5912bc81f"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_useconds_t.h",
+            "bytes": 1484,
+            "digest": "sha256:37c49808a92cc4417181adb1530cc24ca11cc89f064c6c0494a1aff981f92870"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/_types/_wchar_t.h",
+            "bytes": 1857,
+            "digest": "sha256:f0c3da0beecb5feb19ddede0ea9d5fbb9274e7b1de1b7cb91f64196ac1395008"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/appleapiopts.h",
+            "bytes": 2065,
+            "digest": "sha256:efd9793f56c08917cf1ddf5108b78240ede88a5bbc8977d6fdaf1684b6b01c1c"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/cdefs.h",
+            "bytes": 41297,
+            "digest": "sha256:e5bd4ab10c37e7956c1d201e37e18462b682e635544cae479afd95e700dc8430"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/dirent.h",
+            "bytes": 5588,
+            "digest": "sha256:974e1e468150f7654f059d800c76f4f33e9fc7bb1efcf81deb70efa463e07d94"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/errno.h",
+            "bytes": 12965,
+            "digest": "sha256:80dc0ead0d8a003014c02d1f2bf63808000af9babc63a67ea1f36252c0a05212"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/fcntl.h",
+            "bytes": 26353,
+            "digest": "sha256:807bfdae1695967faf13532c1d0eb0d5eb08a67e0bef8bf529f732f6ce00176b"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/resource.h",
+            "bytes": 19848,
+            "digest": "sha256:5c625fb578aa6cdc1419b2a0d0f690a4b1b93b9adc46f42d38201a464c02f380"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/signal.h",
+            "bytes": 16773,
+            "digest": "sha256:171af7545ef750627aeba02c1de838c05e2cf396e2f49881ea74dba6990c44a3"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/stat.h",
+            "bytes": 20575,
+            "digest": "sha256:31c8f252b05785343ca577c007657c0fbab45a182b60fc5b73994c621dc318d4"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/syslimits.h",
+            "bytes": 6294,
+            "digest": "sha256:9374df5269ed815af77e899ac3f9f1649154e60c7b0334d0c8c11ed5e5ebf8ac"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/unistd.h",
+            "bytes": 9677,
+            "digest": "sha256:a3c7d6da838b8858cf04711dcbbab6e28fa5a58cc72175fcf4366158f548369a"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/sys/wait.h",
+            "bytes": 10362,
+            "digest": "sha256:162a5532495a6abef1ae5d5aa13e7601ce5760e2fb27302bc88adc6350999452"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/unistd.h",
+            "bytes": 28820,
+            "digest": "sha256:b2f2a37d44e415206f3168bc78ab3675d2fafe93654443ce044574c4d188af70"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_header_macro.h",
+            "bytes": 417,
+            "digest": "sha256:4cf46e8fbb809df048eecbbd63686fa741da27afa8db4245bd1f61c1fb1611dc"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_max_align_t.h",
+            "bytes": 857,
+            "digest": "sha256:3c1e4de47f4f06b35e2c5890d670052e84f716760505ff51b022fc8b21a9400f"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_null.h",
+            "bytes": 876,
+            "digest": "sha256:e9474ad7a936da2de5db4a81aa0f669c0da0a133be93babf45fd306dce60f0b2"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_offsetof.h",
+            "bytes": 708,
+            "digest": "sha256:e5f0f4ff8ff5fc6a1cc8b535f5065f1728eadd2bf1e1401f021f803ec7b4222f"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_ptrdiff_t.h",
+            "bytes": 717,
+            "digest": "sha256:b4178a57f3711b7013cba747a72a2f178c29fa9364e77d75b2159754072ced43"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_size_t.h",
+            "bytes": 708,
+            "digest": "sha256:d86ddc0238da09b385846ebef814ffc50a44e40cf85d4e3793f485952b7e73ad"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/__stddef_wchar_t.h",
+            "bytes": 853,
+            "digest": "sha256:1900d4998aef3698b06399ed686db0c21e26509b08638a25734fb97ae89b1001"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/limits.h",
+            "bytes": 3695,
+            "digest": "sha256:c4c31a1dc48c734a5de2d3711bced3936d174db0a83bf546713993c27d5c3ac8"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/stdbool.h",
+            "bytes": 1062,
+            "digest": "sha256:a50ba3d832c0bb4faa973612a8c9114a7aa128a2e0a7753b32488860cfa1753d"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/stddef.h",
+            "bytes": 4967,
+            "digest": "sha256:0a560ab70d6dc0428d729d6eb4cc5085a26ba6348cb5c4a87559032bb122dfc6"
+          },
+          {
+            "path": "/Applications/Xcode_16.2.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/16/include/stdint.h",
+            "bytes": 33270,
+            "digest": "sha256:217b5f30a428cb15c1580735c9ca8b2e4d7db3624bfb294a2a8a3e62872ebe9d"
+          },
+          {
+            "path": "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/headers/js_native_api.h",
+            "bytes": 32028,
+            "digest": "sha256:048b4efdcd823f30afd323d61c8aba5be285077f9d790feb52a6fa6382df2541"
+          },
+          {
+            "path": "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/headers/js_native_api_types.h",
+            "bytes": 7033,
+            "digest": "sha256:0410c31e227f81e2981363c4d543f4832ac3df785343ec64cee621742ff8a034"
+          },
+          {
+            "path": "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/headers/node_api.h",
+            "bytes": 10592,
+            "digest": "sha256:d14db85d16f182045c42745a6e44b96e932dfe6e3bfcaac7a1096fae8412c579"
+          },
+          {
+            "path": "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/headers/node_api_types.h",
+            "bytes": 1603,
+            "digest": "sha256:8d5d854088d5725fec9775510e0aeeeb790a41ad083c49bb721d950b86e6bd61"
+          },
+          {
+            "path": "/Users/runner/work/agentscope/agentscope/packages/harnesses/core/native-directory/primitive.c",
+            "bytes": 4499,
+            "digest": "sha256:49f8170f3564584150ea6827d98ca10479537ab5fa329e17086dbc60515be816"
+          }
+        ],
+        "compilerArguments": [
+          "-std=c11",
+          "-O2",
+          "-fPIC",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-I",
+          "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/headers",
+          "-arch",
+          "arm64",
+          "-isysroot",
+          "/Applications/Xcode_16.2.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+          "-mmacosx-version-min=11.0",
+          "-bundle",
+          "-undefined",
+          "dynamic_lookup",
+          "/Users/runner/work/agentscope/agentscope/packages/harnesses/core/native-directory/primitive.c",
+          "-o",
+          "/Users/runner/work/agentscope/agentscope/artifacts/directory-native/darwin-arm64/directory.node"
+        ],
+        "binary": {
+          "bytes": 51680,
+          "digest": "sha256:3697db5a055a8f8c810ea797b479d0ee4ace6a22d7bfcb289140ae9fcbbcb16c"
+        },
+        "staticInspectionDigest": "sha256:e867f27692cc70cc4e7c8b3819c5aa78093a3b576c2e355e1538655b48f5d111",
+        "staticFacts": {
+          "format": "Mach-O",
+          "dependencies": ["/usr/lib/libSystem.B.dylib"],
+          "glibcVersions": [],
+          "minimumOsVersion": "11.0"
+        },
+        "componentProof": "passed",
+        "elapsedMilliseconds": 141355
+      }
+    }
+  ]
+}
