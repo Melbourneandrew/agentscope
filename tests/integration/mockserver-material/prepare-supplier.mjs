@@ -63,6 +63,7 @@ const dockerfile = Buffer.from(
     "WORKDIR /supplier",
     "COPY --chmod=0600 *.mjs /supplier/command/",
     "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+    'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/supplier/maven-repository\', \'/supplier/npm-cache\']) mkdirSync(path, { mode: 0o700 });"]',
     "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
     "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
     'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',

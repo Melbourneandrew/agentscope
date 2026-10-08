@@ -2,17 +2,22 @@ import { createHash } from "node:crypto";
 import type * as NodeFs from "node:fs";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const stderr = vi.hoisted(() => vi.fn((bytes: Uint8Array) => bytes.byteLength));
+const cacheRootInstruction =
+  'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/supplier/maven-repository\', \'/supplier/npm-cache\']) mkdirSync(path, { mode: 0o700 });"]';
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>();
   return {
@@ -157,6 +162,10 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
       ]);
       expect(source).not.toContain("/out/material.json");
+      expect(source.indexOf(cacheRootInstruction)).toBeGreaterThan(0);
+      expect(source.indexOf(cacheRootInstruction)).toBeLessThan(
+        source.indexOf("COPY --from=supplier /supplier/maven-repository"),
+      );
       expect(source).toContain(
         "COPY --from=offline --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
       );
@@ -192,6 +201,66 @@ describe("connected supplier research under inherited lifecycle (synthetic build
       }),
     ).rejects.toBe(state.primary);
     expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+});
+
+describe("fresh offline cache destination construction", () => {
+  it("executes the fixed emitted mkdir program before copying contents and refuses existing roots", async () => {
+    const input = fixture();
+    let program = "";
+    state.afterBuild = () => {
+      const source = readFileSync(
+        resolve(state.builds[0]?.context as string, "Supplier.Dockerfile"),
+        "utf8",
+      );
+      const instruction = source
+        .split("\n")
+        .find((line) => line.includes("mkdirSync"));
+      expect(instruction).toBe(cacheRootInstruction);
+      const argv = JSON.parse(
+        instruction!.slice("RUN --network=none ".length),
+      ) as string[];
+      expect(argv.slice(0, 3)).toEqual([
+        "/usr/local/bin/node",
+        "--input-type=module",
+        "-e",
+      ]);
+      program = argv[3]!.replace("import { mkdirSync } from 'node:fs'; ", "");
+    };
+    await researchMockServerSupplier(input as never);
+    for (const existing of [false, true]) {
+      const root = mkdtempSync(resolve(tmpdir(), "agentscope-cache-roots-"));
+      roots.push(root);
+      if (existing)
+        mkdirSync(resolve(root, "maven-repository"), { mode: 0o755 });
+      const calls: string[] = [];
+      const execute = () => {
+        runInNewContext(program, {
+          mkdirSync: (path: string, options: { mode: number }) => {
+            expect(options).toEqual({ mode: 0o700 });
+            expect(path).toMatch(/^\/supplier\/(maven-repository|npm-cache)$/u);
+            calls.push(path);
+            mkdirSync(resolve(root, path.slice("/supplier/".length)), options);
+          },
+        });
+      };
+      if (existing) {
+        expect(execute).toThrow();
+        expect(calls).toEqual(["/supplier/maven-repository"]);
+        expect(statSync(resolve(root, "maven-repository")).mode & 0o777).toBe(
+          0o755,
+        );
+        expect(existsSync(resolve(root, "npm-cache"))).toBe(false);
+      } else {
+        execute();
+        expect(calls).toEqual([
+          "/supplier/maven-repository",
+          "/supplier/npm-cache",
+        ]);
+        for (const name of ["maven-repository", "npm-cache"])
+          expect(statSync(resolve(root, name)).mode & 0o777).toBe(0o700);
+      }
+    }
   });
 });
 describe("supplier research staging and cleanup", () => {
@@ -238,6 +307,7 @@ describe("supplier research staging and cleanup", () => {
         "WORKDIR /supplier",
         "COPY --chmod=0600 *.mjs /supplier/command/",
         "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+        cacheRootInstruction,
         "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
         "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
         'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',
