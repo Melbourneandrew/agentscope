@@ -1332,9 +1332,33 @@ describe("operational state failures", () => {
 describe("operational state writer lock", () => {
   it("serializes independent stores with an exclusive cross-process lock", async () => {
     const home = await homeFixture();
+    const lock = join(home.healthDirectory, "operational-state.lock");
+    let acknowledgeHeld!: () => void;
+    let releaseHeld!: () => void;
+    const held = new Promise<void>((resolve) => {
+      acknowledgeHeld = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    let pauseDirectorySync = true;
     const first = createOperationalStateStoreForTesting({
       home,
       owner,
+      fileSystem: {
+        open: async (path, flags, mode) => {
+          // acquireLock writes, fsyncs, and closes its exact record before this
+          // directory sync. Hold it here so contention cannot become sequential.
+          if (path === home.healthDirectory && pauseDirectorySync) {
+            pauseDirectorySync = false;
+            acknowledgeHeld();
+            await released;
+          }
+          return nodeOpen(path, flags, mode);
+        },
+        rename: nodeRename,
+        unlink: nodeUnlink,
+      },
       randomId: () => "1".repeat(32),
     });
     const second = createOperationalStateStoreForTesting({
@@ -1347,15 +1371,42 @@ describe("operational state writer lock", () => {
       severity: "info" as const,
       configurationGeneration: 0,
     };
-    const results = await Promise.all([
-      recordSanitizedDiagnostic(first, input),
-      recordSanitizedDiagnostic(second, input),
-    ]);
-    expect(results.map((result) => result.code).sort()).toEqual([
-      "recorded",
-      "unavailable",
-    ]);
+    const winner = recordSanitizedDiagnostic(first, input);
+    try {
+      await Promise.race([
+        held,
+        winner.then(() => {
+          throw new Error("writer completed before its lock was held");
+        }),
+      ]);
+      const expectedLock = `${JSON.stringify({ version: 1, owner, token: "1".repeat(32) })}\n`;
+      await expect(readFile(lock, "utf8")).resolves.toBe(expectedLock);
+      await expect(
+        recordSanitizedDiagnostic(second, input),
+      ).resolves.toMatchObject({
+        recorded: false,
+        code: "unavailable",
+      });
+      await expect(readFile(lock, "utf8")).resolves.toBe(expectedLock);
+    } finally {
+      releaseHeld();
+      await winner;
+    }
+    await expect(winner).resolves.toMatchObject({
+      recorded: true,
+      code: "recorded",
+    });
     expect((await inspectOperationalState(first)).diagnostics).toHaveLength(1);
+    await expect(
+      recordSanitizedDiagnostic(second, input),
+    ).resolves.toMatchObject({
+      recorded: true,
+      code: "recorded",
+    });
+    expect((await inspectOperationalState(second)).diagnostics).toHaveLength(2);
+    await expect(readFile(lock, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("inspects and repairs only a dead operational writer lock", async () => {
