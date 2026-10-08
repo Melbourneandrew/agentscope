@@ -2,6 +2,7 @@
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { types } from "node:util";
+import { parseMavenFailureObservation } from "./image-preparation/process-output.mjs";
 
 const stages = [
   "unknown",
@@ -277,8 +278,42 @@ export const publishBootstrapGpgObservation = (
   );
   const invalidSupplierFamily =
     observedStage.startsWith("supplier-") && observedFamily !== "none";
+  const maven = own(processObservation, "untrustedMavenFailure");
+  const exit = own(maven, "exitCode"),
+    signal = own(maven, "signal");
+  const disposition = own(maven, "disposition");
+  const numbers = ["goal", "unit", "line", "column", "reason"].map((key) =>
+    own(maven, key),
+  );
+  const mavenTuple =
+    typeof maven === "object" &&
+    maven !== null &&
+    !types.isProxy(maven) &&
+    Reflect.ownKeys(maven).length === 8 &&
+    typeof disposition === "string" &&
+    numbers.every(Number.isInteger) &&
+    (exit === null || Number.isInteger(exit)) &&
+    (signal === null ||
+      ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].includes(signal))
+      ? [
+          disposition,
+          exit === null ? 0 : exit + 1,
+          signal === null
+            ? 0
+            : ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].indexOf(signal) + 1,
+          ...numbers,
+        ].join(",")
+      : "unknown";
+  const validMaven =
+    !invalidSupplierFamily &&
+    observedFamily === "none" &&
+    /^supplier-(?:connected-)?package-(?:compilation|resolution|frontend|other)$/u.test(
+      observedStage,
+    ) &&
+    parseMavenFailureObservation(mavenTuple);
   append(
     [
+      ["untrusted_maven_failure", validMaven ? mavenTuple : "unknown"],
       [
         "untrusted_builder_operation",
         selected(own(diagnostic, "operationKind"), [

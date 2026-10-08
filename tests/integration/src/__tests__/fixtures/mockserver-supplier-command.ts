@@ -23,6 +23,18 @@ const state = vi.hoisted(() => ({
   timestamp: 0,
 }));
 export { state };
+export const phases = Object.freeze([
+  "supplier-entry",
+  "supplier-extract",
+  "supplier-package",
+  "supplier-inventory",
+]);
+export const supplierMarker = (
+  stage: string,
+  connected = false,
+  detail = stage.endsWith("package-other") ? "absent,0,0,0,0,0,0,0" : "",
+) =>
+  `[agentscope-material:v1 stage=${connected ? stage.replace("supplier-", "supplier-connected-") : stage} family=none${detail ? ` maven=${detail}` : ""}]\n`;
 const issueMatches = (cache: boolean, artifact: boolean, issue: string) =>
   (cache && state.cacheIssue === issue) ||
   (artifact && state.artifactIssue === issue);
@@ -186,6 +198,10 @@ export const workerSource = fs.readFileSync(
   new URL("../../../mockserver-material/supplier-command.mjs", import.meta.url),
   "utf8",
 );
+export const classifyPackageFailure = runInNewContext(
+  `${workerSource.slice(workerSource.indexOf("const mavenGoals ="), workerSource.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
+  { types, Buffer, lifecycleSourcePins, maximumOutputBytes: 8 * 1024 * 1024 },
+) as (error: unknown) => (string | number)[];
 export const privateWorker = runInNewContext(
   `${workerSource.slice(workerSource.indexOf("const environment ="), workerSource.indexOf("export const runMockServerSupplierResearch"))}\nrunSupplier`,
   {

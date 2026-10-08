@@ -88,7 +88,66 @@ const familyFor = (stage) =>
             ? "none"
             : "gpg-execution";
 
+/** Closed, untrusted package observation; never executable/output content. */
+export const parseMavenFailureObservation = (value) => {
+  if (typeof value !== "string" || value.length > 96) return undefined;
+  const fields = value.split(",");
+  if (
+    fields.length !== 8 ||
+    !["absent", "overflow", "ambiguous", "unlisted", "identified"].includes(
+      fields[0],
+    )
+  )
+    return undefined;
+  const numbers = fields
+    .slice(1)
+    .map((field) =>
+      /^(?:0|[1-9][0-9]{0,5})$/u.test(field) ? Number(field) : -1,
+    );
+  if (
+    numbers.some(
+      (number, index) =>
+        number < 0 || number > [256, 4, 12, 6, 999999, 999999, 6][index],
+    )
+  )
+    return undefined;
+  const [exit, signal, goal, unit, line, column, reason] = numbers;
+  if (
+    (unit === 0 && (line || column || reason)) ||
+    (unit !== 0 && (!line || !column || !reason))
+  )
+    return undefined;
+  if (
+    fields[0] === "identified"
+      ? !goal && !unit
+      : fields[0] === "ambiguous"
+        ? unit
+        : goal || unit
+  )
+    return undefined;
+  return Object.freeze({
+    disposition: fields[0],
+    exitCode: exit === 0 ? null : exit - 1,
+    signal:
+      signal === 0
+        ? null
+        : ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"][signal - 1],
+    goal,
+    unit,
+    line,
+    column,
+    reason,
+  });
+};
+
 /** Untrusted text observation only; neither markers nor absence grant authority. */
+const validMavenMarker = (stage, family, tuple) =>
+  tuple === undefined ||
+  (/^supplier-(?:connected-)?package-(?:compilation|resolution|frontend|other)$/u.test(
+    stage,
+  ) &&
+    family === "none" &&
+    parseMavenFailureObservation(tuple) !== undefined);
 export const createBuildStderrObservation = () => {
   const prefix = Buffer.alloc(maximumHeaderBytes);
   const pending = Buffer.alloc(maximumHeaderBytes);
@@ -101,12 +160,13 @@ export const createBuildStderrObservation = () => {
   let ambiguous = false;
   let stage = "unknown";
   let family = "unknown";
+  let mavenFailure;
   const originalLines = new Set();
   const replayedLines = new Set();
   const line = () => {
     if (!candidate) return false;
     const match =
-      /^(?:(#\d{1,8} )?(\d{1,8}\.\d{1,6}) )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)\]$/u.exec(
+      /^(?:(#\d{1,8} )?(\d{1,8}\.\d{1,6}) )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)(?: maven=([a-z0-9,]+))?\]$/u.exec(
         suffix,
       );
     if (
@@ -115,12 +175,13 @@ export const createBuildStderrObservation = () => {
       !bootstrapStages.includes(match[3]) ||
       !bootstrapFamilies.includes(match[4]) ||
       (supplierStages.includes(match[3]) && match[4] !== "none") ||
-      (match[4] !== "none" && match[4] !== familyFor(match[3]))
+      (match[4] !== "none" && match[4] !== familyFor(match[3])) ||
+      !validMavenMarker(match[3], match[4], match[5])
     ) {
       ambiguous = true;
       return false;
     }
-    const identity = `${match[2]} ${match[3]} ${match[4]}`;
+    const identity = `${match[2]} ${match[3]} ${match[4]} ${match[5] ?? ""}`;
     // Plain BuildKit repeats failed-vertex logs without their #vertex prefix.
     // Only an exact previously observed timestamp/enum tuple is a replay;
     // it cannot advance the observation or introduce another marker value.
@@ -141,6 +202,7 @@ export const createBuildStderrObservation = () => {
     }
     stage = match[3];
     family = match[4];
+    mavenFailure = parseMavenFailureObservation(match[5]);
     if (match[1] !== undefined) originalLines.add(identity);
     return true;
   };
@@ -194,6 +256,9 @@ export const createBuildStderrObservation = () => {
           ? {
               untrustedBootstrapStage: stage,
               untrustedBootstrapFailureFamily: family,
+              ...(mavenFailure === undefined
+                ? {}
+                : { untrustedMavenFailure: mavenFailure }),
             }
           : {};
       return Object.freeze({
