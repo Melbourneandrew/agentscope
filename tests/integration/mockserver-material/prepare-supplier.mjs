@@ -74,22 +74,23 @@ const dockerfile = Buffer.from(
 );
 const reserve = 6_000;
 const serviceDockerfile = Buffer.from(
-  dockerfile
-    .toString("utf8")
-    .replace('"dependency-research"]', '"cache-seeding"]')
-    .replace('"offline-build"]', '"service-offline"]')
-    .replace(
-      "FROM scratch\nCOPY --from=offline --chmod=0644 /out/material.json /material.json",
-      [
-        "FROM ${BASE_IMAGE}",
-        "COPY --from=offline /supplier/tools/jdk-17.0.20.1+1 /opt/java",
-        "COPY --from=offline --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
-        "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
-        "COPY --chmod=0444 expectations.json /config/expectations.json",
-        "USER 0:0",
-        'ENTRYPOINT ["/bin/sh", "-ec", "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080"]',
-      ].join("\n"),
-    ),
+  [
+    ...dockerfile
+      .toString("utf8")
+      .split("\n")
+      .slice(0, 6)
+      .map((line) =>
+        line.replace('"dependency-research"]', '"cache-seeding"]'),
+      ),
+    "FROM ${BASE_IMAGE}",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java",
+    "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+    "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
+    "COPY --chmod=0444 expectations.json /config/expectations.json",
+    "USER 0:0",
+    'ENTRYPOINT ["/bin/sh", "-ec", "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080"]',
+    "",
+  ].join("\n"),
 );
 const fail = () => {
   throw new Error("integration.mockserver-material.supplier");
