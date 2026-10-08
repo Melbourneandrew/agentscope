@@ -24,7 +24,9 @@ import {
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { patchCallbackSource } from "./callback-patch.mjs";
 import {
+  firstSupplierCheckstyleObservation,
   lifecycleSourcePins,
+  supplierSourceUnit,
   patchMockServerLifecycleSource,
 } from "./lifecycle-patch.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
@@ -124,6 +126,10 @@ const packageFailureRecord = (error) => {
       record[3] = mavenGoals.indexOf(goal[1]) + 1;
       record[0] = record[3] === 0 ? "unlisted" : "identified";
     }
+    if (record[3] === 5) {
+      record.splice(4, 4, ...firstSupplierCheckstyleObservation(text));
+      return record;
+    }
     const [compiler, secondCompiler] = text.matchAll(
       /^\[ERROR\] \/[^\r\n]*\/([A-Za-z]+\.java):\[([0-9]{1,6}),([0-9]{1,6})\] ([^\r\n]*)$/gmu,
     );
@@ -134,9 +140,7 @@ const packageFailureRecord = (error) => {
     }
     if (compiler !== undefined) {
       const [, file, line, column, reason] = compiler;
-      const unit =
-        lifecycleSourcePins.findIndex((pin) => pin.path.endsWith(`/${file}`)) +
-        1;
+      const unit = supplierSourceUnit(file);
       const category =
         javacReasons.findIndex(
           (value) => reason === value || reason.startsWith(`${value}:`),

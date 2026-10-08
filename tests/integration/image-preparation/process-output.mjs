@@ -107,14 +107,15 @@ export const parseMavenFailureObservation = (value) => {
   if (
     numbers.some(
       (number, index) =>
-        number < 0 || number > [256, 4, 12, 6, 999999, 999999, 6][index],
+        number < 0 || number > [256, 4, 12, 6, 999999, 999999, 21][index],
     )
   )
     return undefined;
   const [exit, signal, goal, unit, line, column, reason] = numbers;
   if (
     (unit === 0 && (line || column || reason)) ||
-    (unit !== 0 && (!line || !column || !reason))
+    (unit !== 0 &&
+      (!line || !reason || (goal === 5 ? reason > 21 : !column || reason > 6)))
   )
     return undefined;
   if (

@@ -15,3 +15,8 @@ export function patchMockServerLifecycleSource(
   name: string,
   input: Uint8Array,
 ): string;
+export const supplierCheckstyleRules: readonly string[];
+export function supplierSourceUnit(file: string): number;
+export function firstSupplierCheckstyleObservation(
+  text: string,
+): readonly [number, number, number, number];

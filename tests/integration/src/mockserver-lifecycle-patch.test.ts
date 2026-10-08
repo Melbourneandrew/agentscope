@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
+import { spawnSync } from "node:child_process";
+import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 import {
+  parseMavenFailureObservation,
+  createBuildStderrObservation,
+} from "../image-preparation/process-output.mjs";
+import {
   lifecycleSourcePins,
+  supplierSourceUnit,
+  supplierCheckstyleRules,
+  firstSupplierCheckstyleObservation,
   patchMockServerLifecycleSource,
 } from "../mockserver-material/lifecycle-patch.mjs";
 
@@ -10,10 +20,36 @@ const source = readFileSync(
   new URL("../mockserver-material/lifecycle-patch.mjs", import.meta.url),
   "utf8",
 );
+const worker = readFileSync(
+  new URL("../mockserver-material/supplier-command.mjs", import.meta.url),
+  "utf8",
+);
+const classifyStyleFailure = runInNewContext(
+  `${worker.slice(worker.indexOf("const mavenGoals ="), worker.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
+  {
+    types,
+    Buffer,
+    lifecycleSourcePins,
+    supplierSourceUnit,
+    firstSupplierCheckstyleObservation,
+    maximumOutputBytes: 8 * 1024 * 1024,
+  },
+) as (error: unknown) => (string | number)[];
+const styleGoal =
+  "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check (default) on project mockserver-core:";
+const styleError = (text: string) =>
+  Object.assign(new Error("PRIVATE_CANARY"), {
+    stdout: "",
+    stderr: text,
+    code: 1,
+    signal: null,
+  });
+const classifyStyleConsole = (text: string) =>
+  classifyStyleFailure(styleError(`${styleGoal}\n${text}`)).join(",");
 // Execute the actual transformations against narrow synthetic preimages. This
 // does not authenticate synthetic bytes or execute upstream Java.
 const patches = runInNewContext(
-  `${source.slice(source.indexOf("const root ="), source.indexOf("export const patchMockServerLifecycleSource")).replace("export const lifecycleSourcePins", "const lifecycleSourcePins")}\npatches`,
+  `${source.slice(source.indexOf("const root ="), source.indexOf("export const patchMockServerLifecycleSource")).replaceAll("export const ", "const ")}\npatches`,
 ) as Record<
   | "eventLog"
   | "persistence"
@@ -138,6 +174,173 @@ describe("pinned upstream final-ledger lifecycle transformations", () => {
     ).toThrow();
     expect(() => patches.requestHandler(`${input}\n${input}`)).toThrow();
   });
+});
+
+describe("source-bound Checkstyle failure observations", () => {
+  it("pins the authenticated configuration's rule types, not its instance count", () => {
+    const configured = [
+      "FileTabCharacter",
+      "RegexpSingleline",
+      "RegexpSingleline",
+      "RedundantImport",
+      "UnusedImports",
+      "CustomImportOrder",
+      "PackageName",
+      "StaticVariableNameCheck",
+      "MemberNameCheck",
+      "MethodNameCheck",
+      "LeftCurly",
+      "RightCurly",
+      "NeedBraces",
+      "UpperEll",
+      "EmptyCatchBlock",
+      "RegexpSinglelineJava",
+      "FallThrough",
+      "WhitespaceAround",
+      "WhitespaceAfter",
+      "NoWhitespaceAfter",
+      "NoWhitespaceBefore",
+      "ParenPad",
+    ].map((name) => name.replace(/Check$/u, ""));
+    expect(supplierCheckstyleRules).toEqual([...new Set(configured)]);
+    expect(supplierCheckstyleRules).toHaveLength(21);
+    expect(Object.isFrozen(supplierCheckstyleRules)).toBe(true);
+  });
+  it.each(
+    supplierCheckstyleRules.map((rule, index) => [rule, index + 1] as const),
+  )("retains only contextual rule ordinal %s", (rule, ordinal) => {
+    const tuple = classifyStyleConsole(
+      `[ERROR] /PRIVATE_CANARY/HttpState.java:999999:0: PRIVATE_CANARY [${rule}]`,
+    );
+    expect(tuple).toBe(`identified,2,0,5,3,999999,0,${ordinal}`);
+    expect(parseMavenFailureObservation(tuple)).toMatchObject({
+      goal: 5,
+      unit: 3,
+      line: 999999,
+      column: 0,
+      reason: ordinal,
+    });
+    const observer = createBuildStderrObservation();
+    observer.consume(
+      Buffer.from(
+        `[agentscope-material:v1 stage=supplier-connected-package-other family=none maven=${tuple}]\n`,
+      ),
+    );
+    expect(JSON.stringify(observer.snapshot())).not.toContain("PRIVATE_CANARY");
+  });
+  it.each(
+    lifecycleSourcePins.map(
+      (pin, index) => [pin.path.split("/").at(-1)!, index + 1] as const,
+    ),
+  )("preserves the exact known-source lookup for %s", (file, ordinal) => {
+    expect(supplierSourceUnit(file)).toBe(ordinal);
+    expect(
+      firstSupplierCheckstyleObservation(
+        `[ERROR] /PRIVATE_CANARY/${file}:1: PRIVATE_CANARY [NeedBraces]`,
+      ),
+    ).toEqual([ordinal, 1, 0, 12]);
+  });
+  it("selects first supported observation, not first overall or the complete set", () => {
+    const unknown =
+      "[ERROR] /PRIVATE_CANARY/Unknown.java:1:1: PRIVATE_CANARY [Unknown]";
+    const first =
+      "[ERROR] /PRIVATE_CANARY/HttpState.java:2:3: PRIVATE_CANARY [NeedBraces]";
+    const later =
+      "[ERROR] /PRIVATE_CANARY/LifeCycle.java:4:5: PRIVATE_CANARY [RightCurly]";
+    for (const text of [
+      `${unknown}\n${first}\n${later}`,
+      `${first}\n${first}\n${later}`,
+    ])
+      expect(
+        classifyStyleFailure(styleError(`${text}\n${styleGoal}`)).join(","),
+      ).toBe("identified,2,0,5,3,2,3,12");
+    expect(
+      classifyStyleFailure(styleError(`${unknown}\n${styleGoal}`)).join(","),
+    ).toBe("identified,2,0,5,0,0,0,0");
+    expect(
+      classifyStyleFailure(
+        styleError(`${styleGoal}\n${styleGoal}\n${first}`),
+      )[0],
+    ).toBe("ambiguous");
+    expect(classifyStyleFailure(styleError(first))[0]).toBe("absent");
+    expect(supplierSourceUnit("Unknown.java")).toBe(0);
+  });
+  it.each([
+    "[ERROR] /private/HttpState.java:0:1: hidden [NeedBraces]",
+    "[ERROR] /private/HttpState.java:1000000:1: hidden [NeedBraces]",
+    "[ERROR] /private/HttpState.java:1:1000000: hidden [NeedBraces]",
+    "[ERROR] /private/HttpState.java:1:-1: hidden [NeedBraces]",
+    "[ERROR] /private/HttpState.java:1:1: hidden [Unknown]",
+    "[ERROR] /private/HttpState.java:1:1: hidden [NeedBraces] extra",
+  ])("refuses malformed/unsupported observation %s", (text) => {
+    expect(firstSupplierCheckstyleObservation(text)).toEqual([0, 0, 0, 0]);
+    expect(classifyStyleConsole(text)).toBe("identified,2,0,5,0,0,0,0");
+  });
+  it.each([
+    "identified,2,0,5,3,1,0,21",
+    "identified,2,0,5,3,1,1,22",
+    "identified,2,0,4,3,1,1,21",
+    "identified,2,0,4,3,1,0,1",
+  ])("binds rule maxima and zero columns to goal 5 only: %s", (tuple) => {
+    expect(parseMavenFailureObservation(tuple) !== undefined).toBe(
+      tuple.endsWith(",0,21"),
+    );
+  });
+});
+describe("actual optional Maven publisher block", () => {
+  it.each([
+    ["identified,2,0,3,0,0,0,0", true],
+    ["ambiguous,2,0,3,0,0,0,0", true],
+    ["overflow,0,0,0,0,0,0,0", true],
+    ["identified,257,0,3,0,0,0,0", false],
+    ["absent,2,0,3,0,0,0,0", false],
+    ["identified,2,0,3,0,0,0,0,extra", false],
+    ["identified,2,0,3,0,0,0,0\nCANARY", false],
+    ["$(exit 8)", false],
+    ["identified,2,0,5,3,42,0,21", true],
+    ["identified,2,0,5,3,42,1,22", false],
+    ["identified,2,0,4,3,42,1,21", false],
+    ["identified,2,0,4,3,42,0,1", false],
+  ])(
+    "actual workflow retains only canonical Maven tuple %s",
+    (tuple, valid) => {
+      const workflow = parseYaml(
+        readFileSync(
+          new URL(
+            "../../../.github/workflows/integration.yml",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ) as {
+        jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
+      };
+      const script = workflow.jobs["mockserver-supplier-research"]!.steps.find(
+        (step) => step.name === "Project closed research shell observations",
+      )!.run!;
+      const result = spawnSync(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-e", "-c", script],
+        {
+          encoding: "utf8",
+          timeout: 2000,
+          maxBuffer: 4096,
+          env: {
+            OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE:
+              "supplier-connected-package-other",
+            OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: "none",
+            OBSERVED_UNTRUSTED_MAVEN_FAILURE: String(tuple),
+          },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(
+        `untrusted_maven_failure=${valid ? tuple : "unknown"}`,
+      );
+      expect(result.stdout).not.toContain("CANARY");
+    },
+  );
 });
 describe("single upstream received-request capture and closure", () => {
   it("closes the sole publisher, preserves the bounded consumer join, and snapshots every received request before clear", () => {

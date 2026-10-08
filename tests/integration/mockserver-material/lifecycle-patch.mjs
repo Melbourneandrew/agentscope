@@ -1,4 +1,4 @@
-/** Pinned upstream stop/capture patch; no listener, parser or control protocol. */
+/** Pinned stop/capture patch and source-style observations; no control authority. */
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 
@@ -41,6 +41,46 @@ export const lifecycleSourcePins = Object.freeze([
     sha256: "f8953a1c8405fe31d9956e47dc9f9fe4efefbf9dc1d449ebbb83ad9ff1d4e7a6",
   }),
 ]);
+// Pinned checkstyle.xml rule types, not configured instance counts. The two
+// RegexpSingleline instances share one type ordinal; messages never escape.
+export const supplierCheckstyleRules = Object.freeze([
+  "FileTabCharacter",
+  "RegexpSingleline",
+  "RedundantImport",
+  "UnusedImports",
+  "CustomImportOrder",
+  "PackageName",
+  "StaticVariableName",
+  "MemberName",
+  "MethodName",
+  "LeftCurly",
+  "RightCurly",
+  "NeedBraces",
+  "UpperEll",
+  "EmptyCatchBlock",
+  "RegexpSinglelineJava",
+  "FallThrough",
+  "WhitespaceAround",
+  "WhitespaceAfter",
+  "NoWhitespaceAfter",
+  "NoWhitespaceBefore",
+  "ParenPad",
+]);
+export const supplierSourceUnit = (file) =>
+  lifecycleSourcePins.findIndex((pin) => pin.path.endsWith(`/${file}`)) + 1;
+/** First supported observation, not first overall or an exhaustive violation set. */
+export const firstSupplierCheckstyleObservation = (text) => {
+  for (const match of text.matchAll(
+    /^(?:\[INFO\] )?\[ERROR\] \/[^\r\n]*\/([A-Za-z]+\.java):([1-9][0-9]{0,5})(?::(0|[1-9][0-9]{0,5}))?: [^\r\n]* \[([A-Za-z]+)\]$/gmu,
+  )) {
+    const [, file, line, column, rule] = match;
+    const unit = supplierSourceUnit(file);
+    const reason = supplierCheckstyleRules.indexOf(rule) + 1;
+    if (unit && reason && Number(line) > 0)
+      return Object.freeze([unit, Number(line), Number(column ?? 0), reason]);
+  }
+  return Object.freeze([0, 0, 0, 0]);
+};
 const fail = () => {
   throw new Error("integration.mockserver-material.lifecycle-preimage");
 };
