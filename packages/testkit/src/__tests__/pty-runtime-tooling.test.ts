@@ -755,13 +755,9 @@ describe("PTY authenticated build-material tooling", () => {
     ).toThrow(/identity/u);
   });
 
-  // All mutation oracles remain adjacent to the one exact positive patch.
+  // Literal authority checks remain adjacent to independently bounded mutations.
   // eslint-disable-next-line max-lines-per-function
   it("pins deadline, descriptor, cleanup, and close authority", () => {
-    const source = readFileSync(
-      resolve(packageRoot, "../../third_party/node-pty/src/unix/pty.cc"),
-      "utf8",
-    );
     const patch = readFileSync(
       resolve(
         packageRoot,
@@ -773,14 +769,6 @@ describe("PTY authenticated build-material tooling", () => {
       resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
       "utf8",
     );
-    const apply = (candidatePatch: string) =>
-      evaluate(
-        `const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString());`,
-        [
-          Buffer.from(source).toString("base64"),
-          Buffer.from(candidatePatch).toString("base64"),
-        ],
-      );
     expect(patch).toContain(
       "+          fcntl(interpreter_fd, F_SETFD, interpreter_flags & ~FD_CLOEXEC) == -1 ||",
     );
@@ -897,85 +885,6 @@ describe("PTY authenticated build-material tooling", () => {
     expect(patch.indexOf("+  int exec_status[2]")).toBeGreaterThan(
       patch.indexOf("+    argument_values.push_back(std::move(argument));"),
     );
-    expect(() =>
-      apply(
-        patch.replace(
-          "interpreter_flags & ~FD_CLOEXEC",
-          "interpreter_flags | FD_CLOEXEC",
-        ),
-      ),
-    ).toThrow(/identity/u);
-    expect(() =>
-      apply(
-        patch.replace(
-          "candidate == exec_status_fd ||",
-          "candidate == directory_fd ||",
-        ),
-      ),
-    ).toThrow(/identity/u);
-    for (const [needle, replacement] of [
-      [
-        "(interpreter_descriptor_flags & FD_CLOEXEC) == 0",
-        "interpreter_descriptor_flags == -2",
-      ],
-      [
-        "(script_descriptor_flags & FD_CLOEXEC) == 0",
-        "script_descriptor_flags == -2",
-      ],
-      [
-        "pty_exec_succeeded(exec_status[0], deadline, &failure)",
-        "pty_exec_succeeded(exec_status[0], UINT64_MAX, &failure)",
-      ],
-      ["getpid() != 1", "getpid() != 2"],
-      ["identity.parent != 1", "identity.parent != 2"],
-      ["identity.state != 'Z'", "identity.state == 'Z'"],
-      ["adjacent.parent != 1", "adjacent.parent != 2"],
-      ["adjacent.state != 'Z'", "adjacent.state == 'Z'"],
-      ["pty_take_test_fault(19)", "pty_take_test_fault(18)"],
-      ["pty_take_test_fault(21)", "pty_take_test_fault(20)"],
-      [
-        "waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG)",
-        "waitpid(-1, nullptr, WNOHANG)",
-      ],
-      [
-        "pty_join_failed_child(pid, &master, &exec_status[0], deadline)",
-        "pty_join_failed_child(pid, nullptr, nullptr, deadline)",
-      ],
-      ["handle->fd = -1;", "handle->fd = fd;"],
-      [
-        "pty_remaining_milliseconds(handle->deadline) == 0",
-        "pty_remaining_milliseconds(UINT64_MAX) == 0",
-      ],
-      [
-        "#if defined(AGENTSCOPE_PTY_TEST_FAULTS)",
-        "#if defined(AGENTSCOPE_PTY_FAULTS)",
-      ],
-      [
-        "pty_remaining_milliseconds(deadline) == 0) {",
-        "pty_remaining_milliseconds(UINT64_MAX) == 0) {",
-      ],
-      [
-        "tsfn_created && tsfn.Release() != napi_ok",
-        "tsfn_created && napi_ok != napi_ok",
-      ],
-      [
-        "TerminalHandle *slave_handle = nullptr;",
-        "TerminalHandle *slave_handle = master_handle;",
-      ],
-      ["uint32_t envc_unsigned", "int envc_unsigned"],
-      [
-        "memchr(pair_buffer, '\\0', pair_bytes)",
-        "memchr(pair_buffer, 'x', pair_bytes)",
-      ],
-      [
-        "memchr(argument_buffer, '\\0', argument_bytes)",
-        "memchr(argument_buffer, 'x', argument_bytes)",
-      ],
-    ] as const) {
-      expect(() => apply(patch.replace(needle, replacement))).toThrow(
-        /identity/u,
-      );
-    }
     const build = readFileSync(
       resolve(packageRoot, "scripts/build-pty-runtime.mjs"),
       "utf8",
@@ -987,5 +896,88 @@ describe("PTY authenticated build-material tooling", () => {
       '"18bc800a4dcf564822df1ca0bedd18adfd3fe602669218933d39723e12686727"',
     );
     expect(build).toContain('process.argv[2] !== "--glibc"');
+  });
+
+  it.each([
+    ["interpreter_flags & ~FD_CLOEXEC", "interpreter_flags | FD_CLOEXEC"],
+    ["candidate == exec_status_fd ||", "candidate == directory_fd ||"],
+    [
+      "(interpreter_descriptor_flags & FD_CLOEXEC) == 0",
+      "interpreter_descriptor_flags == -2",
+    ],
+    [
+      "(script_descriptor_flags & FD_CLOEXEC) == 0",
+      "script_descriptor_flags == -2",
+    ],
+    [
+      "pty_exec_succeeded(exec_status[0], deadline, &failure)",
+      "pty_exec_succeeded(exec_status[0], UINT64_MAX, &failure)",
+    ],
+    ["getpid() != 1", "getpid() != 2"],
+    ["identity.parent != 1", "identity.parent != 2"],
+    ["identity.state != 'Z'", "identity.state == 'Z'"],
+    ["adjacent.parent != 1", "adjacent.parent != 2"],
+    ["adjacent.state != 'Z'", "adjacent.state == 'Z'"],
+    ["pty_take_test_fault(19)", "pty_take_test_fault(18)"],
+    ["pty_take_test_fault(21)", "pty_take_test_fault(20)"],
+    [
+      "waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG)",
+      "waitpid(-1, nullptr, WNOHANG)",
+    ],
+    [
+      "pty_join_failed_child(pid, &master, &exec_status[0], deadline)",
+      "pty_join_failed_child(pid, nullptr, nullptr, deadline)",
+    ],
+    ["handle->fd = -1;", "handle->fd = fd;"],
+    [
+      "pty_remaining_milliseconds(handle->deadline) == 0",
+      "pty_remaining_milliseconds(UINT64_MAX) == 0",
+    ],
+    [
+      "#if defined(AGENTSCOPE_PTY_TEST_FAULTS)",
+      "#if defined(AGENTSCOPE_PTY_FAULTS)",
+    ],
+    [
+      "pty_remaining_milliseconds(deadline) == 0) {",
+      "pty_remaining_milliseconds(UINT64_MAX) == 0) {",
+    ],
+    [
+      "tsfn_created && tsfn.Release() != napi_ok",
+      "tsfn_created && napi_ok != napi_ok",
+    ],
+    [
+      "TerminalHandle *slave_handle = nullptr;",
+      "TerminalHandle *slave_handle = master_handle;",
+    ],
+    ["uint32_t envc_unsigned", "int envc_unsigned"],
+    [
+      "memchr(pair_buffer, '\\0', pair_bytes)",
+      "memchr(pair_buffer, 'x', pair_bytes)",
+    ],
+    [
+      "memchr(argument_buffer, '\\0', argument_bytes)",
+      "memchr(argument_buffer, 'x', argument_bytes)",
+    ],
+  ] as const)("rejects authority patch mutation %s", (needle, replacement) => {
+    const source = readFileSync(
+      resolve(packageRoot, "../../third_party/node-pty/src/unix/pty.cc"),
+      "utf8",
+    );
+    const patch = readFileSync(
+      resolve(
+        packageRoot,
+        "../../third_party/node-pty/patches/agentscope-terminal-authority.patch",
+      ),
+      "utf8",
+    );
+    expect(() =>
+      evaluate(
+        `const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString());`,
+        [
+          Buffer.from(source).toString("base64"),
+          Buffer.from(patch.replace(needle, replacement)).toString("base64"),
+        ],
+      ),
+    ).toThrow(/identity/u);
   });
 });
