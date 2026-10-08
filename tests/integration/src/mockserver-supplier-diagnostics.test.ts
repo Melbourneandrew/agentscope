@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 const stderr = vi.hoisted(() => vi.fn((bytes: Uint8Array) => bytes.byteLength));
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof NodeFs>();
@@ -295,4 +296,67 @@ describe("fixed primary failure and original cancellation observations", () => {
       expect(readdirSync(input.privateRoot)).toEqual([]);
     },
   );
+});
+const observe = (chunks: readonly string[]) => {
+  const observation = createBuildStderrObservation();
+  for (const chunk of chunks) observation.consume(Buffer.from(chunk));
+  return observation.snapshot();
+};
+describe("fixed untrusted BuildKit supplier RUN result", () => {
+  const summary = (mode = "cache-seeding", code = "137") =>
+    `process "/usr/local/bin/node /supplier/command/supplier-command.mjs ${mode}" did not complete successfully: exit code: ${code}\n`;
+  it.each([
+    "dependency-research",
+    "offline-build",
+    "cache-seeding",
+    "service-offline",
+  ])(
+    "retains only %s and bounded execution exit across every split",
+    (mode) => {
+      const text = `#7 ERROR: ${summary(mode)}ERROR: failed to build: failed to solve: ${summary(mode)}`;
+      for (let split = 0; split <= text.length; split++) {
+        const result = observe([text.slice(0, split), text.slice(split)]);
+        expect(result.untrustedSupplierExecution).toEqual({
+          mode,
+          exitCode: 137,
+        });
+        expect(result.untrustedMavenFailure).toBeUndefined();
+      }
+    },
+  );
+  it.each(["0", "1", "255"])("preserves exact bounded code %s", (code) => {
+    expect(
+      observe([`ERROR: failed to solve: ${summary("service-offline", code)}`])
+        .untrustedSupplierExecution,
+    ).toEqual({ mode: "service-offline", exitCode: Number(code) });
+  });
+  it.each([
+    summary("other"),
+    summary("cache-seeding", "256"),
+    summary("cache-seeding", "01"),
+    summary("cache-seeding", "-1"),
+    summary().replace("/usr/local/bin/node", "/PRIVATE_CANARY"),
+    summary().replace("137", "137 PRIVATE_CANARY"),
+    `PRIVATE_CANARY${summary()}`,
+    `${"X".repeat(257)}${summary()}`,
+    summary().trimEnd(),
+    `#8 ERROR: ${summary("cache-seeding", "1")}`,
+    `#8 ERROR: ${summary("service-offline")}`,
+  ])(
+    "rejects malformed/foreign/incomplete/conflicting summary %#",
+    (suffix) => {
+      const result = observe([`#7 ERROR: ${summary()}`, suffix]);
+      expect(result.untrustedSupplierExecution).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_CANARY");
+    },
+  );
+  it("does not invent execution from success or ordinary private output", () => {
+    for (const text of [
+      "",
+      "#7 DONE 1.0s\n",
+      "PRIVATE_CANARY\n",
+      "exit code: 137\n",
+    ])
+      expect(observe([text]).untrustedSupplierExecution).toBeUndefined();
+  });
 });

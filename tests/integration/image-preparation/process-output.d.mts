@@ -9,6 +9,14 @@ export type MavenFailureObservation = Readonly<{
   column: number;
   reason: number;
 }>;
+export type SupplierExecutionObservation = Readonly<{
+  mode:
+    | "dependency-research"
+    | "offline-build"
+    | "cache-seeding"
+    | "service-offline";
+  exitCode: number;
+}>;
 export declare const parseMavenFailureObservation: (
   value: unknown,
 ) => MavenFailureObservation | undefined;
@@ -19,6 +27,7 @@ export declare const createBuildStderrObservation: () => Readonly<{
     untrustedBootstrapStage?: string;
     untrustedBootstrapFailureFamily?: string;
     untrustedMavenFailure?: MavenFailureObservation;
+    untrustedSupplierExecution?: SupplierExecutionObservation;
   }>;
 }>;
 export declare const selectCommandOutput: (value: unknown) => "text" | "binary";

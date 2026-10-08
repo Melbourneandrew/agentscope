@@ -149,6 +149,53 @@ const validMavenMarker = (stage, family, tuple) =>
   ) &&
     family === "none" &&
     parseMavenFailureObservation(tuple) !== undefined);
+// BuildKit ExecOp wraps its RUN argv; this is its reported execution result,
+// not the Docker client's close code or a Maven-child/OOM observation.
+const createSupplierExecutionObservation = () => {
+  let supplierExecution;
+  let executionAmbiguous = false;
+  return Object.freeze({
+    observe(suffix, lineBytes) {
+      if (!suffix.includes("did not complete successfully")) return;
+      const match =
+        /^(?:#\d{1,8} ERROR: |ERROR: failed to (?:build: failed to )?solve: )process "\/usr\/local\/bin\/node \/supplier\/command\/supplier-command\.mjs (dependency-research|offline-build|cache-seeding|service-offline)" did not complete successfully: exit code: (0|[1-9]\d{0,2})$/u.exec(
+          suffix,
+        );
+      if (lineBytes > 256 || !match || Number(match[2]) > 255) {
+        executionAmbiguous = true;
+        return;
+      }
+      const next = Object.freeze({
+        mode: match[1],
+        exitCode: Number(match[2]),
+      });
+      if (
+        supplierExecution &&
+        (supplierExecution.mode !== next.mode ||
+          supplierExecution.exitCode !== next.exitCode)
+      )
+        executionAmbiguous = true;
+      supplierExecution = next;
+    },
+    snapshot(suffix) {
+      if (suffix.includes("did not complete successfully"))
+        executionAmbiguous = true;
+      return !executionAmbiguous && supplierExecution
+        ? { untrustedSupplierExecution: supplierExecution }
+        : {};
+    },
+  });
+};
+const bootstrapObservation = (stage, family, mavenFailure, ambiguous) =>
+  !ambiguous && stage !== "unknown"
+    ? {
+        untrustedBootstrapStage: stage,
+        untrustedBootstrapFailureFamily: family,
+        ...(mavenFailure === undefined
+          ? {}
+          : { untrustedMavenFailure: mavenFailure }),
+      }
+    : {};
 export const createBuildStderrObservation = () => {
   const prefix = Buffer.alloc(maximumHeaderBytes);
   const pending = Buffer.alloc(maximumHeaderBytes);
@@ -162,9 +209,11 @@ export const createBuildStderrObservation = () => {
   let stage = "unknown";
   let family = "unknown";
   let mavenFailure;
+  const execution = createSupplierExecutionObservation();
   const originalLines = new Set();
   const replayedLines = new Set();
   const line = () => {
+    execution.observe(suffix, lineBytes);
     if (!candidate) return false;
     const match =
       /^(?:(#\d{1,8} )?(\d{1,8}\.\d{1,6}) )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)(?: maven=([a-z0-9,]+))?\]$/u.exec(
@@ -252,16 +301,13 @@ export const createBuildStderrObservation = () => {
     },
     snapshot() {
       if (candidate) ambiguous = true;
-      const observation =
-        !ambiguous && stage !== "unknown"
-          ? {
-              untrustedBootstrapStage: stage,
-              untrustedBootstrapFailureFamily: family,
-              ...(mavenFailure === undefined
-                ? {}
-                : { untrustedMavenFailure: mavenFailure }),
-            }
-          : {};
+      const executionSnapshot = execution.snapshot(suffix);
+      const observation = bootstrapObservation(
+        stage,
+        family,
+        mavenFailure,
+        ambiguous,
+      );
       return Object.freeze({
         stderrClass: classifyBuildxStderr(
           Buffer.concat([
@@ -270,6 +316,7 @@ export const createBuildStderrObservation = () => {
           ]).toString("utf8"),
         ),
         ...observation,
+        ...executionSnapshot,
       });
     },
   });
