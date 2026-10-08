@@ -196,9 +196,10 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
     "rejects %s final JAR without research output or leaked descriptors",
     async (issue) => {
       state.artifactIssue = issue;
-      await expect(
-        privateWorker(async () => {}, "service-offline"),
-      ).rejects.toThrow("supplier-command");
+      for (const phase of ["cache-seeding", "service-offline"])
+        await expect(privateWorker(async () => {}, phase)).rejects.toThrow(
+          "supplier-command",
+        );
       expect(state.writes.some(([path]) => path.startsWith("/out/"))).toBe(
         false,
       );

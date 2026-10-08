@@ -287,31 +287,28 @@ const patchSupplierSource = (service) => {
     }
   }
 };
-const finishServiceArtifact = (offline, caches) => {
-  // The next stage adopts only physical cache roots, never this stage's
-  // generated source, frontend, target or JAR. The final offline JAR stays
-  // inside the same builder and is copied by its fixed Dockerfile path.
+const finishServiceArtifact = (caches) => {
+  // Service preparation copies this exact held artifact inside the same builder;
+  // research cache adoption remains non-authoritative diagnostic work.
   for (const name of caches) adoptCache(`/supplier/${name}`);
-  if (offline) {
-    const artifact = mockServerSupplierLayout.artifact;
-    const named = lstatSync(artifact);
-    if (
-      !named.isFile() ||
-      named.isSymbolicLink() ||
-      named.nlink !== 1 ||
-      named.size < 1 ||
-      named.size > 256 * 1024 * 1024
+  const artifact = mockServerSupplierLayout.artifact;
+  const named = lstatSync(artifact);
+  if (
+    !named.isFile() ||
+    named.isSymbolicLink() ||
+    named.nlink !== 1 ||
+    named.size < 1 ||
+    named.size > 256 * 1024 * 1024
+  )
+    throw new Error("integration.mockserver-material.supplier-command");
+  readFixed(artifact, named.size, 0o644, named);
+  const current = lstatSync(artifact);
+  if (
+    [...cacheFields, "nlink", "size", "mtimeMs", "ctimeMs"].some(
+      (field) => named[field] !== current[field],
     )
-      throw new Error("integration.mockserver-material.supplier-command");
-    readFixed(artifact, named.size, 0o644, named);
-    const current = lstatSync(artifact);
-    if (
-      [...cacheFields, "nlink", "size", "mtimeMs", "ctimeMs"].some(
-        (field) => named[field] !== current[field],
-      )
-    )
-      throw new Error("integration.mockserver-material.supplier-command");
-  }
+  )
+    throw new Error("integration.mockserver-material.supplier-command");
 };
 
 const adoptInitialCache = (name, index, observe) => {
@@ -423,7 +420,7 @@ const runSupplier = async (run, phase, observe = true) => {
     for (const [index, before] of adopted.entries())
       adoptCache(`/supplier/${caches[index]}`, before);
     if (service) {
-      finishServiceArtifact(offline, caches);
+      finishServiceArtifact(caches);
       return;
     }
   } catch (error) {

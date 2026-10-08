@@ -139,7 +139,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("connected supplier research under inherited lifecycle (synthetic builder)", () => {
-  it("builds the actual service from fresh offline sources and only two inherited caches", async () => {
+  it("packages the exact patched service once before consuming its inert artifact", async () => {
     const input = fixture();
     const service = {
       tag: "agentscope-int-0123456789abcdef:mockserver",
@@ -154,20 +154,17 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         "utf8",
       );
       expect(source).toContain('"cache-seeding"]');
-      expect(source).toContain(
-        'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "service-offline"]',
-      );
+      expect(source.match(/RUN --network=default .+/gu)).toHaveLength(1);
+      expect(source).not.toContain('"service-offline"]');
+      expect(source).not.toContain("AS offline");
       expect(source.match(/COPY --from=supplier .+/gu)).toEqual([
-        "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
-        "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
+        "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java",
+        "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
       ]);
       expect(source).not.toContain("/out/material.json");
-      expect(source.indexOf(cacheRootInstruction)).toBeGreaterThan(0);
-      expect(source.indexOf(cacheRootInstruction)).toBeLessThan(
-        source.indexOf("COPY --from=supplier /supplier/maven-repository"),
-      );
+      expect(source).not.toContain(cacheRootInstruction);
       expect(source).toContain(
-        "COPY --from=offline --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+        "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
       );
       expect(source).toContain("USER 0:0");
       expect(source).toContain("umask 077; mkdir /control/private;");

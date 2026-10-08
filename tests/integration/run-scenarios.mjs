@@ -560,6 +560,23 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
+  return Object.freeze({
+    context,
+    requiresHarnessBuildContextBound: harnessMaterial !== undefined,
+  });
+};
+
+const prepareMockServerControl = (plan) => {
+  if (mockServerControls.has(plan.runId))
+    throw new Error("integration.isolation.context");
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === plan.scenarioId,
+  );
+  if (scenario === undefined) throw new Error("integration.isolation.context");
+  const gateCapableMockServer =
+    scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes.length === 1 &&
+    scenario.modelRoutes[0] === "codex-tui-responses";
   const material = createMockServerControlMaterial(plan.runId);
   const expectations = Buffer.from(
     `${JSON.stringify(
@@ -578,10 +595,6 @@ const stageBuildContext = (plan) => {
     )}\n`,
   );
   mockServerControls.set(plan.runId, { material, expectations });
-  return Object.freeze({
-    context,
-    requiresHarnessBuildContextBound: harnessMaterial !== undefined,
-  });
 };
 
 const assertContainer = async (
@@ -1362,7 +1375,7 @@ const buildImage = async (plan, signal) => {
     tag: plan.imageTag,
   });
 };
-const buildMockServerImage = async (plan, signal) => {
+const prepareMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
   const control = mockServerControls.get(plan.runId);
   if (control === undefined) throw new Error("integration.isolation.context");
@@ -1392,6 +1405,24 @@ const buildMockServerImage = async (plan, signal) => {
     built.imageId.replace("sha256-", "sha256:"),
   );
   return built.imageId;
+};
+const buildMockServerImage = async (plan, signal) => {
+  const imageId = mockServerBuiltImages.get(plan.runId);
+  if (imageId === undefined) throw new Error("integration.isolation.context");
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", plan.mockServerImageTag],
+    signal,
+  );
+  const records = JSON.parse(stdout);
+  if (
+    !Array.isArray(records) ||
+    records.length !== 1 ||
+    records[0]?.Id !== imageId ||
+    records[0]?.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId
+  )
+    throw new Error("integration.isolation.image-digest");
+  return imageId.replace("sha256:", "sha256-");
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -2684,6 +2715,10 @@ try {
       },
       scenario,
     });
+  }
+  for (const plan of plans) {
+    prepareMockServerControl(plan);
+    await prepareMockServerImage(plan, integrationStageSignal());
   }
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
