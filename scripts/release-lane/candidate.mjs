@@ -4,6 +4,7 @@ import { basename, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import npa from "npm-package-arg";
 
+import { assertAlphaLocalNativeAbsent } from "../../apps/cli/scripts/alpha-packed-absence.mjs";
 import { publishManifestFields } from "../../apps/cli/scripts/publish-manifest-contract.mjs";
 
 import {
@@ -471,6 +472,11 @@ export function verifyCandidateArtifact({
     "Candidate inventory digest mismatch",
   );
   const { packedManifest } = inspected;
+  // Inventory classification only: the fresh packed CLI gate owns exact
+  // directory-runtime byte verification, not this Local exclusion check.
+  assertAlphaLocalNativeAbsent(
+    inspected.inventory.map(({ path }) => path.slice("package/".length)),
+  );
   for (const field of Object.keys(packedManifest))
     assert(
       publishManifestFields.includes(field),
