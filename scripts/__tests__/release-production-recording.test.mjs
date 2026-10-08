@@ -195,7 +195,17 @@ async function publicationFixture() {
       inspectedAt: input.observedAt,
     }),
   };
-  return { ...f, head, publicationInput: input, owner };
+  return {
+    ...f,
+    head,
+    publicationInput: input,
+    owner,
+    candidate: {
+      manifest: f.candidate.manifest,
+      certificationRecord: f.candidate.certificationRecord,
+      tarballPath: f.candidate.tarballPath,
+    },
+  };
 }
 
 async function approvedPublicationFixture() {
@@ -376,6 +386,11 @@ function syntheticRegistryChild(f, change = "none") {
 
 test("registry composition uses standard npm verification and existing smoke in a credential-free owned root", async () => {
   const f = await approvedPublicationFixture();
+  expect(Object.keys(f.candidate)).toEqual([
+    "manifest",
+    "certificationRecord",
+    "tarballPath",
+  ]);
   const child = syntheticRegistryChild(f);
   const result = await verifyRegistryPublication(
     f.head,
@@ -397,6 +412,28 @@ test("registry composition uses standard npm verification and existing smoke in 
   ]);
   expect(existsSync(child.root())).toBe(false);
 });
+
+test.each(["sourceRevision", "candidateManifestDigest"])(
+  "actual three-field candidate refuses substituted authenticated head %s before a child",
+  async (field) => {
+    const f = await approvedPublicationFixture();
+    const child = syntheticRegistryChild(f);
+    const substituted = {
+      ...f.head,
+      [field]: field === "sourceRevision" ? "c".repeat(40) : hash,
+    };
+    await expect(
+      verifyRegistryPublication(
+        substituted,
+        f.candidate,
+        performance.now() + 10_000,
+        child,
+      ),
+    ).rejects.toThrow();
+    expect(child.calls).toHaveLength(0);
+    expect(child.root()).toBeUndefined();
+  },
+);
 test.each(["tags", "provenance", "installed-integrity"])(
   "registry %s substitution refuses and cleans exact owned root",
   async (kind) => {
