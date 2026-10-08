@@ -4,6 +4,7 @@ import { types } from "node:util";
 import { spawnSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
+import { supplierMavenGoals as mavenGoals } from "../mockserver-material/build-recipe.mjs";
 import {
   parseMavenFailureObservation,
   createBuildStderrObservation,
@@ -25,11 +26,11 @@ const worker = readFileSync(
   "utf8",
 );
 const classifyStyleFailure = runInNewContext(
-  `${worker.slice(worker.indexOf("const mavenGoals ="), worker.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
+  `${worker.slice(worker.indexOf("const javacReasons ="), worker.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
   {
     types,
+    mavenGoals,
     Buffer,
-    lifecycleSourcePins,
     supplierSourceUnit,
     firstSupplierCheckstyleObservation,
     maximumOutputBytes: 8 * 1024 * 1024,
