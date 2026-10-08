@@ -53,9 +53,13 @@ const finalLedgerCapture = `
     public void recordFinalControlObservation(HttpRequest request, String role, int status) {
         try {
             if (!java.util.Set.of("allowed", "forbidden", "unauthenticated", "readiness").contains(role)
-                || status < 100 || status > 599) throw new IllegalStateException();
+                || status < 100 || status > 599) {
+                throw new IllegalStateException();
+            }
             byte[] body = request.getBodyAsOriginalRawBytes();
-            if (body == null || body.length > 1024 * 1024) throw new IllegalStateException();
+            if (body == null || body.length > 1024 * 1024) {
+                throw new IllegalStateException();
+            }
             HttpRequest observed = new HttpRequest().withMethod(request.getMethod().getValue()).withPath(request.getPath().getValue())
                 .withHeader("x-agentscope-final-role", role)
                 .withHeader("x-agentscope-final-status", String.valueOf(status))
@@ -69,16 +73,26 @@ const finalLedgerCapture = `
     }
 
     private RequestDefinition finalLedgerRequest(LogEntry received) {
-        if (!(received.getHttpRequest() instanceof HttpRequest)) throw new IllegalStateException();
+        if (!(received.getHttpRequest() instanceof HttpRequest)) {
+            throw new IllegalStateException();
+        }
         HttpRequest request = (HttpRequest) received.getHttpRequest();
-        if ("agentscope-final-control".equals(received.getMessageFormat())) return request;
+        if ("agentscope-final-control".equals(received.getMessageFormat())) {
+            return request;
+        }
         String correlation = received.getCorrelationId();
-        if (correlation == null || correlation.isEmpty()) throw new IllegalStateException();
+        if (correlation == null || correlation.isEmpty()) {
+            throw new IllegalStateException();
+        }
         List<LogEntry> responses = eventLog.stream().filter(requestResponseLogPredicate)
             .filter(entry -> correlation.equals(entry.getCorrelationId())).collect(Collectors.toList());
-        if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) throw new IllegalStateException();
+        if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {
+            throw new IllegalStateException();
+        }
         Integer status = responses.get(0).getHttpResponse().getStatusCode();
-        if (status == null || status < 100 || status > 599) throw new IllegalStateException();
+        if (status == null || status < 100 || status > 599) {
+            throw new IllegalStateException();
+        }
         return request.clone().withBody(request.getBodyAsOriginalRawBytes())
             .withHeader("x-agentscope-final-role", "data-plane")
             .withHeader("x-agentscope-final-status", String.valueOf(status));
@@ -153,8 +167,11 @@ ${finalLedgerCapture}`,
                 List<RequestDefinition> requests = eventLog.stream()
                     .filter(entry -> entry.getType() == RECEIVED_REQUEST)
                     .map(this::finalLedgerRequest).collect(Collectors.toList());
-                if (requests.size() > 16) finalLedgerFailure = true;
-                else finalRecordedRequests = requestDefinitionSerializer.serializeRecordedRequests(false, requests);
+                if (requests.size() > 16) {
+                    finalLedgerFailure = true;
+                } else {
+                    finalRecordedRequests = requestDefinitionSerializer.serializeRecordedRequests(false, requests);
+                }
             }
             eventLog.clear();`,
   );
@@ -179,9 +196,13 @@ const persistenceCompletion = `
         writeOrderLock.lock();
         try {
             if (!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null
-                || filePath == null || !filePath.toString().equals("/control/private/requests.json")) return;
+                || filePath == null || !filePath.toString().equals("/control/private/requests.json")) {
+                return;
+            }
             byte[] bytes = (snapshot + "\\n").getBytes(UTF_8);
-            if (bytes.length > 1024 * 1024) return;
+            if (bytes.length > 1024 * 1024) {
+                return;
+            }
             Path complete = filePath.resolveSibling("requests.complete");
             Path temporary = filePath.resolveSibling("requests.complete.tmp");
             // Both final snapshot and receipt writers close before the receipt is published.
@@ -223,8 +244,12 @@ const persistence = (source) => {
     "            writer.flush();\n            writer.close();",
     `            Throwable firstFailure = null;
             try { writer.flush(); } catch (Throwable throwable) { firstFailure = throwable; }
-            try { writer.close(); } catch (Throwable throwable) { if (firstFailure == null) firstFailure = throwable; }
-            if (firstFailure != null) throw firstFailure;
+            try { writer.close(); } catch (Throwable throwable) {
+                if (firstFailure == null) {
+                    firstFailure = throwable;
+                }
+            }
+            if (firstFailure != null) { throw firstFailure; }
             recordedPersistenceClosed = true;`,
   );
   return once(
@@ -311,7 +336,7 @@ const lifeCycle = (source) => {
   source = once(
     source,
     "        int remaining = requestsInFlight.get();",
-    "        int remaining = requestsInFlight.get();\n        if (remaining > 0) finalLedgerFailure = true;",
+    "        int remaining = requestsInFlight.get();\n        if (remaining > 0) { finalLedgerFailure = true; }",
   );
   return once(
     source,
@@ -321,7 +346,7 @@ const lifeCycle = (source) => {
 };
 const jsonBody = (source) =>
   once(
-    source,
+    once(source, "import java.util.Arrays;\n", ""),
     "            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));",
     "            && jsonBody.getRawBytes() != null;",
   );
