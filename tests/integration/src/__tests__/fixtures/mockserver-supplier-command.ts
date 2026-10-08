@@ -213,6 +213,8 @@ import {
   inventoryMockServerSupplier,
 } from "../../../mockserver-material/supplier-inventory.mjs";
 import {
+  createSupplierGoalObservation,
+  supplierMavenGoals as mavenGoals,
   mockServerSupplierBuildPlan,
   mockServerSupplierLayout,
   supplierGlobalMavenSettings,
@@ -224,9 +226,10 @@ export const workerSource = fs.readFileSync(
   "utf8",
 );
 export const classifyPackageFailure = runInNewContext(
-  `${workerSource.slice(workerSource.indexOf("const mavenGoals ="), workerSource.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
+  `${workerSource.slice(workerSource.indexOf("const javacReasons ="), workerSource.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
   {
     types,
+    mavenGoals,
     Buffer,
     lifecycleSourcePins,
     firstSupplierCheckstyleObservation,
@@ -239,6 +242,8 @@ export const privateWorker = runInNewContext(
   {
     ...fs,
     types,
+    mavenGoals,
+    createSupplierGoalObservation,
     Buffer,
     firstSupplierCheckstyleObservation,
     supplierSourceUnit,

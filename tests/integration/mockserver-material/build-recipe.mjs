@@ -1,10 +1,70 @@
 /** Fixed conventional supplier commands; not execution or service authority. */
+import { types } from "node:util";
 
 const source = "/supplier/source";
 const home = "/supplier/home";
 const repository = "/supplier/maven-repository";
 const node = "/supplier/tools/node/bin/node";
 const maven = "/supplier/tools/apache-maven-3.9.16/bin/mvn";
+
+// Exact authenticated POM coordinates, shared by pending and failure observers.
+export const supplierMavenGoals = Object.freeze([
+  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:compile",
+  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:testCompile",
+  "org.codehaus.mojo:templating-maven-plugin:3.1.0:filter-sources",
+  "org.apache.maven.plugins:maven-enforcer-plugin:3.6.3:enforce",
+  "org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check",
+  "org.codehaus.mojo:flatten-maven-plugin:1.8.0:flatten",
+  "io.github.git-commit-id:git-commit-id-maven-plugin:9.0.1:revision",
+  "com.github.eirslett:frontend-maven-plugin:2.0.0:install-node-and-npm",
+  "com.github.eirslett:frontend-maven-plugin:2.0.0:npm",
+  "org.apache.maven.plugins:maven-resources-plugin:3.5.0:copy-resources",
+  "org.codehaus.mojo:exec-maven-plugin:3.6.3:exec",
+  "org.apache.maven.plugins:maven-assembly-plugin:3.8.0:single",
+]);
+
+/** A last recognized INFO goal entry, never completion or a failure record. */
+export const createSupplierGoalObservation = () => {
+  let bytes = 0;
+  let last;
+  const lines = ["", ""];
+  return (channel, chunk) => {
+    if (
+      (channel !== 0 && channel !== 1) ||
+      types.isProxy(chunk) ||
+      !Buffer.isBuffer(chunk)
+    )
+      return;
+    bytes += chunk.length;
+    if (bytes > 8 * 1024 * 1024) return;
+    let entered;
+    for (const character of chunk.toString("utf8")) {
+      if (character !== "\n") {
+        if (lines[channel].length <= 16_384) lines[channel] += character;
+        continue;
+      }
+      const match =
+        /^\[INFO\] --- ([A-Za-z0-9_.:-]+) \([A-Za-z0-9_. -]{1,128}\) @ [A-Za-z0-9_.-]{1,128} ---\r?$/u.exec(
+          lines[channel],
+        );
+      lines[channel] = "";
+      if (!match) continue;
+      const goal = supplierMavenGoals.findIndex(
+        (coordinate) =>
+          coordinate
+            .split(":")
+            .slice(1)
+            .join(":")
+            .replace(/^maven-|-maven-plugin(?=:)|-plugin(?=:)/gu, "") ===
+          match[1],
+      );
+      if (goal < 0 || goal === last) continue;
+      last = goal;
+      entered = `supplier-package-goal-${String.fromCharCode(97 + goal)}`;
+    }
+    return entered;
+  };
+};
 
 // Both settings files are explicit so Maven cannot inherit a user/global mirror,
 // server credential or proxy. This mirror also closes repositories in transitive

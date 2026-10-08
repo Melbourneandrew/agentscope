@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createSupplierGoalObservation,
   mockServerSupplierBuildPlan,
   mockServerSupplierLayout,
   supplierGlobalMavenSettings,
@@ -107,4 +108,78 @@ describe("fixed conventional MockServer supplier recipe", () => {
       );
     },
   );
+});
+
+describe("fixed pending Maven INFO goal decoder", () => {
+  const header =
+    "[INFO] --- compiler:3.15.0:compile (default-compile) @ mockserver-core ---\n";
+  it("bounds split headers, channels, unknown input and overflow without raw output", () => {
+    for (let split = 0; split < header.length; split++) {
+      const observe = createSupplierGoalObservation();
+      expect(observe(0, Buffer.from(header.slice(0, split)))).toBeUndefined();
+      expect(observe(0, Buffer.from(header.slice(split)))).toBe(
+        "supplier-package-goal-a",
+      );
+      expect(observe(1, Buffer.from(header))).toBeUndefined();
+    }
+    for (const text of [
+      "PRIVATE_CANARY\n",
+      header.replace("compiler", "unknown"),
+      `prefix ${header}`,
+      "X".repeat(16_385) + header,
+    ])
+      expect(
+        createSupplierGoalObservation()(0, Buffer.from(text)),
+      ).toBeUndefined();
+    const observe = createSupplierGoalObservation();
+    expect(observe(0, Buffer.alloc(8 * 1024 * 1024 + 1))).toBeUndefined();
+    expect(observe(0, Buffer.from(header))).toBeUndefined();
+    const proxy = new Proxy(Buffer.from(header), {
+      get() {
+        throw Error("PRIVATE_CANARY");
+      },
+    });
+    expect(createSupplierGoalObservation()(0, proxy)).toBeUndefined();
+  });
+  it.each([
+    ["compiler:3.15.0:compile", "a"],
+    ["compiler:3.15.0:testCompile", "b"],
+    ["templating:3.1.0:filter-sources", "c"],
+    ["enforcer:3.6.3:enforce", "d"],
+    ["checkstyle:3.6.0:check", "e"],
+    ["flatten:1.8.0:flatten", "f"],
+    ["git-commit-id:9.0.1:revision", "g"],
+    ["frontend:2.0.0:install-node-and-npm", "h"],
+    ["frontend:2.0.0:npm", "i"],
+    ["resources:3.5.0:copy-resources", "j"],
+    ["exec:3.6.3:exec", "k"],
+    ["assembly:3.8.0:single", "l"],
+  ])("maps only pinned %s to pending ordinal %s", (goal, ordinal) => {
+    const text = `[INFO] --- ${goal} (fixed-execution) @ mockserver-netty ---\n`;
+    expect(createSupplierGoalObservation()(0, Buffer.from(text))).toBe(
+      `supplier-package-goal-${ordinal}`,
+    );
+    expect(
+      createSupplierGoalObservation()(
+        1,
+        Buffer.from(text.replace(goal, `${goal}-unknown`)),
+      ),
+    ).toBeUndefined();
+  });
+  it("preserves separate stream fragments and the last recognized goal in a batch", () => {
+    const second = header.replace(
+      "compiler:3.15.0:compile",
+      "frontend:2.0.0:npm",
+    );
+    const observe = createSupplierGoalObservation();
+    expect(observe(0, Buffer.from(header.slice(0, 15)))).toBeUndefined();
+    expect(observe(1, Buffer.from(second))).toBe("supplier-package-goal-i");
+    expect(observe(0, Buffer.from(header.slice(15)))).toBe(
+      "supplier-package-goal-a",
+    );
+    expect(observe(0, Buffer.from(header + second))).toBe(
+      "supplier-package-goal-i",
+    );
+    expect(observe(0, Buffer.from("PRIVATE_CANARY\n"))).toBeUndefined();
+  });
 });

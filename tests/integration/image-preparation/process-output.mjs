@@ -4,6 +4,11 @@ const supplierStages = [
   "supplier-connected-entry",
   "supplier-connected-extract",
   "supplier-connected-package",
+  ...Array.from(
+    { length: 12 },
+    (_, index) =>
+      `supplier-connected-package-goal-${String.fromCharCode(97 + index)}`,
+  ),
   "supplier-connected-package-compilation",
   "supplier-connected-package-resolution",
   "supplier-connected-package-frontend",
@@ -24,6 +29,10 @@ const supplierStages = [
   ]),
   "supplier-extract",
   "supplier-package",
+  ...Array.from(
+    { length: 12 },
+    (_, index) => `supplier-package-goal-${String.fromCharCode(97 + index)}`,
+  ),
   "supplier-package-compilation",
   "supplier-package-resolution",
   "supplier-package-frontend",
@@ -37,7 +46,7 @@ const supplierStages = [
   "supplier-output-write",
 ];
 const supplierFailureStages = supplierStages.filter((stage) =>
-  /-(?:package-compilation|package-resolution|package-frontend|package-other|service-finalization|inventory-read|inventory-guard|inventory-internal|output-create|output-write|parent|type|owner|device|mode|identity|io)$/u.test(
+  /-(?:package-compilation|package-resolution|package-frontend|package-other|inventory-read|inventory-guard|inventory-internal|output-create|output-write|parent|type|owner|device|mode|identity|io)$/u.test(
     stage,
   ),
 );
@@ -202,6 +211,22 @@ const bootstrapObservation = (stage, family, mavenFailure, ambiguous) =>
           : { untrustedMavenFailure: mavenFailure }),
       }
     : {};
+const packageContext = (stage) =>
+  /^(supplier-(?:connected-)?package)(?:-goal-[a-l])?$/u.exec(stage)?.[1];
+// Plugin order and repetition are normal; a supported INFO entry is not an
+// outcome. Finalization is likewise entered only after the package settles.
+const validStageProgression = (previous, next, family) => {
+  if (/-goal-[a-l]$/u.test(next))
+    return (
+      packageContext(previous) !== undefined &&
+      packageContext(previous) === packageContext(next)
+    );
+  return (
+    !supplierFailureStages.includes(previous) &&
+    bootstrapStages.indexOf(next) >= bootstrapStages.indexOf(previous) &&
+    (next !== previous || family !== "none")
+  );
+};
 export const createBuildStderrObservation = () => {
   const prefix = Buffer.alloc(maximumHeaderBytes);
   const pending = Buffer.alloc(maximumHeaderBytes);
@@ -249,9 +274,7 @@ export const createBuildStderrObservation = () => {
     }
     if (
       (family !== "unknown" && family !== "none") ||
-      supplierFailureStages.includes(stage) ||
-      bootstrapStages.indexOf(match[3]) < bootstrapStages.indexOf(stage) ||
-      (match[3] === stage && match[4] === "none")
+      !validStageProgression(stage, match[3], match[4])
     ) {
       ambiguous = true;
       return true;

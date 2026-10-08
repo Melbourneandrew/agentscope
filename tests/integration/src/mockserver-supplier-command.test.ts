@@ -7,6 +7,7 @@ import {
   phases,
 } from "./__tests__/fixtures/mockserver-supplier-command.js";
 import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 describe("actual package rejection has only bounded fixed observations", () => {
   it.each([
@@ -69,6 +70,38 @@ describe("actual package rejection has only bounded fixed observations", () => {
     expect(state.closed).toBe(state.opened);
     state.sinkFailure = true;
     await expect(runMockServerSupplierResearch(run)).rejects.toBe(primary);
+  });
+});
+describe("pending package goals are optional entered observations", () => {
+  const header =
+    "[INFO] --- compiler:3.15.0:compile (default-compile) @ mockserver-core ---\n";
+  it("binds actual child streams and finalization after package settlement", async () => {
+    const stdout = new PassThrough(),
+      stderr = new PassThrough();
+    let beforeSettlement: string[] = [];
+    const run = vi.fn((file: string) => {
+      if (!file.endsWith("/mvn")) return Promise.resolve();
+      return Object.assign(
+        new Promise<void>((resolve) => {
+          queueMicrotask(() => {
+            stdout.write(header);
+            beforeSettlement = [...state.markers];
+            resolve();
+          });
+        }),
+        { child: { stdout, stderr } },
+      );
+    });
+    await privateWorker(run, "cache-seeding", false);
+    expect(beforeSettlement.at(-1)).toBe(
+      supplierMarker("supplier-package-goal-a", true),
+    );
+    expect(beforeSettlement.join("")).not.toContain("service-finalization");
+    expect(state.markers.at(-1)).toBe(
+      supplierMarker("supplier-service-finalization", true),
+    );
+    expect(stdout.listenerCount("data") + stderr.listenerCount("data")).toBe(0);
+    expect(state.markers.join("")).not.toContain("maven=");
   });
 });
 describe("composite build has monotonic connected and offline diagnostics", () => {

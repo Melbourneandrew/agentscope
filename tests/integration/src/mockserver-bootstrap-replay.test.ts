@@ -388,7 +388,7 @@ describe("exact bounded BuildKit failed-RUN replay", () => {
 describe("closed supplier last-entered observations", () => {
   it("refuses any new marker after a first failure category while allowing exact replay", () => {
     const failures = supplierStages.filter((stage) =>
-      /-(?:package-compilation|package-resolution|package-frontend|package-other|service-finalization|inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
+      /-(?:package-compilation|package-resolution|package-frontend|package-other|inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
         stage,
       ),
     );
@@ -449,4 +449,49 @@ describe("closed supplier last-entered observations", () => {
         expect(observe([value])).toEqual(absent);
     },
   );
+});
+describe("pending goal markers retain no package outcome", () => {
+  it("requires the same package context and permits repeated/reordered goals", () => {
+    for (const prefix of ["supplier", "supplier-connected"]) {
+      const entry = `${prefix}-package`,
+        first = `${entry}-goal-a`,
+        last = `${entry}-goal-l`;
+      expect(observe([marker(first)])).toEqual(absent);
+      expect(
+        observe([marker(entry), marker(last), marker(first), marker(first)]),
+      ).toEqual({
+        ...absent,
+        untrustedBootstrapStage: first,
+        untrustedBootstrapFailureFamily: "none",
+      });
+      expect(
+        observe([
+          marker(entry),
+          marker(first),
+          marker(`${prefix}-service-finalization`),
+        ]),
+      ).toEqual({
+        ...absent,
+        untrustedBootstrapStage: `${prefix}-service-finalization`,
+        untrustedBootstrapFailureFamily: "none",
+      });
+      for (const tail of [
+        marker(`${entry}-goal-m`),
+        marker(first, "input"),
+        marker(first).replace(
+          "family=none",
+          "family=none maven=identified,0,0,1,0,0,0,0",
+        ),
+        marker(`${prefix}-service-finalization`) + marker(first),
+      ])
+        expect(observe([marker(entry), tail])).toEqual(absent);
+      const failure = `${entry}-other`;
+      expect(
+        observe([marker(entry), marker(first), marker(failure)]),
+      ).toMatchObject({ untrustedBootstrapStage: failure });
+      expect(observe([marker(entry), marker(failure), marker(first)])).toEqual(
+        absent,
+      );
+    }
+  });
 });
