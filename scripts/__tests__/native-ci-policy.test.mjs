@@ -117,7 +117,7 @@ test("rename and deletion observations remain visible and malformed diffs fail",
     assert.throws(() => parseChangedPaths(value), /native-ci-paths-invalid/u);
 });
 
-test("workflow preserves parallel fresh native candidate authority and only caches frozen dependencies", () => {
+test("alpha workflow always proves fresh packed absence without claiming native execution", () => {
   const source = readFileSync(
     join(root, ".github/workflows/pr-validation.yml"),
     "utf8",
@@ -140,7 +140,7 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     "${{ github.event.pull_request.head.sha || github.sha }}",
   );
   assert.match(
-    workflow.jobs.native.steps.find((step) => step.id === "selection").run,
+    workflow.jobs.native.steps.find((step) => step.env?.NATIVE_HEAD_SHA).run,
     /git rev-parse HEAD.+NATIVE_HEAD_SHA/su,
   );
   const workflowActionReferences = Object.values(workflow.jobs).flatMap((job) =>
@@ -168,10 +168,21 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     source,
     /actions\/cache|restore-keys|AGENTSCOPE_NATIVE_MATERIAL_CACHE/u,
   );
-  assert.match(
-    source,
-    /Run fresh non-admitting native candidate verification/u,
+  assert.equal(workflow.jobs.native.if, undefined);
+  assert.ok(workflow.jobs.native.steps.every((step) => step.if === undefined));
+  assert.deepEqual(
+    workflow.jobs.native.steps
+      .filter((step) => step.run)
+      .map((step) => step.run),
+    [
+      'test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA"',
+      "pnpm install --frozen-lockfile",
+      "pnpm nx build agentscope-cli --skip-nx-cache",
+      "pnpm verify:cli-artifact",
+      'echo "Local SQLite not admitted"',
+    ],
   );
+  assert.doesNotMatch(source, /native-ci-selection|verify:native-candidate/u);
   const evidenceManifest = JSON.parse(
     readFileSync(
       join(
@@ -192,7 +203,10 @@ test("workflow preserves parallel fresh native candidate authority and only cach
   );
   assert.match(
     releaseSource,
-    /--prune-irrelevant[\s\S]+pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+Run fresh non-admitting native candidate verification[\s\S]+pnpm verify:native-candidate/u,
+    /pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+node scripts\/verify-release-candidate.mjs[\s\S]+echo "Local SQLite not admitted"/u,
   );
-  assert.match(source, /--prune-irrelevant/u);
+  assert.doesNotMatch(
+    releaseSource,
+    /native-ci-selection|verify:native-candidate/u,
+  );
 });
