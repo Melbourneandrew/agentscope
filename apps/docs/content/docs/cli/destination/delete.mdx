@@ -9,6 +9,9 @@ Deletion is intentionally separate from unconfiguration. The destination impleme
 
 For Local SQLite, `<selector>` may be the configured name or the opaque selector returned by an earlier unconfigure in another process. The first invocation is non-mutating and reports the exact lifecycle plan. `--confirm` presents that same plan before the package-owned handler deletes only the authenticated database family. Remote destinations remain unsupported.
 
+Local SQLite deletion is unavailable in the 0.1.0 alpha. The examples below
+describe the future admitted lifecycle and do not constitute an alpha setup step.
+
 ## Syntax
 
 ```bash
