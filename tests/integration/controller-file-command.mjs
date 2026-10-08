@@ -81,6 +81,27 @@ const bootstrapStages = [
   "supplier-connected-entry",
   "supplier-connected-extract",
   "supplier-connected-package",
+  ...["", "connected-"].flatMap((prefix) =>
+    Array.from(
+      { length: 12 },
+      (_, index) =>
+        `supplier-${prefix}package-goal-${String.fromCharCode(97 + index)}`,
+    ),
+  ),
+  "supplier-image-worker-complete",
+  ...[
+    "copy-java",
+    "copy-jar",
+    "copy-control",
+    "copy-configuration",
+    "export",
+    "layers",
+    "tar",
+    "load",
+  ].flatMap((role) => [
+    `supplier-image-${role}`,
+    `supplier-image-${role}-complete`,
+  ]),
   "supplier-connected-package-compilation",
   "supplier-connected-package-resolution",
   "supplier-connected-package-frontend",
