@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   createSupplierGoalObservation,
@@ -113,6 +115,47 @@ describe("fixed conventional MockServer supplier recipe", () => {
 describe("fixed pending Maven INFO goal decoder", () => {
   const header =
     "[INFO] --- compiler:3.15.0:compile (default-compile) @ mockserver-core ---\n";
+  it("observes actual default promisified execFile UTF8 string chunks", async () => {
+    const observe = createSupplierGoalObservation();
+    const pending = promisify(execFile)(
+      process.execPath,
+      ["-e", `process.stdout.write(${JSON.stringify(header)});`],
+      { timeout: 1_000, maxBuffer: 4_096 },
+    );
+    const chunks: unknown[] = [];
+    const stages: unknown[] = [];
+    pending.child.stdout?.on("data", (chunk: unknown) => {
+      chunks.push(typeof chunk);
+      stages.push(observe(0, chunk as string));
+    });
+    await pending;
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.every((kind) => kind === "string")).toBe(true);
+    expect(stages.filter((stage) => stage !== undefined)).toEqual([
+      "supplier-package-goal-a",
+    ]);
+  });
+  it("bounds UTF8 bytes without coercing boxed, malformed or oversized text", () => {
+    for (const text of [
+      "PRIVATE_CANARY\n",
+      `prefix ${header}`,
+      "X".repeat(16_385) + header,
+    ])
+      expect(createSupplierGoalObservation()(0, text)).toBeUndefined();
+    const observe = createSupplierGoalObservation();
+    expect(observe(0, "é".repeat(4 * 1024 * 1024 + 1))).toBeUndefined();
+    expect(observe(0, header)).toBeUndefined();
+    const combined = createSupplierGoalObservation();
+    const text = "é".repeat(2 * 1024 * 1024);
+    expect(Buffer.byteLength(text, "utf8")).toBe(4 * 1024 * 1024);
+    expect(combined(0, text)).toBeUndefined();
+    expect(combined(1, text)).toBeUndefined();
+    expect(combined(0, header)).toBeUndefined();
+    expect(
+      createSupplierGoalObservation()(0, new String(header) as never),
+    ).toBeUndefined();
+    expect(createSupplierGoalObservation()(2 as never, header)).toBeUndefined();
+  });
   it("bounds split headers, channels, unknown input and overflow without raw output", () => {
     for (let split = 0; split < header.length; split++) {
       const observe = createSupplierGoalObservation();
