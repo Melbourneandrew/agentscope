@@ -7,6 +7,7 @@ import {
 import { readFileSync } from "node:fs";
 import { verifyCandidateArtifact } from "./candidate.mjs";
 import { proposeStageRecord } from "./production-recorder.mjs";
+import { projectOperatorControlsReport } from "./admission.mjs";
 
 const authenticated = new WeakMap();
 const fail = () => {
@@ -139,13 +140,31 @@ export async function prepareDraft(store, input) {
   });
 }
 
+function validateObservationContext(observation, value) {
+  if (
+    observation.pendingStagesState !== "none-conflicting" ||
+    observation.phase !== "pre-stage" ||
+    observation.sourceRevision !== value.sourceRevision ||
+    value.owner !== "Melbourneandrew" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observation.candidateManifestDigest) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(observation.expectedPriorDigest) ||
+    !Number.isSafeInteger(observation.expectedSequence) ||
+    observation.expectedSequence < 1 ||
+    observation.expectedSequence >= 31 ||
+    !Number.isSafeInteger(observation.draftReleaseDatabaseId) ||
+    observation.draftReleaseDatabaseId < 1 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(observation.transactionId)
+  )
+    fail();
+}
+
 // Authentication comes from the fixed GitHub API store, never from a caller
 // owner label or from a digest of an unauthenticated document.
 export async function authenticateOwnerCheckpoint(
   store,
   input,
   npmObservation,
-  observedAt = new Date().toISOString(),
+  observedAt,
 ) {
   const value = snapshotRecorderInput(input);
   recorderExactKeys(value, [
@@ -165,6 +184,8 @@ export async function authenticateOwnerCheckpoint(
     run.event !== "workflow_dispatch" ||
     run.actor?.login !== value.owner ||
     run.triggering_actor?.login !== value.owner ||
+    run.actor?.id !== 25971425 ||
+    run.triggering_actor?.id !== 25971425 ||
     !Array.isArray(approvals)
   )
     fail();
@@ -172,6 +193,7 @@ export async function authenticateOwnerCheckpoint(
     (entry) =>
       entry.state === "approved" &&
       entry.user?.login === value.owner &&
+      entry.user?.id === 25971425 &&
       entry.environments?.some(
         (environment) =>
           environment.id === value.environmentId &&
@@ -185,39 +207,45 @@ export async function authenticateOwnerCheckpoint(
     "draftReleaseDatabaseId",
     "issuedAt",
     "expiresAt",
-    "consumedAt",
     "pendingStagesState",
+    "phase",
+    "sourceRevision",
+    "candidateManifestDigest",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "controlsReport",
   ]);
   const issued = Date.parse(observation.issuedAt);
   const expires = Date.parse(observation.expiresAt);
-  const consumed = Date.parse(observation.consumedAt);
-  const observed = Date.parse(observedAt);
+  // Dispatch and environment approval may queue. Consumption is a runner fact,
+  // not a timestamp the operator must predict before the job begins. This does
+  // not renew the original observation's issuedAt/expiresAt freshness window.
+  const consumedAt = observedAt ?? new Date().toISOString();
+  const consumed = Date.parse(consumedAt);
   if (
     !Number.isFinite(issued) ||
     !Number.isFinite(expires) ||
     !Number.isFinite(consumed) ||
-    !Number.isFinite(observed) ||
-    observed < consumed ||
-    observed > expires ||
-    observed - consumed > 30_000 ||
-    [
-      observation.issuedAt,
-      observation.expiresAt,
-      observation.consumedAt,
-      observedAt,
-    ].some((time) => new Date(Date.parse(time)).toISOString() !== time) ||
+    [observation.issuedAt, observation.expiresAt, consumedAt].some(
+      (time) => new Date(Date.parse(time)).toISOString() !== time,
+    ) ||
     expires <= issued ||
     expires - issued > 900_000 ||
     consumed < issued ||
-    consumed > expires ||
-    observation.pendingStagesState !== "none-conflicting" ||
-    !Number.isSafeInteger(observation.draftReleaseDatabaseId) ||
-    observation.draftReleaseDatabaseId < 1 ||
-    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(observation.transactionId)
+    consumed > expires
   )
     fail();
+  validateObservationContext(observation, value);
+  const controls = projectOperatorControlsReport(
+    observation.controlsReport,
+    observation.expiresAt,
+    consumedAt,
+  );
+  if (controls.controlsInspectedAt !== observation.issuedAt) fail();
   const checkpoint = snapshotRecorderInput({
     ...observation,
+    ...controls,
+    consumedAt,
     ownerIdentity: value.owner,
     state: "consumed-for-stage",
     authenticationDigest: sha256(
@@ -333,6 +361,11 @@ export function prepareIntent(input, checkpoint) {
     tuple.ownerCheckpointDigest !== sha256(canonicalJson(checkpoint)) ||
     checkpoint.transactionId !== tuple.transactionId ||
     checkpoint.draftReleaseDatabaseId !== head.draftReleaseDatabaseId ||
+    checkpoint.phase !== "pre-stage" ||
+    checkpoint.sourceRevision !== tuple.sourceRevision ||
+    checkpoint.candidateManifestDigest !== tuple.candidateManifestDigest ||
+    checkpoint.expectedSequence !== head.sequence ||
+    checkpoint.expectedPriorDigest !== head.digest ||
     value.consumedAt !== checkpoint.consumedAt ||
     !Number.isSafeInteger(head.draftReleaseDatabaseId) ||
     head.draftReleaseDatabaseId < 1 ||
@@ -429,6 +462,7 @@ export async function recordStage(store, input) {
       schemaVersion: intent.schemaVersion,
       sequence: intent.sequence,
       digest: intent.digest,
+      previousDigest: intent.previousDigest,
       transition: intent.transition,
       transactionId: intent.transactionId,
       draftReleaseDatabaseId: intent.draftReleaseDatabaseId,

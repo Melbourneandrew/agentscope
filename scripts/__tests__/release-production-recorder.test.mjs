@@ -5,17 +5,43 @@ import { proposeStageRecord } from "../release-lane/production-recorder.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
+const controlsReport = JSON.stringify({
+  state: "operator-controls-observed",
+  repository: "Melbourneandrew/agentscope",
+  ownerId: 25971425,
+  ownerLogin: "Melbourneandrew",
+  inspectedAt: "2026-10-07T00:00:00.000Z",
+  responseCount: 8,
+  responses: [
+    "/user",
+    "/rulesets?per_page=100",
+    "/rulesets/24696278",
+    "/rulesets/24696353",
+    "/immutable-releases",
+    "/branches/main/protection",
+    "/environments/npm-release",
+    "/environments/npm-release/deployment-branch-policies?per_page=100",
+  ].map((path) => ({ path, bytes: 1, digest: hash })),
+});
 function fixture(kind = "product", response = "received") {
   const checkpoint = {
     transactionId: "transaction-1",
     draftReleaseDatabaseId: kind === "product" ? 123 : null,
-    ownerIdentity: "owner-1",
+    ownerIdentity: "Melbourneandrew",
     pendingStagesState: "none-conflicting",
     issuedAt: "2026-10-07T00:00:00.000Z",
     expiresAt: "2026-10-07T00:15:00.000Z",
     consumedAt: "2026-10-07T00:01:00.000Z",
     state: "consumed-for-stage",
     authenticationDigest: hash,
+    phase: "pre-stage",
+    sourceRevision: "b".repeat(40),
+    candidateManifestDigest: hash,
+    expectedSequence: 3,
+    expectedPriorDigest: hash,
+    controlsReport,
+    controlsReportDigest: sha256(Buffer.from(controlsReport)),
+    controlsInspectedAt: "2026-10-07T00:00:00.000Z",
   };
   const tuple = {
     kind,
@@ -38,6 +64,7 @@ function fixture(kind = "product", response = "received") {
       schemaVersion: 1,
       sequence: 4,
       digest: hash,
+      previousDigest: hash,
       transition: "pre-stage-intent",
       ownerCheckpointDigest: tuple.ownerCheckpointDigest,
       transactionId: tuple.transactionId,
@@ -137,11 +164,20 @@ test.each(["expectedSequence", "expectedPriorDigest"])(
 test.each([
   { state: "unconsumed" },
   { pendingStagesState: "unknown" },
+  { ownerIdentity: "other-owner" },
   { transactionId: "other" },
   { draftReleaseDatabaseId: 124 },
   { consumedAt: "2026-10-07T00:16:00.000Z" },
   { issuedAt: "invalid" },
   { expiresAt: "2026-10-07T00:16:00.000Z" },
+  { phase: "pre-release" },
+  { sourceRevision: "c".repeat(40) },
+  { candidateManifestDigest: `sha256:${"c".repeat(64)}` },
+  { expectedSequence: 2 },
+  { expectedPriorDigest: `sha256:${"c".repeat(64)}` },
+  { controlsReport: "{}" },
+  { controlsReportDigest: `sha256:${"c".repeat(64)}` },
+  { controlsInspectedAt: "2026-10-07T00:01:00.000Z" },
 ])("rejects invalid checkpoint %j even if selfhash is updated", (change) => {
   const input = fixture();
   Object.assign(input.ownerCheckpoint, change);
@@ -150,6 +186,7 @@ test.each([
   );
   input.stageResult.tuple.ownerCheckpointDigest =
     input.tuple.ownerCheckpointDigest;
+  input.head.ownerCheckpointDigest = input.tuple.ownerCheckpointDigest;
   assert.throws(() => proposeStageRecord(input));
 });
 test("rejects substituted checkpoint digest and observation before consumption", () => {

@@ -17,6 +17,7 @@ import {
   bindIntentTuple,
 } from "./release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "./release-lane/validation.mjs";
+import { requireActualSemanticAdmission } from "./release-lane/admission.mjs";
 
 // This entrypoint prepares durable candidate assets only. It has no npm/OIDC
 // operation, and is not product-tag admission or permission to stage. Protected
@@ -53,14 +54,10 @@ function readBounded(path, limit) {
     closeSync(fd);
   }
 }
-// Deliberate nonprivileged hard fence. candidate.mjs binds bytes and tuples;
-// it does not implement semantic support/evidence admission or authenticate
-// the external controls and rejected probe. rk8.6 owns that next verifier
-// slice. Until it exists, neither verification nor live mutation may proceed.
-function requireProductionAdmission() {
-  throw new Error("release.admission.unimplemented");
-}
-requireProductionAdmission();
+// The actual OTLP semantic producer is still absent. Do not substitute a
+// successful job, digest or caller certification label for that prerequisite.
+// rk8.6 consumes the reviewed producer when available; no live entry meanwhile.
+requireActualSemanticAdmission();
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
   process.env.GITHUB_REPOSITORY !== "Melbourneandrew/agentscope" ||
@@ -69,6 +66,11 @@ if (
   !/^[a-f0-9]{40}$/u.test(process.env.GITHUB_SHA ?? "")
 )
   fail();
+// Semantic verification is nonprivileged. Administrative settings are inspected
+// through the existing operator session and bound to the authenticated stage
+// checkpoint; the read-only Actions token cannot inspect those settings.
+if (process.argv[2] === "--verify-admission") process.exit(0);
+if (process.argv.length !== 2) fail();
 const store = createGitHubReleaseStore({
   token: process.env.GITHUB_TOKEN,
   deadline,
@@ -113,6 +115,9 @@ if (event.inputs.operation === "consume-intent") {
     "scripts/release-lane/stage-result.mjs",
     "scripts/release-lane/candidate.mjs",
     "scripts/release-lane/validation.mjs",
+    "scripts/release-lane/admission.mjs",
+    "scripts/release-lane/operator-controls.mjs",
+    "scripts/release-lane/release-controls.mjs",
     "apps/cli/scripts/publish-manifest-contract.mjs",
   ];
   const bound = await bindIntentTuple(store, head, tuple, {
@@ -144,7 +149,7 @@ if (event.inputs.operation === "consume-intent") {
       },
       expectedSequence: Number(event.inputs["expected-sequence"]),
       expectedPriorDigest: event.inputs["expected-prior-digest"],
-      consumedAt: supplied.consumedAt,
+      consumedAt: checkpoint.consumedAt,
     },
     checkpoint,
   );

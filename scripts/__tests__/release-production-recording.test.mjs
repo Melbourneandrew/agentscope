@@ -19,20 +19,44 @@ afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
+const controlsReport = JSON.stringify({
+  state: "operator-controls-observed",
+  repository: "Melbourneandrew/agentscope",
+  ownerId: 25971425,
+  ownerLogin: "Melbourneandrew",
+  inspectedAt: "2026-10-07T00:00:00.000Z",
+  responseCount: 8,
+  responses: [
+    "/user",
+    "/rulesets?per_page=100",
+    "/rulesets/24696278",
+    "/rulesets/24696353",
+    "/immutable-releases",
+    "/branches/main/protection",
+    "/environments/npm-release",
+    "/environments/npm-release/deployment-branch-policies?per_page=100",
+  ].map((path) => ({ path, bytes: 1, digest: hash })),
+});
 const observation = {
   transactionId: "transaction-1",
   draftReleaseDatabaseId: 7,
   issuedAt: "2026-10-07T00:00:00.000Z",
   expiresAt: "2026-10-07T00:15:00.000Z",
-  consumedAt: "2026-10-07T00:01:00.000Z",
   pendingStagesState: "none-conflicting",
+  phase: "pre-stage",
+  sourceRevision: "b".repeat(40),
+  candidateManifestDigest: hash,
+  expectedSequence: 1,
+  expectedPriorDigest: hash,
+  controlsReport,
 };
+const consumedAt = "2026-10-07T00:01:00.000Z";
 function fixture() {
   const input = {
     runId: 42,
     runAttempt: 1,
     sourceRevision: "b".repeat(40),
-    owner: "owner",
+    owner: "Melbourneandrew",
     environmentId: 9,
   };
   const run = {
@@ -41,12 +65,12 @@ function fixture() {
     run_attempt: 1,
     path: ".github/workflows/release.yml",
     event: "workflow_dispatch",
-    actor: { login: "owner" },
-    triggering_actor: { login: "owner" },
+    actor: { id: 25971425, login: "Melbourneandrew" },
+    triggering_actor: { id: 25971425, login: "Melbourneandrew" },
   };
   const approval = {
     state: "approved",
-    user: { login: "owner" },
+    user: { id: 25971425, login: "Melbourneandrew" },
     environments: [{ id: 9, name: "npm-release" }],
   };
   return {
@@ -56,13 +80,28 @@ function fixture() {
     store: { run: async () => run, approvals: async () => [approval] },
   };
 }
-async function intentFixture() {
+async function intentFixture(observationOverrides = {}) {
   const f = fixture();
+  const head = {
+    schemaVersion: 1,
+    sequence: 1,
+    transition: "draft-prepared",
+    transactionId: "transaction-1",
+    draftReleaseDatabaseId: 7,
+    candidateManifestDigest: hash,
+    sourceRevision: f.input.sourceRevision,
+    kind: "product",
+  };
+  head.digest = sha256(canonicalJson({ ...head, previousDigest: null }));
   const checkpoint = await authenticateOwnerCheckpoint(
     f.store,
     f.input,
-    observation,
-    observation.consumedAt,
+    {
+      ...observation,
+      expectedPriorDigest: head.digest,
+      ...observationOverrides,
+    },
+    consumedAt,
   );
   const tuple = {
     kind: "product",
@@ -79,21 +118,10 @@ async function intentFixture() {
     releaseScriptsDigest: hash,
     ownerCheckpointDigest: sha256(canonicalJson(checkpoint)),
   };
-  const head = {
-    schemaVersion: 1,
-    sequence: 1,
-    digest: hash,
-    transition: "draft-prepared",
-    transactionId: tuple.transactionId,
-    draftReleaseDatabaseId: 7,
-    candidateManifestDigest: hash,
-    sourceRevision: tuple.sourceRevision,
-    kind: "product",
-  };
   const input = {
     tuple,
     head,
-    expectedPriorDigest: hash,
+    expectedPriorDigest: head.digest,
     expectedSequence: 1,
     consumedAt: "2026-10-07T00:01:00.000Z",
   };
@@ -154,12 +182,18 @@ test("rejects missing, duplicate and wrong-environment approval", async () => {
     const f = fixture();
     f.store.approvals = async () => approvals;
     await expect(
-      authenticateOwnerCheckpoint(
-        f.store,
-        f.input,
-        observation,
-        observation.consumedAt,
-      ),
+      authenticateOwnerCheckpoint(f.store, f.input, observation, consumedAt),
+    ).rejects.toThrow();
+  }
+});
+
+test("owner login labels cannot substitute another authenticated principal", async () => {
+  for (const subject of ["actor", "triggering_actor", "approval"]) {
+    const f = fixture();
+    if (subject === "approval") f.approval.user.id = 1;
+    else f.run[subject].id = 1;
+    await expect(
+      authenticateOwnerCheckpoint(f.store, f.input, observation, consumedAt),
     ).rejects.toThrow();
   }
 });
@@ -173,11 +207,55 @@ test.each(["expired", "future", "unknown-pending"])(
       kind === "expired"
         ? "2026-10-07T00:16:00.000Z"
         : kind === "future"
-          ? "2026-10-07T00:00:00.000Z"
-          : observation.consumedAt;
+          ? "2026-10-06T23:59:59.999Z"
+          : consumedAt;
     await expect(
       authenticateOwnerCheckpoint(f.store, f.input, supplied, time),
     ).rejects.toThrow();
+  },
+);
+
+test("queued approval consumes at runner time without renewing original expiry", async () => {
+  const f = fixture();
+  const actualConsumption = "2026-10-07T00:10:00.000Z";
+  const checkpoint = await authenticateOwnerCheckpoint(
+    f.store,
+    f.input,
+    observation,
+    actualConsumption,
+  );
+  expect(checkpoint.consumedAt).toBe(actualConsumption);
+  expect(checkpoint.issuedAt).toBe(observation.issuedAt);
+  expect(checkpoint.expiresAt).toBe(observation.expiresAt);
+  await expect(
+    authenticateOwnerCheckpoint(
+      f.store,
+      f.input,
+      { ...observation, consumedAt },
+      actualConsumption,
+    ),
+  ).rejects.toThrow();
+  await expect(
+    authenticateOwnerCheckpoint(
+      f.store,
+      f.input,
+      observation,
+      "2026-10-07T00:15:00.001Z",
+    ),
+  ).rejects.toThrow();
+});
+
+test.each([
+  ["phase", "pre-release"],
+  ["sourceRevision", "c".repeat(40)],
+  ["candidateManifestDigest", `sha256:${"c".repeat(64)}`],
+  ["expectedSequence", 2],
+  ["expectedPriorDigest", `sha256:${"c".repeat(64)}`],
+  ["controlsReport", "{}"],
+])(
+  "rejects a fresh but detached controls checkpoint %s before intent",
+  async (field, value) => {
+    await expect(intentFixture({ [field]: value })).rejects.toThrow();
   },
 );
 

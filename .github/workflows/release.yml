@@ -47,7 +47,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Require nonprivileged semantic and external-control admission
+      - name: Require nonprivileged semantic admission
         run: node scripts/record-release-stage.mjs --verify-admission
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

@@ -1,6 +1,7 @@
 import { types } from "node:util";
 
 import { canonicalJson, sha256 } from "./validation.mjs";
+import { parseAdmissionDocument } from "./admission.mjs";
 
 const fail = () => {
   throw new Error("release.stage-result.invalid");
@@ -135,4 +136,37 @@ export function validateStageResult(input, expectedInput) {
     tuple,
     stageResultDigest: sha256(canonicalJson(result)),
   });
+}
+
+// npm 11.17's stage publish --json emits { [packageName]: tarballContents },
+// adding stageId only after the registry response. Project that standard output
+// into the existing result; missing/uncertain responses never invent an ID or
+// authorize a retry. The workflow must separately authenticate this producer.
+export function projectNpmStageResponse(bytes, expectedInput) {
+  const tuple = validateStageTuple(expectedInput);
+  let response = "ambiguous";
+  let stageId = null;
+  if (!types.isProxy(bytes) && Buffer.isBuffer(bytes) && bytes.length === 0) {
+    response = "missing";
+  } else {
+    try {
+      const output = parseAdmissionDocument(bytes);
+      recorderExactKeys(output, [tuple.package]);
+      const packageResult = output[tuple.package];
+      if (
+        packageResult?.name !== tuple.package ||
+        packageResult.version !== tuple.version ||
+        packageResult.id !== `${tuple.package}@${tuple.version}` ||
+        packageResult.integrity !== tuple.integrity ||
+        typeof packageResult.stageId !== "string" ||
+        !identifier.test(packageResult.stageId)
+      )
+        fail();
+      response = "received";
+      stageId = packageResult.stageId;
+    } catch {
+      // Preserve uncertainty, not npm output or a fabricated stage identity.
+    }
+  }
+  return Object.freeze({ schemaVersion: 1, tuple, response, stageId });
 }
