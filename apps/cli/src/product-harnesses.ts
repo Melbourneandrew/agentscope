@@ -1,5 +1,6 @@
 import {
   authenticateExactFile,
+  createProductClaudeDiscoveryFactory,
   canonicalFutureDirectory,
   canonicalPrivateDirectory,
   canonicalConfigurationDirectory,
@@ -31,19 +32,8 @@ import {
 import {
   claudeCodeDescriptor,
   createClaudeCodeDialectAuthority,
-} from "@agentscope/harness-claude-code";
-import {
-  createClaudeDiscoveryProbe,
-  captureClaudeEnvironment,
-  claudeUserConfiguration,
   type ClaudeDiscoveryPolicy,
-} from "./claude-discovery.js";
-import {
-  readClaudePluginContextObservation,
-  discoverClaudeCanonicalSettingsRoot,
-  mergeClaudePluginReadGuards,
-} from "./claude-plugin-context.js";
-import { mergeClaudeSettingsDirectorySelections } from "./claude-managed-settings.js";
+} from "@agentscope/harness-claude-code";
 
 import type { AgentscopeHome } from "@agentscope/core/configuration-management";
 import type {
@@ -435,61 +425,6 @@ export const createProductHarnesses = (
   });
 };
 
-const readClaudeInstallationContext = async (
-  homeDirectory: string,
-  projectDirectory: string,
-  platform: NodeJS.Platform,
-  environment: Readonly<Record<string, string | undefined>>,
-) => {
-  const realHome = await realpath(homeDirectory).catch(() => null);
-  const routes = await discoverClaudeCanonicalSettingsRoot(
-    projectDirectory,
-    realHome,
-  );
-  const plugins = await readClaudePluginContextObservation({
-    homeDirectory,
-    projectDirectory,
-    platform,
-    environment,
-  });
-  const canonical =
-    routes.candidate !== null &&
-    routes.candidate !== projectDirectory &&
-    realHome !== null &&
-    routes.candidate !== realHome
-      ? await readClaudePluginContextObservation({
-          homeDirectory,
-          projectDirectory,
-          platform,
-          environment,
-          localSettingsRoot: routes.candidate,
-        })
-      : undefined;
-  return {
-    ...plugins,
-    readGuards: mergeClaudePluginReadGuards([
-      plugins.readGuards,
-      routes.readGuards,
-      canonical?.readGuards ?? [],
-    ]),
-    settingsDirectorySelections: mergeClaudeSettingsDirectorySelections([
-      plugins.settingsDirectorySelections,
-      routes.settingsDirectorySelections,
-      canonical?.settingsDirectorySelections ?? [],
-    ]),
-    ...(canonical === undefined
-      ? {}
-      : {
-          localSettingsElection: {
-            cwd: projectDirectory,
-            candidate: routes.candidate!,
-            realHome,
-            canonical,
-          },
-        }),
-  };
-};
-
 const createClaudeProductAdapter = (
   input: CreateProductHarnessesInput,
   context: Readonly<{
@@ -503,17 +438,8 @@ const createClaudeProductAdapter = (
   }>,
 ): CliHarnessAdapter => {
   const { homeDirectory, platform, architecture } = context;
-  const environment = captureClaudeEnvironment(context.environment);
-  const selectedHookConfigurationPath = () =>
-    homeDirectory === undefined
-      ? undefined
-      : claudeUserConfiguration(
-          homeDirectory,
-          context.projectDirectory,
-          environment,
-        ).settingsPath;
-  const probe = createClaudeDiscoveryProbe({
-    environment,
+  const discovery = createProductClaudeDiscoveryFactory().bindInvocation({
+    environment: context.environment,
     projectDirectory: context.projectDirectory,
     ...(homeDirectory === undefined ? {} : { homeDirectory }),
     platform,
@@ -522,6 +448,8 @@ const createClaudeProductAdapter = (
       ? {}
       : { policy: input.claudeDiscoveryPolicy }),
   });
+  const selectedHookConfigurationPath = discovery.configurationPath;
+  const probe = discovery.probe;
   return Object.freeze({
     commandName: "claude-code",
     harnessType: claudeCodeDescriptor.harnessType,
@@ -551,12 +479,7 @@ const createClaudeProductAdapter = (
       );
       if (dialectAuthority === undefined)
         throw new Error("cli.launcher.unsupported");
-      const plugins = await readClaudeInstallationContext(
-        homeDirectory,
-        context.projectDirectory,
-        platform,
-        environment,
-      );
+      const plugins = await discovery.observeInstallationContext();
       const createInstallation = await loadInstallationFactory(input);
       return createInstallation({
         ...common,

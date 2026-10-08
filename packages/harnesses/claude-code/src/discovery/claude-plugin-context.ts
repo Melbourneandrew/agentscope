@@ -1,16 +1,18 @@
 import { basename, dirname, join, resolve } from "node:path";
-import { lstat } from "node:fs/promises";
+import {
+  collectedCacheElection,
+  discoverCachedLoadingPath,
+} from "./claude-plugin-cache.js";
 
 import {
   CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
   CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST,
   CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
   type ClaudeCodePluginInventory,
-} from "@agentscope/harness-claude-code";
+} from "../lifecycle.js";
 
 import {
   readClaudeInstalledPluginRegistry,
-  readClaudePluginTextDocument,
   readClaudePluginManifest,
   readClaudePluginHooks,
   type ClaudePluginCacheElection,
@@ -19,18 +21,15 @@ import {
   claudeUserConfiguration,
   claudePluginDirectoryPath,
   claudePluginSeedDirectories,
-  claudePluginTemporaryVersion,
-  type ClaudePluginLoadingElection,
-  type ClaudePluginVersionRoot,
 } from "./claude-discovery.js";
 import {
+  type ClaudeCodeDiscoveryReadCapabilities,
   exactAbsolutePath,
   exactEnvironmentValue,
   nodeErrorCode,
   type ProductHarnessReadGuard,
   discoverClaudeCacheRecord,
-  discoverClaudeDirectoryEntries,
-} from "./product-harness-probe-files.js";
+} from "./capabilities.js";
 import { collectClaudeMarketplaceLoads } from "./claude-marketplace-context.js";
 import { projectClaudeParsedSettings } from "./claude-settings-projection.js";
 import {
@@ -95,6 +94,7 @@ const pluginRegistryRoot = (
 // remain incomplete. Single applicable physical caches are observed below.
 // No temporary limitation is a permanent eligibility rule or support claim.
 const collectClaudePluginContext = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   input: Readonly<{
     homeDirectory: string;
     projectDirectory: string;
@@ -128,20 +128,20 @@ const collectClaudePluginContext = async (
     configuration.directory,
   );
   const managed = claudeManagedSettingsPath(input.platform);
-  const managedSources = await discoverClaudeManagedSettings(managed);
-  settingsDirectorySelections.push(
-    managedSources.selection,
-    ...(managedSources.ignoredDirectories ?? []).map((directoryPath) =>
-      Object.freeze({ directoryPath, exists: true }),
-    ),
+  const managedSources = await discoverClaudeManagedSettings(
+    capabilities,
+    managed,
   );
+  retainManagedDirectories(settingsDirectorySelections, managedSources);
   const observed = await readClaudeScopedSettings(
+    capabilities,
     configuration.settingsPath,
     project,
     managedSources.paths,
     localSettingsRoot,
   );
   const registry = await readClaudeInstalledPluginRegistry(
+    capabilities,
     join(registryRoot, "installed_plugins.json"),
   );
   for (const guard of [...observed.map((entry) => entry.guard), registry.guard])
@@ -152,6 +152,7 @@ const collectClaudePluginContext = async (
   const installedPlugins: InstalledPlugin[] = [];
   const cacheElections: ClaudePluginCacheElection[] = [];
   const loading = await collectClaudeMarketplaceLoads(
+    capabilities,
     registryRoot,
     enabled,
     retainGuard.bind(undefined, guards),
@@ -162,18 +163,21 @@ const collectClaudePluginContext = async (
       (entry) => entry.pluginId === id,
     );
     const applicable = await applicablePluginLocations(
+      capabilities,
       locations,
       project,
       guards,
       settingsDirectorySelections,
     );
     const preliminary = await discoverClaudeCacheRecord(
+      capabilities,
       applicable.map((location) => location.installPath),
     );
     if (preliminary.index === undefined) throw unavailable();
     const location = applicable[preliminary.index]!;
     if (location.installPath.endsWith(".zip")) throw unavailable();
     const loading = await discoverCachedLoadingPath(
+      capabilities,
       location.installPath,
       id,
       () =>
@@ -182,17 +186,13 @@ const collectClaudePluginContext = async (
           : [],
       marketplace.localPath,
     );
-    const manifest = await readClaudePluginManifest(loading.selectedPath);
-    retainGuard(guards, manifest.guard);
-    if (manifest.guard.exists && marketplace.conflictsWithManifest)
-      throw unavailable();
-    const hooks = await readClaudePluginHooks({
-      installPath: loading.selectedPath,
-      manifest,
-      marketplaceHooksDeclarationJson: marketplace.hooksDeclarationJson,
-    });
-    for (const guard of hooks.readGuards) retainGuard(guards, guard);
-    const selectedPlugin = observedPlugin(id, manifest, hooks);
+    const selectedPlugin = await readSelectedPlugin(
+      capabilities,
+      loading.selectedPath,
+      marketplace,
+      guards,
+      id,
+    );
     installedPlugins.push(selectedPlugin);
     cacheElections.push(
       collectedCacheElection(
@@ -214,6 +214,40 @@ const collectClaudePluginContext = async (
       loadSelections: loading.loadSelections,
     },
   );
+};
+
+const retainManagedDirectories = (
+  selections: ClaudeSettingsDirectorySelection[],
+  sources: Awaited<ReturnType<typeof discoverClaudeManagedSettings>>,
+) => {
+  selections.push(
+    sources.selection,
+    ...(sources.ignoredDirectories ?? []).map((directoryPath) =>
+      Object.freeze({ directoryPath, exists: true }),
+    ),
+  );
+};
+
+const readSelectedPlugin = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
+  installPath: string,
+  marketplace: Awaited<
+    ReturnType<typeof collectClaudeMarketplaceLoads>
+  >["loads"][number]["marketplace"],
+  guards: Map<string, ProductHarnessReadGuard>,
+  id: string,
+): Promise<InstalledPlugin> => {
+  const manifest = await readClaudePluginManifest(capabilities, installPath);
+  retainGuard(guards, manifest.guard);
+  if (manifest.guard.exists && marketplace.conflictsWithManifest)
+    throw unavailable();
+  const hooks = await readClaudePluginHooks(capabilities, {
+    installPath,
+    manifest,
+    marketplaceHooksDeclarationJson: marketplace.hooksDeclarationJson,
+  });
+  for (const guard of hooks.readGuards) retainGuard(guards, guard);
+  return observedPlugin(id, manifest, hooks);
 };
 
 const collectedContext = (
@@ -241,127 +275,27 @@ const collectedContext = (
     ),
   });
 
-const collectedCacheElection = (
-  locations: readonly Readonly<{ installPath: string }>[],
-  selected: number,
-  plugin: InstalledPlugin,
-  loading: ClaudePluginLoadingElection,
-  prefix: readonly string[],
-): ClaudePluginCacheElection =>
-  Object.freeze({
-    directoryPaths: Object.freeze(
-      Array.from(
-        new Set([
-          ...prefix,
-          ...loading.paths,
-          ...(loading.versionRoots?.flatMap((root) => [
-            root.parentPath,
-            ...root.paths,
-          ]) ?? []),
-        ]),
-      ),
-    ),
-    candidates: Object.freeze(
-      locations.map((candidate, index) =>
-        Object.freeze({
-          installPath: candidate.installPath,
-          ...(index === selected ? { loading } : {}),
-          plugin: index === selected ? plugin : null,
-        }),
-      ),
-    ),
-  });
-
-// Native dLo's cached nonlocal string route tries the recorded cache first,
-// then JIn's exact version across seed roots. Its YDo fallback is collected
-// separately; an unobserved fallback is never fabricated as an empty plugin.
-const discoverCachedLoadingPath = async (
-  cachePath: string,
-  id: string,
-  seedRoots: () => readonly string[],
-  localPath?: string,
-): Promise<ClaudePluginLoadingElection> => {
-  if (localPath !== undefined) {
-    const state = await lstat(localPath);
-    if (state.isSymbolicLink() || !state.isDirectory()) throw unavailable();
-    return Object.freeze({
-      paths: Object.freeze([localPath]),
-      selectedPath: localPath,
-      localPath,
-    });
-  }
-  const cached = await discoverClaudeCacheRecord([cachePath], false);
-  if (cached.index !== undefined)
-    return Object.freeze({
-      paths: cached.directoryPaths,
-      selectedPath: cachePath,
-    });
-  const parts = id.split("@");
-  if (parts.length !== 2 || parts.some((part) => !part)) throw unavailable();
-  const safe = (value: string) => value.replace(/[^a-zA-Z0-9\-_]/g, "-");
-  let version = basename(cachePath)
-    .replace(/\.zip$/, "")
-    .replace(/[^a-zA-Z0-9\-_.]/g, "-");
-  if (version === "." || version === "..") version = "-";
-  const roots = seedRoots().map((root) =>
-    join(root, "cache", safe(parts[1]!), safe(parts[0]!)),
-  );
-  const paths = [cachePath, ...roots.map((root) => join(root, version))];
-  const observed = await discoverClaudeCacheRecord(paths, false);
-  if (observed.index === undefined)
-    return discoverAlternateSeedVersion(paths, roots);
-  return Object.freeze({
-    paths: observed.directoryPaths,
-    selectedPath: paths[observed.index]!,
-  });
-};
-
-const discoverAlternateSeedVersion = async (
-  paths: readonly string[],
-  roots: readonly string[],
-): Promise<ClaudePluginLoadingElection> => {
-  const versionRoots: ClaudePluginVersionRoot[] = [];
-  for (const parentPath of roots) {
-    const names = (await discoverClaudeDirectoryEntries(parentPath)).filter(
-      (name) => !claudePluginTemporaryVersion(name),
-    );
-    const children = names.map((name) => join(parentPath, name));
-    versionRoots.push(
-      Object.freeze({ parentPath, paths: Object.freeze(children) }),
-    );
-    const nonempty: string[] = [];
-    for (const child of children)
-      if ((await discoverClaudeCacheRecord([child], false)).index !== undefined)
-        nonempty.push(child);
-    if (nonempty.length === 1)
-      return Object.freeze({
-        paths: Object.freeze([...paths]),
-        selectedPath: nonempty[0]!,
-        versionRoots: Object.freeze(versionRoots),
-      });
-  }
-  throw unavailable();
-};
-
 export const readClaudePluginContext = async (
-  input: Parameters<typeof collectClaudePluginContext>[0],
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
+  input: Parameters<typeof collectClaudePluginContext>[1],
 ): Promise<ClaudePluginContext> => {
   try {
-    return await collectClaudePluginContext(input);
+    return await collectClaudePluginContext(capabilities, input);
   } catch {
     throw unavailable();
   }
 };
 
 export const readClaudePluginContextObservation = async (
-  input: Parameters<typeof collectClaudePluginContext>[0],
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
+  input: Parameters<typeof collectClaudePluginContext>[1],
 ): Promise<ClaudePluginContextObservation> => {
   const observations: ContextObservations = {
     guards: new Map(),
     settingsDirectorySelections: [],
   };
   try {
-    return await collectClaudePluginContext(input, observations);
+    return await collectClaudePluginContext(capabilities, input, observations);
   } catch {
     return Object.freeze({
       pluginInventory: null,
@@ -403,6 +337,7 @@ const retainGuard = (
 // and Core guards; consulted directories use the existing selection guards.
 // No Git process, directory token, or new authority is minted.
 const canonicalProjectRoot = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   requested: string,
   guards: Map<string, ProductHarnessReadGuard>,
   selections: ClaudeSettingsDirectorySelection[],
@@ -412,41 +347,43 @@ const canonicalProjectRoot = async (
     const marker = join(root, ".git");
     let state;
     try {
-      state = await lstat(marker);
+      state = await capabilities.inspectPath(marker);
     } catch (error) {
       const code: unknown =
         typeof error === "object" && error !== null
           ? Object.getOwnPropertyDescriptor(error, "code")?.value
           : undefined;
       if (code !== "ENOENT") throw unavailable();
-      const absent = await readClaudePluginTextDocument(marker);
+      const absent = await capabilities.readTextDocument(marker);
       if (absent.guard.exists) throw unavailable();
       retainGuard(guards, absent.guard);
       if (dirname(root) === root) return null;
       root = dirname(root);
       continue;
     }
-    if (state.isSymbolicLink()) throw unavailable();
-    if (state.isDirectory()) {
+    if (state.symbolicLink) throw unavailable();
+    if (state.kind === "directory") {
       // Native Kt accepts the directory itself; it does not consult HEAD.
       // Core binds that directory through the existing selection pipeline.
       selections.push(Object.freeze({ directoryPath: marker, exists: true }));
       return root;
     }
-    if (!state.isFile()) throw unavailable();
-    const git = await readClaudePluginTextDocument(marker);
+    if (!(state.kind === "file")) throw unavailable();
+    const git = await capabilities.readTextDocument(marker);
     retainGuard(guards, git.guard);
     if (git.text === undefined) throw unavailable();
     if (!git.text.trim().startsWith("gitdir:")) return root;
     const gitdir = resolve(root, git.text.trim().slice(7).trim());
-    const common = await readClaudePluginTextDocument(
+    const common = await capabilities.readTextDocument(
       join(gitdir, "commondir"),
     );
     retainGuard(guards, common.guard);
     if (common.text === undefined) return root;
     const commonPath = resolve(gitdir, common.text.trim());
     if (resolve(dirname(gitdir)) !== join(commonPath, "worktrees")) return root;
-    const backlink = await readClaudePluginTextDocument(join(gitdir, "gitdir"));
+    const backlink = await capabilities.readTextDocument(
+      join(gitdir, "gitdir"),
+    );
     retainGuard(guards, backlink.guard);
     if (
       backlink.text === undefined ||
@@ -462,12 +399,14 @@ const canonicalProjectRoot = async (
 // This discovers routes only. The caller must put every returned guard and
 // directory selection in the original Core plan; no lstat UID selects a root.
 export const discoverClaudeCanonicalSettingsRoot = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   projectDirectory: string,
   realHome: string | null,
 ) => {
   const guards = new Map<string, ProductHarnessReadGuard>();
   const selections: ClaudeSettingsDirectorySelection[] = [];
   const candidate = await canonicalProjectRoot(
+    capabilities,
     projectDirectory,
     guards,
     selections,
@@ -485,18 +424,18 @@ export const discoverClaudeCanonicalSettingsRoot = async (
     ]) {
       let state;
       try {
-        state = await lstat(path);
+        state = await capabilities.inspectPath(path);
       } catch (error) {
         if (nodeErrorCode(error) !== "ENOENT" || path === candidate)
           throw unavailable();
         selections.push(Object.freeze({ directoryPath: path, exists: false }));
         continue;
       }
-      if (state.isSymbolicLink()) throw unavailable();
-      if (state.isDirectory())
+      if (state.symbolicLink) throw unavailable();
+      if (state.kind === "directory")
         selections.push(Object.freeze({ directoryPath: path, exists: true }));
-      else if (path === join(candidate, ".git") && state.isFile()) {
-        const observed = await readClaudePluginTextDocument(path);
+      else if (path === join(candidate, ".git") && state.kind === "file") {
+        const observed = await capabilities.readTextDocument(path);
         if (!observed.guard.exists) throw unavailable();
         retainGuard(guards, observed.guard);
       } else throw unavailable();
@@ -520,6 +459,7 @@ export const discoverClaudeCanonicalSettingsRoot = async (
 };
 
 const applicablePluginLocations = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   locations: Awaited<
     ReturnType<typeof readClaudeInstalledPluginRegistry>
   >["locations"],
@@ -538,11 +478,20 @@ const applicablePluginLocations = async (
     )
       applicable.push(entry);
     else if (entry.projectPath !== null) {
-      const current = await canonicalProjectRoot(project, guards, selections);
+      const current = await canonicalProjectRoot(
+        capabilities,
+        project,
+        guards,
+        selections,
+      );
       if (
         current !== null &&
-        (await canonicalProjectRoot(entry.projectPath, guards, selections)) ===
-          current
+        (await canonicalProjectRoot(
+          capabilities,
+          entry.projectPath,
+          guards,
+          selections,
+        )) === current
       )
         applicable.push(entry);
     }

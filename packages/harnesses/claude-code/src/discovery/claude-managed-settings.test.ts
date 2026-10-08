@@ -20,6 +20,8 @@ import {
   selectClaudeCanonicalLocalRoot,
   selectClaudeCanonicalLocalRootFromHeld,
   readClaudeScopedSettings,
+  claudeManagedSettingsPath,
+  mergeClaudeSettingsDirectorySelections,
 } from "./claude-managed-settings.js";
 
 import {
@@ -42,6 +44,58 @@ const fixture = async () => {
     directory: join(root, "managed-settings.d"),
   };
 };
+
+describe("managed source paths and immutable directory observations", () => {
+  it("uses exact platform paths rather than a portable managed-file fiction", () => {
+    expect(claudeManagedSettingsPath("darwin")).toBe(
+      "/Library/Application Support/ClaudeCode/managed-settings.json",
+    );
+    expect(claudeManagedSettingsPath("linux")).toBe(
+      "/etc/claude-code/managed-settings.json",
+    );
+    expect(() => claudeManagedSettingsPath("win32")).toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+  });
+  it("rejects contradictory observations of the same consulted directory", () => {
+    const present = { directoryPath: "/managed", exists: true, entries: [] };
+    expect(() =>
+      mergeClaudeSettingsDirectorySelections([
+        [present],
+        [{ ...present, exists: false }],
+      ]),
+    ).toThrow("cli.harness.plugin-inventory-unavailable");
+    expect(() =>
+      mergeClaudeSettingsDirectorySelections([
+        [present],
+        [{ ...present, entries: ["later.json"] }],
+      ]),
+    ).toThrow("cli.harness.plugin-inventory-unavailable");
+  });
+  it("refuses directory metadata drift after collecting names", async () => {
+    const { main, directory } = await fixture();
+    await mkdir(directory);
+    let inspections = 0;
+    const changed = {
+      ...capabilities,
+      inspectPath: async (path: string) => {
+        const observed = await capabilities.inspectPath(path);
+        if (path !== directory) return observed;
+        inspections += 1;
+        return inspections === 1
+          ? observed
+          : {
+              ...observed,
+              mtimeMs: observed.mtimeMs + 1,
+            };
+      },
+    };
+    await expect(discoverClaudeManagedSettings(changed, main)).rejects.toThrow(
+      "cli.harness.plugin-inventory-unavailable",
+    );
+    expect(inspections).toBe(2);
+  });
+});
 
 describe("canonical settings election consumes held Core observations", () => {
   const directory = (directoryPath: string, uid: number | null = 0) => ({
@@ -146,6 +200,7 @@ describe("distinct project and selected local settings scopes", () => {
         JSON.stringify({ enabledPlugins: { [id]: true } }),
       );
       const observed = await readClaudeScopedSettings(
+        capabilities,
         user,
         cwd,
         [main],
@@ -253,7 +308,7 @@ describe("canonical local root projection from held ownership facts", () => {
 describe("preliminary managed-settings discovery", () => {
   it("binds an absent directory without inventing drop-in files", async () => {
     const { main, directory } = await fixture();
-    expect(await discoverClaudeManagedSettings(main)).toEqual({
+    expect(await discoverClaudeManagedSettings(capabilities, main)).toEqual({
       paths: [main],
       ignoredDirectories: [],
       selection: { directoryPath: directory, exists: false, entries: [] },
@@ -265,7 +320,7 @@ describe("preliminary managed-settings discovery", () => {
     await mkdir(directory);
     for (const name of ["b.json", "a.json", ".hidden.json", "other.txt"])
       await writeFile(join(directory, name), "{}");
-    const observed = await discoverClaudeManagedSettings(main);
+    const observed = await discoverClaudeManagedSettings(capabilities, main);
     expect(observed.paths).toEqual([
       main,
       join(directory, "a.json"),
@@ -284,7 +339,7 @@ describe("preliminary managed-settings discovery", () => {
     const { main, directory } = await fixture();
     await mkdir(directory);
     await mkdir(join(directory, "ignored.json"));
-    const observed = await discoverClaudeManagedSettings(main);
+    const observed = await discoverClaudeManagedSettings(capabilities, main);
     expect(observed.paths).toEqual([main]);
     expect(observed.ignoredDirectories).toEqual([
       join(directory, "ignored.json"),
@@ -308,18 +363,18 @@ describe("preliminary managed-settings discovery", () => {
     await mkdir(directory);
     await writeFile(join(root, "target"), "{}");
     await symlink(join(root, "target"), join(directory, "entry.json"));
-    await expect(discoverClaudeManagedSettings(main)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
+    await expect(
+      discoverClaudeManagedSettings(capabilities, main),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
   });
 
   it("does not follow a substituted managed directory", async () => {
     const { root, main, directory } = await fixture();
     await mkdir(join(root, "replacement"));
     await symlink(join(root, "replacement"), directory);
-    await expect(discoverClaudeManagedSettings(main)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
+    await expect(
+      discoverClaudeManagedSettings(capabilities, main),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
   });
 
   it("refuses beyond the raw consulted-row bound", async () => {
@@ -327,9 +382,9 @@ describe("preliminary managed-settings discovery", () => {
     await mkdir(directory);
     for (let index = 0; index < 10; index += 1)
       await writeFile(join(directory, `${index}.json`), "{}");
-    await expect(discoverClaudeManagedSettings(main)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
+    await expect(
+      discoverClaudeManagedSettings(capabilities, main),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
   });
 });
 
@@ -442,3 +497,5 @@ describe("pinned plaintext credential-file path projection, not store absence", 
     expect(invoked).toBe(false);
   });
 });
+
+import { capabilities } from "./__tests__/discovery-fixture.js";

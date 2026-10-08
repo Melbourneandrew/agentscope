@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HarnessDirectoryInspection } from "@agentscope/harnesses-core";
 
 import {
-  readClaudeInstalledPluginRegistry,
   readClaudePluginManifest,
   readClaudePluginSettingsLayer,
   selectClaudePluginCacheRecord,
@@ -125,7 +124,7 @@ afterEach(async () => {
 describe("plugin manifest metadata stays observed rather than fabricated", () => {
   it("keeps missing manifest and missing version distinct from metadata", async () => {
     const value = await fixture();
-    const absent = await readClaudePluginManifest(value.root);
+    const absent = await readClaudePluginManifest(capabilities, value.root);
     expect(absent).toMatchObject({
       guard: { exists: false },
       manifestName: null,
@@ -138,7 +137,7 @@ describe("plugin manifest metadata stays observed rather than fabricated", () =>
       join(value.root, ".claude-plugin", "plugin.json"),
       JSON.stringify({ name: "ordinary", unrelated: "SECRET-CANARY" }),
     );
-    const present = await readClaudePluginManifest(value.root);
+    const present = await readClaudePluginManifest(capabilities, value.root);
     expect(present).toMatchObject({
       guard: { exists: true },
       manifestName: "ordinary",
@@ -159,7 +158,9 @@ describe("plugin manifest metadata stays observed rather than fabricated", () =>
         path,
         JSON.stringify({ name: "ordinary", version: "1.0.0", hooks }),
       );
-      expect(await readClaudePluginManifest(value.root)).toMatchObject({
+      expect(
+        await readClaudePluginManifest(capabilities, value.root),
+      ).toMatchObject({
         manifestName: "ordinary",
         manifestVersion: "1.0.0",
         hasDeclaredHooks: true,
@@ -173,7 +174,9 @@ describe("plugin manifest metadata stays observed rather than fabricated", () =>
     await mkdir(join(value.root, ".claude-plugin"));
     const path = join(value.root, ".claude-plugin", "plugin.json");
     await writeFile(path, JSON.stringify({ name: "tab\tname", version: "" }));
-    expect(await readClaudePluginManifest(value.root)).toMatchObject({
+    expect(
+      await readClaudePluginManifest(capabilities, value.root),
+    ).toMatchObject({
       manifestName: "tab\tname",
       manifestVersion: "",
     });
@@ -194,9 +197,9 @@ describe("plugin manifest metadata stays observed rather than fabricated", () =>
       join(value.root, ".claude-plugin", "plugin.json"),
       JSON.stringify(manifest),
     );
-    await expect(readClaudePluginManifest(value.root)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
+    await expect(
+      readClaudePluginManifest(capabilities, value.root),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
   });
 });
 
@@ -210,7 +213,11 @@ describe("scoped settings observations for the existing plugin inventory", () =>
       }),
     );
     await writeFile(value.path, bytes);
-    const observed = await readClaudePluginSettingsLayer(value.path, "project");
+    const observed = await readClaudePluginSettingsLayer(
+      capabilities,
+      value.path,
+      "project",
+    );
     expect(observed.layer).toEqual({
       scope: "project",
       targetPath: value.path,
@@ -225,11 +232,13 @@ describe("scoped settings observations for the existing plugin inventory", () =>
   it("preserves absence versus an existing settings file without selections", async () => {
     const value = await fixture();
     expect(
-      (await readClaudePluginSettingsLayer(value.path, "user")).layer,
+      (await readClaudePluginSettingsLayer(capabilities, value.path, "user"))
+        .layer,
     ).toMatchObject({ targetExists: false, enabledPlugins: {} });
     await writeFile(value.path, "{}\n");
     expect(
-      (await readClaudePluginSettingsLayer(value.path, "user")).layer,
+      (await readClaudePluginSettingsLayer(capabilities, value.path, "user"))
+        .layer,
     ).toMatchObject({ targetExists: true, enabledPlugins: {} });
   });
 
@@ -247,7 +256,7 @@ describe("scoped settings observations for the existing plugin inventory", () =>
     const value = await fixture();
     await writeFile(value.path, JSON.stringify(settings));
     await expect(
-      readClaudePluginSettingsLayer(value.path, "user"),
+      readClaudePluginSettingsLayer(capabilities, value.path, "user"),
     ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
   });
 });
@@ -264,7 +273,11 @@ describe("native parsed settings reach the actual guarded layer reader", () => {
         }),
       );
       await writeFile(value.path, bytes);
-      const observed = await readClaudePluginSettingsLayer(value.path, scope);
+      const observed = await readClaudePluginSettingsLayer(
+        capabilities,
+        value.path,
+        scope,
+      );
       expect(observed.layer.enabledPlugins).toEqual(
         scope === "user" ? {} : { "ordinary@market": true },
       );
@@ -281,7 +294,11 @@ describe("native parsed settings reach the actual guarded layer reader", () => {
       }),
     );
     await writeFile(value.path, bytes);
-    const observed = await readClaudePluginSettingsLayer(value.path, "user");
+    const observed = await readClaudePluginSettingsLayer(
+      capabilities,
+      value.path,
+      "user",
+    );
     expect(observed.layer.enabledPlugins).toEqual({
       "ordinary@market": ["first", "first", "second"],
       "empty@market": [],
@@ -301,190 +318,16 @@ describe("native parsed settings reach the actual guarded layer reader", () => {
         }),
       );
       await writeFile(value.path, bytes);
-      const observed = await readClaudePluginSettingsLayer(value.path, scope);
+      const observed = await readClaudePluginSettingsLayer(
+        capabilities,
+        value.path,
+        scope,
+      );
       expect(observed.layer.enabledPlugins).toEqual({});
       expect(observed.layer.targetExists).toBe(true);
       expect(observed.guard.digest).toBe(hash(bytes));
     },
   );
-});
-describe("versioned installed plugin location observations", () => {
-  it("retains all scoped records without choosing the first or exposing unrelated data", async () => {
-    const value = await fixture();
-    const bytes = Buffer.from(
-      JSON.stringify({
-        version: 2,
-        plugins: {
-          "ordinary@market": [
-            { scope: "user", installPath: join(value.root, "user-cache") },
-            {
-              scope: "local",
-              installPath: join(value.root, "local-cache"),
-              projectPath: value.root,
-              version: "1.2.3",
-              unrelated: "SECRET-CANARY",
-            },
-          ],
-        },
-      }),
-    );
-    await writeFile(value.path, bytes);
-    const registry = await readClaudeInstalledPluginRegistry(value.path);
-    expect(registry.guard.digest).toBe(hash(bytes));
-    expect(registry.locations).toEqual([
-      {
-        pluginId: "ordinary@market",
-        scope: "user",
-        installPath: join(value.root, "user-cache"),
-        projectPath: null,
-        version: null,
-      },
-      {
-        pluginId: "ordinary@market",
-        scope: "local",
-        installPath: join(value.root, "local-cache"),
-        projectPath: value.root,
-        version: "1.2.3",
-      },
-    ]);
-    expect(JSON.stringify(registry)).not.toContain("SECRET-CANARY");
-    expect(Object.isFrozen(registry.locations)).toBe(true);
-    expect(registry.locations.every(Object.isFrozen)).toBe(true);
-  });
-
-  it("keeps registry absence and an existing empty V2 registry distinct", async () => {
-    const value = await fixture();
-    const absent = await readClaudeInstalledPluginRegistry(value.path);
-    expect(absent.guard.exists).toBe(false);
-    expect(absent.locations).toEqual([]);
-    await writeFile(value.path, '{"version":2,"plugins":{}}');
-    const empty = await readClaudeInstalledPluginRegistry(value.path);
-    expect(empty.guard.exists).toBe(true);
-    expect(empty.locations).toEqual([]);
-  });
-
-  it.each([
-    { version: "2", plugins: {} },
-    { plugins: {} },
-    { version: 2, plugins: [] },
-    { version: 2, plugins: { "ordinary@market": {} } },
-    { version: 2, plugins: { "": [] } },
-  ])("refuses malformed registry shapes", async (registry) => {
-    const value = await fixture();
-    await writeFile(value.path, JSON.stringify(registry));
-    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
-  });
-});
-
-describe("native legacy cache-path conversion", () => {
-  it.each([
-    [
-      "ordinary.plugin@market.name",
-      "1.2.3/branch",
-      "market-name",
-      "ordinary-plugin",
-      "1.2.3-branch",
-    ],
-    ["ordinary", "..", "unknown", "ordinary", "-"],
-  ])(
-    "derives legacy cache identity instead of using its recorded path",
-    async (id, version, market, name, segment) => {
-      const value = await fixture();
-      await writeFile(
-        value.path,
-        JSON.stringify({
-          version: 1,
-          plugins: {
-            [id]: {
-              version,
-              installedAt: "2026-10-06",
-              installPath: "/obsolete/SECRET-CANARY",
-            },
-          },
-        }),
-      );
-      const registry = await readClaudeInstalledPluginRegistry(value.path);
-      expect(registry.locations).toEqual([
-        {
-          pluginId: id,
-          scope: "user",
-          projectPath: null,
-          version,
-          installPath: join(value.root, "cache", market, name, segment),
-        },
-      ]);
-      expect(JSON.stringify(registry)).not.toContain("SECRET-CANARY");
-    },
-  );
-
-  it.each([
-    { version: "1.0", installPath: "/legacy" },
-    { version: "1.0", installedAt: "observed" },
-    { version: null, installedAt: "observed", installPath: "/legacy" },
-  ])(
-    "does not convert invalid legacy installation metadata",
-    async (record) => {
-      const value = await fixture();
-      await writeFile(
-        value.path,
-        JSON.stringify({ version: 1, plugins: { "ordinary@market": record } }),
-      );
-      await expect(
-        readClaudeInstalledPluginRegistry(value.path),
-      ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
-    },
-  );
-});
-
-describe("bounded V2 plugin locations", () => {
-  it.each([
-    { scope: "unknown", installPath: "/cache" },
-    { scope: "user", installPath: "relative" },
-    { scope: "local", installPath: "/cache", projectPath: "relative" },
-    { scope: "user", installPath: "/cache", version: null },
-    { scope: "user", installPath: "/cache", version: "" },
-    { scope: "user", installPath: "/cache", version: "\ud800" },
-    { scope: "user", installPath: "/cache", version: "é".repeat(257) },
-  ])("refuses ambiguous or out-of-contract location fields", async (record) => {
-    const value = await fixture();
-    await writeFile(
-      value.path,
-      JSON.stringify({ version: 2, plugins: { "ordinary@market": [record] } }),
-    );
-    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
-  });
-
-  it("bounds aggregate records even across distinct registry identities", async () => {
-    const value = await fixture();
-    const record = { scope: "user", installPath: join(value.root, "cache") };
-    await writeFile(
-      value.path,
-      JSON.stringify({
-        version: 2,
-        plugins: { first: Array.from({ length: 128 }, () => record) },
-      }),
-    );
-    expect(
-      (await readClaudeInstalledPluginRegistry(value.path)).locations,
-    ).toHaveLength(128);
-    await writeFile(
-      value.path,
-      JSON.stringify({
-        version: 2,
-        plugins: {
-          first: Array.from({ length: 128 }, () => record),
-          second: [record],
-        },
-      }),
-    );
-    await expect(readClaudeInstalledPluginRegistry(value.path)).rejects.toThrow(
-      "cli.harness.plugin-inventory-unavailable",
-    );
-  });
 });
 const fixture = async () => {
   const root = await realpath(
@@ -495,3 +338,5 @@ const fixture = async () => {
 };
 const hash = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
+
+import { capabilities } from "./__tests__/discovery-fixture.js";

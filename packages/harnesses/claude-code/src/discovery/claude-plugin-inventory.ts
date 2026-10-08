@@ -1,6 +1,6 @@
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import type { ClaudeCodePluginInventory } from "@agentscope/harness-claude-code";
+import type { ClaudeCodePluginInventory } from "../lifecycle.js";
 import type { HarnessDirectoryInspection } from "@agentscope/harnesses-core";
 import type { ClaudePluginLoadingElection } from "./claude-discovery.js";
 export { selectClaudePluginLoadingPath } from "./claude-discovery.js";
@@ -9,12 +9,12 @@ import { parseClaudeEnabledPluginsSettingsSource } from "./claude-settings-proje
 export { claudePluginHookEventNames };
 
 import {
+  type ClaudeCodeDiscoveryReadCapabilities,
   exactAbsolutePath,
   type ProductHarnessReadGuard,
   type ClaudePluginDocument,
-  readClaudePluginTextDocument,
   claudePluginCacheContentName,
-} from "./product-harness-probe-files.js";
+} from "./capabilities.js";
 
 // These documents enter the existing Core transaction as consulted read targets.
 // Do not relax its per-target byte bound or mint another installation plan.
@@ -64,9 +64,10 @@ export const selectClaudePluginCacheRecord = (
 };
 
 export const readClaudePluginDocument = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   requestedPath: string,
 ): Promise<ClaudePluginDocument> => {
-  const document = await readClaudePluginTextDocument(requestedPath);
+  const document = await capabilities.readTextDocument(requestedPath);
   try {
     const value: unknown = document.guard.exists
       ? JSON.parse(document.text!)
@@ -80,12 +81,13 @@ export const readClaudePluginDocument = async (
 type SettingsLayer = ClaudeCodePluginInventory["settingsLayers"][number];
 
 export const readClaudePluginSettingsLayer = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   path: string,
   scope: SettingsLayer["scope"],
 ): Promise<
   Readonly<{ guard: ProductHarnessReadGuard; layer: SettingsLayer }>
 > => {
-  const document = await readClaudePluginDocument(path);
+  const document = await readClaudePluginDocument(capabilities, path);
   let enabledPlugins: SettingsLayer["enabledPlugins"] = Object.freeze({});
   if (document.guard.exists) {
     const value = dataRecord(document.value);
@@ -149,6 +151,7 @@ const boundedString = (
   );
 
 export const readClaudePluginManifest = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   installPath: string,
 ): Promise<
   Readonly<{
@@ -160,6 +163,7 @@ export const readClaudePluginManifest = async (
   }>
 > => {
   const document = await readClaudePluginDocument(
+    capabilities,
     join(exactAbsolutePath(installPath), ".claude-plugin", "plugin.json"),
   );
   if (!document.guard.exists)
@@ -257,6 +261,7 @@ const legacyPluginLocation = (
 };
 
 export const readClaudeInstalledPluginRegistry = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   path: string,
 ): Promise<
   Readonly<{
@@ -265,7 +270,7 @@ export const readClaudeInstalledPluginRegistry = async (
   }>
 > => {
   try {
-    const document = await readClaudePluginDocument(path);
+    const document = await readClaudePluginDocument(capabilities, path);
     const locations: InstalledPluginLocation[] = [];
     if (document.guard.exists) {
       const registry = dataRecord(document.value);
@@ -346,6 +351,7 @@ export type ClaudePluginHooksObservation = Readonly<{
 // complete current-context coverage. Its returned observations need those guards
 // in the SAME Core installation plan before any owned mutation.
 const collectClaudePluginHooks = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   input: Readonly<{
     installPath: string;
     manifest: Manifest;
@@ -371,7 +377,7 @@ const collectClaudePluginHooks = async (
         events.add(event);
   };
   const defaultPath = resolve(root, "hooks", "hooks.json");
-  const defaults = await readClaudePluginDocument(defaultPath);
+  const defaults = await readClaudePluginDocument(capabilities, defaultPath);
   addDocument(defaults);
   const raw = input.manifest.hooksDeclarationJson;
   if (raw !== null) {
@@ -385,7 +391,7 @@ const collectClaudePluginHooks = async (
         const path = declarationPath(root, entry);
         // Native strict mode treats a repeated default/custom file as an error.
         if (guards.has(path)) throw unavailable();
-        const custom = await readClaudePluginDocument(path);
+        const custom = await readClaudePluginDocument(capabilities, path);
         if (!custom.guard.exists) throw unavailable();
         addDocument(custom);
       } else
@@ -433,16 +439,17 @@ const mergeMarketplaceHookEvents = (
 };
 
 export const readClaudePluginHooks: typeof collectClaudePluginHooks = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   input,
 ) => {
   try {
-    return await collectClaudePluginHooks(input);
+    return await collectClaudePluginHooks(capabilities, input);
   } catch {
     throw unavailable();
   }
 };
-export { readClaudePluginTextDocument } from "./product-harness-probe-files.js";
+
 export type {
   ClaudePluginDocument,
   ClaudePluginTextDocument,
-} from "./product-harness-probe-files.js";
+} from "./capabilities.js";

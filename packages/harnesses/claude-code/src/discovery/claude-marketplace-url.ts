@@ -17,15 +17,9 @@ export const normalizeClaudeMarketplaceHost = (value: string): string => {
   if (normalized === "" || /[:/\\?#@\s]/u.test(normalized)) return normalized;
   try {
     const parsed = new URL(`https://${normalized}`);
-    if (
-      parsed.username !== "" ||
-      parsed.password !== "" ||
-      parsed.port !== "" ||
-      parsed.pathname !== "/" ||
-      parsed.search !== "" ||
-      parsed.hash !== ""
-    )
-      return normalized;
+    // Native i also checks these URL components. The delimiter precheck and
+    // fixed HTTPS prefix make a successful parse host-only; forbidden decoded
+    // delimiters fail parsing instead of creating another URL component.
     return withoutTrailingDots(parsed.hostname);
   } catch {
     return normalized;
@@ -63,18 +57,24 @@ const invalidHost = (host: string): boolean =>
     return character === "%" || code < 0x20 || code >= 0x7f;
   });
 
-export const claudeGitSourceHasInvalidHost = (value: string): boolean => {
-  if (value.includes("://")) {
-    if (claudeGitAuthorityHasBackslash(value)) return true;
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol === "http:" || parsed.protocol === "https:")
-        return false;
-      return invalidHost(parsed.hostname);
-    } catch {
-      return true;
-    }
+// A shared pure parse preserves native R3c's refusal before native F's URL
+// normalization, without a second identical parse and unreachable catch.
+const parseValidClaudeGitUrl = (value: string): URL | undefined => {
+  if (claudeGitAuthorityHasBackslash(value)) return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" ||
+      parsed.protocol === "https:" ||
+      !invalidHost(parsed.hostname)
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
   }
+};
+
+export const claudeGitSourceHasInvalidHost = (value: string): boolean => {
+  if (value.includes("://")) return parseValidClaudeGitUrl(value) === undefined;
   const colon = value.indexOf(":");
   const at = value.indexOf("@");
   if (colon >= 0 && at > colon) return true;
@@ -100,25 +100,22 @@ export const normalizeClaudeMarketplaceUrl = (value: string): string => {
 };
 
 export const normalizeClaudeMarketplaceGitUrl = (value: string): string => {
-  if (claudeGitSourceHasInvalidHost(value)) return value;
   if (value.includes("://")) {
-    try {
-      const parsed = new URL(value);
-      parsed.hostname = policyHost(parsed.hostname);
-      if (
-        ["http:", "https:", "git:", "git+http:", "git+https:"].includes(
-          parsed.protocol,
-        ) ||
-        claudeMarketplaceGithubHost(parsed.hostname)
-      ) {
-        parsed.username = "";
-        parsed.password = "";
-      }
-      return parsed.toString();
-    } catch {
-      return value;
+    const parsed = parseValidClaudeGitUrl(value);
+    if (parsed === undefined) return value;
+    parsed.hostname = policyHost(parsed.hostname);
+    if (
+      ["http:", "https:", "git:", "git+http:", "git+https:"].includes(
+        parsed.protocol,
+      ) ||
+      claudeMarketplaceGithubHost(parsed.hostname)
+    ) {
+      parsed.username = "";
+      parsed.password = "";
     }
+    return parsed.toString();
   }
+  if (claudeGitSourceHasInvalidHost(value)) return value;
   const scp = /^([^@:/[\]]+)@([^@:/[\]]+):(.*)$/su.exec(value);
   if (scp === null) return value;
   const host = withoutTrailingDots(scp[2]!.toLowerCase());

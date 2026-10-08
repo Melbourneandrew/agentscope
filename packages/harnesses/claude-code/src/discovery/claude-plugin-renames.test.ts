@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createClaudeContextFixtures,
   hooks,
-} from "./__tests__/claude-plugin-context-fixture.js";
+} from "./__tests__/discovery-fixture.js";
 
 const { cachedContext } = createClaudeContextFixtures();
 

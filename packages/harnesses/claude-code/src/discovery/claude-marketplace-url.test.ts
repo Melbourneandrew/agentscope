@@ -68,6 +68,41 @@ const git = (url: string): ClaudeMarketplaceComparisonSource => ({
 });
 const matches = claudeMarketplaceBlockedSourceMatches;
 
+describe("malformed blocked URL observations", () => {
+  it("retains an unparsable source and does not invent a GitHub repository", () => {
+    const value = "https://[bad";
+    expect(normalizeClaudeBlockedGitUrl(value)).toBe(value);
+    expect(claudeMarketplaceGitRepository(value)).toBeNull();
+  });
+});
+
+describe("host-only normalization retains native lexical refusal", () => {
+  it.each([
+    "user@example.com",
+    "example.com:443",
+    "example.com/path",
+    "example.com?query",
+    "example.com#fragment",
+    "example\\.com",
+    "example.com%2fpath",
+    "user%40example.com",
+    "example.com%3a443",
+    "example.com／path",
+    "[broken",
+    "%invalid",
+  ])("never turns %s into another URL component", (value) => {
+    expect(normalizeClaudeMarketplaceHost(value)).toBe(value.toLowerCase());
+  });
+  it("keeps standard IDNA and trailing-dot hostname conversion", () => {
+    expect(normalizeClaudeMarketplaceHost("BÜCHER.example...")).toBe(
+      "xn--bcher-kva.example",
+    );
+    expect(normalizeClaudeMarketplaceHost("EXAMPLE.COM.\t\n\r")).toBe(
+      "example.com",
+    );
+  });
+});
+
 describe("pinned Claude strict versus blocked host extraction", () => {
   it.each([
     ["git@github.com:Owner/Repo", false, ["github.com"]],

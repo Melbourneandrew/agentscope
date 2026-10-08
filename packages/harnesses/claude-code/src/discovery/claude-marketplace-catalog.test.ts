@@ -9,11 +9,12 @@ import {
   normalizeClaudePluginRenames,
   resolveClaudePluginRename,
 } from "./claude-plugin-selection.js";
-import type { ProductHarnessReadGuard } from "./product-harness-probe-files.js";
+import type { ProductHarnessReadGuard } from "./capabilities.js";
 import {
   createClaudeContextFixtures,
   hooks,
-} from "./__tests__/claude-plugin-context-fixture.js";
+  capabilities,
+} from "./__tests__/discovery-fixture.js";
 
 import {
   claudeMarketplaceLoadingSource as observeMarketplaceSource,
@@ -30,6 +31,82 @@ const claudeMarketplaceLoadingSource = (
 };
 
 const { cachedContext } = createClaudeContextFixtures();
+
+describe("guarded catalog refusal preserves consulted raw documents", () => {
+  it.each([
+    [],
+    { market: { source: { source: "npm" }, installLocation: "/market" } },
+    {
+      "claude-plugins-official": {
+        source: { source: "github", repo: "other/repository" },
+        installLocation: "/market",
+      },
+    },
+  ])(
+    "rejects an unusable registry %j after retaining its guard",
+    async (registry) => {
+      const value = await cachedContext();
+      const plugins = join(value.home, ".claude", "plugins");
+      const path = join(plugins, "known_marketplaces.json");
+      await writeFile(path, JSON.stringify(registry));
+      const guards: ProductHarnessReadGuard[] = [];
+      await expect(
+        readClaudeMarketplaceCatalog(
+          capabilities,
+          plugins,
+          Object.hasOwn(registry, "claude-plugins-official")
+            ? "claude-plugins-official"
+            : "market",
+          (guard) => guards.push(guard),
+        ),
+      ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+      expect(guards.map((guard) => guard.targetPath)).toEqual([path]);
+      expect(guards[0]!.exists).toBe(true);
+    },
+  );
+  it.each([
+    null,
+    {},
+    Array.from({ length: 129 }, () => ({ name: "ordinary" })),
+  ])(
+    "refuses invalid catalog plugin rows %j with both preimages retained",
+    async (plugins) => {
+      const value = await cachedContext();
+      const catalog = join(value.catalog, ".claude-plugin", "marketplace.json");
+      await writeFile(catalog, JSON.stringify({ plugins }));
+      const guards: ProductHarnessReadGuard[] = [];
+      await expect(
+        readClaudeMarketplaceCatalog(
+          capabilities,
+          join(value.home, ".claude", "plugins"),
+          "market",
+          (guard) => guards.push(guard),
+        ),
+      ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+      expect(guards).toHaveLength(2);
+      expect(guards[1]!.targetPath).toBe(catalog);
+    },
+  );
+  it("refuses a substituted catalog root before reading a catalog", async () => {
+    const value = await cachedContext();
+    const guards: ProductHarnessReadGuard[] = [];
+    await expect(
+      readClaudeMarketplaceCatalog(
+        {
+          ...capabilities,
+          inspectPath: async (path) => ({
+            ...(await capabilities.inspectPath(path)),
+            symbolicLink: true,
+          }),
+        },
+        join(value.home, ".claude", "plugins"),
+        "market",
+        (guard) => guards.push(guard),
+      ),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+    expect(guards).toHaveLength(1);
+  });
+});
 
 describe("catalog observation before cache selection", () => {
   it("retains the same consulted documents without reading or relabeling a cache", async () => {
@@ -51,6 +128,7 @@ describe("catalog observation before cache selection", () => {
     );
     const guards: ProductHarnessReadGuard[] = [];
     const observed = await readClaudeMarketplaceCatalog(
+      capabilities,
       join(value.home, ".claude", "plugins"),
       "market",
       (guard) => guards.push(guard),
@@ -86,6 +164,7 @@ describe("catalog observation before cache selection", () => {
     const value = await cachedContext();
     const guards: ProductHarnessReadGuard[] = [];
     const observed = await readClaudeMarketplaceCatalog(
+      capabilities,
       join(value.home, ".claude", "plugins"),
       "market",
       (guard) => guards.push(guard),

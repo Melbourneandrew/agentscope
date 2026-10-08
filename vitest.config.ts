@@ -37,6 +37,7 @@ export default defineConfig({
       "src/__tests__/claude-plugin-context-fixture.ts",
       "src/__tests__/product-harness-fixture.ts",
       "src/__tests__/product-installation-fixture.ts",
+      "src/discovery/__tests__/discovery-fixture.ts",
     ],
     coverage: {
       provider: "v8",

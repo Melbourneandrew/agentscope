@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ClaudeCodePluginInventory } from "@agentscope/harness-claude-code";
+import type { ClaudeCodePluginInventory } from "../lifecycle.js";
 import { claudeGitAuthorityHasBackslash } from "./claude-marketplace-url.js";
 
 export const snapshotClaudePlugin = (
@@ -9,6 +9,18 @@ export const snapshotClaudePlugin = (
     ...plugin,
     hookEvents: Object.freeze([...plugin.hookEvents]),
   });
+
+const snapshotEnabledPlugins = (
+  values: ClaudeCodePluginInventory["settingsLayers"][number]["enabledPlugins"],
+) => {
+  const copy = { ...values };
+  for (const key of Object.keys(copy)) {
+    const state = copy[key];
+    if (Array.isArray(state))
+      copy[key] = Object.freeze([...(state as readonly string[])]);
+  }
+  return Object.freeze(copy);
+};
 
 // Copy the observed loading projection separately from raw scoped settings.
 // This is a DTO snapshot, not selection or a new installation authority.
@@ -20,7 +32,7 @@ export const snapshotClaudePluginInventory = (
       inventory.settingsLayers.map((layer) =>
         Object.freeze({
           ...layer,
-          enabledPlugins: Object.freeze({ ...layer.enabledPlugins }),
+          enabledPlugins: snapshotEnabledPlugins(layer.enabledPlugins),
         }),
       ),
     ),

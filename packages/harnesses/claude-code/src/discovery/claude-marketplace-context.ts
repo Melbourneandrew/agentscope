@@ -1,4 +1,3 @@
-import { lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { readClaudePluginDocument } from "./claude-plugin-inventory.js";
@@ -7,9 +6,10 @@ import {
   claudeMarketplaceManifestConflict,
 } from "./claude-discovery.js";
 import {
+  type ClaudeCodeDiscoveryReadCapabilities,
   exactAbsolutePath,
   type ProductHarnessReadGuard,
-} from "./product-harness-probe-files.js";
+} from "./capabilities.js";
 import {
   deduplicateClaudePluginLoads,
   normalizeClaudePluginRenames,
@@ -40,12 +40,14 @@ export type ClaudeMarketplaceCatalog = Readonly<{
 // Rename resolution and entry selection consult this same owned catalog. The
 // caller retains both documents in its existing Core read set, not a new plan.
 export const readClaudeMarketplaceCatalog = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   pluginsRoot: string,
   market: string,
   retainReadGuard: (guard: ProductHarnessReadGuard) => void,
 ): Promise<ClaudeMarketplaceCatalog> => {
   if (market.length === 0 || market.includes("@")) throw unavailable();
   const registry = await readClaudePluginDocument(
+    capabilities,
     join(pluginsRoot, "known_marketplaces.json"),
   );
   retainReadGuard(registry.guard);
@@ -67,11 +69,15 @@ export const readClaudeMarketplaceCatalog = async (
   )
     throw unavailable();
   const path = exactAbsolutePath(registered.installLocation);
-  const state = await lstat(path);
-  if (state.isSymbolicLink() || (!state.isDirectory() && !state.isFile()))
+  const state = await capabilities.inspectPath(path);
+  if (
+    state.symbolicLink ||
+    (!(state.kind === "directory") && !(state.kind === "file"))
+  )
     throw unavailable();
   const catalog = await readClaudePluginDocument(
-    state.isDirectory()
+    capabilities,
+    state.kind === "directory"
       ? join(path, ".claude-plugin", "marketplace.json")
       : path,
   );
@@ -86,7 +92,7 @@ export const readClaudeMarketplaceCatalog = async (
       ...value,
       plugins: Object.freeze(value.plugins),
     }),
-    root: state.isDirectory() ? path : dirname(path),
+    root: state.kind === "directory" ? path : dirname(path),
   });
 };
 
@@ -131,6 +137,7 @@ export const selectClaudeMarketplaceEntry = (
 // Resolve before registry/cache election. Original settings IDs still occupy
 // native deduplication slots, even when disabled; no cache is relabelled.
 export const collectClaudeMarketplaceLoads = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   pluginsRoot: string,
   settings: ReadonlyMap<string, boolean | readonly string[]>,
   retainReadGuard: (guard: ProductHarnessReadGuard) => void,
@@ -145,6 +152,7 @@ export const collectClaudeMarketplaceLoads = async (
     let catalog = catalogs.get(market);
     if (catalog === undefined) {
       catalog = await readClaudeMarketplaceCatalog(
+        capabilities,
         pluginsRoot,
         market,
         retainReadGuard,

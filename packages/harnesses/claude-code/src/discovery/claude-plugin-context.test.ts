@@ -3,143 +3,140 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 import {
-  inspectClaudeCodePluginOverlap,
   CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
   CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST,
   CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
-} from "@agentscope/harness-claude-code";
+} from "../lifecycle.js";
 
 import {
   readClaudePluginContext,
-  readClaudePluginContextObservation,
   discoverClaudeCanonicalSettingsRoot,
+  mergeClaudePluginReadGuards,
 } from "./claude-plugin-context.js";
 import * as readers from "./claude-plugin-inventory.js";
-import * as files from "./product-harness-probe-files.js";
+import * as files from "./capabilities.js";
 import * as managed from "./claude-managed-settings.js";
 import { captureClaudeEnvironment } from "./claude-discovery.js";
 
 import {
   createClaudeContextFixtures,
   hooks,
-} from "./__tests__/claude-plugin-context-fixture.js";
+  capabilities,
+} from "./__tests__/discovery-fixture.js";
 
 const { cachedContext } = createClaudeContextFixtures();
 
-describe("raw array selections cross the real settings and loading boundary", () => {
-  it.each([{ state: [] }, { state: ["unresolved-selector"] }])(
-    "loads the selected entry without inventing boolean hook enablement (%j)",
-    async ({ state }) => {
-      const value = await cachedContext();
-      await writeFile(
-        join(value.home, ".claude", "settings.json"),
-        JSON.stringify({ enabledPlugins: { "ordinary@market": state } }),
-      );
-      await writeFile(
-        join(value.plugin, ".claude-plugin", "plugin.json"),
-        JSON.stringify({ name: "ordinary" }),
-      );
-      await writeFile(
-        join(value.plugin, "hooks", "hooks.json"),
-        JSON.stringify({ hooks: hooks("Stop") }),
-      );
-      const observed = await value.read();
-      expect(
-        observed.pluginInventory.settingsLayers[0]?.enabledPlugins,
-      ).toEqual({
-        "ordinary@market": state,
-      });
-      expect(observed.pluginInventory.installedPlugins).toHaveLength(1);
-      // An absent projection preserves identity; do not fabricate a rename.
-      expect(observed.pluginInventory.loadSelections).toBeUndefined();
-      expect(inspectClaudeCodePluginOverlap(observed.pluginInventory)).toEqual({
-        status: "absent",
-      });
-    },
-  );
-});
-
-describe("alternative plugin context failures remain branch-local", () => {
-  it.each([
-    [".claude-plugin", "plugin.json", false],
-    ["hooks", "hooks.json", false],
-    [".claude-plugin", "plugin.json", true],
-    ["hooks", "hooks.json", true],
-  ])(
-    "retains branch-local failure for malformed %s/%s (%s)",
-    async (directory, file, canonicalEnabled) => {
-      const value = await cachedContext();
-      await writeFile(join(value.plugin, directory, file), "{");
-      await writeFile(
-        join(value.home, ".claude", "settings.json"),
-        JSON.stringify({
-          enabledPlugins: { "ordinary@market": !canonicalEnabled },
-        }),
-      );
-      const canonicalRoot = join(value.root, "canonical");
-      await mkdir(join(canonicalRoot, ".claude"), { recursive: true });
-      await writeFile(
-        join(canonicalRoot, ".claude", "settings.local.json"),
-        JSON.stringify({
-          enabledPlugins: { "ordinary@market": canonicalEnabled },
-        }),
-      );
-      const input = {
-        homeDirectory: value.home,
-        projectDirectory: value.project,
-        platform: "linux" as const,
-      };
-      if (!canonicalEnabled)
-        await expect(readClaudePluginContext(input)).rejects.toThrow(
-          "cli.harness.plugin-inventory-unavailable",
-        );
-      const fallback = await readClaudePluginContextObservation(input);
-      if (canonicalEnabled)
-        expect(fallback.pluginInventory?.installedPlugins).toEqual([]);
-      else expect(fallback.pluginInventory).toBeNull();
-      expect(fallback.readGuards).toContainEqual(
-        expect.objectContaining({
-          targetPath: join(
-            value.home,
-            ".claude",
-            "plugins",
-            "installed_plugins.json",
-          ),
-          exists: true,
-        }),
-      );
-      const canonical = await readClaudePluginContextObservation({
-        ...input,
-        localSettingsRoot: canonicalRoot,
-      });
-      if (canonicalEnabled) expect(canonical.pluginInventory).toBeNull();
-      else expect(canonical.pluginInventory?.installedPlugins).toEqual([]);
-      expect(Object.isFrozen(fallback)).toBe(true);
-    },
-  );
-
-  it("does not fabricate an empty inventory for shared registry corruption", async () => {
-    const value = await cachedContext();
-    await writeFile(
-      join(value.home, ".claude", "plugins", "installed_plugins.json"),
-      "{",
-    );
-    const input = {
-      homeDirectory: value.home,
-      projectDirectory: value.project,
-      platform: "linux" as const,
+describe("canonical route fallback and contradictory observations", () => {
+  it("refuses different raw preimages for the same consulted file", () => {
+    const guard = {
+      targetPath: "/settings",
+      exists: true,
+      digest: "a",
+      mode: 0o600,
     };
-    for (const localSettingsRoot of [value.project, value.home]) {
-      const observed = await readClaudePluginContextObservation({
-        ...input,
-        localSettingsRoot,
-      });
-      expect(observed.pluginInventory).toBeNull();
-    }
+    expect(() =>
+      mergeClaudePluginReadGuards([[guard], [{ ...guard, digest: "b" }]]),
+    ).toThrow("cli.harness.plugin-inventory-unavailable");
   });
+  it.each([undefined, "../../other/.git"])(
+    "keeps the worktree root when its backlink is missing or different: %s",
+    async (backlink) => {
+      const value = await cachedContext();
+      const gitdir = join(
+        value.root,
+        "canonical",
+        ".git",
+        "worktrees",
+        "linked",
+      );
+      await mkdir(gitdir, { recursive: true });
+      await writeFile(join(value.project, ".git"), `gitdir: ${gitdir}`);
+      await writeFile(join(gitdir, "commondir"), "../..");
+      if (backlink !== undefined)
+        await writeFile(join(gitdir, "gitdir"), backlink);
+      const observed = await discoverClaudeCanonicalSettingsRoot(
+        capabilities,
+        value.project,
+        "/home",
+      );
+      expect(observed.candidate).toBe(value.project);
+      expect(observed.readGuards.map((guard) => guard.targetPath)).toContain(
+        join(gitdir, "gitdir"),
+      );
+    },
+  );
+  it("retains a genuinely absent optional canonical .claude directory", async () => {
+    const value = await cachedContext();
+    const candidate = join(value.root, "canonical");
+    const gitdir = join(candidate, ".git", "worktrees", "linked");
+    await mkdir(gitdir, { recursive: true });
+    await writeFile(join(value.project, ".git"), `gitdir: ${gitdir}`);
+    await writeFile(join(gitdir, "commondir"), "../..");
+    await writeFile(join(gitdir, "gitdir"), join(value.project, ".git"));
+    const observed = await discoverClaudeCanonicalSettingsRoot(
+      capabilities,
+      value.project,
+      "/home",
+    );
+    expect(observed.candidate).toBe(candidate);
+    expect(observed.settingsDirectorySelections).toContainEqual({
+      directoryPath: join(candidate, ".claude"),
+      exists: false,
+    });
+  });
+  it.each(["other", "missing"])(
+    "refuses a canonical ownership route with %s root observation",
+    async (kind) => {
+      const value = await cachedContext();
+      const cwd = join(value.project, "nested");
+      await mkdir(cwd);
+      await mkdir(join(value.project, ".git"));
+      await expect(
+        discoverClaudeCanonicalSettingsRoot(
+          {
+            ...capabilities,
+            inspectPath: async (path) => {
+              if (path !== value.project) return capabilities.inspectPath(path);
+              if (kind === "missing")
+                throw Object.assign(new Error("absent"), { code: "ENOENT" });
+              return {
+                ...(await capabilities.inspectPath(path)),
+                kind: "other" as const,
+              };
+            },
+          },
+          cwd,
+          "/home",
+        ),
+      ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+    },
+  );
 });
 
 describe("canonical settings routes remain preliminary observations", () => {
+  it("refuses a marker that disappears between route and ownership collection", async () => {
+    const value = await cachedContext();
+    const cwd = join(value.project, "nested");
+    const marker = join(value.project, ".git");
+    await mkdir(cwd);
+    await mkdir(marker);
+    let visits = 0;
+    await expect(
+      discoverClaudeCanonicalSettingsRoot(
+        {
+          ...capabilities,
+          inspectPath: async (path) => {
+            if (path === marker && ++visits === 2)
+              throw Object.assign(new Error("disappeared"), { code: "ENOENT" });
+            return capabilities.inspectPath(path);
+          },
+        },
+        cwd,
+        "/home",
+      ),
+    ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
+    expect(visits).toBe(2);
+  });
   it.each([".git", ".claude"])(
     "refuses a %s alias rather than borrowing its ownership",
     async (name) => {
@@ -155,7 +152,7 @@ describe("canonical settings routes remain preliminary observations", () => {
       }
       await symlink(value.root, join(value.project, name));
       await expect(
-        discoverClaudeCanonicalSettingsRoot(cwd, "/home"),
+        discoverClaudeCanonicalSettingsRoot(capabilities, cwd, "/home"),
       ).rejects.toThrow("cli.harness.plugin-inventory-unavailable");
     },
   );
@@ -165,7 +162,11 @@ describe("canonical settings routes remain preliminary observations", () => {
     await mkdir(cwd);
     const marker = join(value.project, ".git");
     await mkdir(marker);
-    const observed = await discoverClaudeCanonicalSettingsRoot(cwd, "/home");
+    const observed = await discoverClaudeCanonicalSettingsRoot(
+      capabilities,
+      cwd,
+      "/home",
+    );
     expect(observed.candidate).toBe(value.project);
     expect(observed.readGuards).toContainEqual(
       expect.objectContaining({ targetPath: join(cwd, ".git"), exists: false }),
@@ -184,7 +185,11 @@ describe("canonical settings routes remain preliminary observations", () => {
     await mkdir(cwd);
     const marker = join(value.project, ".git");
     await writeFile(marker, "native-non-gitdir-marker");
-    const observed = await discoverClaudeCanonicalSettingsRoot(cwd, "/home");
+    const observed = await discoverClaudeCanonicalSettingsRoot(
+      capabilities,
+      cwd,
+      "/home",
+    );
     expect(observed.candidate).toBe(value.project);
     expect(observed.readGuards).toContainEqual(
       expect.objectContaining({ targetPath: marker, exists: true }),
@@ -236,7 +241,7 @@ describe("managed settings preserve individual consulted preimages", () => {
       rootPath,
       JSON.stringify({ enabledPlugins: { "root@market": false } }),
     );
-    const context = await readClaudePluginContext({
+    const context = await readClaudePluginContext(capabilities, {
       homeDirectory: value.home,
       projectDirectory: value.project,
       platform: "linux",
@@ -273,8 +278,8 @@ describe("managed settings preserve individual consulted preimages", () => {
       .mocked(readers.readClaudePluginSettingsLayer)
       .getMockImplementation()!;
     vi.mocked(readers.readClaudePluginSettingsLayer).mockImplementation(
-      (path, scope) => {
-        if (scope !== "managed") return prior(path, scope);
+      (capabilities, path, scope) => {
+        if (scope !== "managed") return prior(capabilities, path, scope);
         const digest = (path === main ? "a" : "b").repeat(64);
         return Promise.resolve({
           guard: { targetPath: path, exists: true, digest, mode: 0o644 },
@@ -375,7 +380,7 @@ describe("current-context composition signature", () => {
     "derives settings and registry for cache/cowork controls %s/%s",
     async (override, cowork, root) => {
       vi.spyOn(managed, "discoverClaudeManagedSettings").mockImplementation(
-        (mainPath) =>
+        (_capabilities, mainPath) =>
           Promise.resolve({
             paths: [mainPath],
             ignoredDirectories: [],
@@ -388,7 +393,7 @@ describe("current-context composition signature", () => {
       );
       const paths: string[] = [];
       vi.spyOn(readers, "readClaudePluginSettingsLayer").mockImplementation(
-        (path, scope) => {
+        (_capabilities, path, scope) => {
           paths.push(path);
           const guard = Object.freeze({
             targetPath: path,
@@ -409,7 +414,7 @@ describe("current-context composition signature", () => {
         },
       );
       vi.spyOn(readers, "readClaudeInstalledPluginRegistry").mockImplementation(
-        (path) => {
+        (_capabilities, path) => {
           paths.push(path);
           return Promise.resolve({
             guard: {
@@ -422,7 +427,7 @@ describe("current-context composition signature", () => {
           });
         },
       );
-      const context = await readClaudePluginContext({
+      const context = await readClaudePluginContext(capabilities, {
         homeDirectory: "/home/user",
         projectDirectory: "/work/project",
         platform: "linux",
@@ -461,7 +466,7 @@ describe("current-context composition signature", () => {
         },
       });
       await expect(
-        readClaudePluginContext({
+        readClaudePluginContext(capabilities, {
           homeDirectory: "/home/user",
           projectDirectory: "/work/project",
           platform: "linux",
@@ -471,133 +476,6 @@ describe("current-context composition signature", () => {
       expect(invoked).toBe(false);
     },
   );
-});
-
-describe("same-root cache registry observations", () => {
-  it.each(["cache", "cowork"])(
-    "reads both registries from %s, not defaults",
-    async (control) => {
-      const value = await cachedContext();
-      const override =
-        control === "cache"
-          ? join(value.root, "registry-override")
-          : join(value.home, ".claude", "cowork_plugins");
-      await mkdir(override);
-      if (control === "cowork") {
-        const original = join(value.home, ".claude", "settings.json");
-        await rename(
-          original,
-          join(value.home, ".claude", "cowork_settings.json"),
-        );
-        await writeFile(original, "not-json");
-      }
-      for (const name of [
-        "installed_plugins.json",
-        "known_marketplaces.json",
-      ]) {
-        const original = join(value.home, ".claude", "plugins", name);
-        await rename(original, join(override, name));
-        await writeFile(original, "not-json");
-      }
-      await writeFile(
-        join(value.plugin, ".claude-plugin", "plugin.json"),
-        JSON.stringify({ name: "ordinary" }),
-      );
-      const context = await value.read(
-        control === "cache"
-          ? { CLAUDE_CODE_PLUGIN_CACHE_DIR: override }
-          : { CLAUDE_CODE_USE_COWORK_PLUGINS: "1" },
-      );
-      expect(context.pluginInventory.installedPlugins).toMatchObject([
-        { pluginId: "ordinary@market", hookEvents: ["Stop"] },
-      ]);
-      for (const name of ["installed_plugins.json", "known_marketplaces.json"])
-        expect(context.readGuards.map((guard) => guard.targetPath)).toContain(
-          join(override, name),
-        );
-    },
-  );
-});
-
-describe("recorded-cache exact-version seed loading", () => {
-  it("does not consult seed controls when the recorded cache already has content", async () => {
-    const value = await cachedContext();
-    let reads = 0;
-    const environment = Object.defineProperty(
-      {},
-      "CLAUDE_CODE_PLUGIN_SEED_DIR",
-      {
-        get: () => {
-          reads++;
-          throw new Error("unconsulted-seed");
-        },
-      },
-    );
-    expect(
-      (await value.read(environment)).cacheElections[0]?.candidates[0]?.loading
-        ?.selectedPath,
-    ).toBe(value.plugin);
-    expect(reads).toBe(0);
-  });
-  it("observes seed documents only after the recorded cache and earlier seed are empty", async () => {
-    const value = await cachedContext();
-    const first = join(value.root, "seed-first"),
-      second = join(value.root, "seed-second");
-    const seed = join(second, "cache", "market", "ordinary", "cache");
-    await mkdir(join(second, "cache", "market", "ordinary"), {
-      recursive: true,
-    });
-    await rename(value.plugin, seed);
-    await mkdir(join(value.plugin, "node_modules"), { recursive: true });
-    const context = await value.read({
-      CLAUDE_CODE_PLUGIN_SEED_DIR: `${first}:${second}`,
-    });
-    expect(context.cacheElections[0]?.candidates[0]?.loading).toEqual({
-      paths: [
-        value.plugin,
-        join(first, "cache", "market", "ordinary", "cache"),
-        seed,
-      ],
-      selectedPath: seed,
-    });
-    expect(
-      context.readGuards.some((guard) =>
-        guard.targetPath.startsWith(`${seed}/`),
-      ),
-    ).toBe(true);
-    expect(
-      context.readGuards.some((guard) =>
-        guard.targetPath.startsWith(`${value.plugin}/`),
-      ),
-    ).toBe(false);
-    expect(context.pluginInventory.installedPlugins).toMatchObject([
-      { pluginId: "ordinary@market", hookEvents: ["Stop"] },
-    ]);
-  });
-});
-
-describe("recorded-cache alternate-version seed loading", () => {
-  it("uses one nonempty alternate version and does not parse a temporary canary", async () => {
-    const value = await cachedContext();
-    const root = join(value.root, "seed"),
-      parentPath = join(root, "cache", "market", "ordinary");
-    const seed = join(parentPath, "alternate");
-    await mkdir(parentPath, { recursive: true });
-    await rename(value.plugin, seed);
-    await mkdir(join(value.plugin, "node_modules"), { recursive: true });
-    const temp = join(parentPath, "temp.tmp~deadbeef");
-    await writeFile(temp, "UNCONSULTED-TEMP-CANARY");
-    const context = await value.read({ CLAUDE_CODE_PLUGIN_SEED_DIR: root });
-    expect(context.cacheElections[0]?.candidates[0]?.loading).toEqual({
-      paths: [value.plugin, join(parentPath, "cache")],
-      selectedPath: seed,
-      versionRoots: [{ parentPath, paths: [seed] }],
-    });
-    expect(context.cacheElections[0]?.directoryPaths).toContain(parentPath);
-    expect(context.readGuards.some((guard) => guard.targetPath === temp)).toBe(
-      false,
-    );
-  });
 });
 
 describe("existing catalog name before rename metadata", () => {
@@ -700,108 +578,5 @@ describe("synthetic official exporter classification", () => {
       (await value.read()).pluginInventory.installedPlugins[0]
         ?.directTraceExporter,
     ).toBeNull();
-  });
-});
-
-describe("recorded object-source plugin loading", () => {
-  it("does not resurrect unnamed malformed catalog entries or reject an unrelated valid cache", async () => {
-    const value = await cachedContext();
-    await writeFile(
-      join(value.catalog, ".claude-plugin", "marketplace.json"),
-      JSON.stringify({
-        name: "market",
-        plugins: [
-          null,
-          1,
-          { source: { source: "unknown" } },
-          {
-            name: "ordinary",
-            source: { source: "github", repo: "example/plugins" },
-            hooks: hooks("Stop"),
-          },
-        ],
-      }),
-    );
-    expect((await value.read()).pluginInventory.installedPlugins).toMatchObject(
-      [{ pluginId: "ordinary@market", hookEvents: ["Stop"] }],
-    );
-  });
-  it.each([
-    { source: "github", repo: "example/plugins" },
-    { source: "url", url: "https://example.invalid/plugins.git" },
-    { source: "git-subdir", url: "example/plugins", path: "plugin" },
-    { source: "npm", package: "example-plugin" },
-    { source: "command", command: "never-executed" },
-    { source: "archive", url: "https://example.invalid/plugin.zip" },
-  ])(
-    "observes the installed cache without acquiring its $source",
-    async (source) => {
-      const value = await cachedContext();
-      await writeFile(
-        join(value.catalog, ".claude-plugin", "marketplace.json"),
-        JSON.stringify({
-          name: "market",
-          plugins: [{ name: "ordinary", source, hooks: hooks("Stop") }],
-        }),
-      );
-      expect(
-        (await value.read()).pluginInventory.installedPlugins,
-      ).toMatchObject([{ pluginId: "ordinary@market", hookEvents: ["Stop"] }]);
-    },
-  );
-  it("loads an unknown named-entry stub from the recorded cache but discards only its raw catalog hooks", async () => {
-    const value = await cachedContext();
-    await writeFile(
-      join(value.plugin, "hooks", "hooks.json"),
-      JSON.stringify({ hooks: hooks("PostToolUse") }),
-    );
-    await writeFile(
-      join(value.catalog, ".claude-plugin", "marketplace.json"),
-      JSON.stringify({
-        name: "market",
-        plugins: [
-          {
-            name: "ordinary",
-            source: {
-              source: "git",
-              url: "https://example.invalid/plugins.git",
-            },
-            hooks: hooks("Stop"),
-            strict: false,
-          },
-        ],
-      }),
-    );
-    expect((await value.read()).pluginInventory.installedPlugins).toMatchObject(
-      [
-        {
-          pluginId: "ordinary@market",
-          hookEvents: ["PostToolUse"],
-          manifestName: null,
-        },
-      ],
-    );
-  });
-  it("does not use string-source seed fallback for a missing recorded object cache", async () => {
-    const value = await cachedContext();
-    const seedRoot = join(value.root, "seed"),
-      parent = join(seedRoot, "cache", "market", "ordinary");
-    await mkdir(parent, { recursive: true });
-    await rename(value.plugin, join(parent, "cache"));
-    await writeFile(
-      join(value.catalog, ".claude-plugin", "marketplace.json"),
-      JSON.stringify({
-        name: "market",
-        plugins: [
-          {
-            name: "ordinary",
-            source: { source: "github", repo: "example/plugins" },
-          },
-        ],
-      }),
-    );
-    await expect(
-      value.read({ CLAUDE_CODE_PLUGIN_SEED_DIR: seedRoot }),
-    ).rejects.toThrow("plugin-inventory-unavailable");
   });
 });

@@ -1,3 +1,7 @@
+import {
+  createClaudeCodeDiscoveryContextFactory,
+  type ClaudeCodeDiscoveryReadCapabilities,
+} from "@agentscope/harness-claude-code";
 import { constants, createReadStream } from "node:fs";
 import {
   access,
@@ -22,47 +26,9 @@ export type ProductHarnessReadGuard = Readonly<{
   mode: number | null;
 }>;
 
-const cacheMarkers = new Set([
-  "node_modules",
-  ".orphaned_at",
-  ".in_use",
-  ".links_materialized",
-]);
-export const claudePluginCacheContentName = (name: string): boolean =>
-  !cacheMarkers.has(name);
-
-// Preliminary path discovery ONLY. This never supplies an authenticated
-// HarnessDirectoryInspection; the same transaction must independently elect
-// from Core's held observations before consuming the selected plugin data.
-export const discoverClaudeCacheRecord = async (
-  paths: readonly string[],
-  fallbackToFirst = true,
-): Promise<
-  Readonly<{ index: number | undefined; directoryPaths: readonly string[] }>
-> => {
-  const result = (index: number | undefined, count: number) =>
-    Object.freeze({
-      index,
-      directoryPaths: Object.freeze(paths.slice(0, count)),
-    });
-  if (paths.length === 0) return result(undefined, 0);
-  if (paths.length === 1 && fallbackToFirst) return result(0, 1);
-  for (const [index, path] of paths.entries()) {
-    if (path.endsWith(".zip"))
-      throw new Error("cli.harness.plugin-inventory-unavailable");
-    if (
-      (await discoverClaudeDirectoryEntries(path)).some(
-        claudePluginCacheContentName,
-      )
-    )
-      return result(index, index + 1);
-  }
-  return result(fallbackToFirst ? 0 : undefined, paths.length);
-};
-
 // Unauthenticated route discovery only; never passed to a planner as a Core
 // inspection. Every consulted directory is reopened by the existing plan.
-export const discoverClaudeDirectoryEntries = async (
+export const discoverProductHarnessDirectoryEntries = async (
   path: string,
 ): Promise<readonly string[]> => {
   let directory;
@@ -379,21 +345,14 @@ const unchangedFile = (before: FileState, after: FileState): boolean =>
   before.mtimeMs === after.mtimeMs &&
   before.ctimeMs === after.ctimeMs;
 
-export type ClaudePluginDocument = Readonly<{
-  guard: ProductHarnessReadGuard;
-  // The version-bound inventory projection validates this value separately.
-  // Absence is not an empty registry, an absent hook, or a no-exporter claim.
-  value: unknown;
-}>;
-
-export type ClaudePluginTextDocument = Readonly<{
+export type ProductHarnessTextDocument = Readonly<{
   guard: ProductHarnessReadGuard;
   text: string | undefined;
 }>;
 
-export const readClaudePluginTextDocument = async (
+export const readProductHarnessTextDocument = async (
   requestedPath: string,
-): Promise<ClaudePluginTextDocument> => {
+): Promise<ProductHarnessTextDocument> => {
   try {
     const path = exactAbsolutePath(requestedPath);
     const parent = dirname(path);
@@ -470,3 +429,43 @@ export const readClaudePluginTextDocument = async (
     throw pluginDocumentUnavailable();
   }
 };
+
+export const productHarnessReadCapabilities =
+  (): ClaudeCodeDiscoveryReadCapabilities =>
+    Object.freeze({
+      readTextDocument: readProductHarnessTextDocument,
+      readDirectoryEntries: discoverProductHarnessDirectoryEntries,
+      inspectPath: async (path: string) => {
+        const value = await lstat(path);
+        return Object.freeze({
+          kind: value.isFile()
+            ? ("file" as const)
+            : value.isDirectory()
+              ? ("directory" as const)
+              : ("other" as const),
+          symbolicLink: value.isSymbolicLink(),
+          dev: value.dev,
+          ino: value.ino,
+          mtimeMs: value.mtimeMs,
+          ctimeMs: value.ctimeMs,
+        });
+      },
+      realpath,
+      canonicalFutureDirectory,
+      executableCandidates,
+      authenticateExecutable: async (
+        path: string,
+        identity: ExactFileIdentity,
+        mode: number,
+      ) => {
+        const authenticated = await authenticateExactFile(path, identity, mode);
+        try {
+          await revalidateAuthenticatedFile(authenticated);
+        } finally {
+          await authenticated.handle.close();
+        }
+      },
+    });
+
+export const createProductClaudeDiscoveryFactory = () =>
+  createClaudeCodeDiscoveryContextFactory(productHarnessReadCapabilities());

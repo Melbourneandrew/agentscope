@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { normalizeClaudeCatalogEntry } from "../claude-catalog-entry.js";
+import { normalizeClaudeCatalogEntry } from "./claude-catalog-entry.js";
 
 const hooks = { Stop: [{ hooks: [{ type: "command", command: "" }] }] };
+
+it("does not recover a named catalog entry from a revoked non-JSON object", () => {
+  const input = Proxy.revocable({ name: "ordinary", source: "./" }, {});
+  input.revoke();
+  expect(normalizeClaudeCatalogEntry(input.proxy)).toBeUndefined();
+});
 const normalize = (fields: Record<string, unknown> = {}) =>
   normalizeClaudeCatalogEntry({
     name: "plugin",

@@ -10,24 +10,23 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  createClaudeDiscoveryProbe,
-  claudeUserConfiguration,
-  captureClaudeEnvironment,
-  claudePluginSeedDirectories,
-  selectClaudePluginLoadingPath,
-  claudeMarketplaceLoadingSource,
-  type ClaudeDiscoveryPolicy,
-} from "./claude-discovery.js";
+import type { ClaudeDiscoveryPolicy } from "@agentscope/harness-claude-code";
 import {
   authenticateExactFile,
+  createProductClaudeDiscoveryFactory,
   executableCandidates,
   revalidateAuthenticatedFile,
 } from "./product-harness-probe-files.js";
+
+const createClaudeDiscoveryProbe = (
+  input: Parameters<
+    ReturnType<typeof createProductClaudeDiscoveryFactory>["bindInvocation"]
+  >[0],
+) => createProductClaudeDiscoveryFactory().bindInvocation(input).probe;
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -101,7 +100,10 @@ describe("exact Claude native discovery", () => {
       expect(
         await probe.inspectConfiguration([[".claude", "settings.json"]]),
       ).toEqual([{ locationIndex: 0, present: false }]);
-      const selected = claudeUserConfiguration(root, root, environment);
+      const selected = {
+        directory: join(root, value),
+        settingsPath: join(root, value, "settings.json"),
+      };
       await mkdir(selected.directory, { recursive: true });
       await writeFile(selected.settingsPath, "{}");
       expect(
@@ -118,12 +120,13 @@ describe("exact Claude native discovery", () => {
         throw Error("must-not-read");
       },
     });
-    expect(
-      await createClaudeDiscoveryProbe({
-        ...input,
-        environment,
-      }).locateExecutable(["claude"]),
-    ).toEqual({ kind: "unavailable" });
+    const probe = createClaudeDiscoveryProbe({
+      ...input,
+      environment,
+    });
+    expect(await probe.locateExecutable(["claude"])).toEqual({
+      kind: "unavailable",
+    });
     expect(reads).toBe(0);
   });
   it.each(["wrapper", "failure-stub", "wrong-native"])(
@@ -136,259 +139,6 @@ describe("exact Claude native discovery", () => {
       });
     },
   );
-});
-
-describe("pinned Claude user settings selection", () => {
-  it("captures only the consulted controls before later environment mutation", () => {
-    const environment = {
-      PATH: "/bin",
-      CLAUDE_CONFIG_DIR: "original",
-      SECRET: "unused",
-    };
-    const captured = captureClaudeEnvironment(environment);
-    environment.CLAUDE_CONFIG_DIR = "changed";
-    expect(captured).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "original" });
-    expect(Object.isFrozen(captured)).toBe(true);
-    expect(
-      claudeUserConfiguration("/home/user", "/work", captured).settingsPath,
-    ).toBe("/work/original/settings.json");
-  });
-  it.each([
-    [undefined, undefined, "/home/user/.claude/settings.json"],
-    ["", undefined, "/work/project/settings.json"],
-    ["relative", undefined, "/work/project/relative/settings.json"],
-    ["~/literal", undefined, "/work/project/~/literal/settings.json"],
-    ["/custom/root", undefined, "/custom/root/settings.json"],
-    ["/custom/cafe\u0301", undefined, "/custom/caf\u00e9/settings.json"],
-    [undefined, "", "/home/user/.claude/settings.json"],
-    [undefined, "false", "/home/user/.claude/cowork_settings.json"],
-    ["/custom/root", "1", "/custom/root/cowork_settings.json"],
-  ])(
-    "resolves nullish/NFC/cowork controls %s/%s",
-    (config, cowork, expected) => {
-      const value = claudeUserConfiguration("/home/user", "/work/project", {
-        ...(config === undefined ? {} : { CLAUDE_CONFIG_DIR: config }),
-        ...(cowork === undefined
-          ? {}
-          : { CLAUDE_CODE_USE_COWORK_PLUGINS: cowork }),
-      });
-      expect(value.settingsPath).toBe(expected);
-      expect(Object.isFrozen(value)).toBe(true);
-    },
-  );
-  it.each(["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_COWORK_PLUGINS"])(
-    "does not invoke accessor selection %s",
-    (key) => {
-      let reads = 0;
-      const environment = Object.defineProperty({}, key, {
-        get: () => {
-          reads++;
-          return "/foreign";
-        },
-      });
-      expect(() =>
-        claudeUserConfiguration("/home/user", "/work/project", environment),
-      ).toThrow("probe-unavailable");
-      expect(reads).toBe(0);
-    },
-  );
-});
-
-describe("pinned Claude seed directory controls", () => {
-  it("preserves seed order and duplicates, omits empty entries, and expands only home prefixes", () => {
-    const selected = ["", "~/first", "relative", "~other", "~", "~/first", ""];
-    const paths = claudePluginSeedDirectories("/home/user", "/work", {
-      CLAUDE_CODE_PLUGIN_SEED_DIR: selected.join(delimiter),
-    });
-    expect(paths).toEqual([
-      "/home/user/first",
-      "/work/relative",
-      "/work/~other",
-      "/home/user",
-      "/home/user/first",
-    ]);
-    expect(Object.isFrozen(paths)).toBe(true);
-  });
-  it.each([{}, { CLAUDE_CODE_PLUGIN_SEED_DIR: "" }])(
-    "has no implicit seed root",
-    (environment) => {
-      expect(
-        claudePluginSeedDirectories("/home/user", "/work", environment),
-      ).toEqual([]);
-    },
-  );
-  it("snapshots seed selection before mutation without reading unrelated controls", () => {
-    const environment = { CLAUDE_CODE_PLUGIN_SEED_DIR: "~/original" };
-    const captured = captureClaudeEnvironment(environment);
-    environment.CLAUDE_CODE_PLUGIN_SEED_DIR = "~/changed";
-    expect(
-      claudePluginSeedDirectories("/home/user", "/work", captured),
-    ).toEqual(["/home/user/original"]);
-  });
-  it("rejects accessor and malformed seed paths without invoking their getter", () => {
-    let reads = 0;
-    const environment = Object.defineProperty(
-      {},
-      "CLAUDE_CODE_PLUGIN_SEED_DIR",
-      {
-        get: () => {
-          reads++;
-          return "/foreign";
-        },
-      },
-    );
-    expect(() =>
-      claudePluginSeedDirectories(
-        "/home/user",
-        "/work",
-        captureClaudeEnvironment(environment),
-      ),
-    ).toThrow("probe-unavailable");
-    expect(reads).toBe(0);
-    expect(() =>
-      claudePluginSeedDirectories("/home/user", "/work", {
-        CLAUDE_CODE_PLUGIN_SEED_DIR: "bad\0path",
-      }),
-    ).toThrow("probe-unavailable");
-  });
-});
-
-describe("marketplace loading refuses incomplete declarations", () => {
-  it.each([
-    { entry: { source: "./plugin" }, source: { source: "github" } },
-    {
-      entry: { name: "plugin", source: "./plugin" },
-      source: { source: "file" },
-    },
-    {
-      entry: { name: "plugin", source: "./plugin" },
-      source: { source: "directory" },
-    },
-  ])(
-    "does not fabricate a named entry or local path from %j",
-    ({ entry, source }) => {
-      expect(() =>
-        claudeMarketplaceLoadingSource(entry, source, "/catalog"),
-      ).toThrow("cli.harness.plugin-inventory-unavailable");
-    },
-  );
-});
-
-describe("alternate seed version selection from Core snapshots", () => {
-  const inspect = (directoryPath: string, entries: readonly string[]) => ({
-    directoryPath,
-    entries,
-    exists: true,
-    mode: 0o755,
-  });
-  const cache = "/recorded",
-    parentPath = "/seed/cache/market/plugin";
-  const version = join(parentPath, "v9"),
-    other = join(parentPath, "v10");
-  const roots = [{ parentPath, paths: [version] }];
-  it("excludes only the exact temporary suffix and selects the one nonempty version", () => {
-    const observed = [
-      inspect(cache, []),
-      inspect(parentPath, ["v9", "v10.tmp~deadbeef"]),
-      inspect(version, ["hooks"]),
-    ];
-    expect(selectClaudePluginLoadingPath([cache], observed, roots)).toBe(
-      version,
-    );
-    expect(() =>
-      selectClaudePluginLoadingPath(
-        [cache],
-        [
-          observed[0]!,
-          inspect(parentPath, ["v9", "v10.tmp~DEADBEEF"]),
-          observed[2]!,
-        ],
-        roots,
-      ),
-    ).toThrow("plugin-inventory-unavailable");
-  });
-  it("rejects a substituted parent projection and missing child observation", () => {
-    const observed = [
-      inspect(cache, []),
-      inspect(parentPath, ["v9", "v10"]),
-      inspect(version, ["hooks"]),
-    ];
-    expect(() =>
-      selectClaudePluginLoadingPath([cache], observed, roots),
-    ).toThrow("plugin-inventory-unavailable");
-    // Equal cardinality must not make a substituted child authoritative.
-    expect(() =>
-      selectClaudePluginLoadingPath(
-        [cache],
-        [observed[0]!, inspect(parentPath, ["v10"]), inspect(other, ["hooks"])],
-        roots,
-      ),
-    ).toThrow("plugin-inventory-unavailable");
-    expect(() =>
-      selectClaudePluginLoadingPath(
-        [cache],
-        [observed[0]!, inspect(parentPath, ["v9"])],
-        roots,
-      ),
-    ).toThrow("plugin-inventory-unavailable");
-  });
-  it("does not choose arbitrarily between two nonempty versions", () => {
-    const observed = [
-      inspect(cache, []),
-      inspect(parentPath, ["v9", "v10"]),
-      inspect(version, ["hooks"]),
-      inspect(other, ["skills"]),
-    ];
-    expect(
-      selectClaudePluginLoadingPath([cache], observed, [
-        { parentPath, paths: [version, other] },
-      ]),
-    ).toBeUndefined();
-    expect(
-      selectClaudePluginLoadingPath(
-        [cache],
-        [inspect(cache, ["current"])],
-        roots,
-      ),
-    ).toBe(cache);
-  });
-});
-
-describe("local plugin selection from Core snapshots", () => {
-  it("requires the exact local directory existence, not cached content", () => {
-    const path = "/market/ordinary";
-    const directory = {
-      directoryPath: path,
-      exists: true,
-      mode: 0o755,
-      entries: [],
-    };
-    expect(selectClaudePluginLoadingPath([path], [directory], [], path)).toBe(
-      path,
-    );
-    expect(
-      selectClaudePluginLoadingPath(
-        [path],
-        [{ ...directory, exists: false }],
-        [],
-        path,
-      ),
-    ).toBeUndefined();
-    expect(() => selectClaudePluginLoadingPath([path], [], [], path)).toThrow(
-      "plugin-inventory-unavailable",
-    );
-    expect(() =>
-      selectClaudePluginLoadingPath([path, "/cache"], [directory], [], path),
-    ).toThrow("plugin-inventory-unavailable");
-    expect(() =>
-      selectClaudePluginLoadingPath(
-        [path],
-        [directory],
-        [{ parentPath: "/seed", paths: [] }],
-        path,
-      ),
-    ).toThrow("plugin-inventory-unavailable");
-  });
 });
 
 describe("Claude discovery hostile filesystem boundaries", () => {

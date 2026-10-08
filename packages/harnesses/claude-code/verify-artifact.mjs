@@ -5,6 +5,13 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
 const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+if (
+  JSON.stringify(manifest.sideEffects) !==
+  JSON.stringify(["./dist/*.js", "./src/**/*.ts"])
+)
+  throw new Error(
+    "claude-code scoped side-effect metadata changed unexpectedly",
+  );
 const expectedExports = [".", "./testing"];
 const actualExports = Object.keys(manifest.exports ?? {}).sort();
 if (JSON.stringify(actualExports) !== JSON.stringify(expectedExports))
@@ -35,6 +42,8 @@ assertExactKeys("production root", rootModule, [
   "createClaudeCodeDialectAuthority",
   "createClaudeCodeExecutionEnvironment",
   "createClaudeCodeInstallationPlanner",
+  "createClaudeCodeDiscoveryContextFactory",
+  "prepareClaudeCodeInstallationContext",
   "inspectClaudeCodePluginOverlap",
   "mapClaudeCodeCapture",
   "decodeClaudeCodeRootHookInput",
@@ -217,6 +226,20 @@ const harnessCoreTestingSpecifier = [
 ].join("/");
 
 assertGraph("production runtime", productionRuntime, [
+  "discovery/capabilities.js",
+  "discovery/claude-catalog-components.js",
+  "discovery/claude-catalog-entry.js",
+  "discovery/claude-catalog-transports.js",
+  "discovery/claude-discovery.js",
+  "discovery/claude-managed-settings.js",
+  "discovery/claude-marketplace-context.js",
+  "discovery/claude-marketplace-url.js",
+  "discovery/claude-plugin-context.js",
+  "discovery/claude-plugin-cache.js",
+  "discovery/claude-plugin-inventory.js",
+  "discovery/claude-plugin-selection.js",
+  "discovery/claude-settings-projection.js",
+  "discovery/context-factory.js",
   "descriptor.js",
   "execution.js",
   "index.js",
@@ -228,6 +251,12 @@ assertGraph("production runtime", productionRuntime, [
   "root-hook.js",
 ]);
 assertGraph("production declarations", productionDeclarations, [
+  "discovery/capabilities.d.ts",
+  "discovery/claude-catalog-transports.d.ts",
+  "discovery/claude-discovery.d.ts",
+  "discovery/claude-managed-settings.d.ts",
+  "discovery/claude-plugin-inventory.d.ts",
+  "discovery/context-factory.d.ts",
   "descriptor.d.ts",
   "execution.d.ts",
   "index.d.ts",
@@ -256,11 +285,14 @@ assertGraph("testing declarations", testingDeclarations, [
 assertExternal("production runtime", productionRuntime, [
   "@agentscope/harnesses-core",
   "node:path",
+  "node:net",
   "node:util/types",
+  "zod",
 ]);
 assertExternal("production declarations", productionDeclarations, [
   "@agentscope/harnesses-core",
   "@agentscope/protocol",
+  "zod",
 ]);
 assertExternal("testing runtime", testingRuntime, [
   "@agentscope/harnesses-core",

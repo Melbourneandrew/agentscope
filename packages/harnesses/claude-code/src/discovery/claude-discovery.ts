@@ -1,7 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 
-import { claudeCodeDescriptor } from "@agentscope/harness-claude-code";
+import { claudeCodeDescriptor } from "../descriptor.js";
 import type {
   HarnessDiscoveryProbe,
   HarnessDirectoryInspection,
@@ -10,16 +9,13 @@ import type {
 import { normalizeClaudeCatalogEntry } from "./claude-catalog-entry.js";
 
 import {
-  authenticateExactFile,
-  canonicalFutureDirectory,
   exactAbsolutePath,
   exactEnvironmentValue,
-  executableCandidates,
-  revalidateAuthenticatedFile,
   unavailable,
   claudePluginCacheContentName,
   type ExactFileIdentity,
-} from "./product-harness-probe-files.js";
+  type ClaudeCodeDiscoveryReadCapabilities,
+} from "./capabilities.js";
 
 export type ClaudeDiscoveryPolicy = Readonly<{
   version: string;
@@ -333,12 +329,20 @@ export const createClaudeDiscoveryProbe = (
   input: Readonly<{
     environment: Readonly<Record<string, string | undefined>>;
     homeDirectory?: string;
-    projectDirectory?: string;
+    projectDirectory: string;
     platform: NodeJS.Platform;
     architecture: NodeJS.Architecture;
     policy?: ClaudeDiscoveryPolicy;
   }>,
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
 ): HarnessDiscoveryProbe => {
+  const {
+    inspectPath: lstat,
+    realpath,
+    canonicalFutureDirectory,
+    executableCandidates,
+    authenticateExecutable,
+  } = capabilities;
   const policy = input.policy ?? CLAUDE_DISCOVERY_POLICY;
   return Object.freeze({
     locateExecutable: async (names: readonly string[]) => {
@@ -363,20 +367,11 @@ export const createClaudeDiscoveryProbe = (
         const canonical = exactAbsolutePath(
           await realpath(exactAbsolutePath(path)),
         );
-        const authenticated = await authenticateExactFile(
-          canonical,
-          identity,
-          0o755,
-        );
-        try {
-          await revalidateAuthenticatedFile(authenticated);
-          return Object.freeze({
-            kind: "observed" as const,
-            output: `${policy.version} (Claude Code)\n`,
-          });
-        } finally {
-          await authenticated.handle.close();
-        }
+        await authenticateExecutable(canonical, identity, 0o755);
+        return Object.freeze({
+          kind: "observed" as const,
+          output: `${policy.version} (Claude Code)\n`,
+        });
       } catch {
         return unavailable();
       }
@@ -392,14 +387,14 @@ export const createClaudeDiscoveryProbe = (
         throw new Error("cli.harness.probe-unavailable");
       const path = claudeUserConfiguration(
         input.homeDirectory,
-        input.projectDirectory ?? process.cwd(),
+        input.projectDirectory,
         input.environment,
       ).settingsPath;
       if ((await canonicalFutureDirectory(dirname(path))) !== dirname(path))
         throw new Error("cli.harness.probe-unavailable");
       try {
         const state = await lstat(path);
-        if (!state.isFile() || state.isSymbolicLink())
+        if (state.kind !== "file" || state.symbolicLink)
           throw new Error("cli.harness.probe-unavailable");
         return [Object.freeze({ locationIndex: 0, present: true })];
       } catch (error) {

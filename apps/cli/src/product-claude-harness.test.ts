@@ -18,7 +18,6 @@ import {
   testDiscoveryPolicy,
 } from "./__tests__/product-harness-fixture.js";
 import { createHarnessCliServices } from "./harness-services.js";
-import { claudeUserConfiguration } from "./claude-discovery.js";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
 import { createProductHarnesses } from "./product-harnesses.js";
 import { claudeServiceProofInNode } from "./__tests__/product-installation-fixture.js";
@@ -163,9 +162,7 @@ describe("ordinary CLI registry exposes Codex and Claude independently", () => {
     "observes the selected profile rather than the default with override %s",
     async (override) => {
       const value = await claudeFixture(override);
-      const path = claudeUserConfiguration(value.vendorHome, value.vendorHome, {
-        CLAUDE_CONFIG_DIR: override,
-      }).settingsPath;
+      const path = join(value.vendorHome, override, "settings.json");
       await mkdir(join(value.vendorHome, ".claude"));
       await writeFile(join(value.vendorHome, ".claude", "settings.json"), "{}");
       await expect(value.services.listHarnesses()).resolves.toMatchObject({

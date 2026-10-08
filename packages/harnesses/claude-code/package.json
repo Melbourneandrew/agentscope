@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "sideEffects": [
+    "./dist/*.js",
+    "./src/**/*.ts"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,9 +40,9 @@
     "prepack": "node ../../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
-    "@agentscope/core": "workspace:*",
     "@agentscope/harnesses-core": "workspace:*",
-    "@agentscope/protocol": "workspace:*"
+    "@agentscope/protocol": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

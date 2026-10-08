@@ -1,15 +1,14 @@
-import { lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   HarnessDirectoryInspection,
   HarnessTargetInspection,
 } from "@agentscope/harnesses-core";
-import type { ClaudeCodePluginSettingsLayer } from "@agentscope/harness-claude-code";
+import type { ClaudeCodePluginSettingsLayer } from "../lifecycle.js";
 import {
-  discoverClaudeDirectoryEntries,
+  type ClaudeCodeDiscoveryReadCapabilities,
   nodeErrorCode,
   type ProductHarnessReadGuard,
-} from "./product-harness-probe-files.js";
+} from "./capabilities.js";
 import { readClaudePluginSettingsLayer } from "./claude-plugin-inventory.js";
 
 export type ClaudeSettingsDirectorySelection = Readonly<{
@@ -110,6 +109,7 @@ export const claudeManagedSettingsPath = (
 };
 
 export const readClaudeScopedSettings = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
   userPath: string,
   project: string,
   managedPaths: readonly string[],
@@ -133,7 +133,9 @@ export const readClaudeScopedSettings = async (
   ] as const;
   const observed = [];
   for (const [scope, path] of locations)
-    observed.push(await readClaudePluginSettingsLayer(path, scope));
+    observed.push(
+      await readClaudePluginSettingsLayer(capabilities, path, scope),
+    );
   return observed;
 };
 
@@ -200,11 +202,14 @@ export const claudeDirectoryDependencies = (
 // Preliminary route discovery, not a Core observation or mutation authority.
 // The existing installation plan must reopen and bind this directory plus
 // every selected regular file before any owned target can be changed.
-export const discoverClaudeManagedSettings = async (mainPath: string) => {
+export const discoverClaudeManagedSettings = async (
+  capabilities: ClaudeCodeDiscoveryReadCapabilities,
+  mainPath: string,
+) => {
   const directoryPath = join(dirname(mainPath), "managed-settings.d");
   let before;
   try {
-    before = await lstat(directoryPath);
+    before = await capabilities.inspectPath(directoryPath);
   } catch (error) {
     if (nodeErrorCode(error) !== "ENOENT") throw unavailable();
     return Object.freeze({
@@ -217,9 +222,10 @@ export const discoverClaudeManagedSettings = async (mainPath: string) => {
       }),
     });
   }
-  if (!before.isDirectory() || before.isSymbolicLink()) throw unavailable();
+  if (!(before.kind === "directory") || before.symbolicLink)
+    throw unavailable();
   const entries = [
-    ...(await discoverClaudeDirectoryEntries(directoryPath)),
+    ...(await capabilities.readDirectoryEntries(directoryPath)),
   ].sort();
   const candidates = entries.filter(
     (name) => !name.startsWith(".") && name.endsWith(".json"),
@@ -229,21 +235,21 @@ export const discoverClaudeManagedSettings = async (mainPath: string) => {
   const selected: string[] = [];
   const ignoredDirectories: string[] = [];
   for (const name of candidates) {
-    const state = await lstat(join(directoryPath, name));
-    if (state.isDirectory() && !state.isSymbolicLink()) {
+    const state = await capabilities.inspectPath(join(directoryPath, name));
+    if (state.kind === "directory" && !state.symbolicLink) {
       ignoredDirectories.push(join(directoryPath, name));
       continue;
     }
     // Native may follow a drop-in symlink, but the current Core transaction
     // cannot bind that file. Report this concrete observation as unavailable.
-    if (!state.isFile() || state.isSymbolicLink()) throw unavailable();
+    if (!(state.kind === "file") || state.symbolicLink) throw unavailable();
     selected.push(name);
     if (selected.length > 9) throw unavailable();
   }
-  const after = await lstat(directoryPath);
+  const after = await capabilities.inspectPath(directoryPath);
   if (
-    !after.isDirectory() ||
-    after.isSymbolicLink() ||
+    !(after.kind === "directory") ||
+    after.symbolicLink ||
     before.dev !== after.dev ||
     before.ino !== after.ino ||
     before.mtimeMs !== after.mtimeMs ||
