@@ -1,0 +1,98 @@
+---
+title: Getting started
+description: Publication status and the safe Agentscope setup sequence.
+---
+
+## Before you begin
+
+Agentscope 0.1.0 is not published yet. Do not install an artifact from an
+untrusted source or treat source-checkout behavior as a support claim. The
+release will name each supported Codex and Claude Code version, mode, platform,
+and credential context only after actual-binary OTLP admission.
+
+The Claude Code 2.1.245 candidate profile under validation covers
+`SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not expose
+`SessionEnd`, so Agentscope does not claim a native Claude session-end event.
+
+The intended alpha sends to Langfuse over OTLP. Local SQLite, Cursor, and the
+other harnesses are not 0.1.0 support claims. Agentscope requires Node.js 22 or
+later, and the public product is the `agentscope-cli` npm package, which exposes
+the `agentscope` command.
+
+## Install the published alpha
+
+After the release is published, install either its alpha tag or exact version:
+
+```bash
+npm install --global agentscope-cli@alpha
+# Equivalent exact pin for the first alpha:
+npm install --global agentscope-cli@0.1.0
+
+agentscope --version
+```
+
+Do not use bare `agentscope-cli` or `npx agentscope-cli`: npm `latest` remains an
+inert ownership bootstrap until a later stable release.
+
+Use only a platform combination listed in the release support manifest. If your
+combination is absent, stop before configuring credentials or installing a
+harness.
+
+## Safe setup sequence
+
+Once the release lists your complete platform combination:
+
+1. Run `agentscope init` and inspect the plan. Repeat with `--yes` only when you
+   intend to create the non-secret Agentscope configuration.
+2. Configure a named Langfuse connection with `agentscope destination configure
+langfuse --name <name>`. This command writes the destination immediately, so
+   review its name and settings before invoking it and inspect the saved
+   destination afterward. On an admitted interactive macOS path, follow the
+   hidden credential prompts; use `--credential-env` only for an explicit CI
+   environment-reference setup. `--yes` is not a Langfuse dry-run or commit
+   switch.
+3. Select that connection explicitly with `agentscope routing set <name>`.
+   Configuring a destination does not enable delivery; a bare `agentscope
+routing set` disables delivery.
+4. Run `agentscope harness list` and `agentscope harness status <harness>`.
+5. Run `agentscope install <harness>` without `--yes` and inspect the plan.
+   Repeat with `--yes` only when the current plan is acceptable.
+6. Run `agentscope doctor` to inspect the resulting setup.
+
+Ordinary installation never replaces an overlapping vendor observability hook.
+If installation reports an overlap, review it before using the separate
+`agentscope harness migrate` command.
+
+## Configuration and credentials
+
+Non-secret configuration lives under `~/.agentscope`. Credentials use the
+admitted platform backend or an explicit CI environment reference; Agentscope
+does not store credential values in configuration or print them.
+`AGENTSCOPE_HOME` is an explicit override for portable installations, tests, and
+CI isolation.
+
+Routing is always explicit. Agentscope never chooses the first configured
+destination as a default.
+
+## Inspect and remove an installation
+
+Use `agentscope harness status <harness>` and `agentscope doctor` for read-only
+inspection. `agentscope uninstall <harness>` is plan-first until `--yes` is
+present and removes only an exact Agentscope-owned integration.
+
+Local SQLite persistence and maintenance commands are outside the intended
+0.1.0 alpha. Do not infer their availability from source files or descriptor
+discovery.
+
+## Troubleshooting
+
+- Use `agentscope doctor --output json` for a bounded machine-readable report.
+- Treat `unsupported` and `indeterminate` as distinct from an absent harness.
+- A configured destination is inactive until routing selects it.
+- For a recovery requirement or outcome-unknown state, stop mutation and follow
+  the state-specific action. Doctor reports an action identifier, not a shell
+  command.
+- Never paste credential values into `--settings`, command arguments, issue
+  reports, or logs.
+
+See the [CLI reference](./cli) for exact syntax and stable diagnostics.
