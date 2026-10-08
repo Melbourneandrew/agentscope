@@ -22,6 +22,7 @@ import type { CliDiagnostic, CliOperationResult } from "./cli-contract.js";
 import type { CliConfigurationServices } from "./configuration-command-contract.js";
 import type { CliCommandBoundary } from "./command-runtime.js";
 import { readHiddenCredentialForCli } from "./credential-input.js";
+import { localSqliteDestinationDescriptor } from "@agentscope/destination-local-sqlite";
 
 type ProductionState = Readonly<{
   management: ConfigurationManagementRuntime;
@@ -190,6 +191,12 @@ export const lifecyclePlanValue = (plan: DestinationLifecyclePlan) =>
 export const createConfigureService =
   (state: ProductionState): CliConfigurationServices["configureDestination"] =>
   async (input) => {
+    // The alpha keeps descriptor discovery, not an admitted Local capability.
+    // Refuse before settings, credentials, plans, or any mutation.
+    if (input.type === localSqliteDestinationDescriptor.commandName)
+      return failure(
+        diagnostic("unavailable", "destination.capability-unavailable"),
+      );
     try {
       if (expired(state)) return failure(unavailable);
       const signal = state.commandBoundary.credentialContext.signal;
