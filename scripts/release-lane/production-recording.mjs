@@ -4,10 +4,22 @@ import {
   snapshotRecorderInput,
   validateStageTuple,
 } from "./stage-result.mjs";
-import { readFileSync } from "node:fs";
+import {
+  readFileSync,
+  mkdtempSync,
+  writeFileSync,
+  unlinkSync,
+  rmdirSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { verifyCandidateArtifact } from "./candidate.mjs";
-import { proposeStageRecord } from "./production-recorder.mjs";
+import {
+  proposeStageRecord,
+  validateStageCheckpoint,
+} from "./production-recorder.mjs";
 import { projectOperatorControlsReport } from "./admission.mjs";
+import { produceNpmStage } from "./npm-stage-producer.mjs";
 
 const authenticated = new WeakMap();
 const fail = () => {
@@ -160,12 +172,7 @@ function validateObservationContext(observation, value) {
 
 // Authentication comes from the fixed GitHub API store, never from a caller
 // owner label or from a digest of an unauthenticated document.
-export async function authenticateOwnerCheckpoint(
-  store,
-  input,
-  npmObservation,
-  observedAt,
-) {
+async function authenticateRunApproval(store, input) {
   const value = snapshotRecorderInput(input);
   recorderExactKeys(value, [
     "runId",
@@ -189,6 +196,9 @@ export async function authenticateOwnerCheckpoint(
     !Array.isArray(approvals)
   )
     fail();
+  // The fixed workflow protects both the writer and stage jobs. GitHub's
+  // review history may therefore contain multiple approvals by the same owner;
+  // global history cardinality is not authentication of a particular job.
   const approval = approvals.filter(
     (entry) =>
       entry.state === "approved" &&
@@ -200,7 +210,23 @@ export async function authenticateOwnerCheckpoint(
           environment.name === "npm-release",
       ),
   );
-  if (approval.length !== 1) fail();
+  if (
+    !approval.length ||
+    approvals.length > 100 ||
+    approval.length !== approvals.length
+  )
+    fail();
+  if (value.owner !== "Melbourneandrew") fail();
+  return { value, run, approval: approval[0] };
+}
+
+export async function authenticateOwnerCheckpoint(
+  store,
+  input,
+  npmObservation,
+  observedAt,
+) {
+  const { value, run, approval } = await authenticateRunApproval(store, input);
   const observation = snapshotRecorderInput(npmObservation);
   recorderExactKeys(observation, [
     "transactionId",
@@ -248,12 +274,152 @@ export async function authenticateOwnerCheckpoint(
     consumedAt,
     ownerIdentity: value.owner,
     state: "consumed-for-stage",
-    authenticationDigest: sha256(
-      canonicalJson({ run, approval: approval[0], observation }),
-    ),
+    authenticationDigest: sha256(canonicalJson({ run, approval, observation })),
   });
   authenticated.set(checkpoint, value);
   return checkpoint;
+}
+
+const intentHead = (intent) =>
+  Object.fromEntries(
+    [
+      "schemaVersion",
+      "sequence",
+      "digest",
+      "previousDigest",
+      "transition",
+      "transactionId",
+      "draftReleaseDatabaseId",
+      "candidateManifestDigest",
+      "sourceRevision",
+      "kind",
+      "ownerCheckpointDigest",
+    ].map((key) => [key, intent[key]]),
+  );
+
+async function authenticatedIntent(store, value) {
+  const { value: identity } = await authenticateRunApproval(
+    store,
+    value.identity,
+  );
+  await store.protectedSource(identity.sourceRevision);
+  const intent = await readLatestRecord(store, value.releaseId);
+  if (
+    intent.transition !== "pre-stage-intent" ||
+    intent.digest !== value.intentDigest ||
+    intent.runId !== identity.runId ||
+    intent.runAttempt !== identity.runAttempt ||
+    intent.sourceRevision !== identity.sourceRevision
+  )
+    fail();
+  // Fresh API principal/approval authentication is independent of the recorded
+  // authentication digest. Mutable API run metadata cannot be replayed as a
+  // new checkpoint, and no digest substitutes for the fixed authenticated run.
+  const tuple = await bindIntentTuple(
+    store,
+    intent,
+    intent.tuple,
+    value.executingDigests,
+  );
+  return { intent, tuple };
+}
+
+// This is the protected product job's composition, not a new admission source.
+// The entrypoint's actual semantic guard remains mandatory and disabled.
+export async function stageRetainedCandidate(
+  store,
+  input,
+  candidate,
+  execution = {},
+) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "releaseId",
+    "intentDigest",
+    "identity",
+    "executingDigests",
+    "deadline",
+  ]);
+  const { intent, tuple } = await authenticatedIntent(store, value);
+  const checkpoint = intent.ownerCheckpoint;
+  const verified = verifyCandidateArtifact({
+    ...candidate,
+    expectedManifestDigest: tuple.candidateManifestDigest,
+    expectedSourceRevision: tuple.sourceRevision,
+    expectedProtectedTag: tuple.protectedTag,
+  });
+  const bytes = readFileSync(candidate.tarballPath);
+  if (
+    bytes.length !== verified.bytes ||
+    sha256(bytes) !== tuple.tarballSha256 ||
+    candidate.manifest.tarball.integrity !== tuple.integrity ||
+    !Number.isFinite(value.deadline)
+  )
+    fail();
+  const root = mkdtempSync(join(tmpdir(), "agentscope-npm-stage-"));
+  const path = join(root, "agentscope-cli-0.1.0.tgz");
+  let created = false;
+  try {
+    writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+    created = true;
+    verifyCandidateArtifact({
+      ...candidate,
+      tarballPath: path,
+      expectedManifestDigest: tuple.candidateManifestDigest,
+      expectedSourceRevision: tuple.sourceRevision,
+      expectedProtectedTag: tuple.protectedTag,
+    });
+    const current = await readLatestRecord(store, value.releaseId);
+    if (current.digest !== intent.digest) fail();
+    const observedAt = new Date().toISOString();
+    validateStageCheckpoint({
+      tuple,
+      head: intentHead(intent),
+      ownerCheckpoint: checkpoint,
+      observedAt,
+    });
+    // The original owner expiry also caps version acquisition and the mutation;
+    // npm preflight cannot renew it. There is exactly one producer invocation.
+    const deadline = Math.min(
+      value.deadline,
+      performance.now() + Date.parse(checkpoint.expiresAt) - Date.now(),
+    );
+    return await produceNpmStage({
+      tuple,
+      tarballPath: path,
+      deadline,
+      execFileImpl: execution.execFileImpl,
+    });
+  } finally {
+    // Trusted npm direct-child callback/stdio closure precedes exact owned cleanup.
+    if (created) unlinkSync(path);
+    rmdirSync(root);
+  }
+}
+
+// Fixed dependent-job output acquisition belongs to the protected entrypoint.
+// Authenticate the same API principal/intent again, but do not renew expiry or
+// discard an uncertain stage merely because recording occurs after expiry.
+export async function recordStageFromJob(store, input) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "releaseId",
+    "intentDigest",
+    "identity",
+    "executingDigests",
+    "stageResult",
+    "observedAt",
+  ]);
+  await authenticatedIntent(store, value);
+  return recordStage(store, {
+    releaseId: value.releaseId,
+    intentDigest: value.intentDigest,
+    runId: value.identity.runId,
+    runAttempt: value.identity.runAttempt,
+    stageResult: value.stageResult,
+    observedAt: value.observedAt,
+    actor: value.identity.owner,
+  });
 }
 
 export async function bindIntentTuple(store, head, input, executingDigests) {

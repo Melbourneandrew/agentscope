@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
 
-import { proposeStageRecord } from "../release-lane/production-recorder.mjs";
+import {
+  proposeStageRecord,
+  validateStageCheckpoint,
+} from "../release-lane/production-recorder.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
@@ -114,6 +117,23 @@ test.each(["product"])(
 );
 test("refuses probe results at the product recorder boundary", () => {
   assert.throws(() => proposeStageRecord(fixture("probe")));
+});
+test("stage expiry gates mutation without discarding a later recorded outcome", () => {
+  const input = fixture();
+  const stage = {
+    tuple: input.tuple,
+    head: input.head,
+    ownerCheckpoint: input.ownerCheckpoint,
+    observedAt: "2026-10-07T00:14:59.999Z",
+  };
+  assert.equal(validateStageCheckpoint(stage).kind, "product");
+  for (const observedAt of [
+    "2026-10-07T00:15:00.000Z",
+    "2026-10-07T01:00:00.000Z",
+    "2026-10-07T00:00:00.000Z",
+  ])
+    assert.throws(() => validateStageCheckpoint({ ...stage, observedAt }));
+  assert.equal(proposeStageRecord(input).record.transition, "stage-recorded");
 });
 test("refuses the former unconsumed draft-prepared head", () => {
   const input = fixture();
