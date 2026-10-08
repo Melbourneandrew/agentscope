@@ -396,6 +396,7 @@ describe("same-kernel binary output", () => {
     });
     expect(args).toEqual([
       "build",
+      "--progress=plain",
       "--builder",
       "fixture",
       "--file",

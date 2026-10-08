@@ -18,7 +18,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
 
 import {
   compileIsolationEvidence,
@@ -1631,6 +1631,43 @@ const startCollector = (plan, signal) =>
   startDestinationSidecar(plan, signal, "ingestion");
 const startRetrieval = (plan, signal) =>
   startDestinationSidecar(plan, signal, "retrieval");
+const mockServerNetworkObservation = (server, network) => {
+  const own = (value, key) =>
+    value !== null && typeof value === "object" && !types.isProxy(value)
+      ? Object.getOwnPropertyDescriptor(value, key)?.value
+      : undefined;
+  const state = own(server, "State");
+  const status = own(state, "Status");
+  const exit = own(state, "ExitCode");
+  const networks = own(own(server, "NetworkSettings"), "Networks");
+  const count =
+    networks && typeof networks === "object" && !types.isProxy(networks)
+      ? Reflect.ownKeys(networks).length
+      : undefined;
+  const boolean = (value) => (typeof value === "boolean" ? value : null);
+  const ip = own(network, "IPAddress");
+  return {
+    diagnosticVersion: 1,
+    trust: "untrusted-diagnostic",
+    stage: "mockserver-network-refusal",
+    status: [
+      "created",
+      "running",
+      "exited",
+      "dead",
+      "paused",
+      "restarting",
+      "removing",
+    ].includes(status)
+      ? status
+      : "unknown",
+    running: boolean(own(state, "Running")),
+    oomKilled: boolean(own(state, "OOMKilled")),
+    exitCode: Number.isInteger(exit) && exit >= 0 && exit <= 255 ? exit : null,
+    networkCount: Number.isInteger(count) && count <= 16 ? count : null,
+    ipPresent: typeof ip === "string" && /^(?:\d{1,3}\.){3}\d{1,3}$/u.test(ip),
+  };
+};
 const startMockServer = async (plan, signal) => {
   await assertControlVolumeCurrent(plan, signal);
   await dockerWithSignal(
@@ -1697,8 +1734,17 @@ const startMockServer = async (plan, signal) => {
   if (
     !/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(network?.IPAddress ?? "") ||
     Object.keys(server.NetworkSettings.Networks).length !== 1
-  )
+  ) {
+    try {
+      console.error(
+        "integration.isolation.mockserver-network-diagnostic:" +
+          JSON.stringify(mockServerNetworkObservation(server, network)),
+      );
+    } catch {
+      // Optional content-free projection never replaces the original refusal.
+    }
     throw new Error("integration.isolation.mockserver-network");
+  }
   mockServerControls.get(plan.runId).host = network.IPAddress;
   mockServerContainerIdentities.set(plan.runId, containerId);
 };

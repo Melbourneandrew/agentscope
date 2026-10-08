@@ -227,6 +227,77 @@ const validStageProgression = (previous, next, family) => {
     (next !== previous || family !== "none")
   );
 };
+// Closed last-observed plain BuildKit role, never a completion/admission proof.
+const createSupplierBuildPhaseObservation = () => {
+  let worker;
+  let vertex;
+  let role;
+  let stage;
+  const copies = [
+    ["java", "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java"],
+    [
+      "jar",
+      "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+    ],
+    [
+      "control",
+      "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
+    ],
+    [
+      "configuration",
+      "COPY --chmod=0444 expectations.json /config/expectations.json",
+    ],
+  ];
+  return {
+    marker(prefix, observed) {
+      stage = undefined;
+      worker = undefined;
+      if (observed === "supplier-connected-service-finalization" && prefix)
+        worker = prefix.trim();
+    },
+    line(text, bytes) {
+      if (!worker || bytes > 256) return;
+      const match = /^(#\d{1,8}) (.+)$/u.exec(text);
+      if (!match) return;
+      const [, id, body] = match;
+      if (id === worker && /^DONE (?:0|[1-9]\d{0,5})\.\d{1,6}s$/u.test(body)) {
+        stage = "supplier-image-worker-complete";
+        return;
+      }
+      const copy = /^\[stage-1 [1-9]\d?\/[1-9]\d?\] (.+)$/u.exec(body);
+      const selected = copies.find(([, command]) => command === copy?.[1]);
+      if (selected) {
+        vertex = id;
+        role = `copy-${selected[0]}`;
+        stage = `supplier-image-${role}`;
+      } else if (
+        id === vertex &&
+        /^DONE (?:0|[1-9]\d{0,5})\.\d{1,6}s$/u.test(body)
+      ) {
+        stage = `supplier-image-${role}-complete`;
+      } else {
+        const exportRole =
+          /^(exporting to docker image format|exporting layers|sending tarball|importing to docker)(?: (?:0|[1-9]\d{0,5})\.\d{1,6}s)?( done)?$/u.exec(
+            body,
+          );
+        if (!exportRole) return;
+        role = ["export", "layers", "tar", "load"][
+          [
+            "exporting to docker image format",
+            "exporting layers",
+            "sending tarball",
+            "importing to docker",
+          ].indexOf(exportRole[1])
+        ];
+        vertex = id;
+        stage = `supplier-image-${role}${exportRole[2] ? "-complete" : ""}`;
+      }
+    },
+    snapshot() {
+      return stage;
+    },
+  };
+};
 export const createBuildStderrObservation = () => {
   const prefix = Buffer.alloc(maximumHeaderBytes);
   const pending = Buffer.alloc(maximumHeaderBytes);
@@ -241,10 +312,12 @@ export const createBuildStderrObservation = () => {
   let family = "unknown";
   let mavenFailure;
   const execution = createSupplierExecutionObservation();
+  const buildPhase = createSupplierBuildPhaseObservation();
   const originalLines = new Set();
   const replayedLines = new Set();
   const line = () => {
     execution.observe(suffix, lineBytes);
+    buildPhase.line(suffix, lineBytes);
     if (!candidate) return false;
     const match =
       /^(?:(#\d{1,8} )?(\d{1,8}\.\d{1,6}) )?\[agentscope-material:v1 stage=([a-z-]+) family=([a-z-]+)(?: maven=([a-z0-9,]+))?\]$/u.exec(
@@ -280,6 +353,7 @@ export const createBuildStderrObservation = () => {
       return true;
     }
     stage = match[3];
+    buildPhase.marker(match[1], stage);
     family = match[4];
     mavenFailure = parseMavenFailureObservation(match[5]);
     if (match[1] !== undefined) originalLines.add(identity);
@@ -331,12 +405,6 @@ export const createBuildStderrObservation = () => {
     snapshot() {
       if (candidate) ambiguous = true;
       const executionSnapshot = execution.snapshot(suffix);
-      const observation = bootstrapObservation(
-        stage,
-        family,
-        mavenFailure,
-        ambiguous,
-      );
       return Object.freeze({
         stderrClass: classifyBuildxStderr(
           Buffer.concat([
@@ -344,7 +412,12 @@ export const createBuildStderrObservation = () => {
             pending.subarray(0, pendingBytes),
           ]).toString("utf8"),
         ),
-        ...observation,
+        ...bootstrapObservation(
+          buildPhase.snapshot() ?? stage,
+          buildPhase.snapshot() ? "none" : family,
+          mavenFailure,
+          ambiguous,
+        ),
         ...executionSnapshot,
       });
     },

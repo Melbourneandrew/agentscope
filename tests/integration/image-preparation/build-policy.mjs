@@ -125,6 +125,7 @@ export const buildArgumentsFor = ({
   const network = selectBuildNetwork(buildNetwork);
   const result = [
     "build",
+    "--progress=plain",
     "--builder",
     builder,
     "--file",
