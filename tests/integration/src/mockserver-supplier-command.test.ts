@@ -3,17 +3,12 @@ import {
   workerSource,
   privateWorker,
   runMockServerSupplierResearch,
+  classifyPackageFailure,
+  supplierMarker,
+  phases,
 } from "./__tests__/fixtures/mockserver-supplier-command.js";
 import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-const phases = Object.freeze([
-  "supplier-entry",
-  "supplier-extract",
-  "supplier-package",
-  "supplier-inventory",
-]);
-const supplierMarker = (stage: string, connected = false) =>
-  `[agentscope-material:v1 stage=${connected ? stage.replace("supplier-", "supplier-connected-") : stage} family=none]\n`;
 describe("actual package rejection has only bounded fixed observations", () => {
   it.each([
     ["compilation", "[ERROR] COMPILATION ERROR :"],
@@ -59,16 +54,17 @@ describe("actual package rejection has only bounded fixed observations", () => {
     const run = vi.fn((file: string) =>
       file.endsWith("/mvn") ? Promise.reject(primary) : Promise.resolve(),
     );
-    await expect(runMockServerSupplierResearch(run)).rejects.toBe(primary);
-    expect(state.markers.at(-1)).toBe(
-      supplierMarker(`supplier-package-${category}`),
-    );
-    await expect(privateWorker(run, "cache-seeding", false)).rejects.toBe(
-      primary,
-    );
-    expect(state.markers.at(-1)).toBe(
-      supplierMarker(`supplier-package-${category}`, true),
-    );
+    const detail = classifyPackageFailure(primary).join(",");
+    for (const connected of [false, true]) {
+      await expect(
+        connected
+          ? privateWorker(run, "cache-seeding", false)
+          : runMockServerSupplierResearch(run),
+      ).rejects.toBe(primary);
+      expect(state.markers.at(-1)).toBe(
+        supplierMarker(`supplier-package-${category}`, connected, detail),
+      );
+    }
     expect(reads).toBe(0);
     expect(state.markers.join("")).not.toContain("CANARY");
     expect(state.closed).toBe(state.opened);

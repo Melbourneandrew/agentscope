@@ -304,7 +304,8 @@ describe("existing builder diagnostic projection", () => {
     );
     const text = readFileSync(value.output, "utf8");
     expect(text).toBe(
-      "untrusted_builder_operation=image-build\nuntrusted_builder_outcome=failed-settled\n" +
+      "untrusted_maven_failure=unknown\n" +
+        "untrusted_builder_operation=image-build\nuntrusted_builder_outcome=failed-settled\n" +
         "untrusted_builder_observed=true\nuntrusted_builder_exited=true\nuntrusted_builder_signaled=false\n" +
         "untrusted_builder_timed_out=false\nuntrusted_builder_joined=true\nuntrusted_builder_stderr_class=build-failed\n" +
         "untrusted_bootstrap_stage=unknown\nuntrusted_bootstrap_failure_family=unknown\n",
@@ -313,7 +314,7 @@ describe("existing builder diagnostic projection", () => {
     publishBootstrapGpgObservation(undefined, value.env);
     expect(
       readFileSync(value.output, "utf8").split("\n").filter(Boolean),
-    ).toHaveLength(10);
+    ).toHaveLength(11);
     expect(readFileSync(value.output, "utf8")).not.toMatch(/=(?!unknown\n)/u);
   });
   it.each(["preflight", "builder-create", "builder-bootstrap", "image-build"])(

@@ -42,36 +42,119 @@ const options = {
   env: environment,
   maxBuffer: maximumOutputBytes,
 };
-const enter = (stage) => {
+const enter = (stage, failure = "") => {
   try {
-    writeSync(2, `[agentscope-material:v1 stage=${stage} family=none]\n`);
+    writeSync(
+      2,
+      `[agentscope-material:v1 stage=${stage} family=none${failure}]\n`,
+    );
   } catch {
     // Optional last-entered observation, never the operation's outcome.
   }
 };
-const enterSupplier = (observe, stage) => {
+const enterSupplier = (observe, stage, failure) => {
   // Connected CLI uses an earlier fixed sequence; standalone exports retain
   // their original stages. These observations never describe an outcome.
-  enter(observe ? stage : stage.replace("supplier-", "supplier-connected-"));
+  enter(
+    observe ? stage : stage.replace("supplier-", "supplier-connected-"),
+    failure,
+  );
+};
+// Authenticated POM coordinates only; zero means unobserved, never output text.
+const mavenGoals = [
+  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:compile",
+  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:testCompile",
+  "org.codehaus.mojo:templating-maven-plugin:3.1.0:filter-sources",
+  "org.apache.maven.plugins:maven-enforcer-plugin:3.6.3:enforce",
+  "org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check",
+  "org.codehaus.mojo:flatten-maven-plugin:1.8.0:flatten",
+  "io.github.git-commit-id:git-commit-id-maven-plugin:9.0.1:revision",
+  "com.github.eirslett:frontend-maven-plugin:2.0.0:install-node-and-npm",
+  "com.github.eirslett:frontend-maven-plugin:2.0.0:npm",
+  "org.apache.maven.plugins:maven-resources-plugin:3.5.0:copy-resources",
+  "org.codehaus.mojo:exec-maven-plugin:3.6.3:exec",
+  "org.apache.maven.plugins:maven-assembly-plugin:3.8.0:single",
+];
+const javacReasons = [
+  "cannot find symbol",
+  "incompatible types",
+  "method does not override or implement a method from a supertype",
+  "illegal start of expression",
+  "';' expected",
+  "reached end of file while parsing",
+];
+const packageOutput = (error) => {
+  if (types.isProxy(error) || !types.isNativeError(error)) return null;
+  const output = ["stdout", "stderr"].map(
+    (key) => Object.getOwnPropertyDescriptor(error, key)?.value,
+  );
+  if (output.some((value) => typeof value !== "string")) return null;
+  if (
+    output.some((value) => value.length > maximumOutputBytes) ||
+    output.reduce((sum, value) => sum + Buffer.byteLength(value), 0) >
+      maximumOutputBytes
+  )
+    return false;
+  return output.join("\n");
+};
+const packageFailureRecord = (error) => {
+  const record = ["absent", 0, 0, 0, 0, 0, 0, 0];
+  try {
+    if (types.isProxy(error) || !types.isNativeError(error)) return record;
+    const own = (key) => Object.getOwnPropertyDescriptor(error, key)?.value;
+    const code = own("code"),
+      signal = own("signal");
+    record[1] =
+      Number.isInteger(code) && code >= 0 && code <= 255 ? code + 1 : 0;
+    record[2] = ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].indexOf(signal) + 1;
+    const text = packageOutput(error);
+    if (text === null) return record;
+    if (text === false) {
+      record[0] = "overflow";
+      return record;
+    }
+    const [goal, secondGoal] = text.matchAll(
+      /^\[ERROR\] Failed to execute goal ([a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+:[0-9.]+:[a-zA-Z0-9-]+) /gmu,
+    );
+    if (secondGoal !== undefined) {
+      record[0] = "ambiguous";
+      return record;
+    }
+    if (goal !== undefined) {
+      record[3] = mavenGoals.indexOf(goal[1]) + 1;
+      record[0] = record[3] === 0 ? "unlisted" : "identified";
+    }
+    const [compiler, secondCompiler] = text.matchAll(
+      /^\[ERROR\] \/[^\r\n]*\/([A-Za-z]+\.java):\[([0-9]{1,6}),([0-9]{1,6})\] ([^\r\n]*)$/gmu,
+    );
+    if (secondCompiler !== undefined) {
+      record[0] = "ambiguous";
+      record.fill(0, 4);
+      return record;
+    }
+    if (compiler !== undefined) {
+      const [, file, line, column, reason] = compiler;
+      const unit =
+        lifecycleSourcePins.findIndex((pin) => pin.path.endsWith(`/${file}`)) +
+        1;
+      const category =
+        javacReasons.findIndex(
+          (value) => reason === value || reason.startsWith(`${value}:`),
+        ) + 1;
+      if (unit && category && Number(line) > 0 && Number(column) > 0) {
+        record.splice(4, 4, unit, Number(line), Number(column), category);
+        record[0] = "identified";
+      }
+    }
+  } catch {
+    record[0] = "absent";
+  }
+  return record;
 };
 const packageFailureStage = (error) => {
   try {
-    if (types.isProxy(error) || !types.isNativeError(error))
-      return "supplier-package-other";
-    const output = ["stdout", "stderr"].map((key) => {
-      const descriptor = Object.getOwnPropertyDescriptor(error, key);
-      return descriptor && "value" in descriptor ? descriptor.value : undefined;
-    });
-    if (
-      output.some(
-        (value) =>
-          typeof value !== "string" || value.length > maximumOutputBytes,
-      ) ||
-      output.reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) >
-        maximumOutputBytes
-    )
-      return "supplier-package-other";
-    const text = output.join("\n");
+    const text = packageOutput(error);
+    if (typeof text !== "string") return "supplier-package-other";
     const classes = [
       ["compilation", /^\[ERROR\] COMPILATION ERROR :\s*$/mu],
       [
@@ -98,7 +181,11 @@ const runPackage = async (run, plan, observe) => {
       maxBuffer: maximumOutputBytes,
     });
   } catch (error) {
-    enterSupplier(observe, packageFailureStage(error));
+    enterSupplier(
+      observe,
+      packageFailureStage(error),
+      ` maven=${packageFailureRecord(error).join(",")}`,
+    );
     throw error;
   }
 };
@@ -116,6 +203,17 @@ const writeInventory = (inventory, observe) => {
     throw error;
   }
 };
+const fileIdentityFields = [
+  "dev",
+  "ino",
+  "mode",
+  "uid",
+  "gid",
+  "nlink",
+  "size",
+  "mtimeMs",
+  "ctimeMs",
+];
 const readFixed = (path, size, mode = 0o600, expected) => {
   const fd = openSync(
     path,
@@ -134,17 +232,7 @@ const readFixed = (path, size, mode = 0o600, expected) => {
       throw new Error("integration.mockserver-material.supplier-command");
     if (
       expected !== undefined &&
-      [
-        "dev",
-        "ino",
-        "mode",
-        "uid",
-        "gid",
-        "nlink",
-        "size",
-        "mtimeMs",
-        "ctimeMs",
-      ].some((field) => before[field] !== expected[field])
+      fileIdentityFields.some((field) => before[field] !== expected[field])
     )
       throw new Error("integration.mockserver-material.supplier-command");
     const bytes = Buffer.alloc(size);
@@ -158,17 +246,7 @@ const readFixed = (path, size, mode = 0o600, expected) => {
     const after = fstatSync(fd);
     if (
       readSync(fd, Buffer.alloc(1), 0, 1, position) !== 0 ||
-      [
-        "dev",
-        "ino",
-        "mode",
-        "uid",
-        "gid",
-        "nlink",
-        "size",
-        "mtimeMs",
-        "ctimeMs",
-      ].some((key) => before[key] !== after[key])
+      fileIdentityFields.some((key) => before[key] !== after[key])
     )
       throw new Error("integration.mockserver-material.supplier-command");
     return bytes;
@@ -332,14 +410,11 @@ const runSupplier = async (run, phase, observe = true) => {
     options,
   );
   patchSupplierSource(service);
-  writeFileSync("/supplier/settings.xml", supplierMavenSettings, {
-    flag: "wx",
-    mode: 0o600,
-  });
-  writeFileSync("/supplier/global-settings.xml", supplierGlobalMavenSettings, {
-    flag: "wx",
-    mode: 0o600,
-  });
+  for (const [name, content] of [
+    ["settings.xml", supplierMavenSettings],
+    ["global-settings.xml", supplierGlobalMavenSettings],
+  ])
+    writeFileSync(`/supplier/${name}`, content, { flag: "wx", mode: 0o600 });
   for (const name of ["user.npmrc", "global.npmrc"])
     writeFileSync(`/supplier/${name}`, "", { flag: "wx", mode: 0o600 });
   // Seed the exact upstream frontend-plugin layout without skipping its install,
@@ -384,12 +459,12 @@ const runSupplier = async (run, phase, observe = true) => {
   }
   enterSupplier(observe, "supplier-inventory");
   const inventory = inventoryMockServerSupplier("/supplier", (category) => {
-    if (category === "inventory-read")
-      enterSupplier(observe, "supplier-inventory-read");
-    else if (category === "inventory-guard")
-      enterSupplier(observe, "supplier-inventory-guard");
-    else if (category === "inventory-internal")
-      enterSupplier(observe, "supplier-inventory-internal");
+    if (
+      ["inventory-read", "inventory-guard", "inventory-internal"].includes(
+        category,
+      )
+    )
+      enterSupplier(observe, `supplier-${category}`);
   });
   writeInventory(inventory, observe);
 };

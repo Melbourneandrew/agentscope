@@ -401,6 +401,7 @@ jobs:
           OBSERVED_MATERIAL_PHASE: ${{ steps.research_packet.outputs.material_phase }}
           OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE: ${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}
           OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: ${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}
+          OBSERVED_UNTRUSTED_MAVEN_FAILURE: ${{ steps.research_packet.outputs.untrusted_maven_failure }}
           OBSERVED_UNTRUSTED_BUILDER_OPERATION: ${{ steps.research_packet.outputs.untrusted_builder_operation }}
           OBSERVED_UNTRUSTED_BUILDER_OUTCOME: ${{ steps.research_packet.outputs.untrusted_builder_outcome }}
           OBSERVED_UNTRUSTED_BUILDER_OBSERVED: ${{ steps.research_packet.outputs.untrusted_builder_observed }}
@@ -438,6 +439,13 @@ jobs:
           case "$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" in authenticate-inputs|keyrings|import-key|export-key|selected-key-file|import-selected|list-key|listing-policy|verify-signature|signature-policy|signature-recordset|signature-recordset-information|signature-recordset-rejection|signature-recordset-unknown|signature-count|signature-compliance|signature-signer|signature-algorithm|signature-hash|signature-class|signature-time|signature-key-time|checksum-policy|completed|supplier-connected-entry|supplier-connected-extract|supplier-connected-package|supplier-connected-package-compilation|supplier-connected-package-resolution|supplier-connected-package-frontend|supplier-connected-package-other|supplier-connected-service-finalization|supplier-connected-inventory|supplier-connected-inventory-read|supplier-connected-inventory-guard|supplier-connected-inventory-internal|supplier-connected-output-create|supplier-connected-output-write|supplier-entry|supplier-extract|supplier-package|supplier-package-compilation|supplier-package-resolution|supplier-package-frontend|supplier-package-other|supplier-service-finalization|supplier-inventory|supplier-inventory-read|supplier-inventory-guard|supplier-inventory-internal|supplier-output-create|supplier-output-write) untrusted_bootstrap_stage="$OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE" ;; esac
           case "$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" in none|input|filesystem|gpg-execution|listing-policy|signature-policy|checksum-policy) untrusted_bootstrap_failure_family="$OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY" ;; esac
           case "$untrusted_bootstrap_stage:$untrusted_bootstrap_failure_family" in supplier-*:none) ;; supplier-*:*) untrusted_bootstrap_stage=unknown; untrusted_bootstrap_failure_family=unknown ;; esac
+          untrusted_maven_failure=unknown
+          if [[ "$OBSERVED_UNTRUSTED_MAVEN_FAILURE" =~ ^(absent|overflow|ambiguous|unlisted|identified),(0|[1-9][0-9]{0,2}),[0-4],(0|[1-9]|1[0-2]),[0-6],(0|[1-9][0-9]{0,5}),(0|[1-9][0-9]{0,5}),[0-6]$ ]]; then
+            IFS=, read -r md me ms mg mu ml mc mr <<< "$OBSERVED_UNTRUSTED_MAVEN_FAILURE"
+            if (( me <= 256 )) && { [[ "$mu" == 0 && "$ml:$mc:$mr" == 0:0:0 ]] || (( mu > 0 && ml > 0 && mc > 0 && mr > 0 )); } && { [[ "$md" == identified ]] && (( mg > 0 || mu > 0 )) || [[ "$md" == ambiguous && "$mu" == 0 ]] || [[ "$md" != identified && "$md" != ambiguous && "$mg:$mu" == 0:0 ]]; }; then
+              case "$untrusted_bootstrap_stage:$untrusted_bootstrap_failure_family" in supplier-*-package-*:none|supplier-package-*:none) untrusted_maven_failure="$OBSERVED_UNTRUSTED_MAVEN_FAILURE" ;; esac
+            fi
+          fi
           case "$OBSERVED_MATERIAL_PHASE" in research-preflight|research-client|research-inventory|research-close|bootstrap-preflight|download-source|download-maven|download-node|download-jdk|verify-archives|pinned-metadata|download-maven-key|download-maven-signature|verify-maven|verify-node|verify-jdk|retire-maven|retire-node|retire-jdk|bootstrap-cleanup|supplier-context|supplier-build|supplier-inventory|supplier-cleanup) material_phase="$OBSERVED_MATERIAL_PHASE" ;; esac
           case "$OBSERVED_SUPERVISOR" in terminal|rejected) supervisor="$OBSERVED_SUPERVISOR" ;; esac
           if [[ "$OBSERVED_SUPERVISOR_CODE" =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( OBSERVED_SUPERVISOR_CODE <= 255 )); then supervisor_code="$OBSERVED_SUPERVISOR_CODE"; fi
@@ -455,6 +463,7 @@ jobs:
           if [[ "$supervisor" != unknown || "$failure" != unknown || "$material_phase" != unknown || "$untrusted_bootstrap_stage" != unknown || "$untrusted_builder_operation" != unknown || "$untrusted_builder_outcome" != unknown || "$untrusted_builder_observed" != unknown ]]; then
             observation="integration.mockserver-research.controller-observation supervisor=$supervisor code=$supervisor_code signal=$supervisor_signal contained=$contained residual=$residual termination=$termination within_deadline=$within_deadline failure=$failure stage=$stage kind=$kind cleanup=$cleanup trigger=$trigger reconciliation=$reconciliation material_phase=$material_phase untrusted_bootstrap_stage=$untrusted_bootstrap_stage untrusted_bootstrap_failure_family=$untrusted_bootstrap_failure_family"
             observation="$observation untrusted_builder_operation=$untrusted_builder_operation untrusted_builder_outcome=$untrusted_builder_outcome untrusted_builder_observed=$untrusted_builder_observed untrusted_builder_exited=$untrusted_builder_exited untrusted_builder_signaled=$untrusted_builder_signaled untrusted_builder_timed_out=$untrusted_builder_timed_out untrusted_builder_joined=$untrusted_builder_joined untrusted_builder_stderr_class=$untrusted_builder_stderr_class"
+            observation="$observation untrusted_maven_failure=$untrusted_maven_failure"
             ( printf '%s\n' "$observation" ) || :
             { printf '%s\n' "$observation" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"; } 2>/dev/null || :
           fi

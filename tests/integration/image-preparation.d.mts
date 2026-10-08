@@ -292,6 +292,7 @@ export declare const preparedDockerClientDiagnostic: (
         stderrClass: string;
         untrustedBootstrapStage?: string;
         untrustedBootstrapFailureFamily?: string;
+        untrustedMavenFailure?: import("./image-preparation/process-output.mjs").MavenFailureObservation;
       }>;
       responseBytes: number;
       responseTruncated: false;
