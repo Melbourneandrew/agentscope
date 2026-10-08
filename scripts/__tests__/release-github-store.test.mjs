@@ -2,6 +2,222 @@ import { test, expect } from "vitest";
 import { createGitHubReleaseStore } from "../release-lane/github-release-store.mjs";
 import { sha256 } from "../release-lane/validation.mjs";
 
+test.each(["supported", "old-version", "fallback-help"])(
+  "standard gh capability preflight %s",
+  async (kind) => {
+    const calls = [];
+    const store = createGitHubReleaseStore({
+      token: "synthetic-only",
+      deadline: performance.now() + 1000,
+      execFileImpl: (_file, args, options, callback) => {
+        calls.push(args);
+        expect(options.env.GH_TOKEN).toBeUndefined();
+        const output =
+          args[0] === "--version"
+            ? `gh version ${kind === "old-version" ? "2.69.0" : "2.83.2"} (synthetic)\n`
+            : kind === "fallback-help"
+              ? "Work seamlessly with GitHub releases."
+              : "Verify that a GitHub Release is accompanied by a valid cryptographically signed attestation.\n--format string";
+        callback(null, Buffer.from(output), Buffer.alloc(0));
+        return { kill() {} };
+      },
+      fetchImpl: () => {
+        throw new Error("must-not-contact-api");
+      },
+    });
+    if (kind === "supported")
+      expect(await store.verifyAttestationCapability()).toMatch(/^sha256:/u);
+    else await expect(store.verifyAttestationCapability()).rejects.toThrow();
+    expect(calls).toEqual(
+      kind === "old-version"
+        ? [["--version"]]
+        : [["--version"], ["release", "verify", "--help"]],
+    );
+  },
+);
+
+test.each([false, true])(
+  "one draft publish PATCH reconciles even with uncertain response %s",
+  async (uncertain) => {
+    const calls = [];
+    let reads = 0;
+    const store = createGitHubReleaseStore({
+      token: "synthetic-only",
+      deadline: performance.now() + 1000,
+      fetchImpl: async (url, options) => {
+        calls.push([url, options.method, options.body]);
+        if (options.method === "PATCH") {
+          if (uncertain) throw new Error("ambiguous");
+          return Response.json({ id: 7 });
+        }
+        return Response.json({
+          id: 7,
+          draft: reads++ === 0,
+          immutable: reads > 1,
+          prerelease: true,
+          tag_name: "v0.1.0",
+        });
+      },
+    });
+    const result = await store.publishDraft(7);
+    expect(result.release.immutable).toBe(true);
+    expect(result.uncertain).toBe(uncertain);
+    expect(calls.map((entry) => entry[1])).toEqual(["GET", "PATCH", "GET"]);
+    expect(calls[1][2]).toBe('{"draft":false}');
+  },
+);
+test("immutable or foreign release refuses before PATCH", async () => {
+  for (const change of [
+    { immutable: true },
+    { id: 8 },
+    { tag_name: "v0.2.0" },
+    { draft: false },
+  ]) {
+    const calls = [];
+    const store = createGitHubReleaseStore({
+      token: "synthetic-only",
+      deadline: performance.now() + 1000,
+      fetchImpl: async (_url, options) => {
+        calls.push(options.method);
+        return Response.json({
+          id: 7,
+          draft: true,
+          immutable: false,
+          prerelease: true,
+          tag_name: "v0.1.0",
+          ...change,
+        });
+      },
+    });
+    await expect(store.publishDraft(7)).rejects.toThrow();
+    expect(calls).toEqual(["GET"]);
+  }
+});
+
+function signedReleaseFixture() {
+  const tag = "b".repeat(40);
+  const asset = {
+    name: "candidate-manifest.json",
+    digest: `sha256:${"a".repeat(64)}`,
+  };
+  const statement = {
+    predicateType: "https://in-toto.io/attestation/release/v0.1",
+    predicate: {
+      ownerId: "25971425",
+      releaseId: "7",
+      repository: "Melbourneandrew/agentscope",
+      tag: "v0.1.0",
+      purl: "pkg:github/Melbourneandrew/agentscope@v0.1.0",
+    },
+    subject: [
+      {
+        uri: "pkg:github/Melbourneandrew/agentscope@v0.1.0",
+        digest: { sha1: tag },
+      },
+      { name: asset.name, digest: { sha256: asset.digest.slice(7) } },
+    ],
+  };
+  const output = () =>
+    Buffer.from(
+      JSON.stringify({
+        verificationResult: { syntheticTestVerifier: true },
+        attestation: {
+          bundle: {
+            dsseEnvelope: {
+              payloadType: "application/vnd.in-toto+json",
+              payload: Buffer.from(JSON.stringify(statement)).toString(
+                "base64",
+              ),
+            },
+          },
+        },
+      }),
+    );
+  return { tag, asset, statement, output };
+}
+test("standard gh verified output binds tag/release/all assets and isolated fixed invocation", async () => {
+  const f = signedReleaseFixture();
+  let home;
+  const store = createGitHubReleaseStore({
+    token: "synthetic-only",
+    deadline: performance.now() + 1000,
+    execFileImpl: (file, args, options, callback) => {
+      expect(file).toBe("gh");
+      expect(args).toEqual([
+        "release",
+        "verify",
+        "v0.1.0",
+        "--repo",
+        "Melbourneandrew/agentscope",
+        "--format",
+        "json",
+      ]);
+      expect(options.env.GH_TOKEN).toBe("synthetic-only");
+      expect(options.env.GH_HOST).toBe("github.com");
+      expect(options.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
+      home = options.env.HOME;
+      callback(null, f.output());
+    },
+  });
+  expect(await store.verifyImmutableAttestation(7, [f.asset], f.tag)).toBe(
+    sha256(f.output()),
+  );
+  expect(home).toContain("agentscope-release-attestation-");
+});
+test.each(["tag", "release", "asset", "duplicate"])(
+  "verified attestation %s mismatch cannot complete",
+  async (kind) => {
+    const f = signedReleaseFixture();
+    if (kind === "tag") f.statement.predicate.tag = "v0.2.0";
+    if (kind === "release") f.statement.predicate.releaseId = "8";
+    if (kind === "asset") f.statement.subject[1].digest.sha256 = "c".repeat(64);
+    if (kind === "duplicate") f.statement.subject.push(f.statement.subject[1]);
+    const store = createGitHubReleaseStore({
+      token: "synthetic-only",
+      deadline: performance.now() + 1000,
+      execFileImpl: (_file, _args, _options, callback) =>
+        callback(null, f.output()),
+    });
+    await expect(
+      store.verifyImmutableAttestation(7, [f.asset], f.tag),
+    ).rejects.toThrow();
+  },
+);
+test("attestation expected-array accessors and proxies refuse without execution", async () => {
+  let getters = 0;
+  let calls = 0;
+  const values = [];
+  Object.defineProperty(values, "0", {
+    get() {
+      getters++;
+      return {};
+    },
+  });
+  const store = createGitHubReleaseStore({
+    token: "synthetic-only",
+    deadline: performance.now() + 1000,
+    execFileImpl: () => {
+      calls++;
+    },
+  });
+  await expect(
+    store.verifyImmutableAttestation(7, values, "b".repeat(40)),
+  ).rejects.toThrow();
+  await expect(
+    store.verifyImmutableAttestation(
+      7,
+      new Proxy([], {
+        get() {
+          getters++;
+        },
+      }),
+      "b".repeat(40),
+    ),
+  ).rejects.toThrow();
+  expect(getters).toBe(0);
+  expect(calls).toBe(0);
+});
+
 test("never retries an ambiguous upload", async () => {
   const calls = [];
   const store = createGitHubReleaseStore({
