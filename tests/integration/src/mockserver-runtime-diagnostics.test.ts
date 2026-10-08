@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 
 type RuntimeFunctions = {
+  mockServerStartupObservation: (output: unknown) => string;
   mockServerNetworkObservation: (
     server: unknown,
     network: unknown,
@@ -21,7 +22,11 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
-const load = (records: unknown, sink: (value: string) => void) => {
+const load = (
+  records: unknown,
+  sink: (value: string) => void,
+  logs: unknown = { stdout: "", stderr: "" },
+) => {
   const source = runtimeSource();
   const start = source.indexOf("const mockServerNetworkObservation =");
   const end = source.indexOf(
@@ -32,13 +37,16 @@ const load = (records: unknown, sink: (value: string) => void) => {
   expect(end).toBeGreaterThan(start);
   const controls = new Map([["run", {}]]);
   const calls: string[][] = [];
+  const requests: { signal: unknown; options: unknown }[] = [];
   return {
     controls,
     calls,
+    requests,
     functions: runInNewContext(
-      `${source.slice(start, end)}; ({ mockServerNetworkObservation, startMockServer })`,
+      `${source.slice(start, end)}; ({ mockServerNetworkObservation, mockServerStartupObservation, startMockServer })`,
       {
         types,
+        Buffer,
         console: { error: sink },
         canonicalImagePlatform: "linux/amd64",
         ISOLATION_EXECUTOR_LIMITS: { containers: { mockServer: {} } },
@@ -47,8 +55,17 @@ const load = (records: unknown, sink: (value: string) => void) => {
         sidecarResourceArguments: () => [],
         tmpfsArguments: () => [],
         assertContainer: () => Promise.resolve("fixed-container"),
-        dockerWithSignal: (args: string[]) => {
+        dockerWithSignal: (
+          args: string[],
+          signal: unknown,
+          options: unknown,
+        ) => {
           calls.push(args);
+          requests.push({ signal, options });
+          if (args[0] === "logs")
+            return logs instanceof Error
+              ? Promise.reject(logs)
+              : Promise.resolve(logs);
           return Promise.resolve({ stdout: JSON.stringify(records) });
         },
         mockServerBuiltImages: new Map([["run", { imageId: "fixed-image" }]]),
@@ -91,6 +108,7 @@ describe("content-free MockServer network refusal observation", () => {
         "create",
         "start",
         "container",
+        "logs",
       ]);
       expect(output).toHaveLength(1);
       expect(output[0]).not.toContain("PRIVATE_CANARY");
@@ -107,8 +125,15 @@ describe("content-free MockServer network refusal observation", () => {
         exitCode: 1,
         networkCount: 1,
         ipPresent: false,
+        startupPhase: "unknown",
       });
       expect(value.controls.get("run")).toEqual({});
+      expect(value.calls.at(-1)).toEqual([
+        "logs",
+        "--tail",
+        "64",
+        "fixed-container",
+      ]);
     },
   );
   it("refuses accessor/proxy and out-of-range facts without invoking caller code", () => {
@@ -164,6 +189,102 @@ describe("content-free MockServer network refusal observation", () => {
     );
   });
 });
+describe("bounded authenticated MockServer refusal log read", () => {
+  const plan = {
+    runId: "run",
+    mockServerName: "fixed",
+    networkName: "network",
+  };
+  it.each([false, true])(
+    "bounds the authenticated log read without replacing refusal when read fails=%s",
+    async (fails) => {
+      const output: string[] = [];
+      const signal = {};
+      const value = load(
+        [
+          {
+            Image: "fixed-image",
+            NetworkSettings: { Networks: { network: { IPAddress: "" } } },
+          },
+        ],
+        (text) => output.push(text),
+        fails
+          ? Error("PRIVATE_CANARY")
+          : {
+              stderr:
+                "[agentscope-mockserver:v1 phase=entry]\nPRIVATE_CANARY\n",
+            },
+      );
+      await expect(
+        value.functions.startMockServer(plan, signal),
+      ).rejects.toThrow("integration.isolation.mockserver-network");
+      expect(value.calls.at(-1)).toEqual([
+        "logs",
+        "--tail",
+        "64",
+        "fixed-container",
+      ]);
+      expect(value.requests.at(-1)).toEqual({
+        signal,
+        options: { maxBuffer: 65536 },
+      });
+      expect(output[0]).not.toContain("PRIVATE_CANARY");
+      const projected = JSON.parse(
+        output[0]!.split("diagnostic:")[1]!,
+      ) as Record<string, unknown>;
+      expect(projected.startupPhase).toBe(fails ? "unknown" : "entry");
+      expect(value.controls.get("run")).toEqual({});
+    },
+  );
+});
+
+describe("untrusted ordered MockServer startup phases", () => {
+  const phases = ["entry", "directory", "private-key", "jwks", "java-entry"];
+  const line = (phase: string) => `[agentscope-mockserver:v1 phase=${phase}]\n`;
+  const observe = () =>
+    load([], () => {}).functions.mockServerStartupObservation;
+  it.each([0, 1, 2, 3, 4, 5])(
+    "projects only the entered prefix of %s phases",
+    (count) => {
+      expect(
+        observe()({ stderr: phases.slice(0, count).map(line).join("") }),
+      ).toBe(phases[count - 1] ?? "unknown");
+    },
+  );
+  it.each([
+    line("directory"),
+    line("entry") + line("entry"),
+    line("entry") + line("jwks"),
+    line("entry") + "[agentscope-mockserver:v2 phase=directory]\n",
+    line("entry") + "[agentscope-mockserver:v1 phase=PRIVATE_CANARY]\n",
+    phases.map(line).join("") + line("java-entry"),
+  ])("refuses malformed, reordered or duplicate phase text", (stderr) => {
+    expect(observe()({ stderr })).toBe("unknown");
+  });
+  it("never reads getters/proxies/coerces text and bounds aggregate UTF8 bytes", () => {
+    const trap = vi.fn(() => {
+      throw Error("PRIVATE_CANARY");
+    });
+    for (const output of [
+      new Proxy({}, { getOwnPropertyDescriptor: trap }),
+      {
+        get stdout() {
+          return trap();
+        },
+      },
+      { stderr: new String(line("entry")) },
+      { stderr: 1 },
+    ])
+      expect(observe()(output)).toBe("unknown");
+    expect(trap).not.toHaveBeenCalled();
+    expect(
+      observe()({ stdout: "é".repeat(32768), stderr: line("entry") }),
+    ).toBe("unknown");
+    expect(observe()({ stderr: line("entry") + "PRIVATE_CANARY\n" })).toBe(
+      "entry",
+    );
+  });
+});
 
 const imageRoles = [
   "copy-java",
@@ -178,10 +299,10 @@ const imageRoles = [
 const marker =
   "#7 1.0 [agentscope-material:v1 stage=supplier-connected-service-finalization family=none]\n";
 const copy = [
-  [
+  ...["bin", "lib", "conf", "legal", "release", "NOTICE"].map((name) => [
     "copy-java",
-    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java",
-  ],
+    `COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/${name} /opt/java/${name}`,
+  ]),
   [
     "copy-jar",
     "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
