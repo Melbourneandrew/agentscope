@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 describe("upstream control staging closure", () => {
-  it("excludes only the synthetic helper while retaining every canonical test include", () => {
+  it("retains inherited helper exclusions and the Mock helper while preserving canonical test includes", () => {
     const source = readFileSync(
       resolve(import.meta.dirname, "../../../vitest.config.ts"),
       "utf8",
@@ -28,6 +28,10 @@ describe("upstream control staging closure", () => {
     expect(definition.test.exclude).toEqual([
       "**/dist/**",
       "**/node_modules/**",
+      "src/__tests__/claude-plugin-context-fixture.ts",
+      "src/__tests__/product-harness-fixture.ts",
+      "src/__tests__/product-installation-fixture.ts",
+      "src/discovery/__tests__/discovery-fixture.ts",
       "src/__tests__/fixtures/mockserver-supplier-command.ts",
     ]);
     expect(definition.test.exclude).not.toContain(
