@@ -279,6 +279,77 @@ describe("Doctor CLI composition", () => {
   });
 });
 
+describe("Doctor absent-vendor hook inspection", () => {
+  it.each([
+    ["absent", 0, "unavailable", "warning"],
+    ["absent", 1, "unavailable", "error"],
+    ["installed", 0, "unavailable", "error"],
+    ["indeterminate", 0, "unavailable", "error"],
+    ["absent", 0, "conflict", "error"],
+    ["absent", 0, "invalid", "error"],
+    ["absent", 0, "recovery-required", "error"],
+    ["absent", 0, "unsupported", "error"],
+  ] as const)(
+    "keeps %s/%i/%s inspection truthful as %s",
+    async (state, configurationPresentCount, installation, severity) => {
+      const discovery = {
+        configurationLocationCount: 1,
+        configurationPresentCount,
+        harness: "claude-code",
+        harnessType: "@agentscope/harness-claude-code",
+        reason:
+          state === "absent"
+            ? "not-found"
+            : state === "installed"
+              ? "compatible"
+              : "probe-unavailable",
+        state,
+        version: state === "installed" ? "1.2.3" : null,
+      } as const;
+      const harnessServices: CliHarnessServices = {
+        ...emptyHarnessServices(),
+        listHarnesses: () => ({
+          status: "success",
+          value: { harnesses: [discovery] },
+        }),
+        statusHarness: () =>
+          installation === "unavailable"
+            ? {
+                status: "failure",
+                diagnostic: {
+                  category: "unavailable",
+                  code: "harness.unavailable",
+                },
+              }
+            : {
+                status: "success",
+                value: { discovery, installation },
+              },
+      };
+      const report = await inspect(await fixture({ harnessServices }));
+      const hook = report.findings.find(
+        ({ code }) => code === `doctor.hook.${installation}`,
+      );
+      expect(hook?.severity).toBe(severity);
+      expect(hook?.suggestedAction).toBe(
+        installation === "conflict" ? "migrate-harness" : "retry",
+      );
+      expect(hook?.evidence).toMatchObject({
+        subject: "claude-code",
+        state: installation,
+      });
+      if (state === "absent")
+        expect(report.findings).toContainEqual(
+          expect.objectContaining({
+            code: "doctor.harness.absent",
+            severity: "warning",
+            suggestedAction: "install-harness",
+          }),
+        );
+    },
+  );
+});
+
 // eslint-disable-next-line max-lines-per-function -- one group owns the complete closed destination inspection matrix.
 describe("Doctor destination composition", () => {
   it("runs a bounded declared reachability probe for one configured connection", async () => {

@@ -179,13 +179,16 @@ const harnessDiscoveryFinding = (
 const hookFinding = (
   harness: string,
   disposition: CliHarnessStatusValue["installation"] | "unavailable",
+  unavailableSeverity: "warning" | "error" = "error",
 ): CliDoctorFinding => {
   const valid = disposition === "unchanged";
   const severity = valid
     ? "info"
     : disposition === "ready"
       ? "warning"
-      : "error";
+      : disposition === "unavailable"
+        ? unavailableSeverity
+        : "error";
   const action =
     disposition === "ready"
       ? "install-harness"
@@ -255,7 +258,14 @@ const inspectHarnesses = async (
     findings.push(
       status.status === "success"
         ? hookFinding(harness.harness, status.value.installation)
-        : hookFinding(harness.harness, "unavailable"),
+        : hookFinding(
+            harness.harness,
+            "unavailable",
+            harness.state === "absent" &&
+              harness.configurationPresentCount === 0
+              ? "warning"
+              : "error",
+          ),
     );
   }
   return Object.freeze(findings);
