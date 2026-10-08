@@ -2202,7 +2202,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
     throw new Error("integration.isolation.headless-authority");
   const outerMonotonicDeadline =
     linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
-  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline);
+  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline + 10_000);
   const immutableCandidate = await createImmutableCandidateHandoff(
     plan,
     signal,
