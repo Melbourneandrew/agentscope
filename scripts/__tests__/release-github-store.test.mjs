@@ -2,6 +2,124 @@ import { test, expect } from "vitest";
 import { createGitHubReleaseStore } from "../release-lane/github-release-store.mjs";
 import { sha256 } from "../release-lane/validation.mjs";
 
+function bootstrapTreeFixture(location = "bootstrap") {
+  const commit = "a".repeat(40);
+  const root = "b".repeat(40);
+  const records = "c".repeat(40);
+  const bootstrap = "d".repeat(40);
+  const entry = (path, sha) => ({ path, sha, type: "tree", mode: "040000" });
+  const tree = (sha, entries) => ({ sha, truncated: false, tree: entries });
+  const ref = {
+    ref: "refs/heads/main",
+    object: { type: "commit", sha: commit },
+  };
+  const values = {
+    "/git/ref/heads/main": ref,
+    [`/git/commits/${commit}`]: { sha: commit, tree: { sha: root } },
+    [`/git/trees/${root}`]: tree(
+      root,
+      location === "root" ? [] : [entry("release-records", records)],
+    ),
+    [`/git/trees/${records}`]: tree(
+      records,
+      location === "records" ? [] : [entry("bootstrap", bootstrap)],
+    ),
+    [`/git/trees/${bootstrap}`]: tree(bootstrap, []),
+  };
+  const calls = [];
+  let refReads = 0;
+  const state = { fail: false, changed: false };
+  const store = createGitHubReleaseStore({
+    token: "synthetic-only",
+    deadline: performance.now() + 1000,
+    fetchImpl: async (url, options) => {
+      expect(options.method).toBe("GET");
+      const path = url.slice(
+        "https://api.github.com/repos/Melbourneandrew/agentscope".length,
+      );
+      calls.push(path);
+      if (state.fail) return new Response("missing", { status: 404 });
+      if (path === "/git/ref/heads/main" && ++refReads > 1 && state.changed)
+        return Response.json({
+          ...ref,
+          object: { type: "commit", sha: "e".repeat(40) },
+        });
+      return Response.json(values[path]);
+    },
+  });
+  return { store, values, calls, state, commit, root, records, bootstrap };
+}
+
+test.each(["root", "records", "bootstrap"])(
+  "complete current-main %s absence closes only the bootstrap exclusion",
+  async (location) => {
+    const f = bootstrapTreeFixture(location);
+    await expect(
+      f.store.assertNoBootstrapTransaction(),
+    ).resolves.toBeUndefined();
+    expect(f.calls[0]).toBe("/git/ref/heads/main");
+    expect(f.calls.at(-1)).toBe("/git/ref/heads/main");
+    expect(f.calls.filter((path) => path.includes("/git/commits/"))).toEqual([
+      `/git/commits/${f.commit}`,
+    ]);
+    expect(
+      f.calls.some((path) => /recursive|contents|assets/u.test(path)),
+    ).toBe(false);
+  },
+);
+
+test.each([
+  "present",
+  "truncated",
+  "tree-sha",
+  "duplicate",
+  "null-entry",
+  "records-blob",
+  "bootstrap-symlink",
+  "commit-sha",
+  "child-sha",
+  "ref-type",
+  "ref-name",
+  "path",
+  "missing-response",
+  "main-changed",
+])(
+  "bootstrap %s cannot mint absence from current-main metadata",
+  async (kind) => {
+    const f = bootstrapTreeFixture();
+    const root = f.values[`/git/trees/${f.root}`];
+    const records = f.values[`/git/trees/${f.records}`];
+    if (kind === "present")
+      f.values[`/git/trees/${f.bootstrap}`].tree.push({
+        path: "intent.json",
+        type: "blob",
+        mode: "100644",
+        sha: "f".repeat(40),
+      });
+    if (kind === "truncated") root.truncated = true;
+    if (kind === "tree-sha") root.sha = "f".repeat(40);
+    if (kind === "duplicate") root.tree.push({ ...root.tree[0] });
+    if (kind === "null-entry") root.tree.push(null);
+    if (kind === "records-blob")
+      Object.assign(root.tree[0], { type: "blob", mode: "100644" });
+    if (kind === "bootstrap-symlink")
+      Object.assign(records.tree[0], { type: "blob", mode: "120000" });
+    if (kind === "commit-sha")
+      f.values[`/git/commits/${f.commit}`].sha = "f".repeat(40);
+    if (kind === "child-sha") root.tree[0].sha = "invalid";
+    if (kind === "ref-type")
+      f.values["/git/ref/heads/main"].object.type = "tag";
+    if (kind === "ref-name")
+      f.values["/git/ref/heads/main"].ref = "refs/heads/other";
+    if (kind === "path") root.tree[0].path = "release-records/../bootstrap";
+    f.state.fail = kind === "missing-response";
+    f.state.changed = kind === "main-changed";
+    await expect(f.store.assertNoBootstrapTransaction()).rejects.toThrow(
+      "release.store.unresolved",
+    );
+  },
+);
+
 test.each(["supported", "old-version", "fallback-help"])(
   "standard gh capability preflight %s",
   async (kind) => {
