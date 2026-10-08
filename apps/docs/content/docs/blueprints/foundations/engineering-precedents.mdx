@@ -1,0 +1,38 @@
+---
+title: Engineering Precedents
+description: Established upstream patterns and proportionate verification before bespoke infrastructure.
+---
+
+## Capability Summary
+
+Agentscope captures and delivers coding-agent traces. Its supporting infrastructure exists to make that product work, install, and ship reliably; it is not a separate platform-certification product. Engineering decisions start from comparable working implementations and add only the complexity earned by Agentscope's requirements and observed failures.
+
+## Architecture Decision Records
+
+### ADR-001: Start with working upstream precedents
+
+**Decision:** Ground implementation and verification principally in CodexBar, Crabbox, OpenClaw, and other established projects solving the relevant problem. Before introducing a subsystem, inspect the applicable upstream source or documented workflow, record its revision and the pattern being reused, and explain the material Agentscope-specific differences. Prefer an established dependency, official integration, or small adaptation over a bespoke replacement.
+
+These projects are reference implementations, not authorities over Agentscope's requirements. Use CodexBar for overlapping coding-agent discovery, credential handling, terminal interaction, and CLI distribution; Crabbox for development execution and disposable worker operations; and OpenClaw or another comparable npm CLI for package installation and publication. Select the closest relevant pattern rather than copying every feature or control from a larger project.
+
+**Context:** Familiar project names alone do not constrain design. The implementation and its operational cost must be examined. A precedent for one problem does not justify unrelated infrastructure, nor prove the absence of a requirement in another project.
+
+**Consequences:** Decision and review evidence identifies the upstream path/revision, what is reused, and what differs. A new bespoke authority, orchestration layer, manifest, ledger, or certification gate requires a concrete requirement or reproduced failure plus an explanation of why the simpler established approach is insufficient. Hypothetical hardening alone does not create a delivery dependency. Existing governing decisions must be reconciled through a standalone Blueprint change before a divergent implementation proceeds.
+
+### ADR-002: Verify the product and the actual release path
+
+**Decision:** Match verification to the behavior Agentscope actually promises: installed CLI usage, Codex and Claude trace capture, privacy and credential boundaries, destination delivery/retrieval, supported execution environments, and publishing the correct package. Release verification focuses on the tested artifact, package/version/channel identity, intended publisher permissions, registry integrity/provenance, and fresh installation. Do not make generic certification of GitHub's permission machinery a product acceptance prerequisite.
+
+Unit/component negatives and read-only inspection of the intended repository settings are the normal ways to verify release code and configuration. Creating, administering, and deleting a separate GitHub repository is not a routine release step or a mandatory release-control rehearsal. An exceptional live administrative experiment requires an evidenced unresolved defect, an explicit bounded decision and owner authorization; it cannot arise from a reviewer's hypothetical concern. Cleanup or retention of a historical experimental repository is an administrative obligation, not proof that the product is ready or a prerequisite to npm publication.
+
+**Context:** Conventional projects verify their own release tooling and produced artifacts. Testing every possible platform permission transition adds unrelated account scope and state without necessarily improving the shipped CLI.
+
+**Consequences:** This decision supersedes the mandatory disposable-canary mutation evidence in NPM Publishing ADR-003, but does not waive artifact integrity, intended publisher authentication, product acceptance, CI, or actual registry/install verification. Other release decisions remain binding until separately reconciled. Delivery owners must remove superseded canary dependencies from their task records; they must not label the unfinished experiment as passed.
+
+## Examined precedents
+
+- [CodexBar release process, revision 844b0e19](https://github.com/steipete/CodexBar/blob/844b0e19bbbbc5d8739b7344b22abec667cfbbc9/docs/RELEASING.md): packaging, platform signing, release assets, installation/update checks. Its macOS signing and Sparkle requirements are not npm requirements.
+- [Crabbox GoReleaser configuration, revision 1330d44c](https://github.com/openclaw/crabbox/blob/1330d44c74a26c0f5a843373beba8ae5cf93bff9/.goreleaser.yaml): an established build tool declares targets, archives and checksums; this configuration disables publication and is not evidence of the whole publication path.
+- [OpenClaw npm release workflow, revision 954012f9](https://github.com/openclaw/openclaw/blob/954012f95a6a9c91837f32c2b0d92603f20925db/.github/workflows/openclaw-npm-release.yml): separates validation-only preflight from gated publication and can consume a prepared tarball. Its multi-channel, multi-package controls are not automatically required for Agentscope's alpha.
+
+These are bounded observations of the named sources, not claims that the projects have no additional release infrastructure. Revisit the relevant upstream code when making a new decision; a stored reference does not replace that inspection.
