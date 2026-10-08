@@ -440,3 +440,116 @@ export function proposeStageRecord(input) {
     }),
   });
 }
+
+function validatePublicationTags(tags) {
+  if (
+    !tags ||
+    Object.keys(tags).length > 24 ||
+    Object.entries(tags).some(
+      ([key, version]) =>
+        !/^[a-z][a-z0-9-]{0,63}$/u.test(key) ||
+        typeof version !== "string" ||
+        version.length > 128 ||
+        !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/u.test(version),
+    ) ||
+    tags.bootstrap !== "0.0.0-bootstrap.0" ||
+    tags.latest !== "0.0.0-bootstrap.0"
+  )
+    fail();
+}
+
+// A validated owner document is an attestation, not npm-server proof. The
+// production composition separately authenticates its fixed API principal.
+export function validatePublicationObservation(
+  input,
+  headInput,
+  observedAt,
+  consume = true,
+) {
+  const value = snapshotRecorderInput(input);
+  const head = snapshotRecorderInput(headInput);
+  recorderExactKeys(value, [
+    "transactionId",
+    "draftReleaseDatabaseId",
+    "sourceRevision",
+    "candidateManifestDigest",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "stageId",
+    "package",
+    "version",
+    "distTag",
+    "tarballSha256",
+    "integrity",
+    "downloadedTarballSha256",
+    "pendingStagesState",
+    "distTags",
+    "issuedAt",
+    "expiresAt",
+    "controlsReport",
+  ]);
+  if (
+    !["stage-recorded", "publication-checkpoint"].includes(head.transition) ||
+    value.transactionId !== head.transactionId ||
+    value.draftReleaseDatabaseId !== head.draftReleaseDatabaseId ||
+    value.sourceRevision !== head.sourceRevision ||
+    value.candidateManifestDigest !== head.candidateManifestDigest ||
+    value.expectedSequence !== head.sequence ||
+    value.expectedPriorDigest !== head.digest ||
+    value.pendingStagesState !== "exact-stage-only" ||
+    value.package !== "agentscope-cli" ||
+    value.version !== "0.1.0" ||
+    value.distTag !== "alpha" ||
+    !identifier.test(value.stageId) ||
+    !digest.test(value.tarballSha256) ||
+    value.downloadedTarballSha256 !== value.tarballSha256 ||
+    !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(value.integrity)
+  )
+    fail();
+  const stage =
+    head.transition === "stage-recorded" ? head.payload : head.checkpoint;
+  for (const key of [
+    "stageId",
+    "package",
+    "version",
+    "distTag",
+    "tarballSha256",
+    "integrity",
+  ])
+    if (value[key] !== stage[key]) fail();
+  const tags = value.distTags;
+  validatePublicationTags(tags);
+  const issued = Date.parse(value.issuedAt);
+  const expires = Date.parse(value.expiresAt);
+  const observed = Date.parse(observedAt);
+  if (
+    [value.issuedAt, value.expiresAt, observedAt].some(
+      (time) =>
+        !Number.isFinite(Date.parse(time)) ||
+        new Date(Date.parse(time)).toISOString() !== time,
+    ) ||
+    expires <= issued ||
+    expires - issued > 900_000 ||
+    observed < issued ||
+    observed >= expires
+  )
+    fail();
+  const controls = projectOperatorControlsReport(
+    value.controlsReport,
+    value.expiresAt,
+    observedAt,
+  );
+  if (controls.controlsInspectedAt !== value.issuedAt) fail();
+  if (
+    consume &&
+    head.transition === "publication-checkpoint" &&
+    (value.expiresAt !== stage.expiresAt ||
+      canonicalJson(tags) !== canonicalJson(stage.distTags))
+  )
+    fail();
+  return snapshotRecorderInput({
+    ...value,
+    ...controls,
+    distTagsDigest: sha256(canonicalJson(tags)),
+  });
+}
