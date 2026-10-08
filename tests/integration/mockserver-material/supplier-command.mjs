@@ -30,7 +30,10 @@ import {
   patchMockServerLifecycleSource,
 } from "./lifecycle-patch.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
-import { inventoryMockServerSupplier } from "./supplier-inventory.mjs";
+import {
+  adoptMockServerSupplierCache as adoptCache,
+  inventoryMockServerSupplier,
+} from "./supplier-inventory.mjs";
 
 const maximumOutputBytes = 8 * 1024 * 1024;
 const execute = promisify(execFile);
@@ -260,47 +263,6 @@ const readFixed = (path, size, mode = 0o600, expected) => {
 };
 
 const cacheFields = ["dev", "ino", "mode", "uid", "gid"];
-const adoptCache = (path, expected) => {
-  const parent = lstatSync("/supplier");
-  const named = lstatSync(path);
-  const fd = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
-  try {
-    const held = fstatSync(fd);
-    const after = fstatSync(fd);
-    const current = lstatSync(path);
-    const currentParent = lstatSync("/supplier");
-    if (
-      !parent.isDirectory() ||
-      parent.isSymbolicLink() ||
-      parent.uid !== 0 ||
-      parent.gid !== 0 ||
-      ![0o700, 0o755].includes(parent.mode & 0o7777) ||
-      !named.isDirectory() ||
-      named.isSymbolicLink() ||
-      !held.isDirectory() ||
-      held.uid !== 0 ||
-      held.gid !== 0 ||
-      held.dev !== parent.dev ||
-      (held.mode & 0o7777) !== 0o700 ||
-      cacheFields.some(
-        (key) =>
-          named[key] !== held[key] ||
-          held[key] !== after[key] ||
-          held[key] !== current[key] ||
-          parent[key] !== currentParent[key] ||
-          (expected !== undefined && held[key] !== expected[key]),
-      )
-    )
-      throw new Error("integration.mockserver-material.supplier-command");
-    return held;
-  } finally {
-    closeSync(fd);
-  }
-};
-
 const patchSupplierSource = (service) => {
   const callback = mockServerSupplierLayout.callback;
   writeFileSync(
@@ -352,6 +314,13 @@ const finishServiceArtifact = (offline, caches) => {
   }
 };
 
+const adoptInitialCache = (name, index, observe) => {
+  const stage = `supplier-cache-${index === 0 ? "maven" : "npm"}`;
+  enterSupplier(observe, stage);
+  return adoptCache(`/supplier/${name}`, undefined, (reason) =>
+    enterSupplier(observe, `${stage}-${reason}`),
+  );
+};
 const runSupplier = async (run, phase, observe = true) => {
   const service = phase === "cache-seeding" || phase === "service-offline";
   const offline = phase === "offline-build" || phase === "service-offline";
@@ -359,10 +328,10 @@ const runSupplier = async (run, phase, observe = true) => {
     service ? (offline ? "offline-build" : "dependency-research") : phase,
   );
   const caches = ["maven-repository", "npm-cache"];
-  const adopted = offline
-    ? caches.map((name) => adoptCache(`/supplier/${name}`))
-    : [];
   enterSupplier(observe, "supplier-entry");
+  const adopted = offline
+    ? caches.map((name, index) => adoptInitialCache(name, index, observe))
+    : [];
   // Only exact previously authenticated archives are admitted. Host staging also
   // authenticates them; this rejects mutation at the actual extraction boundary.
   verifyMockServerSourceArchive(

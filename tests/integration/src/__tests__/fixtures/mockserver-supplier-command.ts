@@ -1,5 +1,6 @@
 import type * as FileSystem from "node:fs";
 import type * as LifecyclePatch from "../../../mockserver-material/lifecycle-patch.mjs";
+import type * as SupplierInventory from "../../../mockserver-material/supplier-inventory.mjs";
 import * as fs from "node:fs";
 import { types } from "node:util";
 import { runInNewContext } from "node:vm";
@@ -21,6 +22,7 @@ const state = vi.hoisted(() => ({
   opened: 0,
   closed: 0,
   timestamp: 0,
+  cacheReads: [] as string[],
 }));
 export { state };
 export const phases = Object.freeze([
@@ -58,7 +60,11 @@ function statusFor(path: string, held = false) {
         : artifact && state.artifactIssue === "oversized"
           ? 256 * 1024 * 1024 + 1
           : expectedSize(),
-    uid: issueMatches(cache, artifact, "owner") ? 1 : 0,
+    uid:
+      issueMatches(cache, artifact, "owner") ||
+      (path === "/supplier" && state.cacheIssue === "parent")
+        ? 1
+        : 0,
     gid: cache && state.cacheIssue === "group" ? 1 : 0,
     mode: directory
       ? cache && state.cacheIssue === "mode"
@@ -92,13 +98,23 @@ function expectedSize() {
 vi.mock("node:fs", async (original) => ({
   ...(await original<typeof FileSystem>()),
   openSync: (path: string) => {
+    state.cacheReads.push(`open:${path}`);
+    if (state.cacheIssue === "io" && path.endsWith("maven-repository"))
+      throw state.primary ?? Error("IO_CANARY");
     state.path = path;
     state.opened++;
     return 1;
   },
-  closeSync: () => state.closed++,
-  fstatSync: () => statusFor(state.path, true),
+  closeSync: () => {
+    state.cacheReads.push("close");
+    return state.closed++;
+  },
+  fstatSync: () => {
+    state.cacheReads.push("held");
+    return statusFor(state.path, true);
+  },
   lstatSync: (path: string) => {
+    state.cacheReads.push(`named:${path}`);
     if (state.cacheIssue === "missing" && path.endsWith("npm-cache"))
       throw Error("synthetic-missing-cache");
     return statusFor(path);
@@ -164,19 +180,23 @@ vi.mock(
       `synthetic-lifecycle-${name}`,
   }),
 );
-vi.mock("../../../mockserver-material/supplier-inventory.mjs", () => ({
-  inventoryMockServerSupplier: (
-    _root: string,
-    observe?: (category: string) => void,
-  ) => {
-    if (state.failureCategory.startsWith("inventory-")) {
-      observe?.(state.failureCategory);
-      throw state.primary ?? Error("synthetic-inventory");
-    }
-    if (state.inventoryFailure) throw state.primary ?? new Error("inventory");
-    return Buffer.from("synthetic-inventory");
-  },
-}));
+vi.mock(
+  "../../../mockserver-material/supplier-inventory.mjs",
+  async (original) => ({
+    ...(await original<typeof SupplierInventory>()),
+    inventoryMockServerSupplier: (
+      _root: string,
+      observe?: (category: string) => void,
+    ) => {
+      if (state.failureCategory.startsWith("inventory-")) {
+        observe?.(state.failureCategory);
+        throw state.primary ?? Error("synthetic-inventory");
+      }
+      if (state.inventoryFailure) throw state.primary ?? new Error("inventory");
+      return Buffer.from("synthetic-inventory");
+    },
+  }),
+);
 import { runMockServerSupplierResearch as runSupplierResearch } from "../../../mockserver-material/supplier-command.mjs";
 import { verifyMockServerSourceArchive } from "../../../mockserver-material/source-archive.mjs";
 import { verifyMavenArchiveBytes } from "../../../mockserver-material/build-tool-archive.mjs";
@@ -188,7 +208,10 @@ import {
   supplierSourceUnit,
   patchMockServerLifecycleSource,
 } from "../../../mockserver-material/lifecycle-patch.mjs";
-import { inventoryMockServerSupplier } from "../../../mockserver-material/supplier-inventory.mjs";
+import {
+  adoptMockServerSupplierCache as adoptCache,
+  inventoryMockServerSupplier,
+} from "../../../mockserver-material/supplier-inventory.mjs";
 import {
   mockServerSupplierBuildPlan,
   mockServerSupplierLayout,
@@ -227,6 +250,7 @@ export const privateWorker = runInNewContext(
     lifecycleSourcePins,
     patchMockServerLifecycleSource,
     inventoryMockServerSupplier,
+    adoptCache,
     mockServerSupplierBuildPlan,
     mockServerSupplierLayout,
     supplierGlobalMavenSettings,
@@ -255,6 +279,7 @@ beforeEach(() => {
   state.artifactIssue = "";
   state.opened = state.closed = 0;
   state.timestamp = 0;
+  state.cacheReads = [];
 });
 
 export const runMockServerSupplierResearch: typeof runSupplierResearch = (
