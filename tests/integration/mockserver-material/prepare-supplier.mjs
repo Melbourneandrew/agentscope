@@ -13,6 +13,7 @@ import {
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { types } from "node:util";
 import {
   exactDirectory,
   readMaterialSource,
@@ -186,12 +187,29 @@ const preserveSupplierBuildFailure = (error, dockerClient) => {
   throw error;
 };
 
-const observeSupplierFailure = (phase, dockerClient) => {
+const supplierPrimaryFailure = (error, signal, workSignal) => {
+  let kind = "unknown";
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+    const code = Object.getOwnPropertyDescriptor(error, "code")?.value;
+    if (code === "ETIMEDOUT" || message === "integration.images.timeout")
+      kind = "timeout";
+    else if (message === "integration.images.interrupted") kind = "interrupted";
+    else if (message === "integration.images.command") kind = "command";
+  }
+  return {
+    kind,
+    callerAborted: signal.aborted,
+    preparationAborted: workSignal.aborted,
+  };
+};
+const observeSupplierFailure = (phase, dockerClient, failure) => {
   try {
     const bytes = Buffer.from(
       `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({
         phase,
         imagePreparation: preparedDockerClientDiagnostic(dockerClient) ?? null,
+        primaryFailure: supplierPrimaryFailure(...failure),
       })}\n`,
     );
     if (bytes.length > 4096) return;
@@ -309,7 +327,7 @@ const prepareSupplier = async (input, service) => {
           bootstrapVerification: bootstrap.verification,
         });
   } catch (error) {
-    observeSupplierFailure(phase, dockerClient);
+    observeSupplierFailure(phase, dockerClient, [error, signal, workSignal]);
     if (owned !== undefined) {
       try {
         cleanup(owned, deadline);
