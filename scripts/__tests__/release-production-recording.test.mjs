@@ -545,6 +545,73 @@ test("ready precedes one publish; immutable continuation never writes another as
   expect(f.publication.calls).toBe(1);
   expect(f.publication.attestations).toBe(2);
 });
+
+test("bootstrap refusal before draft creation cannot append candidate assets", async () => {
+  const f = candidateFixture();
+  const createDraft = vi.fn();
+  const appendAsset = vi.fn();
+  await expect(
+    prepareDraft(
+      {
+        releases: async () => [],
+        assertNoBootstrapTransaction: async () => {
+          throw new Error("release.store.unresolved");
+        },
+        createDraft,
+        appendAsset,
+      },
+      f,
+    ),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(createDraft).not.toHaveBeenCalled();
+  expect(appendAsset).not.toHaveBeenCalled();
+});
+
+test("bootstrap appearing after initial checkpoint inspection refuses before append", async () => {
+  const f = await publicationFixture();
+  const count = f.assets.length;
+  let checks = 0;
+  f.store.assertNoBootstrapTransaction = async () => {
+    if (++checks === 2) throw new Error("release.store.unresolved");
+  };
+  await expect(
+    recordPublicationCheckpoint(f.store, f.publicationInput, f.owner),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(checks).toBe(2);
+  expect(f.assets).toHaveLength(count);
+});
+
+test("bootstrap refusal at the actual pre-stage boundary invokes no npm child", async () => {
+  const f = await stageFixture();
+  const child = vi.fn();
+  f.store.assertNoBootstrapTransaction = async () => {
+    throw new Error("release.store.unresolved");
+  };
+  await expect(
+    stageRetainedCandidate(f.store, f.input, f.candidate, {
+      execFileImpl: child,
+    }),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(child).not.toHaveBeenCalled();
+});
+
+test("fresh bootstrap refusal after durable ready preserves intent without PATCH", async () => {
+  const f = await continuationFixture();
+  f.store.assertNoBootstrapTransaction = async () => {
+    const last = JSON.parse(f.assets.at(-1).bytes.toString("utf8"));
+    if (last.transition === "ready-to-publish")
+      throw new Error("release.store.unresolved");
+  };
+  await expect(
+    continuePublication(f.store, f.continuationInput, f.packet, f.controls),
+  ).rejects.toThrow("release.store.unresolved");
+  expect((await readLatestRecord(f.store, 7)).transition).toBe(
+    "ready-to-publish",
+  );
+  expect(f.publication.calls).toBe(0);
+  expect(f.publication.attestations).toBe(0);
+});
+
 test.each(["run", "tuple", "controls", "assets"])(
   "continuation %s mismatch refuses before publication",
   async (kind) => {
@@ -1032,7 +1099,13 @@ function fixture() {
     input,
     run,
     approval,
-    store: { run: async () => run, approvals: async () => [approval] },
+    store: {
+      run: async () => run,
+      approvals: async () => [approval],
+      // Synthetic store classification; actual tree acquisition is tested in
+      // release-github-store.test.mjs, not minted by this fixture.
+      assertNoBootstrapTransaction: async () => {},
+    },
   };
 }
 async function intentFixture(observationOverrides = {}) {
@@ -1093,6 +1166,7 @@ function chainStore(f, write) {
   f.intent = prepareIntent(f.input, f.checkpoint);
   records.push(first);
   return {
+    assertNoBootstrapTransaction: async () => {},
     release: async () => ({
       draft: true,
       prerelease: true,
@@ -1737,6 +1811,7 @@ test("draft producer retains exact candidate and writes first record last, not a
   const names = [];
   const result = await prepareDraft(
     {
+      assertNoBootstrapTransaction: async () => {},
       releases: async () => [],
       createDraft: async () => ({
         id: 7,
@@ -1766,6 +1841,7 @@ test.each(["existing-draft", "ambiguous-create", "ambiguous-upload"])(
     let creations = 0;
     const fixture = candidateFixture();
     const store = {
+      assertNoBootstrapTransaction: async () => {},
       releases: async () =>
         kind === "existing-draft" ? [{ draft: true }] : [],
       createDraft: async () => {

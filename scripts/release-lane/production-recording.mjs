@@ -426,6 +426,32 @@ export async function reconcileProbePacket(
   });
 }
 
+async function appendBootstrapGuardedAsset(store, releaseId, name, bytes) {
+  await store.assertNoBootstrapTransaction();
+  return store.appendAsset(releaseId, name, bytes);
+}
+
+async function assertBootstrapBeforeExpiry(store, expires) {
+  if (Date.now() >= expires) fail();
+  await store.assertNoBootstrapTransaction();
+  if (Date.now() >= expires) fail();
+}
+
+async function uploadDraftAssets(store, releaseId, assets) {
+  const uploaded = [];
+  for (const asset of assets) {
+    uploaded.push(
+      await appendBootstrapGuardedAsset(
+        store,
+        releaseId,
+        asset.name,
+        asset.bytes,
+      ),
+    );
+  }
+  return uploaded;
+}
+
 // Candidate validation remains the existing authority; this producer neither
 // certifies support evidence nor rebuilds the packed candidate.
 export async function prepareDraft(store, input) {
@@ -503,6 +529,7 @@ export async function prepareDraft(store, input) {
     )
   )
     fail();
+  await store.assertNoBootstrapTransaction();
   const release = await store.createDraft(
     expectedSourceRevision,
     transactionId,
@@ -515,15 +542,12 @@ export async function prepareDraft(store, input) {
     release.tag_name !== expectedProtectedTag
   )
     fail();
-  const uploaded = [];
-  for (const asset of [
+  const uploaded = await uploadDraftAssets(store, release.id, [
     { name: manifest.tarball.fileName, bytes: tarball },
     { name: "candidate-manifest.json", bytes: encode(manifest) },
     { name: "certification-record.json", bytes: encode(certificationRecord) },
     ...owned,
-  ]) {
-    uploaded.push(await store.appendAsset(release.id, asset.name, asset.bytes));
-  }
+  ]);
   const unsigned = {
     schemaVersion: 1,
     sequence: 1,
@@ -539,7 +563,8 @@ export async function prepareDraft(store, input) {
     assets: uploaded,
   };
   const record = { ...unsigned, digest: sha256(canonicalJson(unsigned)) };
-  await store.appendAsset(
+  await appendBootstrapGuardedAsset(
+    store,
     release.id,
     "release-record-000001.json",
     encode(record),
@@ -626,6 +651,7 @@ export async function authenticateOwnerCheckpoint(
   observedAt,
 ) {
   const { value, run, approval } = await authenticateRunApproval(store, input);
+  await store.assertNoBootstrapTransaction();
   const observation = snapshotRecorderInput(npmObservation);
   recorderExactKeys(observation, [
     "transactionId",
@@ -783,6 +809,7 @@ export async function stageRetainedCandidate(
       value.deadline,
       performance.now() + Date.parse(checkpoint.expiresAt) - Date.now(),
     );
+    await store.assertNoBootstrapTransaction();
     return await produceNpmStage({
       tuple,
       tarballPath: path,
@@ -992,6 +1019,7 @@ export async function consumeIntent(store, intent, latestHead) {
     current.sequence !== latestHead.sequence
   )
     fail();
+  await store.assertNoBootstrapTransaction();
   const result = await store.appendAsset(
     record.draftReleaseDatabaseId,
     name,
@@ -1065,6 +1093,7 @@ export async function recordStage(store, input) {
     stageRunAttempt: intent.runAttempt,
   };
   const result = { ...durable, digest: sha256(canonicalJson(durable)) };
+  await store.assertNoBootstrapTransaction();
   await store.appendAsset(
     value.releaseId,
     `release-record-${String(result.sequence).padStart(6, "0")}.json`,
@@ -1100,6 +1129,7 @@ async function appendPublicationRecord(store, head, transition, fields) {
     ...fields,
   };
   const record = { ...unsigned, digest: sha256(canonicalJson(unsigned)) };
+  await store.assertNoBootstrapTransaction();
   await store.appendAsset(
     head.draftReleaseDatabaseId,
     `release-record-${String(record.sequence).padStart(6, "0")}.json`,
@@ -1112,6 +1142,7 @@ async function appendPublicationRecord(store, head, transition, fields) {
 }
 
 async function assertSelectedReleaseFence(store, releaseId) {
+  await store.assertNoBootstrapTransaction();
   const releases = await store.releases();
   if (
     !Array.isArray(releases) ||
@@ -1772,7 +1803,7 @@ export async function continuePublication(
     value.releaseId,
   );
   const currentRelease = await store.release(value.releaseId);
-  if (Date.now() >= expires) fail();
+  await assertBootstrapBeforeExpiry(store, expires);
   const outcome =
     currentRelease.immutable === true && currentRelease.draft === false
       ? { release: currentRelease, uncertain: false }

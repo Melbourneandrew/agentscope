@@ -93,6 +93,80 @@ async function assertMainAncestry(request, sourceRevision) {
     fail();
 }
 
+function mainCommit(ref) {
+  if (
+    ref?.ref !== "refs/heads/main" ||
+    ref.object?.type !== "commit" ||
+    !/^[a-f0-9]{40}$/u.test(ref.object.sha)
+  )
+    fail();
+  return ref.object.sha;
+}
+
+async function completeTree(request, sha) {
+  if (!/^[a-f0-9]{40}$/u.test(sha)) fail();
+  const value = await request("GET", `/git/trees/${sha}`);
+  if (
+    value?.sha !== sha ||
+    value.truncated !== false ||
+    !Array.isArray(value.tree) ||
+    value.tree.length > 10_000
+  )
+    fail();
+  const names = new Set();
+  for (const entry of value.tree) {
+    if (
+      typeof entry?.path !== "string" ||
+      entry.path.length < 1 ||
+      entry.path.length > 255 ||
+      /[\\/]/u.test(entry.path) ||
+      [...entry.path].some((character) => {
+        const code = character.codePointAt(0);
+        return code < 32 || code === 127;
+      }) ||
+      [".", ".."].includes(entry.path) ||
+      names.has(entry.path) ||
+      !/^[a-f0-9]{40}$/u.test(entry.sha) ||
+      ![
+        "tree:040000",
+        "blob:100644",
+        "blob:100755",
+        "blob:120000",
+        "commit:160000",
+      ].includes(`${entry.type}:${entry.mode}`)
+    )
+      fail();
+    names.add(entry.path);
+  }
+  return value.tree;
+}
+
+async function assertNoBootstrapTransaction(request) {
+  // Current protected-main contents, never a caller's absent/terminal label or
+  // the older candidate checkout. No bootstrap terminal grammar exists yet;
+  // every present record remains unaccounted and refuses ordinary authority.
+  const sourceRevision = mainCommit(
+    await request("GET", "/git/ref/heads/main"),
+  );
+  const commit = await request("GET", `/git/commits/${sourceRevision}`);
+  if (commit?.sha !== sourceRevision) fail();
+  let entries = await completeTree(request, commit.tree?.sha);
+  for (const path of ["release-records", "bootstrap"]) {
+    const entry = entries.find((value) => value.path === path);
+    if (entry === undefined) {
+      entries = [];
+      break;
+    }
+    if (entry.type !== "tree" || entry.mode !== "040000") fail();
+    entries = await completeTree(request, entry.sha);
+  }
+  if (
+    entries.length !== 0 ||
+    mainCommit(await request("GET", "/git/ref/heads/main")) !== sourceRevision
+  )
+    fail();
+}
+
 function createGhRunner(token, deadline, execFileImpl) {
   return async function runGh(args, authenticated = false) {
     const root = mkdtempSync(join(tmpdir(), "agentscope-release-attestation-"));
@@ -320,6 +394,7 @@ export function createGitHubReleaseStore({
       request("GET", `/actions/runs/${id(runId)}/approvals`),
     protectedMainSource: (sourceRevision) =>
       assertMainAncestry(request, sourceRevision),
+    assertNoBootstrapTransaction: () => assertNoBootstrapTransaction(request),
     async protectedSource(sourceRevision) {
       if (!/^[a-f0-9]{40}$/u.test(sourceRevision)) fail();
       const ref = await request("GET", "/git/ref/tags/v0.1.0");
