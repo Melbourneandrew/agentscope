@@ -371,6 +371,41 @@ test("verifies one exact certified agentscope-cli tarball without rebuilding", (
   });
 });
 
+test.each([
+  "dist/internal/local-sqlite/owned-loader.cjs",
+  "dist/internal/local-sqlite/support-manifest.json",
+  "dist/internal/local-sqlite/better-sqlite3.node",
+  "dist/internal/Local-SQLite/runtime.js",
+  "dist/internal/elsewhere/owned-loader.cjs",
+  "dist/internal/elsewhere/better-sqlite3.cjs",
+  "dist/internal/elsewhere/support-manifest.json",
+  "dist/internal/elsewhere/binary.NODE",
+  "dist/internal/directory-runtime/native/napi8-darwin-arm64/directory.NODE",
+])("rejects self-consistently certified alpha Local inventory: %s", (path) => {
+  const fixture = createCandidateFixture({
+    extraEntries: [{ path: `package/${path}`, content: "synthetic payload" }],
+  });
+  assert.throws(
+    verify(fixture),
+    /must not ship the proposed Local native tuple/u,
+  );
+});
+
+test("directory inventory classification remains permitted, not byte certification", () => {
+  const paths = [
+    "dist/internal/directory-runtime/native/napi8-darwin-arm64/directory.node",
+    "dist/internal/directory-runtime/native/napi8-linux-x64-glibc/directory.node",
+    "dist/internal/directory-runtime/records/support-manifest.json",
+  ];
+  const fixture = createCandidateFixture({
+    extraEntries: paths.map((path) => ({
+      path: `package/${path}`,
+      content: "synthetic classification only; packed verifier owns byte proof",
+    })),
+  });
+  assert.equal(verify(fixture)().inventoryEntries, 5);
+});
+
 test("inert probe reuses bounded inspection without product certification", () => {
   const manifest = {
     name: "agentscope-cli",
@@ -1996,7 +2031,7 @@ test("enforces the checked-in reusable workflow as read-only and offline", () =>
       scriptPaths: releaseEntryPoints,
     }),
     {
-      scripts: 10,
+      scripts: 11,
       workflow: ".github/workflows/release-candidate-rehearsal.yml",
     },
   );
@@ -2149,9 +2184,24 @@ test("requires the exact ordered workflow topology and environment bindings", ()
     );
   };
 
-  const omitted = parse(checkedInWorkflow);
-  omitted.jobs["validate-certified-candidate"].steps.pop();
-  verify(omitted);
+  for (const command of [
+    "pnpm nx build agentscope-cli --skip-nx-cache",
+    "pnpm verify:cli-artifact",
+    'echo "Local SQLite not admitted"',
+    "pnpm verify:release-lane-substrate",
+  ]) {
+    const omitted = parse(checkedInWorkflow);
+    const job = omitted.jobs["validate-certified-candidate"];
+    job.steps = job.steps.filter((step) => step.run !== command);
+    verify(omitted);
+  }
+  const omittedCandidate = parse(checkedInWorkflow);
+  const candidateJob = omittedCandidate.jobs["validate-certified-candidate"];
+  candidateJob.steps = candidateJob.steps.filter(
+    (step) =>
+      !step.run?.startsWith("node scripts/verify-release-candidate.mjs"),
+  );
+  verify(omittedCandidate);
 
   const reordered = parse(checkedInWorkflow);
   const reorderedSteps = reordered.jobs["validate-certified-candidate"].steps;
