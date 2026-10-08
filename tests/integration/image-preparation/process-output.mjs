@@ -16,6 +16,12 @@ const supplierStages = [
   "supplier-connected-output-create",
   "supplier-connected-output-write",
   "supplier-entry",
+  ...["maven", "npm"].flatMap((cache) => [
+    `supplier-cache-${cache}`,
+    ...["parent", "type", "owner", "device", "mode", "identity", "io"].map(
+      (reason) => `supplier-cache-${cache}-${reason}`,
+    ),
+  ]),
   "supplier-extract",
   "supplier-package",
   "supplier-package-compilation",
@@ -31,7 +37,7 @@ const supplierStages = [
   "supplier-output-write",
 ];
 const supplierFailureStages = supplierStages.filter((stage) =>
-  /-(?:package-compilation|package-resolution|package-frontend|package-other|service-finalization|inventory-read|inventory-guard|inventory-internal|output-create|output-write)$/u.test(
+  /-(?:package-compilation|package-resolution|package-frontend|package-other|service-finalization|inventory-read|inventory-guard|inventory-internal|output-create|output-write|parent|type|owner|device|mode|identity|io)$/u.test(
     stage,
   ),
 );

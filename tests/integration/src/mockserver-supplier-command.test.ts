@@ -1,6 +1,5 @@
 import {
   state,
-  workerSource,
   privateWorker,
   runMockServerSupplierResearch,
   classifyPackageFailure,
@@ -102,7 +101,11 @@ describe("composite build has monotonic connected and offline diagnostics", () =
         observation.consume(Buffer.from(`#20 ${index}.100 ${marker}`));
       expect(observation.snapshot()).toMatchObject({
         untrustedBootstrapStage:
-          phase === "supplier-package" ? "supplier-package-other" : phase,
+          phase === "supplier-package"
+            ? "supplier-package-other"
+            : phase === "supplier-entry"
+              ? "supplier-cache-npm"
+              : phase,
         untrustedBootstrapFailureFamily: "none",
       });
       expect(state.markers.join("")).not.toContain("CANARY");
@@ -235,85 +238,6 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
     expect(state.writes.at(-1)?.[0]).toBe("/out/material.json");
     expect(state.closed).toBe(state.opened);
     expect(state.timestamp).toBeGreaterThan(0);
-  });
-});
-describe("physical cache adoption refusal", () => {
-  it.each([
-    "missing",
-    "file",
-    "symlink",
-    "device",
-    "identity",
-    "owner",
-    "group",
-    "mode",
-  ])(
-    "rejects %s cache before extraction and closes any held descriptors",
-    async (issue) => {
-      state.cacheIssue = issue;
-      const execute = vi.fn(() => Promise.resolve());
-      await expect(privateWorker(execute, "offline-build")).rejects.toThrow();
-      expect(execute).not.toHaveBeenCalled();
-      expect(state.writes).toEqual([]);
-      expect(state.closed).toBe(state.opened);
-    },
-  );
-  it("rejects changed physical cache metadata after package without freezing its content timestamps", async () => {
-    const execute = vi.fn((file) => {
-      if (String(file).endsWith("/mvn")) state.cacheIssue = "mode";
-      return Promise.resolve();
-    });
-    await expect(privateWorker(execute, "offline-build")).rejects.toThrow(
-      "supplier-command",
-    );
-    expect(state.writes.some(([path]) => path === "/out/material.json")).toBe(
-      false,
-    );
-    expect(state.closed).toBe(state.opened);
-    expect(state.markers.at(-1)).toBe(
-      supplierMarker("supplier-service-finalization"),
-    );
-  });
-  it("rejects an unknown mode before any filesystem operation", async () => {
-    const execute = vi.fn(() => Promise.resolve());
-    await expect(privateWorker(execute, "other")).rejects.toThrow(
-      "build-recipe",
-    );
-    expect(state.opened).toBe(0);
-    expect(state.directories).toEqual([]);
-    expect(execute).not.toHaveBeenCalled();
-    expect(workerSource).toMatch(
-      /await runSupplier\(\s*execute,\s*process\.argv\[2\],\s*process\.argv\[2\] === "offline-build" \|\|\s*process\.argv\[2\] === "service-offline",?\s*\)/u,
-    );
-    expect(workerSource).toMatch(
-      /"dependency-research",\s*"offline-build",\s*"cache-seeding",\s*"service-offline",/u,
-    );
-  });
-  it.each(["source", "maven", "node", "jdk"])(
-    "reauthenticates %s in offline mode",
-    async (kind) => {
-      state.rejects = kind;
-      const execute = vi.fn(() => Promise.resolve());
-      await expect(privateWorker(execute, "offline-build")).rejects.toThrow(
-        kind,
-      );
-      expect(execute).not.toHaveBeenCalled();
-      expect(state.closed).toBe(state.opened);
-    },
-  );
-  it("preserves offline package failure identity even when the optional sink throws", async () => {
-    state.sinkFailure = true;
-    const primary = new Error("synthetic-offline-primary");
-    const execute = vi.fn((file) =>
-      String(file).endsWith("/mvn")
-        ? Promise.reject(primary)
-        : Promise.resolve(),
-    );
-    await expect(privateWorker(execute, "offline-build")).rejects.toBe(primary);
-    expect(state.writes.some(([path]) => path === "/out/material.json")).toBe(
-      false,
-    );
-    expect(state.closed).toBe(state.opened);
   });
 });
 

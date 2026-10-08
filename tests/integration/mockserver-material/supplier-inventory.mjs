@@ -33,6 +33,93 @@ const fail = (observe) => {
 };
 const same = (before, after) =>
   fields.every((key) => before[key] === after[key]);
+const cacheFields = ["dev", "ino", "mode", "uid", "gid"];
+const cacheDenial = ([
+  parent,
+  named,
+  held,
+  after,
+  current,
+  currentParent,
+  expected,
+]) => {
+  if (
+    !parent.isDirectory() ||
+    parent.isSymbolicLink() ||
+    parent.uid !== 0 ||
+    parent.gid !== 0 ||
+    ![0o700, 0o755].includes(parent.mode & 0o7777)
+  )
+    return "parent";
+  if (!named.isDirectory() || named.isSymbolicLink() || !held.isDirectory())
+    return "type";
+  if (held.uid !== 0 || held.gid !== 0) return "owner";
+  if (held.dev !== parent.dev) return "device";
+  if ((held.mode & 0o7777) !== 0o700) return "mode";
+  if (
+    cacheFields.some(
+      (key) =>
+        named[key] !== held[key] ||
+        held[key] !== after[key] ||
+        held[key] !== current[key] ||
+        parent[key] !== currentParent[key] ||
+        (expected !== undefined && held[key] !== expected[key]),
+    )
+  )
+    return "identity";
+  return undefined;
+};
+/** Same fixed cache reader; optional observations never change its outcome. */
+const closeCache = (fd, failed) => {
+  try {
+    closeSync(fd);
+  } catch (error) {
+    failed();
+    throw error;
+  }
+};
+export const adoptMockServerSupplierCache = (path, expected, observe) => {
+  let denial = "io";
+  try {
+    const parent = lstatSync("/supplier");
+    const named = lstatSync(path);
+    const fd = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const held = fstatSync(fd);
+      const after = fstatSync(fd);
+      const current = lstatSync(path);
+      const currentParent = lstatSync("/supplier");
+      const reason = cacheDenial([
+        parent,
+        named,
+        held,
+        after,
+        current,
+        currentParent,
+        expected,
+      ]);
+      if (reason !== undefined) {
+        denial = reason;
+        throw new Error("integration.mockserver-material.supplier-command");
+      }
+      return held;
+    } finally {
+      closeCache(fd, () => {
+        denial = "io";
+      });
+    }
+  } catch (error) {
+    try {
+      observe?.(denial);
+    } catch {
+      /* Optional, never replaces the primary error. */
+    }
+    throw error;
+  }
+};
 const read = (observe, operation) => {
   try {
     return operation();
