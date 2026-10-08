@@ -56,6 +56,7 @@ import {
   revalidatePreparedImageAdmission,
   retirePreparedDockerNetwork,
   retirePreparedDockerControlVolume,
+  retirePreparedDockerImage,
 } from "./image-preparation.mjs";
 import {
   inspectPreparedHarnessMaterial,
@@ -1354,6 +1355,7 @@ const inspectDockerRuntimeIdentity = async (signal) => {
   };
 };
 const buildImage = async (plan, signal) => {
+  requireSettledMockServerClients();
   await preparedImageFor(plan.baseImage, signal);
   const { context, requiresHarnessBuildContextBound } = stageBuildContext(plan);
   return buildPreparedDockerImage(preparedDockerClient, {
@@ -1376,38 +1378,50 @@ const buildImage = async (plan, signal) => {
   });
 };
 const prepareMockServerImage = async (plan, signal) => {
+  requireSettledMockServerClients();
   await preparedImageFor(plan.mockServerImage, signal);
   const control = mockServerControls.get(plan.runId);
-  if (control === undefined) throw new Error("integration.isolation.context");
-  const built = await prepareMockServerService(
-    {
-      dockerClient: preparedDockerClient,
-      privateRoot: capability.binding.privateStorage.root,
-      runId: plan.runId,
-      deadline:
-        performance.now() +
-        remainingIntegrationOperationMilliseconds(
-          Math.min(
-            scenarioTimeoutMilliseconds,
-            IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+  if (control === undefined || mockServerBuiltImages.has(plan.runId))
+    throw new Error("integration.isolation.context");
+  try {
+    const client = createPreparedDockerClient(preparedImageEvidence, {
+      dockerEnvironment: capability.binding.dockerEnvironment,
+      dockerExecutable: capability.binding.dockerExecutable,
+    });
+    const owned = { client, imageId: undefined };
+    mockServerBuiltImages.set(plan.runId, owned);
+    const built = await prepareMockServerService(
+      {
+        dockerClient: client,
+        privateRoot: capability.binding.privateStorage.root,
+        runId: plan.runId,
+        deadline:
+          performance.now() +
+          remainingIntegrationOperationMilliseconds(
+            Math.min(
+              scenarioTimeoutMilliseconds,
+              IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+            ),
           ),
-        ),
-      signal,
-    },
-    {
-      ...control.material,
-      expectations: control.expectations,
-      tag: plan.mockServerImageTag,
-    },
-  );
-  mockServerBuiltImages.set(
-    plan.runId,
-    built.imageId.replace("sha256-", "sha256:"),
-  );
-  return built.imageId;
+        signal,
+      },
+      {
+        ...control.material,
+        expectations: control.expectations,
+        tag: plan.mockServerImageTag,
+      },
+    );
+    owned.imageId = built.imageId.replace("sha256-", "sha256:");
+    return built.imageId;
+  } catch (error) {
+    // A failed service prefix may have created an image without returning its
+    // exact identity. Preserve all owned clients; do not guess safe retirement.
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
 };
 const buildMockServerImage = async (plan, signal) => {
-  const imageId = mockServerBuiltImages.get(plan.runId);
+  const imageId = mockServerBuiltImages.get(plan.runId)?.imageId;
   if (imageId === undefined) throw new Error("integration.isolation.context");
   const { stdout } = await dockerWithSignal(
     ["image", "inspect", plan.mockServerImageTag],
@@ -1423,6 +1437,38 @@ const buildMockServerImage = async (plan, signal) => {
   )
     throw new Error("integration.isolation.image-digest");
   return imageId.replace("sha256:", "sha256-");
+};
+const requireSettledMockServerClients = () => {
+  if (
+    [...mockServerBuiltImages.values()].some(({ client }) =>
+      preparedDockerClientRequiresOuterHostRetirement(client),
+    )
+  )
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+  if (preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient))
+    throw new Error("integration.controller.unsettled-operation");
+};
+const retireMockServerImage = async (plan, signal, deadline) => {
+  requireSettledMockServerClients();
+  const owned = mockServerBuiltImages.get(plan.runId);
+  if (owned === undefined) return;
+  try {
+    const closeReserve = IMAGE_PREPARATION_LIMITS.maximumTeardownMilliseconds;
+    if (owned.imageId !== undefined)
+      await retirePreparedDockerImage(owned.client, {
+        deadline: deadline - closeReserve,
+        imageId: owned.imageId.replace("sha256:", "sha256-"),
+        signal,
+        tag: plan.mockServerImageTag,
+      });
+    if (performance.now() + closeReserve >= deadline)
+      throw new Error("integration.images.deadline");
+    closePreparedDockerClient(owned.client);
+    mockServerBuiltImages.delete(plan.runId);
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -1623,7 +1669,7 @@ const startMockServer = async (plan, signal) => {
         "MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK=true",
         "MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH=/control/private/requests.json",
       ].flatMap((value) => ["--env", value]),
-      mockServerBuiltImages.get(plan.runId),
+      mockServerBuiltImages.get(plan.runId)?.imageId,
     ],
     signal,
     { mutationCapable: true },
@@ -1645,7 +1691,7 @@ const startMockServer = async (plan, signal) => {
     Array.isArray(inspected) && inspected.length === 1
       ? inspected[0]
       : undefined;
-  if (server?.Image !== mockServerBuiltImages.get(plan.runId))
+  if (server?.Image !== mockServerBuiltImages.get(plan.runId)?.imageId)
     throw new Error("integration.isolation.mockserver-image");
   const network = server.NetworkSettings?.Networks?.[plan.networkName];
   if (
@@ -2479,8 +2525,11 @@ const countDockerResources = async (kind, plan, signal) => {
 const createDriver = (plan) => {
   const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;
   let removalSignal;
+  let removalDeadline;
   let runtimeIdentity;
   const boundedRemovalSignal = () => {
+    removalDeadline ??=
+      performance.now() + ISOLATION_EXECUTOR_LIMITS.cleanup.removalMilliseconds;
     removalSignal ??= AbortSignal.timeout(
       ISOLATION_EXECUTOR_LIMITS.cleanup.removalMilliseconds,
     );
@@ -2566,7 +2615,20 @@ const createDriver = (plan) => {
       }
     },
     removeImage: (tag) =>
-      ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
+      tag === plan.mockServerImageTag
+        ? retireMockServerImage(
+            plan,
+            boundedRemovalSignal(),
+            Math.min(
+              removalDeadline,
+              performance.now() +
+                remainingIntegrationOperationMilliseconds(30_000, true),
+            ),
+          )
+        : ignoreMissing(
+            ["image", "rm", "--force", tag],
+            boundedRemovalSignal(),
+          ),
     removeContext: async (runId) => {
       if (!/^[a-f\d]{16}$/u.test(runId))
         throw new Error("integration.isolation.context");
@@ -2775,6 +2837,12 @@ try {
   terminalEvidence = evidence;
 } catch (error) {
   if (
+    [...mockServerBuiltImages.values()].some(({ client }) =>
+      preparedDockerClientRequiresOuterHostRetirement(client),
+    )
+  )
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+  if (
     preparedDockerClient !== undefined &&
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
   ) {
@@ -2798,10 +2866,27 @@ try {
   process.removeListener("SIGTERM", abort);
   let cleanupError;
   try {
+    requireSettledMockServerClients();
+    if (mockServerBuiltImages.size > 0) {
+      const deadline =
+        performance.now() +
+        remainingIntegrationOperationMilliseconds(30_000, true);
+      const signal = AbortSignal.timeout(
+        Math.max(1, deadline - performance.now()),
+      );
+      for (const plan of plans)
+        await retireMockServerImage(plan, signal, deadline);
+    }
+  } catch (error) {
+    retirementRequired = true;
+    cleanupError = error;
+    primaryError ??= error;
+  }
+  try {
     for (const material of preparedHarnessMaterials.values())
       retirePreparedHarnessMaterial(material);
   } catch (error) {
-    cleanupError = error;
+    cleanupError ??= error;
     primaryError ??= error;
   }
   if (preparedDockerClient !== undefined && !retirementRequired) {

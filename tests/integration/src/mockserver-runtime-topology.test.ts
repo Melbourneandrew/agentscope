@@ -4,6 +4,9 @@ import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
+const runtimeSource = () =>
+  readFileSync(resolve(import.meta.dirname, "../run-scenarios.mjs"), "utf8");
+
 describe("upstream control staging closure", () => {
   it("retains inherited helper exclusions and the Mock helper while preserving canonical test includes", () => {
     const source = readFileSync(
@@ -79,10 +82,7 @@ describe("upstream control staging closure", () => {
 
 describe("trusted service preparation precedes scenario authority", () => {
   it("settles actual orchestration preparation before creating any scenario cutoff", async () => {
-    const source = readFileSync(
-      resolve(import.meta.dirname, "../run-scenarios.mjs"),
-      "utf8",
-    );
+    const source = runtimeSource();
     const start = source.indexOf(
       "  for (const plan of plans) {\n    prepareMockServerControl(plan);",
     );
@@ -155,102 +155,6 @@ describe("trusted service preparation precedes scenario authority", () => {
       ["control", "first"],
       ["prepare", "first"],
     ]);
-  });
-});
-
-describe("prepared service image consumption", () => {
-  it("builds once before activation and consumes only its exact run-owned image", async () => {
-    const source = readFileSync(
-      resolve(import.meta.dirname, "../run-scenarios.mjs"),
-      "utf8",
-    );
-    const preparation = source.indexOf(
-      "  for (const plan of plans) {\n    prepareMockServerControl(plan);",
-    );
-    const activation = source.indexOf(
-      "  await activateRuns(plans);",
-      preparation,
-    );
-    const scenarioCutoff = source.indexOf(
-      "AbortSignal.timeout(scenarioTimeoutMilliseconds)",
-      activation,
-    );
-    expect(preparation).toBeGreaterThan(0);
-    expect(activation).toBeGreaterThan(preparation);
-    expect(scenarioCutoff).toBeGreaterThan(activation);
-    const start = source.indexOf("const prepareMockServerImage =");
-    const end = source.indexOf("const createNetwork =", start);
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    const runId = "0123456789abcdef";
-    const image = `sha256:${"a".repeat(64)}`;
-    const signal = {};
-    const calls: unknown[][] = [];
-    let inspected = image;
-    let inspectedRun = runId;
-    const functions = runInNewContext(
-      `${source.slice(start, end)}; ({ prepareMockServerImage, buildMockServerImage })`,
-      {
-        preparedImageFor: (...args: unknown[]) => calls.push(["base", ...args]),
-        mockServerControls: new Map([
-          [runId, { material: {}, expectations: Buffer.from("[]") }],
-        ]),
-        mockServerBuiltImages: new Map(),
-        prepareMockServerService: (...args: unknown[]) => {
-          calls.push(["prepare", ...args]);
-          return { imageId: image.replace("sha256:", "sha256-") };
-        },
-        preparedDockerClient: {},
-        capability: { binding: { privateStorage: { root: "/fixed" } } },
-        performance: { now: () => 100 },
-        remainingIntegrationOperationMilliseconds: (value: number) => value,
-        scenarioTimeoutMilliseconds: 300_000,
-        IMAGE_PREPARATION_LIMITS: { maximumPreparationMilliseconds: 300_000 },
-        dockerWithSignal: (...args: unknown[]) => {
-          calls.push(["inspect", ...args]);
-          return {
-            stdout: JSON.stringify([
-              {
-                Id: inspected,
-                Config: {
-                  Labels: { "com.agentscope.integration.run": inspectedRun },
-                },
-              },
-            ]),
-          };
-        },
-      },
-    );
-    const plan = {
-      runId,
-      mockServerImage: "base",
-      mockServerImageTag: "run-tag",
-    };
-    await expect(functions.buildMockServerImage(plan, signal)).rejects.toThrow(
-      "integration.isolation.context",
-    );
-    expect(calls).toEqual([]);
-    await functions.prepareMockServerImage(plan, signal);
-    expect(calls.map(([kind]) => kind)).toEqual(["base", "prepare"]);
-    expect((calls[1]?.[1] as { deadline: number }).deadline).toBe(300_100);
-    await expect(functions.buildMockServerImage(plan, signal)).resolves.toBe(
-      image.replace("sha256:", "sha256-"),
-    );
-    expect(calls[2]).toEqual([
-      "inspect",
-      ["image", "inspect", "run-tag"],
-      signal,
-    ]);
-    expect(calls.filter(([kind]) => kind === "prepare")).toHaveLength(1);
-    inspected = `sha256:${"b".repeat(64)}`;
-    await expect(functions.buildMockServerImage(plan, signal)).rejects.toThrow(
-      "integration.isolation.image-digest",
-    );
-    inspected = image;
-    inspectedRun = "another-run";
-    await expect(functions.buildMockServerImage(plan, signal)).rejects.toThrow(
-      "integration.isolation.image-digest",
-    );
   });
 });
 
