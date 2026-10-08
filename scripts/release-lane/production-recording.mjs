@@ -3,6 +3,7 @@ import {
   recorderExactKeys,
   snapshotRecorderInput,
   validateStageTuple,
+  validateStageResult,
 } from "./stage-result.mjs";
 import {
   readFileSync,
@@ -13,10 +14,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { verifyCandidateArtifact } from "./candidate.mjs";
+import {
+  verifyCandidateArtifact,
+  verifyInertProbeTarball,
+  inspectCandidateTarball,
+} from "./candidate.mjs";
 import {
   proposeStageRecord,
   validateStageCheckpoint,
+  validateProbeMaterial,
+  validateProbeIntent,
+  validateProbeStagePacket,
+  validateProbeInvocationReservation,
 } from "./production-recorder.mjs";
 import { projectOperatorControlsReport } from "./admission.mjs";
 import { produceNpmStage } from "./npm-stage-producer.mjs";
@@ -26,6 +35,388 @@ const fail = () => {
   throw new Error("release.recording.unresolved");
 };
 const encode = (value) => Buffer.from(`${canonicalJson(value)}\n`);
+
+// Ordinary npm pack supplies this inert archive. Preparation output records
+// observed bytes; it is neither product certification nor stage authority.
+export function prepareProbeMaterial({
+  tarballPath,
+  runId,
+  runAttempt,
+  sourceRevision,
+  executingDigests,
+}) {
+  if (
+    !Number.isSafeInteger(runId) ||
+    runId < 1 ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1
+  )
+    fail();
+  const version = `0.0.0-oidc-probe.${runId}-${runAttempt}`;
+  const facts = inspectCandidateTarball(tarballPath);
+  const material = validateProbeMaterial({
+    schemaVersion: 1,
+    kind: "inert-probe-material",
+    preparationRunId: runId,
+    preparationRunAttempt: runAttempt,
+    sourceRevision,
+    ...executingDigests,
+    version,
+    tarballFilename: `agentscope-cli-${version}.tgz`,
+    tarballSha256: facts.sha256,
+    integrity: facts.integrity,
+    inventoryDigest: facts.inventoryDigest,
+  });
+  verifyInertProbeTarball({
+    tarballPath,
+    tuple: {
+      kind: "probe",
+      package: "agentscope-cli",
+      version,
+      distTag: "oidc-probe",
+      protectedTag: null,
+      tarballSha256: material.tarballSha256,
+      integrity: material.integrity,
+    },
+  });
+  return material;
+}
+
+async function authenticatePreparedProbe(
+  store,
+  material,
+  identity,
+  executingDigests,
+) {
+  const value = validateProbeMaterial(material);
+  const run = await store.run(value.preparationRunId);
+  if (
+    run.id !== value.preparationRunId ||
+    run.run_attempt !== value.preparationRunAttempt ||
+    run.head_sha !== value.sourceRevision ||
+    run.head_branch !== "main" ||
+    run.path !== ".github/workflows/release.yml" ||
+    run.event !== "workflow_dispatch" ||
+    run.status !== "completed" ||
+    run.conclusion !== "success" ||
+    run.actor?.id !== 25971425 ||
+    run.triggering_actor?.id !== 25971425 ||
+    run.actor?.login !== "Melbourneandrew" ||
+    run.triggering_actor?.login !== "Melbourneandrew" ||
+    value.workflowDigest !== executingDigests.workflowDigest ||
+    value.releaseScriptsDigest !== executingDigests.releaseScriptsDigest
+  )
+    fail();
+  await store.protectedMainSource(value.sourceRevision);
+  await store.protectedMainSource(identity.sourceRevision);
+  return value;
+}
+
+function matchReservedProbeRun(run, reservationInput, material) {
+  const reservation = validateProbeInvocationReservation(
+    reservationInput,
+    material,
+  );
+  if (
+    !Number.isSafeInteger(run.workflow_id) ||
+    !Number.isSafeInteger(run.run_number) ||
+    run.workflow_id !== reservation.workflowDatabaseId ||
+    run.run_number !== reservation.expectedRunNumber ||
+    run.run_attempt !== 1 ||
+    run.actor?.id !== reservation.ownerId ||
+    run.triggering_actor?.id !== reservation.ownerId ||
+    run.actor?.login !== reservation.ownerLogin ||
+    run.triggering_actor?.login !== reservation.ownerLogin
+  )
+    fail();
+  return reservation;
+}
+
+export async function prepareProbeIntent(
+  store,
+  input,
+  observationInput,
+  observedAt,
+) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "material",
+    "executingDigests",
+    "transactionId",
+    "invocationIntent",
+  ]);
+  const {
+    value: identity,
+    run,
+    approval,
+  } = await authenticateRunApproval(store, value.identity);
+  const material = await authenticatePreparedProbe(
+    store,
+    value.material,
+    identity,
+    value.executingDigests,
+  );
+  const invocationIntent = matchReservedProbeRun(
+    run,
+    value.invocationIntent,
+    material,
+  );
+  const observation = snapshotRecorderInput(observationInput);
+  recorderExactKeys(observation, [
+    "phase",
+    "sourceRevision",
+    "candidateManifestDigest",
+    "issuedAt",
+    "expiresAt",
+    "controlsReport",
+    "pendingStagesState",
+    "probeVersionState",
+  ]);
+  const consumedAt = observedAt ?? new Date().toISOString();
+  const controls = projectOperatorControlsReport(
+    observation.controlsReport,
+    observation.expiresAt,
+    consumedAt,
+  );
+  const checkpoint = {
+    ...observation,
+    ...controls,
+    consumedAt,
+    ownerIdentity: identity.owner,
+    state: "consumed-for-probe",
+    authenticationDigest: sha256(canonicalJson({ run, approval, observation })),
+  };
+  const tuple = validateStageTuple({
+    kind: "probe",
+    transactionId: value.transactionId,
+    candidateManifestDigest: sha256(canonicalJson(material)),
+    tarballSha256: material.tarballSha256,
+    integrity: material.integrity,
+    sourceRevision: identity.sourceRevision,
+    protectedTag: null,
+    package: "agentscope-cli",
+    version: material.version,
+    distTag: "oidc-probe",
+    workflowDigest: material.workflowDigest,
+    releaseScriptsDigest: material.releaseScriptsDigest,
+    ownerCheckpointDigest: sha256(canonicalJson(checkpoint)),
+  });
+  const unsigned = {
+    schemaVersion: 1,
+    kind: "probe-stage-intent",
+    runId: identity.runId,
+    runAttempt: identity.runAttempt,
+    sourceRevision: identity.sourceRevision,
+    material,
+    tuple,
+    ownerCheckpoint: checkpoint,
+    invocationIntent,
+  };
+  return validateProbeIntent(
+    { ...unsigned, digest: sha256(canonicalJson(unsigned)) },
+    consumedAt,
+    true,
+  );
+}
+
+async function authenticateProbeIntent(store, input, observedAt, forStage) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "intent",
+    "intentDigest",
+    "executingDigests",
+  ]);
+  const { value: identity, run } = await authenticateRunApproval(
+    store,
+    value.identity,
+  );
+  const intent = validateProbeIntent(value.intent, observedAt, forStage);
+  matchReservedProbeRun(run, intent.invocationIntent, intent.material);
+  if (
+    intent.digest !== value.intentDigest ||
+    intent.runId !== identity.runId ||
+    intent.runAttempt !== identity.runAttempt ||
+    intent.sourceRevision !== identity.sourceRevision
+  )
+    fail();
+  await authenticatePreparedProbe(
+    store,
+    intent.material,
+    identity,
+    value.executingDigests,
+  );
+  return intent;
+}
+
+export async function stageRetainedProbe(
+  store,
+  input,
+  tarballPath,
+  deadline,
+  execution = {},
+) {
+  const intent = await authenticateProbeIntent(
+    store,
+    input,
+    new Date().toISOString(),
+    true,
+  );
+  const facts = verifyInertProbeTarball({ tarballPath, tuple: intent.tuple });
+  const bytes = readFileSync(tarballPath);
+  if (
+    bytes.length !== facts.bytes ||
+    sha256(bytes) !== intent.tuple.tarballSha256
+  )
+    fail();
+  const root = mkdtempSync(join(tmpdir(), "agentscope-inert-probe-"));
+  const path = join(root, intent.material.tarballFilename);
+  let created = false;
+  try {
+    writeFileSync(path, bytes, { flag: "wx", mode: 0o600 });
+    created = true;
+    verifyInertProbeTarball({ tarballPath: path, tuple: intent.tuple });
+    validateProbeIntent(intent, new Date().toISOString(), true);
+    const boundedDeadline = Math.min(
+      deadline,
+      performance.now() +
+        Date.parse(intent.ownerCheckpoint.expiresAt) -
+        Date.now(),
+    );
+    return await produceNpmStage({
+      tuple: intent.tuple,
+      tarballPath: path,
+      deadline: boundedDeadline,
+      execFileImpl: execution.execFileImpl,
+    });
+  } finally {
+    if (created) unlinkSync(path);
+    rmdirSync(root);
+  }
+}
+
+export async function recordProbeStagePacket(
+  store,
+  input,
+  stageResult,
+  observedAt = new Date().toISOString(),
+) {
+  const intent = await authenticateProbeIntent(store, input, observedAt, false);
+  const result = validateStageResult(stageResult, intent.tuple);
+  const unsigned = {
+    schemaVersion: 1,
+    kind: "retained-probe-stage",
+    sourceRevision: intent.sourceRevision,
+    runId: intent.runId,
+    runAttempt: intent.runAttempt,
+    intent,
+    stageResult: snapshotRecorderInput(stageResult),
+    stageResultDigest: result.stageResultDigest,
+    state:
+      result.response === "received"
+        ? "pending-owner-reconciliation"
+        : "frozen-unresolved",
+  };
+  return snapshotRecorderInput({
+    ...unsigned,
+    digest: sha256(canonicalJson(unsigned)),
+  });
+}
+
+// The owner supplies observations of standard npm stage download/reject with
+// interactive 2FA. This projection attests the authenticated owner report; it
+// neither executes npm nor claims independent npm-server proof.
+export async function reconcileProbePacket(
+  store,
+  input,
+  ownerInput,
+  observedAt = new Date().toISOString(),
+) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, ["identity", "packet", "executingDigests"]);
+  const {
+    value: identity,
+    run,
+    approval,
+  } = await authenticateRunApproval(store, value.identity);
+  const packet = validateProbeStagePacket(value.packet, observedAt);
+  await store.protectedMainSource(identity.sourceRevision);
+  const intent = packet.intent;
+  const result = validateStageResult(packet.stageResult, intent.tuple);
+  // Later reviewed manifest commits differ from the actual dispatch source.
+  // Preserve that source and prove ancestry plus current code equality instead.
+  await store.protectedMainSource(intent.sourceRevision);
+  const original = await authenticateRunApproval(store, {
+    ...identity,
+    runId: intent.runId,
+    runAttempt: intent.runAttempt,
+    sourceRevision: intent.sourceRevision,
+  });
+  matchReservedProbeRun(original.run, intent.invocationIntent, intent.material);
+  if (
+    intent.tuple.workflowDigest !== value.executingDigests.workflowDigest ||
+    intent.tuple.releaseScriptsDigest !==
+      value.executingDigests.releaseScriptsDigest
+  )
+    fail();
+  const owner = snapshotRecorderInput(ownerInput);
+  recorderExactKeys(owner, [
+    "phase",
+    "packetDigest",
+    "issuedAt",
+    "expiresAt",
+    "controlsReport",
+    "stageId",
+    "downloadedTarballSha256",
+    "downloadedIntegrity",
+    "downloadedInventoryDigest",
+    "terminalNpmState",
+  ]);
+  if (
+    owner.phase !== "reconcile-probe" ||
+    owner.packetDigest !== packet.digest ||
+    owner.stageId !== result.stageId ||
+    owner.downloadedTarballSha256 !== intent.tuple.tarballSha256 ||
+    owner.downloadedIntegrity !== intent.tuple.integrity ||
+    owner.downloadedInventoryDigest !== intent.material.inventoryDigest ||
+    owner.terminalNpmState !== "rejected"
+  )
+    fail();
+  const controls = projectOperatorControlsReport(
+    owner.controlsReport,
+    owner.expiresAt,
+    observedAt,
+  );
+  if (controls.controlsInspectedAt !== owner.issuedAt) fail();
+  const unsigned = {
+    schemaVersion: 1,
+    kind: "terminal-inert-oidc-probe",
+    repository: "Melbourneandrew/agentscope",
+    workflowPath: ".github/workflows/release.yml",
+    environment: "npm-release",
+    trustedPublisherAction: "stage-publish",
+    sourceRevision: intent.sourceRevision,
+    runId: intent.runId,
+    runAttempt: intent.runAttempt,
+    workflowDigest: intent.tuple.workflowDigest,
+    releaseScriptsDigest: intent.tuple.releaseScriptsDigest,
+    material: intent.material,
+    stageId: result.stageId,
+    recorderOutputDigest: packet.digest,
+    invocationIntentDigest: intent.invocationIntent.digest,
+    ownerIdentity: identity.owner,
+    ownerObservation: owner,
+    ...controls,
+    authenticationDigest: sha256(canonicalJson({ run, approval, owner })),
+    terminalNpmState: "rejected",
+    disposition: "awaiting-reviewed-append-under-release-records/probes",
+  };
+  return snapshotRecorderInput({
+    ...unsigned,
+    digest: sha256(canonicalJson(unsigned)),
+  });
+}
 
 // Candidate validation remains the existing authority; this producer neither
 // certifies support evidence nor rebuilds the packed candidate.

@@ -31,7 +31,9 @@ const requireSeparatedProductJobs = (workflow) => {
   });
   expect(stage.environment).toBe("npm-release");
   expect(stage.needs).toEqual(["verify-candidate", "prepare-draft"]);
-  expect(stage.if).toBe("inputs.operation == 'consume-intent'");
+  expect(stage.if).toBe(
+    "inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe'",
+  );
   expect(
     stage.steps.filter(
       (step) => step.run === "npm install -g npm@11.17.0 --ignore-scripts",
@@ -52,7 +54,7 @@ const requireSeparatedProductJobs = (workflow) => {
   expect(recorder.permissions).toEqual({ contents: "write", actions: "read" });
   expect(recorder.needs).toEqual(["prepare-draft", "stage-candidate"]);
   expect(recorder.if).toBe(
-    "always() && inputs.operation == 'consume-intent' && needs.prepare-draft.result == 'success'",
+    "always() && (inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe') && needs.prepare-draft.result == 'success'",
   );
   const step = recorder.steps.find(
     (item) =>
@@ -82,8 +84,9 @@ test("fixed stage output reaches a separate no-OIDC recorder without dispatch au
       w.jobs["record-stage"].if = "success()";
     },
     (w) => {
-      w.jobs["record-stage"].steps.at(-1).env.RELEASE_STAGE_RESULT =
-        "${{ inputs.stage-tuple }}";
+      w.jobs["record-stage"].steps.find(
+        (s) => s.run === "node scripts/record-release-stage.mjs --record-stage",
+      ).env.RELEASE_STAGE_RESULT = "${{ inputs.stage-tuple }}";
     },
     (w) => {
       w.jobs["stage-candidate"].steps.find(
@@ -94,6 +97,91 @@ test("fixed stage output reaches a separate no-OIDC recorder without dispatch au
     const workflow = parse(source);
     mutate(workflow);
     expect(() => requireSeparatedProductJobs(workflow)).toThrow();
+  }
+});
+const requireProbeGraph = (workflow) => {
+  expect(Object.keys(workflow.jobs)).toEqual([
+    "verify-candidate",
+    "prepare-draft",
+    "stage-candidate",
+    "record-stage",
+  ]);
+  expect(workflow.on.workflow_dispatch.inputs.operation.options).toEqual([
+    "prepare-draft",
+    "consume-intent",
+    "prepare-probe",
+    "consume-probe",
+    "reconcile-probe",
+  ]);
+  expect(workflow.jobs["verify-candidate"].if).toContain("refs/heads/main");
+  const verify = workflow.jobs["verify-candidate"].steps;
+  const pack = verify.filter((step) => step.run?.startsWith("npm pack "));
+  expect(pack).toHaveLength(1);
+  expect(pack[0]).toEqual({
+    if: "inputs.operation == 'prepare-probe'",
+    run: "npm pack ./artifacts/release-probe-source --ignore-scripts --json --pack-destination ./artifacts/release-probe",
+  });
+  expect(workflow.jobs["prepare-draft"].if).toBe(
+    "inputs.operation != 'prepare-probe'",
+  );
+  for (const name of ["stage-candidate", "record-stage"]) {
+    const intent = workflow.jobs[name].steps.find(
+      (step) =>
+        step.with?.name === "release-probe-intent-${{ github.run_attempt }}",
+    );
+    expect(intent.uses).toBe(
+      "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    );
+    expect(intent.if).toBe("inputs.operation == 'consume-probe'");
+    expect(intent.with).toEqual({
+      name: "release-probe-intent-${{ github.run_attempt }}",
+      path: "artifacts/retained-probe",
+    });
+  }
+  const prepared = workflow.jobs["stage-candidate"].steps.find(
+    (step) => step.with?.name === "release-inert-probe",
+  );
+  expect(prepared.with["run-id"]).toBe("${{ inputs.candidate-run-id }}");
+  expect(prepared.if).toBe("inputs.operation == 'consume-probe'");
+  for (const name of ["verify-candidate", "prepare-draft"]) {
+    const retained = workflow.jobs[name].steps.find((step) =>
+      step.with?.name?.startsWith("release-probe-stage-"),
+    );
+    expect(retained.if).toBe("inputs.operation == 'reconcile-probe'");
+    expect(retained.with).toEqual({
+      name: "release-probe-stage-${{ fromJSON(fromJSON(inputs.owner-observation).probePacket).runAttempt }}",
+      path: "artifacts/reconciled-probe",
+      "run-id": "${{ inputs.candidate-run-id }}",
+      "github-token": "${{ github.token }}",
+    });
+  }
+};
+test("closed protected-main probe preparation uses the same stage/recorder, not another publisher", () => {
+  requireProbeGraph(parse(source));
+  for (const mutate of [
+    (w) => {
+      w.jobs["stage-candidate"].steps.find(
+        (s) =>
+          s.with?.name === "release-probe-intent-${{ github.run_attempt }}",
+      ).with["run-id"] = "${{ inputs.candidate-run-id }}";
+    },
+    (w) => {
+      w.jobs["verify-candidate"].steps.find((s) =>
+        s.run?.startsWith("npm pack "),
+      ).run = "npm pack --json";
+    },
+    (w) => {
+      w.jobs["probe-publisher"] = w.jobs["stage-candidate"];
+    },
+    (w) => {
+      w.jobs["prepare-draft"].steps.find((s) =>
+        s.with?.name?.startsWith("release-probe-stage-"),
+      ).with["run-id"] = "${{ github.run_id }}";
+    },
+  ]) {
+    const workflow = parse(source);
+    mutate(workflow);
+    expect(() => requireProbeGraph(workflow)).toThrow();
   }
 });
 const requireNonprivilegedAdmission = (workflow) => {

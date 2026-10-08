@@ -268,6 +268,49 @@ export function inspectCandidateTarball(tarballPath) {
   });
 }
 
+// The trust-path probe is inert, not a certified product or release candidate.
+// Reuse the same bounded tar parser; never load a file or execute package code.
+export function verifyInertProbeTarball({ tarballPath, tuple: input }) {
+  // The stage boundary validates the complete shared tuple separately. Keep
+  // inert archive inspection in the offline graph, without importing a live
+  // stage/owner-checkpoint dependency merely to inspect package bytes.
+  const tuple = input;
+  assert(tuple.kind === "probe", "Probe cannot select a product tuple");
+  assert(
+    tuple.package === "agentscope-cli" &&
+      typeof tuple.version === "string" &&
+      /^0\.0\.0-oidc-probe\.[a-z0-9][a-z0-9-]{0,63}$/u.test(tuple.version) &&
+      tuple.distTag === "oidc-probe" &&
+      tuple.protectedTag === null,
+    "Inert probe package/channel identity drifted",
+  );
+  const named = lstatSync(tarballPath);
+  assert(
+    named.isFile() && named.size > 0 && named.size <= 65_536,
+    "Inert probe must be a bounded regular tarball",
+  );
+  const inspected = inspectCandidateTarball(tarballPath);
+  const manifest = inspected.packedManifest;
+  assert(
+    inspected.sha256 === tuple.tarballSha256 &&
+      inspected.integrity === tuple.integrity &&
+      inspected.inventory.length === 1 &&
+      inspected.inventory[0].path === "package/package.json" &&
+      inspected.inventory[0].bytes <= 4096 &&
+      manifest.name === tuple.package &&
+      manifest.version === tuple.version,
+    "Inert probe artifact identity or inventory drifted",
+  );
+  const metadata = new Set(["name", "version", "description", "license"]);
+  assert(
+    Object.entries(manifest).every(
+      ([key, value]) => metadata.has(key) && typeof value === "string",
+    ),
+    "Inert probe contains executable, dependency or publishing metadata",
+  );
+  return inspected;
+}
+
 export function validateCandidateManifest(manifest) {
   assertExactKeys(
     manifest,

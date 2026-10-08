@@ -18,6 +18,11 @@ import {
   recordStage,
   stageRetainedCandidate,
   recordStageFromJob,
+  prepareProbeMaterial,
+  prepareProbeIntent,
+  stageRetainedProbe,
+  recordProbeStagePacket,
+  reconcileProbePacket,
 } from "../release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "../release-lane/validation.mjs";
 
@@ -576,24 +581,29 @@ test.each([
   },
 );
 
-function candidateFixture() {
+const packedFixtureManifest = (probeVersion) =>
+  probeVersion
+    ? { name: "agentscope-cli", version: probeVersion }
+    : {
+        name: "agentscope-cli",
+        version: "0.1.0",
+        bin: { agentscope: "./dist/bin/agentscope.js" },
+        publishConfig: { access: "public" },
+      };
+function candidateFixture(probeVersion = null) {
   const root = mkdtempSync(join(tmpdir(), "agentscope-production-fixture-"));
   roots.push(root);
   const files = [
     {
       path: "package/package.json",
-      content: JSON.stringify({
-        name: "agentscope-cli",
-        version: "0.1.0",
-        bin: { agentscope: "./dist/bin/agentscope.js" },
-        publishConfig: { access: "public" },
-      }),
+      content: JSON.stringify(packedFixtureManifest(probeVersion)),
     },
     {
       path: "package/dist/bin/agentscope.js",
       content: "#!/usr/bin/env node\n",
     },
   ];
+  if (probeVersion) files.pop();
   const octal = (value, width) =>
     `${value.toString(8).padStart(width - 1, "0")}\0`;
   const chunks = files.map(({ path, content }) => {
@@ -695,6 +705,368 @@ function candidateFixture() {
     })),
   };
 }
+
+function probeReservation(material) {
+  const unsigned = {
+    schemaVersion: 1,
+    kind: "reserved-inert-probe-invocation",
+    repository: "Melbourneandrew/agentscope",
+    workflowPath: ".github/workflows/release.yml",
+    workflowDatabaseId: 12,
+    expectedRunNumber: 102,
+    runAttempt: 1,
+    ownerId: 25971425,
+    ownerLogin: "Melbourneandrew",
+    version: material.version,
+    preparationRunId: material.preparationRunId,
+    preparationRunAttempt: material.preparationRunAttempt,
+    preparationSourceRevision: material.sourceRevision,
+    preparedMaterialDigest: sha256(canonicalJson(material)),
+    tarballSha256: material.tarballSha256,
+    integrity: material.integrity,
+    workflowDigest: material.workflowDigest,
+    releaseScriptsDigest: material.releaseScriptsDigest,
+  };
+  return { ...unsigned, digest: sha256(canonicalJson(unsigned)) };
+}
+async function probeFixture() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(consumedAt));
+  const f = fixture();
+  const preparation = {
+    ...f.run,
+    id: 40,
+    head_branch: "main",
+    status: "completed",
+    conclusion: "success",
+  };
+  const tarballPath = candidateFixture("0.0.0-oidc-probe.40-1").tarballPath;
+  const executingDigests = { workflowDigest: hash, releaseScriptsDigest: hash };
+  const material = prepareProbeMaterial({
+    tarballPath,
+    runId: 40,
+    runAttempt: 1,
+    sourceRevision: f.input.sourceRevision,
+    executingDigests,
+  });
+  const store = {
+    ...f.store,
+    run: async (id) => (id === 40 ? preparation : f.run),
+    protectedMainSource: async () => {},
+  };
+  const invocationIntent = probeReservation(material);
+  f.input.sourceRevision = "c".repeat(40);
+  f.run.head_sha = f.input.sourceRevision;
+  f.run.workflow_id = 12;
+  f.run.run_number = 102;
+  const observation = {
+    phase: "pre-probe",
+    sourceRevision: f.input.sourceRevision,
+    candidateManifestDigest: sha256(canonicalJson(material)),
+    issuedAt: "2026-10-07T00:00:00.000Z",
+    expiresAt: "2026-10-07T00:15:00.000Z",
+    controlsReport,
+    pendingStagesState: "none-conflicting",
+    probeVersionState: "never-staged",
+  };
+  const intent = await prepareProbeIntent(
+    store,
+    {
+      identity: f.input,
+      material,
+      executingDigests,
+      transactionId: "probe-40-1",
+      invocationIntent,
+    },
+    observation,
+    consumedAt,
+  );
+  const input = {
+    identity: f.input,
+    intent,
+    intentDigest: intent.digest,
+    executingDigests,
+  };
+  return {
+    ...f,
+    store,
+    material,
+    preparation,
+    tarballPath,
+    executingDigests,
+    observation,
+    intent,
+    input,
+    invocationIntent,
+  };
+}
+
+test.each([
+  "fresh-dispatch",
+  "rerun",
+  "workflow",
+  "string-number",
+  "string-workflow",
+  "foreign-owner",
+  "tampered-intent",
+])(
+  "reserved probe invocation refuses %s before the npm producer",
+  async (kind) => {
+    const f = await probeFixture();
+    if (kind === "fresh-dispatch") {
+      f.run.id = 43;
+      f.run.run_number = 103;
+      f.input.identity.runId = 43;
+    }
+    if (kind === "rerun") {
+      f.run.run_attempt = 2;
+      f.input.identity.runAttempt = 2;
+    }
+    if (kind === "workflow") f.run.workflow_id = 13;
+    if (kind === "string-number") f.run.run_number = "102";
+    if (kind === "string-workflow") f.run.workflow_id = "12";
+    if (kind === "foreign-owner") f.run.actor.id = 1;
+    if (kind === "tampered-intent")
+      f.input.intent = {
+        ...f.input.intent,
+        invocationIntent: {
+          ...f.input.intent.invocationIntent,
+          expectedRunNumber: 103,
+        },
+      };
+    let calls = 0;
+    await expect(
+      stageRetainedProbe(
+        f.store,
+        f.input,
+        f.tarballPath,
+        performance.now() + 10_000,
+        {
+          execFileImpl: () => {
+            calls++;
+          },
+        },
+      ),
+    ).rejects.toThrow();
+    expect(calls).toBe(0);
+  },
+);
+
+test("inert preparation shares the real producer/DTO without product tag or draft", async () => {
+  const f = await probeFixture();
+  let calls = 0,
+    isolated;
+  const result = await stageRetainedProbe(
+    f.store,
+    f.input,
+    f.tarballPath,
+    performance.now() + 10_000,
+    {
+      execFileImpl: (_file, args, _options, callback) => {
+        calls++;
+        if (args[0] === "--version")
+          return callback(null, Buffer.from("11.17.0"), Buffer.alloc(0));
+        isolated = args[2];
+        expect(readFileSync(isolated)).toEqual(readFileSync(f.tarballPath));
+        expect(args.slice(3)).toEqual([
+          "--json",
+          "--tag",
+          "oidc-probe",
+          "--provenance",
+          "--ignore-scripts",
+          "--registry",
+          "https://registry.npmjs.org",
+        ]);
+        callback(
+          null,
+          Buffer.from(
+            JSON.stringify({
+              "agentscope-cli": {
+                name: "agentscope-cli",
+                version: f.material.version,
+                id: `agentscope-cli@${f.material.version}`,
+                integrity: f.material.integrity,
+                stageId: "probe-stage-1",
+              },
+            }),
+          ),
+          Buffer.alloc(0),
+        );
+      },
+    },
+  );
+  expect(calls).toBe(2);
+  expect(existsSync(isolated)).toBe(false);
+  expect(result.tuple.protectedTag).toBe(null);
+  expect(f.intent).not.toHaveProperty("draftReleaseDatabaseId");
+  const packet = await recordProbeStagePacket(
+    f.store,
+    f.input,
+    result,
+    "2026-10-07T01:00:00.000Z",
+  );
+  expect(packet.state).toBe("pending-owner-reconciliation");
+  expect(packet.sourceRevision).toBe(f.input.identity.sourceRevision);
+});
+
+test.each([
+  "preparation-run",
+  "preparation-attempt",
+  "preparation-branch",
+  "preparation-conclusion",
+  "code",
+  "owner",
+  "expired",
+  "ever-staged",
+  "pending",
+])("probe refuses %s without invoking npm", async (kind) => {
+  const f = await probeFixture();
+  let calls = 0;
+  if (kind === "preparation-run") f.preparation.id = 39;
+  if (kind === "preparation-attempt") f.preparation.run_attempt = 2;
+  if (kind === "preparation-branch") f.preparation.head_branch = "feature";
+  if (kind === "preparation-conclusion") f.preparation.conclusion = "failure";
+  if (kind === "code")
+    f.input.executingDigests.releaseScriptsDigest = `sha256:${"c".repeat(64)}`;
+  if (kind === "owner") f.run.actor.id = 1;
+  if (kind === "expired")
+    vi.setSystemTime(new Date("2026-10-07T00:15:00.000Z"));
+  if (kind === "ever-staged" || kind === "pending") {
+    const observation = {
+      ...f.observation,
+      ...(kind === "pending"
+        ? { pendingStagesState: "unknown" }
+        : { probeVersionState: "previously-staged" }),
+    };
+    await expect(
+      prepareProbeIntent(
+        f.store,
+        {
+          identity: f.input.identity,
+          material: f.material,
+          executingDigests: f.executingDigests,
+          transactionId: "probe-40-1",
+          invocationIntent: f.invocationIntent,
+        },
+        observation,
+        consumedAt,
+      ),
+    ).rejects.toThrow();
+  } else
+    await expect(
+      stageRetainedProbe(
+        f.store,
+        f.input,
+        f.tarballPath,
+        performance.now() + 10_000,
+        {
+          execFileImpl: () => {
+            calls++;
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  expect(calls).toBe(0);
+});
+
+async function reconciledProbeFixture(response = "received") {
+  const f = await probeFixture();
+  const packet = await recordProbeStagePacket(f.store, f.input, {
+    schemaVersion: 1,
+    tuple: f.intent.tuple,
+    response,
+    stageId: response === "received" ? "probe-stage-1" : null,
+  });
+  const identity = {
+    ...f.input.identity,
+    runId: 44,
+    sourceRevision: "d".repeat(40),
+  };
+  const current = { ...f.run, id: 44, head_sha: identity.sourceRevision };
+  const original = f.run;
+  f.store.run = async (id) =>
+    id === 44 ? current : id === 40 ? f.preparation : original;
+  const owner = {
+    phase: "reconcile-probe",
+    packetDigest: packet.digest,
+    issuedAt: "2026-10-07T01:00:00.000Z",
+    expiresAt: "2026-10-07T01:15:00.000Z",
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: "2026-10-07T01:00:00.000Z",
+    }),
+    stageId: "probe-stage-1",
+    downloadedTarballSha256: f.material.tarballSha256,
+    downloadedIntegrity: f.material.integrity,
+    downloadedInventoryDigest: f.material.inventoryDigest,
+    terminalNpmState: "rejected",
+  };
+  return {
+    ...f,
+    current,
+    original,
+    owner,
+    input: { identity, packet, executingDigests: f.executingDigests },
+  };
+}
+
+test("owner rejection preserves actual earlier dispatch source across later main commits", async () => {
+  const f = await reconciledProbeFixture();
+  const observed = [];
+  f.store.protectedMainSource = async (source) => observed.push(source);
+  const manifest = await reconcileProbePacket(
+    f.store,
+    f.input,
+    f.owner,
+    "2026-10-07T01:01:00.000Z",
+  );
+  expect(manifest.sourceRevision).toBe("c".repeat(40));
+  expect(manifest.material.sourceRevision).toBe("b".repeat(40));
+  expect(manifest.invocationIntentDigest).toBe(
+    f.intent.invocationIntent.digest,
+  );
+  expect(manifest.sourceRevision).not.toBe(f.input.identity.sourceRevision);
+  expect(manifest.runId).toBe(42);
+  expect(manifest.terminalNpmState).toBe("rejected");
+  expect(manifest.disposition).toBe(
+    "awaiting-reviewed-append-under-release-records/probes",
+  );
+  expect(observed).toContain("c".repeat(40));
+});
+test.each([
+  "missing",
+  "ambiguous",
+  "stage",
+  "download",
+  "terminal",
+  "expired",
+  "code",
+  "original-run",
+  "original-attempt",
+  "owner",
+])(
+  "owner reconciliation cannot manufacture rejection from %s",
+  async (kind) => {
+    const f = await reconciledProbeFixture(
+      ["missing", "ambiguous"].includes(kind) ? kind : "received",
+    );
+    if (kind === "stage") f.owner.stageId = "other";
+    if (kind === "download") f.owner.downloadedTarballSha256 = hash;
+    if (kind === "terminal") f.owner.terminalNpmState = "approved";
+    if (kind === "code")
+      f.input.executingDigests.workflowDigest = `sha256:${"c".repeat(64)}`;
+    if (kind === "original-run") f.original.head_sha = "d".repeat(40);
+    if (kind === "original-attempt") f.original.run_attempt = 2;
+    if (kind === "owner") f.current.actor.id = 1;
+    const now =
+      kind === "expired"
+        ? "2026-10-07T01:16:00.000Z"
+        : "2026-10-07T01:01:00.000Z";
+    await expect(
+      reconcileProbePacket(f.store, f.input, f.owner, now),
+    ).rejects.toThrow();
+  },
+);
 test("draft producer retains exact candidate and writes first record last, not admission", async () => {
   const fixture = candidateFixture();
   const names = [];

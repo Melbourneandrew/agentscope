@@ -4,10 +4,40 @@ import { test } from "vitest";
 import {
   proposeStageRecord,
   validateStageCheckpoint,
+  validateProbeMaterial,
 } from "../release-lane/production-recorder.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
+test("probe material binds actual preparation run/attempt, not a fabricated product", () => {
+  const material = {
+    schemaVersion: 1,
+    kind: "inert-probe-material",
+    preparationRunId: 40,
+    preparationRunAttempt: 1,
+    sourceRevision: "b".repeat(40),
+    workflowDigest: hash,
+    releaseScriptsDigest: hash,
+    version: "0.0.0-oidc-probe.40-1",
+    tarballFilename: "agentscope-cli-0.0.0-oidc-probe.40-1.tgz",
+    tarballSha256: hash,
+    integrity: `sha512-${Buffer.alloc(64).toString("base64")}`,
+    inventoryDigest: hash,
+  };
+  assert.equal(validateProbeMaterial(material).version, material.version);
+  for (const change of [
+    { preparationRunId: 41 },
+    { preparationRunAttempt: 2 },
+    { kind: "product" },
+    { version: "0.1.0" },
+    { tarballFilename: "../probe.tgz" },
+    { workflowDigest: [] },
+  ])
+    assert.throws(() => validateProbeMaterial({ ...material, ...change }));
+  assert.throws(() =>
+    validateProbeMaterial({ ...material, draftReleaseDatabaseId: 7 }),
+  );
+});
 const controlsReport = JSON.stringify({
   state: "operator-controls-observed",
   repository: "Melbourneandrew/agentscope",
