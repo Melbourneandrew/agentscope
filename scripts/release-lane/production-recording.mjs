@@ -1522,13 +1522,16 @@ export async function verifyRegistryPublication(
   )
     fail();
   const tuple = validateStageTuple(head.tuple);
-  verifyCandidateArtifact(candidate);
-  if (
-    candidate.expectedManifestDigest !== head.candidateManifestDigest ||
-    candidate.expectedSourceRevision !== head.sourceRevision ||
-    candidate.expectedProtectedTag !== "v0.1.0"
-  )
-    fail();
+  // The ordinary entry returns only these retained candidate inputs. Expected
+  // identities come from the authenticated record, never fixture/caller extras.
+  verifyCandidateArtifact({
+    manifest: candidate.manifest,
+    certificationRecord: candidate.certificationRecord,
+    tarballPath: candidate.tarballPath,
+    expectedManifestDigest: head.candidateManifestDigest,
+    expectedSourceRevision: head.sourceRevision,
+    expectedProtectedTag: "v0.1.0",
+  });
   const root = mkdtempSync(join(tmpdir(), "agentscope-registry-install-"));
   try {
     mkdirSync(join(root, "home"), { mode: 0o700 });
