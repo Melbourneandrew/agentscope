@@ -124,6 +124,27 @@ function validateCheckpoint(checkpoint, head, tuple, observedAt) {
   checkpointWindow(checkpoint, observedAt);
 }
 
+// Structural validation only: the caller must acquire the durable intent and
+// authenticate the current GitHub run/approval before invoking a mutation.
+export function validateStageCheckpoint(input) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, ["tuple", "head", "ownerCheckpoint", "observedAt"]);
+  const tuple = validateStageTuple(value.tuple);
+  if (tuple.kind !== "product") fail();
+  validateHead(value.head, tuple);
+  validateCheckpoint(
+    value.ownerCheckpoint,
+    value.head,
+    tuple,
+    value.observedAt,
+  );
+  if (
+    Date.parse(value.observedAt) >= Date.parse(value.ownerCheckpoint.expiresAt)
+  )
+    fail();
+  return tuple;
+}
+
 // Inert proposal only. The integration must authenticate head/checkpoint/stage
 // provenance, recheck external controls and CAS this exact prior head before IO.
 // No hash or accepted input here is an authorization to append, stage or approve.

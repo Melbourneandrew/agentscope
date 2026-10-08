@@ -1,6 +1,12 @@
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -10,15 +16,294 @@ import {
   consumeIntent,
   prepareDraft,
   recordStage,
+  stageRetainedCandidate,
+  recordStageFromJob,
 } from "../release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "../release-lane/validation.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
 const roots = [];
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
+
+async function stageFixture() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(consumedAt));
+  const f = fixture();
+  const candidate = candidateFixture();
+  const assets = [];
+  const store = {
+    ...f.store,
+    protectedSource: async () => {},
+    releases: async () => [],
+    createDraft: async () => ({
+      id: 7,
+      draft: true,
+      prerelease: true,
+      tag_name: "v0.1.0",
+    }),
+    release: async () => ({
+      draft: true,
+      prerelease: true,
+      tag_name: "v0.1.0",
+    }),
+    appendAsset: async (_releaseId, name, bytes) => {
+      const entry = {
+        id: assets.length + 1,
+        name,
+        size: bytes.length,
+        digest: sha256(bytes),
+        bytes: Buffer.from(bytes),
+      };
+      assets.push(entry);
+      return entry;
+    },
+    assets: async () => assets,
+    readAsset: async (id) => assets.find((entry) => entry.id === id).bytes,
+  };
+  const draft = await prepareDraft(store, candidate);
+  const checkpoint = await authenticateOwnerCheckpoint(
+    store,
+    f.input,
+    {
+      ...observation,
+      expectedPriorDigest: draft.record.digest,
+      candidateManifestDigest: candidate.expectedManifestDigest,
+    },
+    consumedAt,
+  );
+  const tuple = {
+    kind: "product",
+    transactionId: "transaction-1",
+    candidateManifestDigest: candidate.expectedManifestDigest,
+    tarballSha256: candidate.manifest.tarball.sha256,
+    integrity: candidate.manifest.tarball.integrity,
+    sourceRevision: f.input.sourceRevision,
+    protectedTag: "v0.1.0",
+    package: "agentscope-cli",
+    version: "0.1.0",
+    distTag: "alpha",
+    workflowDigest: hash,
+    releaseScriptsDigest: hash,
+    ownerCheckpointDigest: sha256(canonicalJson(checkpoint)),
+  };
+  const head = Object.fromEntries(
+    [
+      "schemaVersion",
+      "sequence",
+      "transition",
+      "transactionId",
+      "draftReleaseDatabaseId",
+      "candidateManifestDigest",
+      "sourceRevision",
+      "kind",
+      "digest",
+    ].map((key) => [key, draft.record[key]]),
+  );
+  const intent = prepareIntent(
+    {
+      tuple,
+      head,
+      expectedSequence: 1,
+      expectedPriorDigest: head.digest,
+      consumedAt,
+    },
+    checkpoint,
+  );
+  await consumeIntent(store, intent, draft.record);
+  const input = {
+    releaseId: 7,
+    intentDigest: intent.digest,
+    identity: f.input,
+    executingDigests: { workflowDigest: hash, releaseScriptsDigest: hash },
+    deadline: Math.floor(performance.now() + 10_000),
+  };
+  return { ...f, store, candidate, assets, intent, tuple, input };
+}
+
+test("same-run durable intent stages the exact isolated bytes once then records fixed DTO", async () => {
+  const f = await stageFixture();
+  const calls = [];
+  let isolated;
+  const result = await stageRetainedCandidate(f.store, f.input, f.candidate, {
+    execFileImpl: (_file, args, _options, callback) => {
+      calls.push(args);
+      if (args[0] === "--version")
+        return callback(null, Buffer.from("11.17.0\n"), Buffer.alloc(0));
+      isolated = args[2];
+      expect(isolated).not.toBe(f.candidate.tarballPath);
+      expect(readFileSync(isolated)).toEqual(
+        readFileSync(f.candidate.tarballPath),
+      );
+      callback(
+        null,
+        Buffer.from(
+          JSON.stringify({
+            "agentscope-cli": {
+              name: "agentscope-cli",
+              version: "0.1.0",
+              id: "agentscope-cli@0.1.0",
+              integrity: f.tuple.integrity,
+              stageId: "stage-1",
+            },
+          }),
+        ),
+        Buffer.alloc(0),
+      );
+    },
+  });
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toEqual([
+    "stage",
+    "publish",
+    isolated,
+    "--json",
+    "--tag",
+    "alpha",
+    "--provenance",
+    "--ignore-scripts",
+    "--registry",
+    "https://registry.npmjs.org",
+  ]);
+  expect(existsSync(isolated)).toBe(false);
+  expect(result.response).toBe("received");
+  const record = await recordStageFromJob(f.store, {
+    releaseId: 7,
+    intentDigest: f.intent.digest,
+    identity: f.input.identity,
+    executingDigests: f.input.executingDigests,
+    stageResult: result,
+    observedAt: "2026-10-07T01:00:00.000Z",
+  });
+  expect(record.transition).toBe("stage-recorded");
+  await expect(
+    stageRetainedCandidate(f.store, f.input, f.candidate),
+  ).rejects.toThrow();
+});
+
+test.each([
+  "attempt",
+  "principal",
+  "approval",
+  "intent",
+  "workflow",
+  "expired",
+  "bytes",
+  "protected-source",
+])("refuses detached %s before any npm acquisition", async (kind) => {
+  const f = await stageFixture();
+  if (kind === "attempt") f.input.identity.runAttempt = 2;
+  if (kind === "principal") f.run.actor.id = 1;
+  if (kind === "approval") f.approval.user.id = 1;
+  if (kind === "intent") f.input.intentDigest = hash;
+  if (kind === "workflow")
+    f.input.executingDigests.workflowDigest = `sha256:${"c".repeat(64)}`;
+  if (kind === "expired")
+    vi.setSystemTime(new Date("2026-10-07T00:15:00.000Z"));
+  if (kind === "bytes")
+    writeFileSync(f.candidate.tarballPath, Buffer.from("drift"));
+  if (kind === "protected-source")
+    f.store.protectedSource = async () => {
+      throw new Error("unprotected");
+    };
+  let calls = 0;
+  await expect(
+    stageRetainedCandidate(f.store, f.input, f.candidate, {
+      execFileImpl: () => {
+        calls++;
+      },
+    }),
+  ).rejects.toThrow();
+  expect(calls).toBe(0);
+});
+
+test("failed producer settlement cleans only its copy and missing output stays quarantined", async () => {
+  const f = await stageFixture();
+  let isolated;
+  const result = await stageRetainedCandidate(f.store, f.input, f.candidate, {
+    execFileImpl: (_file, args, _options, callback) => {
+      if (args[0] === "--version")
+        return callback(null, Buffer.from("11.17.0"), Buffer.alloc(0));
+      isolated = args[2];
+      callback(
+        new Error("secret must not escape"),
+        Buffer.alloc(0),
+        Buffer.alloc(0),
+      );
+    },
+  });
+  expect(result.response).toBe("ambiguous");
+  expect(existsSync(isolated)).toBe(false);
+  expect(existsSync(f.candidate.tarballPath)).toBe(true);
+  const recorded = await recordStageFromJob(f.store, {
+    releaseId: 7,
+    intentDigest: f.intent.digest,
+    identity: f.input.identity,
+    executingDigests: f.input.executingDigests,
+    stageResult: {
+      schemaVersion: 1,
+      tuple: f.tuple,
+      response: "missing",
+      stageId: null,
+    },
+    observedAt: "2026-10-07T01:00:00.000Z",
+  });
+  expect(recorded.transition).toBe("quarantine-still-draft");
+  expect(recorded.payload.terminal).toBe(false);
+});
+
+test("version acquisition cannot renew original checkpoint expiry", async () => {
+  const f = await stageFixture();
+  let now = 100;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  f.input.deadline = 1_000_000;
+  vi.setSystemTime(new Date("2026-10-07T00:14:59.000Z"));
+  let calls = 0;
+  await expect(
+    stageRetainedCandidate(f.store, f.input, f.candidate, {
+      execFileImpl: (_file, args, options, callback) => {
+        calls++;
+        expect(args).toEqual(["--version"]);
+        expect(options.timeout).toBeLessThanOrEqual(1000);
+        now = 1101;
+        callback(null, Buffer.from("11.17.0"), Buffer.alloc(0));
+      },
+    }),
+  ).rejects.toThrow("release.npm-stage.unavailable");
+  expect(calls).toBe(1);
+});
+
+test.each(["principal", "attempt", "workflow", "stage-tuple"])(
+  "recorder authenticates %s rather than trusting job result labels",
+  async (kind) => {
+    const f = await stageFixture();
+    const input = {
+      releaseId: 7,
+      intentDigest: f.intent.digest,
+      identity: f.input.identity,
+      executingDigests: f.input.executingDigests,
+      stageResult: {
+        schemaVersion: 1,
+        tuple: { ...f.tuple },
+        response: "received",
+        stageId: "stage-1",
+      },
+      observedAt: "2026-10-07T01:00:00.000Z",
+    };
+    if (kind === "principal") f.run.triggering_actor.id = 1;
+    if (kind === "attempt") input.identity.runAttempt = 2;
+    if (kind === "workflow")
+      input.executingDigests.releaseScriptsDigest = `sha256:${"c".repeat(64)}`;
+    if (kind === "stage-tuple") input.stageResult.tuple.transactionId = "other";
+    const count = f.assets.length;
+    await expect(recordStageFromJob(f.store, input)).rejects.toThrow();
+    expect(f.assets).toHaveLength(count);
+  },
+);
 const controlsReport = JSON.stringify({
   state: "operator-controls-observed",
   repository: "Melbourneandrew/agentscope",
@@ -173,10 +458,10 @@ test.each([
   f.run[field] = null;
   await expect(authenticateOwnerCheckpoint(f.store, f.input)).rejects.toThrow();
 });
-test("rejects missing, duplicate and wrong-environment approval", async () => {
+test("rejects missing, conflicting and wrong-environment approval", async () => {
   for (const approvals of [
     [],
-    [fixture().approval, fixture().approval],
+    [fixture().approval, { ...fixture().approval, state: "rejected" }],
     [{ ...fixture().approval, environments: [] }],
   ]) {
     const f = fixture();
@@ -195,6 +480,38 @@ test("owner login labels cannot substitute another authenticated principal", asy
     await expect(
       authenticateOwnerCheckpoint(f.store, f.input, observation, consumedAt),
     ).rejects.toThrow();
+  }
+});
+test("two protected jobs accept repeated fixed-owner approvals, never foreign history", async () => {
+  const f = await stageFixture();
+  f.store.approvals = async () => [f.approval, { ...f.approval }];
+  let calls = 0;
+  const result = await stageRetainedCandidate(f.store, f.input, f.candidate, {
+    execFileImpl: (_file, args, _options, callback) => {
+      calls++;
+      callback(
+        null,
+        Buffer.from(args[0] === "--version" ? "11.17.0" : ""),
+        Buffer.alloc(0),
+      );
+    },
+  });
+  expect(calls).toBe(2);
+  expect(result.response).toBe("missing");
+  for (const extra of [
+    { ...f.approval, user: { id: 1, login: "Melbourneandrew" } },
+    { ...f.approval, state: "rejected" },
+    { ...f.approval, environments: [{ id: 10, name: "npm-release" }] },
+  ]) {
+    f.store.approvals = async () => [f.approval, extra];
+    await expect(
+      stageRetainedCandidate(f.store, f.input, f.candidate, {
+        execFileImpl: () => {
+          calls++;
+        },
+      }),
+    ).rejects.toThrow();
+    expect(calls).toBe(2);
   }
 });
 test.each(["expired", "future", "unknown-pending"])(
