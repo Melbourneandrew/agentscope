@@ -1668,6 +1668,35 @@ const mockServerNetworkObservation = (server, network) => {
     ipPresent: typeof ip === "string" && /^(?:\d{1,3}\.){3}\d{1,3}$/u.test(ip),
   };
 };
+const mockServerStartupObservation = (output) => {
+  if (typeof output !== "object" || output === null || types.isProxy(output))
+    return "unknown";
+  const streams = ["stdout", "stderr"].map((key) =>
+    Object.getOwnPropertyDescriptor(output, key),
+  );
+  if (
+    streams.some(
+      (value) =>
+        value !== undefined &&
+        (!Object.hasOwn(value, "value") || typeof value.value !== "string"),
+    )
+  )
+    return "unknown";
+  const values = streams.map((value) => value?.value ?? "");
+  if (
+    values.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) > 65536
+  )
+    return "unknown";
+  const phases = ["entry", "directory", "private-key", "jwks", "java-entry"];
+  let count = 0;
+  for (const line of values.join("\n").split("\n")) {
+    if (!line.startsWith("[agentscope-mockserver:")) continue;
+    if (line !== `[agentscope-mockserver:v1 phase=${phases[count]}]`)
+      return "unknown";
+    count += 1;
+  }
+  return phases[count - 1] ?? "unknown";
+};
 const startMockServer = async (plan, signal) => {
   await assertControlVolumeCurrent(plan, signal);
   await dockerWithSignal(
@@ -1735,10 +1764,23 @@ const startMockServer = async (plan, signal) => {
     !/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(network?.IPAddress ?? "") ||
     Object.keys(server.NetworkSettings.Networks).length !== 1
   ) {
+    let startupPhase = "unknown";
+    try {
+      startupPhase = mockServerStartupObservation(
+        await dockerWithSignal(["logs", "--tail", "64", containerId], signal, {
+          maxBuffer: 65536,
+        }),
+      );
+    } catch {
+      // A failed optional read cannot replace or weaken the original refusal.
+    }
     try {
       console.error(
         "integration.isolation.mockserver-network-diagnostic:" +
-          JSON.stringify(mockServerNetworkObservation(server, network)),
+          JSON.stringify({
+            ...mockServerNetworkObservation(server, network),
+            startupPhase,
+          }),
       );
     } catch {
       // Optional content-free projection never replaces the original refusal.

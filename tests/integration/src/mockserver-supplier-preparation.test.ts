@@ -158,7 +158,10 @@ describe("connected supplier research under inherited lifecycle (synthetic build
       expect(source).not.toContain('"service-offline"]');
       expect(source).not.toContain("AS offline");
       expect(source.match(/COPY --from=supplier .+/gu)).toEqual([
-        "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java",
+        ...["bin", "lib", "conf", "legal", "release", "NOTICE"].map(
+          (name) =>
+            `COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/${name} /opt/java/${name}`,
+        ),
         "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
       ]);
       expect(source).not.toContain("/out/material.json");
@@ -168,6 +171,31 @@ describe("connected supplier research under inherited lifecycle (synthetic build
       );
       expect(source).toContain("USER 0:0");
       expect(source).toContain("umask 077; mkdir /control/private;");
+      for (const name of ["jmods", "include", "man"])
+        expect(source).not.toContain(`/opt/java/${name}`);
+      const entrypoint = JSON.parse(
+        source
+          .split("\n")
+          .find((line) => line.startsWith("ENTRYPOINT "))!
+          .slice(11),
+      ) as string[];
+      expect(entrypoint.slice(0, 2)).toEqual(["/bin/sh", "-ec"]);
+      const phases = [...entrypoint[2]!.matchAll(/phase=([a-z-]+)\]/gu)].map(
+        (match) => match[1],
+      );
+      expect(phases).toEqual([
+        "entry",
+        "directory",
+        "private-key",
+        "jwks",
+        "java-entry",
+      ]);
+      expect(entrypoint[2]).toMatch(
+        /; exec \/opt\/java\/bin\/java -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
+      );
+      expect(entrypoint[2]!.replace(/printf '[^']*' >&2; /gu, "")).toBe(
+        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080",
+      );
       expect(readFileSync(resolve(context, "control-private.pem"))).toEqual(
         service.privateKey,
       );

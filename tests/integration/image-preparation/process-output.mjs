@@ -234,7 +234,10 @@ const createSupplierBuildPhaseObservation = () => {
   let role;
   let stage;
   const copies = [
-    ["java", "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1 /opt/java"],
+    ...["bin", "lib", "conf", "legal", "release", "NOTICE"].map((name) => [
+      "java",
+      `COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/${name} /opt/java/${name}`,
+    ]),
     [
       "jar",
       "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
