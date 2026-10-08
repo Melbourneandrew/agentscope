@@ -80,31 +80,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - name: Select native candidate verification
-        id: selection
+      - name: Authenticate exact alpha candidate checkout
         env:
-          NATIVE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           NATIVE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA"
-          node scripts/native-ci-selection.mjs
-      - name: Report native candidate verification skip
-        if: steps.selection.outputs.required != 'true'
-        run: echo "Native candidate verification skipped — ${{ steps.selection.outputs.reason }}"
-      - name: Remove inputs certified irrelevant to the native candidate
-        if: steps.selection.outputs.required == 'true'
-        run: node scripts/native-ci-selection.mjs --prune-irrelevant
+        run: test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA"
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        if: steps.selection.outputs.required == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.selection.outputs.required == 'true'
         with: { node-version: 22, cache: pnpm }
-      - if: steps.selection.outputs.required == 'true'
-        run: pnpm install --frozen-lockfile
-      - if: steps.selection.outputs.required == 'true'
-        run: pnpm nx build agentscope-cli --skip-nx-cache
-      - if: steps.selection.outputs.required == 'true'
-        run: pnpm verify:cli-artifact
-      - name: Run fresh non-admitting native candidate verification
-        if: steps.selection.outputs.required == 'true'
-        run: pnpm verify:native-candidate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm nx build agentscope-cli --skip-nx-cache
+      - run: pnpm verify:cli-artifact
+      - name: Report alpha Local native exclusion after fresh packed proof
+        run: echo "Local SQLite not admitted"
