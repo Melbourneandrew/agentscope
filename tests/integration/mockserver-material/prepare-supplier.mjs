@@ -90,6 +90,7 @@ const serviceDockerfile = Buffer.from(
     "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/release /opt/java/release",
     "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/NOTICE /opt/java/NOTICE",
     "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+    'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/opt/control\', \'/config\']) mkdirSync(path, { mode: 0o700 });"]',
     "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
     "COPY --chmod=0444 expectations.json /config/expectations.json",
     "USER 0:0",
