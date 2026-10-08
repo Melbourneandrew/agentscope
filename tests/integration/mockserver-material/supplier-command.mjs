@@ -16,6 +16,8 @@ import { fileURLToPath } from "node:url";
 import { promisify, types } from "node:util";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import {
+  createSupplierGoalObservation,
+  supplierMavenGoals as mavenGoals,
   mockServerSupplierBuildPlan,
   mockServerSupplierLayout,
   supplierGlobalMavenSettings,
@@ -65,21 +67,6 @@ const enterSupplier = (observe, stage, failure) => {
     failure,
   );
 };
-// Authenticated POM coordinates only; zero means unobserved, never output text.
-const mavenGoals = [
-  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:compile",
-  "org.apache.maven.plugins:maven-compiler-plugin:3.15.0:testCompile",
-  "org.codehaus.mojo:templating-maven-plugin:3.1.0:filter-sources",
-  "org.apache.maven.plugins:maven-enforcer-plugin:3.6.3:enforce",
-  "org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check",
-  "org.codehaus.mojo:flatten-maven-plugin:1.8.0:flatten",
-  "io.github.git-commit-id:git-commit-id-maven-plugin:9.0.1:revision",
-  "com.github.eirslett:frontend-maven-plugin:2.0.0:install-node-and-npm",
-  "com.github.eirslett:frontend-maven-plugin:2.0.0:npm",
-  "org.apache.maven.plugins:maven-resources-plugin:3.5.0:copy-resources",
-  "org.codehaus.mojo:exec-maven-plugin:3.6.3:exec",
-  "org.apache.maven.plugins:maven-assembly-plugin:3.8.0:single",
-];
 const javacReasons = [
   "cannot find symbol",
   "incompatible types",
@@ -181,12 +168,37 @@ const packageFailureStage = (error) => {
   }
 };
 const runPackage = async (run, plan, observe) => {
+  const listeners = [];
   try {
-    await run(plan.executable, [...plan.arguments], {
+    const pending = run(plan.executable, [...plan.arguments], {
       cwd: plan.cwd,
       env: plan.environment,
       maxBuffer: maximumOutputBytes,
     });
+    const observeGoal = createSupplierGoalObservation();
+    try {
+      const child =
+        !types.isProxy(pending) &&
+        Object.getOwnPropertyDescriptor(pending, "child")?.value;
+      const streams =
+        child && !types.isProxy(child)
+          ? ["stdout", "stderr"].map(
+              (key) => Object.getOwnPropertyDescriptor(child, key)?.value,
+            )
+          : [];
+      for (const [channel, stream] of streams.entries()) {
+        if (!stream || types.isProxy(stream)) continue;
+        const consume = (chunk) => {
+          const stage = observeGoal(channel, chunk);
+          if (stage) enterSupplier(observe, stage);
+        };
+        stream.on("data", consume);
+        listeners.push([stream, consume]);
+      }
+    } catch {
+      // Optional observation cannot change the package operation's outcome.
+    }
+    await pending;
   } catch (error) {
     enterSupplier(
       observe,
@@ -194,6 +206,13 @@ const runPackage = async (run, plan, observe) => {
       ` maven=${packageFailureRecord(error).join(",")}`,
     );
     throw error;
+  } finally {
+    for (const [stream, consume] of listeners)
+      try {
+        stream.removeListener("data", consume);
+      } catch {
+        /* Optional observation only. */
+      }
   }
 };
 const writeInventory = (inventory, observe) => {
@@ -416,6 +435,7 @@ const runSupplier = async (run, phase, observe = true) => {
   );
   enterSupplier(observe, "supplier-package");
   await runPackage(run, plan, observe);
+  if (service) enterSupplier(observe, "supplier-service-finalization");
   try {
     for (const [index, before] of adopted.entries())
       adoptCache(`/supplier/${caches[index]}`, before);
@@ -424,7 +444,7 @@ const runSupplier = async (run, phase, observe = true) => {
       return;
     }
   } catch (error) {
-    enterSupplier(observe, "supplier-service-finalization");
+    if (!service) enterSupplier(observe, "supplier-service-finalization");
     throw error;
   }
   enterSupplier(observe, "supplier-inventory");

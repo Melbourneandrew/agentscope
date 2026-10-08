@@ -1,6 +1,11 @@
 /** Closed recipe data only. No process, signature or service authority. */
 export const supplierMavenSettings: string;
 export const supplierGlobalMavenSettings: string;
+export const supplierMavenGoals: readonly string[];
+export function createSupplierGoalObservation(): (
+  channel: 0 | 1,
+  chunk: Buffer,
+) => string | undefined;
 export const mockServerSupplierLayout: Readonly<{
   source: string;
   reactor: string;
