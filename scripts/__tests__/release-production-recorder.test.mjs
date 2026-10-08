@@ -5,6 +5,7 @@ import {
   proposeStageRecord,
   validateStageCheckpoint,
   validateProbeMaterial,
+  validatePublicationObservation,
 } from "../release-lane/production-recorder.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 
@@ -55,6 +56,118 @@ const controlsReport = JSON.stringify({
     "/environments/npm-release",
     "/environments/npm-release/deployment-branch-policies?per_page=100",
   ].map((path) => ({ path, bytes: 1, digest: hash })),
+});
+
+function publicationObservationFixture() {
+  const f = fixture();
+  const head = {
+    ...f.head,
+    transition: "stage-recorded",
+    payload: {
+      stageId: "stage-1",
+      package: "agentscope-cli",
+      version: "0.1.0",
+      distTag: "alpha",
+      tarballSha256: f.tuple.tarballSha256,
+      integrity: f.tuple.integrity,
+    },
+  };
+  return {
+    head,
+    observation: {
+      transactionId: head.transactionId,
+      draftReleaseDatabaseId: head.draftReleaseDatabaseId,
+      sourceRevision: head.sourceRevision,
+      candidateManifestDigest: head.candidateManifestDigest,
+      expectedSequence: head.sequence,
+      expectedPriorDigest: head.digest,
+      ...head.payload,
+      downloadedTarballSha256: head.payload.tarballSha256,
+      pendingStagesState: "exact-stage-only",
+      distTags: { bootstrap: "0.0.0-bootstrap.0", latest: "0.0.0-bootstrap.0" },
+      issuedAt: "2026-10-07T00:00:00.000Z",
+      expiresAt: "2026-10-07T00:15:00.000Z",
+      controlsReport,
+    },
+  };
+}
+
+test("publication observation binds complete tags/download/stage and freezes its snapshot", () => {
+  const f = publicationObservationFixture();
+  const result = validatePublicationObservation(
+    f.observation,
+    f.head,
+    "2026-10-07T00:01:00.000Z",
+  );
+  assert.equal(
+    result.distTagsDigest,
+    sha256(canonicalJson(f.observation.distTags)),
+  );
+  f.observation.distTags.latest = "0.1.0";
+  assert.equal(result.distTags.latest, "0.0.0-bootstrap.0");
+  assert.ok(Object.isFrozen(result.distTags));
+});
+test.each([
+  "stageId",
+  "downloadedTarballSha256",
+  "expectedPriorDigest",
+  "sourceRevision",
+  "candidateManifestDigest",
+])(
+  "publication refuses substituted %s without a consumed authority label",
+  (field) => {
+    const f = publicationObservationFixture();
+    f.observation[field] =
+      field === "stageId" ? "other" : `sha256:${"c".repeat(64)}`;
+    assert.throws(() =>
+      validatePublicationObservation(
+        f.observation,
+        f.head,
+        "2026-10-07T00:01:00.000Z",
+      ),
+    );
+  },
+);
+test("consumption preserves the original expiry and all tag mappings", () => {
+  const f = publicationObservationFixture();
+  f.head.transition = "publication-checkpoint";
+  f.head.checkpoint = validatePublicationObservation(
+    f.observation,
+    { ...f.head, transition: "stage-recorded" },
+    "2026-10-07T00:01:00.000Z",
+  );
+  assert.equal(
+    validatePublicationObservation(
+      f.observation,
+      f.head,
+      "2026-10-07T00:02:00.000Z",
+    ).stageId,
+    "stage-1",
+  );
+  for (const mutate of [
+    (o) => {
+      o.expiresAt = "2026-10-07T00:14:00.000Z";
+    },
+    (o) => {
+      o.distTags.other = "0.0.0-bootstrap.0";
+    },
+    (o) => {
+      o.distTags.latest = "0.1.0";
+    },
+  ]) {
+    const value = { ...f.observation, distTags: { ...f.observation.distTags } };
+    mutate(value);
+    assert.throws(() =>
+      validatePublicationObservation(value, f.head, "2026-10-07T00:02:00.000Z"),
+    );
+  }
+  assert.throws(() =>
+    validatePublicationObservation(
+      f.observation,
+      f.head,
+      f.observation.expiresAt,
+    ),
+  );
 });
 function fixture(kind = "product", response = "received") {
   const checkpoint = {

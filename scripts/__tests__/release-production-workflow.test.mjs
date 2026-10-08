@@ -105,6 +105,8 @@ const requireProbeGraph = (workflow) => {
     "prepare-draft",
     "stage-candidate",
     "record-stage",
+    "verify-publication",
+    "continue-publication",
   ]);
   expect(workflow.on.workflow_dispatch.inputs.operation.options).toEqual([
     "prepare-draft",
@@ -112,6 +114,10 @@ const requireProbeGraph = (workflow) => {
     "prepare-probe",
     "consume-probe",
     "reconcile-probe",
+    "prepare-publication",
+    "consume-publication",
+    "record-approval",
+    "continue-publication",
   ]);
   expect(workflow.jobs["verify-candidate"].if).toContain("refs/heads/main");
   const verify = workflow.jobs["verify-candidate"].steps;
@@ -122,7 +128,7 @@ const requireProbeGraph = (workflow) => {
     run: "npm pack ./artifacts/release-probe-source --ignore-scripts --json --pack-destination ./artifacts/release-probe",
   });
   expect(workflow.jobs["prepare-draft"].if).toBe(
-    "inputs.operation != 'prepare-probe'",
+    "inputs.operation != 'prepare-probe' && inputs.operation != 'continue-publication'",
   );
   for (const name of ["stage-candidate", "record-stage"]) {
     const intent = workflow.jobs[name].steps.find(
@@ -229,4 +235,54 @@ test("missing actual semantic evidence stops before token or API acquisition", (
   expect(
     entry.indexOf('process.argv[2] === "--verify-admission"'),
   ).toBeLessThan(entry.indexOf("createGitHubReleaseStore({"));
+});
+
+const requirePublicationSeparation = (workflow) => {
+  const verify = workflow.jobs["verify-publication"];
+  const publish = workflow.jobs["continue-publication"];
+  expect(verify.permissions).toEqual({ contents: "read", actions: "read" });
+  expect(verify.needs).toBe("verify-candidate");
+  expect(verify.environment).toBeUndefined();
+  expect(publish.permissions).toEqual({ contents: "write", actions: "read" });
+  expect(publish.environment).toBe("npm-release");
+  expect(publish.needs).toEqual(["verify-candidate", "verify-publication"]);
+  for (const job of [verify, publish])
+    expect(job.if).toBe(
+      "inputs.operation == 'continue-publication' && github.ref == 'refs/tags/v0.1.0'",
+    );
+  const publisher = publish.steps.find(
+    (step) => step.run === "node scripts/record-release-stage.mjs",
+  );
+  expect(publisher.env.RELEASE_REGISTRY_RESULT).toBe(
+    "${{ needs.verify-publication.outputs.registry-result }}",
+  );
+  expect(JSON.stringify(publish)).not.toMatch(
+    /--verify-publication|\bnpm (?:install|stage|publish)|id-token/u,
+  );
+  expect(verify.outputs).toEqual({
+    "registry-result": "${{ steps.verify.outputs.registry-result }}",
+  });
+};
+test("installed registry verification is separate from no-OIDC same-tag publication", () => {
+  requirePublicationSeparation(parse(source));
+  for (const mutate of [
+    (w) => {
+      w.jobs["verify-publication"].permissions.contents = "write";
+    },
+    (w) => {
+      w.jobs["continue-publication"].permissions["id-token"] = "write";
+    },
+    (w) => {
+      w.jobs["continue-publication"].if = "github.ref == 'refs/heads/main'";
+    },
+    (w) => {
+      w.jobs["continue-publication"].steps.find(
+        (s) => s.run === "node scripts/record-release-stage.mjs",
+      ).env.RELEASE_REGISTRY_RESULT = "${{ inputs.owner-observation }}";
+    },
+  ]) {
+    const workflow = parse(source);
+    mutate(workflow);
+    expect(() => requirePublicationSeparation(workflow)).toThrow();
+  }
 });
