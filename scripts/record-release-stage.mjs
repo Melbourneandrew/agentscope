@@ -6,8 +6,13 @@ import {
   lstatSync,
   constants,
   appendFileSync,
+  mkdirSync,
+  writeFileSync,
 } from "node:fs";
-import { resolveContainedArtifactPath } from "./release-lane/candidate.mjs";
+import {
+  resolveContainedArtifactPath,
+  verifyInertProbeTarball,
+} from "./release-lane/candidate.mjs";
 import { createGitHubReleaseStore } from "./release-lane/github-release-store.mjs";
 import {
   prepareDraft,
@@ -18,10 +23,20 @@ import {
   bindIntentTuple,
   stageRetainedCandidate,
   recordStageFromJob,
+  prepareProbeMaterial,
+  prepareProbeIntent,
+  stageRetainedProbe,
+  recordProbeStagePacket,
+  reconcileProbePacket,
 } from "./release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "./release-lane/validation.mjs";
 import { requireActualSemanticAdmission } from "./release-lane/admission.mjs";
 import { validateStageResult } from "./release-lane/stage-result.mjs";
+import {
+  validateProbeMaterial,
+  validateProbeStagePacket,
+  validateProbeInvocationReservation,
+} from "./release-lane/production-recorder.mjs";
 
 // Product composition remains disabled until actual semantic admission exists.
 // Separate protected jobs own the stage OIDC and recorder GitHub permissions.
@@ -65,7 +80,7 @@ requireActualSemanticAdmission();
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
   process.env.GITHUB_REPOSITORY !== "Melbourneandrew/agentscope" ||
-  process.env.GITHUB_REF !== "refs/tags/v0.1.0" ||
+  !["refs/tags/v0.1.0", "refs/heads/main"].includes(process.env.GITHUB_REF) ||
   process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
   !/^[a-f0-9]{40}$/u.test(process.env.GITHUB_SHA ?? "")
 )
@@ -74,12 +89,128 @@ if (
 // through the existing operator session and bound to the authenticated stage
 // checkpoint; the read-only Actions token cannot inspect those settings.
 if (process.argv[2] === "--verify-admission") process.exit(0);
+const eventBytes = readBounded(process.env.GITHUB_EVENT_PATH, 65_536);
+const event = JSON.parse(eventBytes.toString("utf8"));
 const mode = process.argv[2];
 if (!(
   process.argv.length === 2 ||
-  (process.argv.length === 3 && ["--stage", "--record-stage"].includes(mode))
+  (process.argv.length === 3 &&
+    ["--stage", "--record-stage", "--prepare-probe", "--verify-probe"].includes(
+      mode,
+    ))
 ))
   fail();
+const probeOperation = [
+  "prepare-probe",
+  "consume-probe",
+  "reconcile-probe",
+].includes(event.inputs.operation);
+if (
+  (probeOperation && process.env.GITHUB_REF !== "refs/heads/main") ||
+  (!probeOperation && process.env.GITHUB_REF !== "refs/tags/v0.1.0")
+)
+  fail();
+if (mode === "--prepare-probe" || mode === "--verify-probe") {
+  if (
+    !["prepare-probe", "consume-probe", "reconcile-probe"].includes(
+      event.inputs.operation,
+    ) ||
+    (mode === "--prepare-probe" && event.inputs.operation !== "prepare-probe")
+  )
+    fail();
+  const runId = Number(process.env.GITHUB_RUN_ID);
+  const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
+  if (
+    !Number.isSafeInteger(runId) ||
+    runId < 1 ||
+    !Number.isSafeInteger(runAttempt) ||
+    runAttempt < 1
+  )
+    fail();
+  const version = `0.0.0-oidc-probe.${runId}-${runAttempt}`;
+  if (mode === "--prepare-probe") {
+    mkdirSync("artifacts/release-probe-source", { recursive: true });
+    mkdirSync("artifacts/release-probe", { recursive: true });
+    writeFileSync(
+      "artifacts/release-probe-source/package.json",
+      canonicalJson({
+        name: "agentscope-cli",
+        version,
+        description:
+          "Inert trusted-publisher probe; not the Agentscope product",
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+  } else {
+    if (event.inputs.operation === "prepare-probe") {
+      const tarballPath = resolveContainedArtifactPath(
+        "artifacts/release-probe",
+        `agentscope-cli-${version}.tgz`,
+        "inert probe",
+      );
+      const material = prepareProbeMaterial({
+        tarballPath,
+        runId,
+        runAttempt,
+        sourceRevision: process.env.GITHUB_SHA,
+        executingDigests: executingDigests(),
+      });
+      writeFileSync(
+        "artifacts/release-probe/probe-material.json",
+        canonicalJson(material),
+        { flag: "wx", mode: 0o600 },
+      );
+    } else if (event.inputs.operation === "consume-probe") {
+      const material = validateProbeMaterial(
+        JSON.parse(
+          readBounded(
+            resolveContainedArtifactPath(
+              "artifacts/release-probe",
+              "probe-material.json",
+              "probe material",
+            ),
+            16_384,
+          ).toString("utf8"),
+        ),
+      );
+      if (
+        sha256(canonicalJson(material)) !==
+          event.inputs["candidate-manifest-digest"] ||
+        canonicalJson({
+          workflowDigest: material.workflowDigest,
+          releaseScriptsDigest: material.releaseScriptsDigest,
+        }) !== canonicalJson(executingDigests())
+      )
+        fail();
+      invocationReservation(material);
+      verifyInertProbeTarball({
+        tarballPath: resolveContainedArtifactPath(
+          "artifacts/release-probe",
+          material.tarballFilename,
+          "inert probe",
+        ),
+        tuple: {
+          kind: "probe",
+          package: "agentscope-cli",
+          version: material.version,
+          distTag: "oidc-probe",
+          protectedTag: null,
+          tarballSha256: material.tarballSha256,
+          integrity: material.integrity,
+        },
+      });
+    } else {
+      const supplied = JSON.parse(event.inputs["owner-observation"]);
+      if (
+        typeof supplied.probePacket !== "string" ||
+        Buffer.byteLength(supplied.probePacket) > 8192
+      )
+        fail();
+      retainedProbePacket(supplied.probePacket);
+    }
+  }
+  process.exit(0);
+}
 const store = createGitHubReleaseStore({
   token: process.env.GITHUB_TOKEN,
   deadline,
@@ -93,11 +224,10 @@ if (
   run.triggering_actor?.login !== process.env.GITHUB_TRIGGERING_ACTOR
 )
   fail();
-await store.protectedSource(process.env.GITHUB_SHA);
+if (probeOperation) await store.protectedMainSource(process.env.GITHUB_SHA);
+else await store.protectedSource(process.env.GITHUB_SHA);
 // GitHub supplies this authenticated event inside the protected job. Ordinary
 // workstation files and owner labels do not satisfy the runner/API checks.
-const eventBytes = readBounded(process.env.GITHUB_EVENT_PATH, 65_536);
-const event = JSON.parse(eventBytes.toString("utf8"));
 if (event.sender?.login !== run.actor.login) fail();
 const identity = {
   runId: run.id,
@@ -135,6 +265,58 @@ function executingDigests() {
     ),
   };
 }
+function invocationReservation(materialInput) {
+  const material = validateProbeMaterial(materialInput);
+  // Fixed version namespace from authenticated checked-out protected main.
+  // Ordinary append-only review forbids amending/reissuing this reservation.
+  const bytes = readBounded(
+    resolveContainedArtifactPath(
+      "release-records/probes",
+      `${material.version}.intent.json`,
+      "probe invocation reservation",
+    ),
+    16_384,
+  );
+  const record = validateProbeInvocationReservation(
+    JSON.parse(bytes.toString("utf8")),
+    material,
+  );
+  const canonical = canonicalJson(record);
+  const encoded = bytes.toString("utf8");
+  if (
+    encoded !== `${canonical}\n` &&
+    encoded !== `${JSON.stringify(JSON.parse(canonical), null, 2)}\n`
+  )
+    fail();
+  return record;
+}
+function retainedProbePacket(encoded) {
+  if (typeof encoded !== "string" || Buffer.byteLength(encoded) > 8192) fail();
+  const now = new Date().toISOString();
+  const supplied = validateProbeStagePacket(JSON.parse(encoded), now);
+  const packet = validateProbeStagePacket(
+    JSON.parse(
+      readBounded(
+        resolveContainedArtifactPath(
+          "artifacts/reconciled-probe",
+          "probe-stage-packet.json",
+          "retained probe stage",
+        ),
+        16_384,
+      ).toString("utf8"),
+    ),
+    now,
+  );
+  if (
+    !/^[1-9][0-9]*$/u.test(event.inputs["candidate-run-id"] ?? "") ||
+    Number(event.inputs["candidate-run-id"]) !== packet.runId ||
+    canonicalJson(supplied) !== canonicalJson(packet) ||
+    invocationReservation(packet.intent.material).digest !==
+      packet.intent.invocationIntent.digest
+  )
+    fail();
+  return packet;
+}
 function output(name, value) {
   if (
     !process.env.GITHUB_OUTPUT ||
@@ -162,6 +344,134 @@ const candidate = () => ({
     "candidate",
   ),
 });
+const readProbe = (name) =>
+  readBounded(
+    resolveContainedArtifactPath(
+      "artifacts/release-probe",
+      name,
+      "probe artifact",
+    ),
+    65_536,
+  );
+const probeMaterial = () =>
+  JSON.parse(readProbe("probe-material.json").toString("utf8"));
+function retainProbe(name, value) {
+  mkdirSync("artifacts/retained-probe", { recursive: true });
+  writeFileSync(`artifacts/retained-probe/${name}`, canonicalJson(value), {
+    flag: "wx",
+    mode: 0o600,
+  });
+}
+function dependentStageOutput(tuple) {
+  // Fixed needs output only, never an event input; uncertainty is not retry.
+  const encoded = process.env.RELEASE_STAGE_RESULT ?? "";
+  if (encoded && encoded.length <= 16_384) {
+    try {
+      const supplied = JSON.parse(encoded);
+      validateStageResult(supplied, tuple);
+      return supplied;
+    } catch {
+      /* Preserve uncertainty without inventing a stage identifier. */
+    }
+  }
+  return {
+    schemaVersion: 1,
+    tuple,
+    response: encoded ? "ambiguous" : "missing",
+    stageId: null,
+  };
+}
+if (probeOperation) {
+  const executing = executingDigests();
+  if (event.inputs.operation === "consume-probe") {
+    if (!mode) {
+      const material = probeMaterial();
+      if (
+        sha256(canonicalJson(material)) !==
+        event.inputs["candidate-manifest-digest"]
+      )
+        fail();
+      const intent = await prepareProbeIntent(
+        store,
+        {
+          identity,
+          material,
+          executingDigests: executing,
+          transactionId: event.inputs["transaction-id"],
+          invocationIntent: invocationReservation(material),
+        },
+        JSON.parse(event.inputs["owner-observation"]),
+      );
+      retainProbe("probe-intent.json", intent);
+      output("intent-digest", intent.digest);
+    } else {
+      const intent = JSON.parse(
+        readBounded(
+          resolveContainedArtifactPath(
+            "artifacts/retained-probe",
+            "probe-intent.json",
+            "probe intent",
+          ),
+          16_384,
+        ).toString("utf8"),
+      );
+      const input = {
+        identity,
+        intent,
+        intentDigest: process.env.RELEASE_INTENT_DIGEST,
+        executingDigests: executing,
+      };
+      if (
+        invocationReservation(intent.material).digest !==
+        intent.invocationIntent.digest
+      )
+        fail();
+      if (mode === "--stage") {
+        const result = await stageRetainedProbe(
+          store,
+          input,
+          resolveContainedArtifactPath(
+            "artifacts/release-probe",
+            intent.material.tarballFilename,
+            "inert probe",
+          ),
+          deadline,
+        );
+        output("stage-result", canonicalJson(result));
+      } else if (mode === "--record-stage") {
+        retainProbe(
+          "probe-stage-packet.json",
+          await recordProbeStagePacket(
+            store,
+            input,
+            dependentStageOutput(intent.tuple),
+          ),
+        );
+      } else fail();
+    }
+  } else if (event.inputs.operation === "reconcile-probe" && !mode) {
+    // Owner inspection identifies the actual retained job packet; it cannot
+    // replace its artifact provenance. Fixed API checks authenticate its run.
+    const supplied = JSON.parse(event.inputs["owner-observation"]);
+    if (
+      typeof supplied.probePacket !== "string" ||
+      Buffer.byteLength(supplied.probePacket) > 8192
+    )
+      fail();
+    const packet = retainedProbePacket(supplied.probePacket);
+    const report = { ...supplied };
+    delete report.probePacket;
+    retainProbe(
+      "probe-terminal-manifest.json",
+      await reconcileProbePacket(
+        store,
+        { identity, packet, executingDigests: executing },
+        report,
+      ),
+    );
+  } else fail();
+  process.exit(0);
+}
 if (mode) {
   if (
     event.inputs.operation !== "consume-intent" ||
@@ -192,29 +502,12 @@ if (mode) {
       intent.tuple,
       executingDigests(),
     );
-    const encoded = process.env.RELEASE_STAGE_RESULT ?? "";
-    let result = {
-      schemaVersion: 1,
-      tuple,
-      response: encoded ? "ambiguous" : "missing",
-      stageId: null,
-    };
-    if (encoded && encoded.length <= 16_384) {
-      try {
-        const supplied = JSON.parse(encoded);
-        validateStageResult(supplied, tuple);
-        result = supplied;
-      } catch {
-        // Malformed fixed job output is uncertainty, never an invented stage ID
-        // or a request to execute another mutation.
-      }
-    }
     await recordStageFromJob(store, {
       releaseId,
       intentDigest: process.env.RELEASE_INTENT_DIGEST,
       identity,
       executingDigests: executingDigests(),
-      stageResult: result,
+      stageResult: dependentStageOutput(tuple),
       observedAt: new Date().toISOString(),
     });
   }

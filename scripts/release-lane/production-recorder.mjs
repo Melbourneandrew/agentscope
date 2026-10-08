@@ -145,6 +145,226 @@ export function validateStageCheckpoint(input) {
   return tuple;
 }
 
+// Production probe records do not impersonate a product draft or tag. These
+// projections remain inert; the protected composition authenticates API runs.
+export function validateProbeMaterial(input) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "schemaVersion",
+    "kind",
+    "preparationRunId",
+    "preparationRunAttempt",
+    "sourceRevision",
+    "workflowDigest",
+    "releaseScriptsDigest",
+    "version",
+    "tarballFilename",
+    "tarballSha256",
+    "integrity",
+    "inventoryDigest",
+  ]);
+  if (
+    value.schemaVersion !== 1 ||
+    value.kind !== "inert-probe-material" ||
+    !Number.isSafeInteger(value.preparationRunId) ||
+    value.preparationRunId < 1 ||
+    !Number.isSafeInteger(value.preparationRunAttempt) ||
+    value.preparationRunAttempt < 1 ||
+    !/^[a-f0-9]{40}$/u.test(value.sourceRevision) ||
+    value.version !==
+      `0.0.0-oidc-probe.${value.preparationRunId}-${value.preparationRunAttempt}` ||
+    value.tarballFilename !== `agentscope-cli-${value.version}.tgz` ||
+    !/^sha512-[A-Za-z0-9+/]{86}==$/u.test(value.integrity)
+  )
+    fail();
+  for (const key of [
+    "workflowDigest",
+    "releaseScriptsDigest",
+    "tarballSha256",
+    "inventoryDigest",
+  ])
+    if (typeof value[key] !== "string" || !digest.test(value[key])) fail();
+  return value;
+}
+
+// Authenticated checkout of this reviewed append-only per-version file is the
+// reservation source. Its digest alone is not permission to invoke npm.
+export function validateProbeInvocationReservation(input, materialInput) {
+  const value = snapshotRecorderInput(input);
+  const material = validateProbeMaterial(materialInput);
+  recorderExactKeys(value, [
+    "schemaVersion",
+    "kind",
+    "repository",
+    "workflowPath",
+    "workflowDatabaseId",
+    "expectedRunNumber",
+    "runAttempt",
+    "ownerId",
+    "ownerLogin",
+    "version",
+    "preparationRunId",
+    "preparationRunAttempt",
+    "preparationSourceRevision",
+    "preparedMaterialDigest",
+    "tarballSha256",
+    "integrity",
+    "workflowDigest",
+    "releaseScriptsDigest",
+    "digest",
+  ]);
+  const { digest: actualDigest, ...unsigned } = value;
+  if (
+    value.schemaVersion !== 1 ||
+    value.kind !== "reserved-inert-probe-invocation" ||
+    value.repository !== "Melbourneandrew/agentscope" ||
+    value.workflowPath !== ".github/workflows/release.yml" ||
+    !Number.isSafeInteger(value.workflowDatabaseId) ||
+    value.workflowDatabaseId < 1 ||
+    !Number.isSafeInteger(value.expectedRunNumber) ||
+    value.expectedRunNumber < 1 ||
+    value.runAttempt !== 1 ||
+    value.ownerId !== 25971425 ||
+    value.ownerLogin !== "Melbourneandrew" ||
+    value.version !== material.version ||
+    value.preparationRunId !== material.preparationRunId ||
+    value.preparationRunAttempt !== material.preparationRunAttempt ||
+    value.preparationSourceRevision !== material.sourceRevision ||
+    value.preparedMaterialDigest !== sha256(canonicalJson(material)) ||
+    value.tarballSha256 !== material.tarballSha256 ||
+    value.integrity !== material.integrity ||
+    value.workflowDigest !== material.workflowDigest ||
+    value.releaseScriptsDigest !== material.releaseScriptsDigest ||
+    actualDigest !== sha256(canonicalJson(unsigned))
+  )
+    fail();
+  return value;
+}
+
+function validateProbeOwnerCheckpoint(checkpoint, tuple, observedAt, forStage) {
+  recorderExactKeys(checkpoint, [
+    "phase",
+    "sourceRevision",
+    "candidateManifestDigest",
+    "issuedAt",
+    "expiresAt",
+    "controlsReport",
+    "pendingStagesState",
+    "probeVersionState",
+    "consumedAt",
+    "ownerIdentity",
+    "state",
+    "authenticationDigest",
+    "controlsReportDigest",
+    "controlsInspectedAt",
+  ]);
+  if (
+    tuple.ownerCheckpointDigest !== sha256(canonicalJson(checkpoint)) ||
+    checkpoint.phase !== "pre-probe" ||
+    checkpoint.sourceRevision !== tuple.sourceRevision ||
+    checkpoint.candidateManifestDigest !== tuple.candidateManifestDigest ||
+    checkpoint.pendingStagesState !== "none-conflicting" ||
+    checkpoint.probeVersionState !== "never-staged" ||
+    checkpoint.ownerIdentity !== "Melbourneandrew" ||
+    checkpoint.state !== "consumed-for-probe" ||
+    typeof checkpoint.authenticationDigest !== "string" ||
+    !digest.test(checkpoint.authenticationDigest)
+  )
+    fail();
+  const controls = projectOperatorControlsReport(
+    checkpoint.controlsReport,
+    checkpoint.expiresAt,
+    checkpoint.consumedAt,
+  );
+  if (
+    controls.controlsReportDigest !== checkpoint.controlsReportDigest ||
+    controls.controlsInspectedAt !== checkpoint.controlsInspectedAt ||
+    controls.controlsInspectedAt !== checkpoint.issuedAt
+  )
+    fail();
+  checkpointWindow(checkpoint, observedAt);
+  if (forStage && Date.parse(observedAt) >= Date.parse(checkpoint.expiresAt))
+    fail();
+}
+
+export function validateProbeIntent(input, observedAt, forStage = false) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "schemaVersion",
+    "kind",
+    "runId",
+    "runAttempt",
+    "sourceRevision",
+    "material",
+    "tuple",
+    "ownerCheckpoint",
+    "invocationIntent",
+    "digest",
+  ]);
+  const material = validateProbeMaterial(value.material);
+  validateProbeInvocationReservation(value.invocationIntent, material);
+  const tuple = validateStageTuple(value.tuple);
+  const { digest: actualDigest, ...unsigned } = value;
+  if (
+    value.schemaVersion !== 1 ||
+    value.kind !== "probe-stage-intent" ||
+    !Number.isSafeInteger(value.runId) ||
+    value.runId < 1 ||
+    !Number.isSafeInteger(value.runAttempt) ||
+    value.runAttempt < 1 ||
+    value.runAttempt !== 1 ||
+    actualDigest !== sha256(canonicalJson(unsigned)) ||
+    tuple.kind !== "probe" ||
+    tuple.sourceRevision !== value.sourceRevision ||
+    tuple.candidateManifestDigest !== sha256(canonicalJson(material)) ||
+    tuple.tarballSha256 !== material.tarballSha256 ||
+    tuple.integrity !== material.integrity ||
+    tuple.version !== material.version ||
+    tuple.workflowDigest !== material.workflowDigest ||
+    tuple.releaseScriptsDigest !== material.releaseScriptsDigest
+  )
+    fail();
+  validateProbeOwnerCheckpoint(
+    value.ownerCheckpoint,
+    tuple,
+    observedAt,
+    forStage,
+  );
+  return value;
+}
+
+export function validateProbeStagePacket(input, observedAt) {
+  const packet = snapshotRecorderInput(input);
+  recorderExactKeys(packet, [
+    "schemaVersion",
+    "kind",
+    "sourceRevision",
+    "runId",
+    "runAttempt",
+    "intent",
+    "stageResult",
+    "stageResultDigest",
+    "state",
+    "digest",
+  ]);
+  const { digest: packetDigest, ...unsigned } = packet;
+  const intent = validateProbeIntent(packet.intent, observedAt, false);
+  const result = validateStageResult(packet.stageResult, intent.tuple);
+  if (
+    packetDigest !== sha256(canonicalJson(unsigned)) ||
+    packet.schemaVersion !== 1 ||
+    packet.kind !== "retained-probe-stage" ||
+    packet.state !== "pending-owner-reconciliation" ||
+    result.response !== "received" ||
+    result.stageResultDigest !== packet.stageResultDigest ||
+    packet.sourceRevision !== intent.sourceRevision ||
+    packet.runId !== intent.runId ||
+    packet.runAttempt !== intent.runAttempt
+  )
+    fail();
+  return packet;
+}
+
 // Inert proposal only. The integration must authenticate head/checkpoint/stage
 // provenance, recheck external controls and CAS this exact prior head before IO.
 // No hash or accepted input here is an authorization to append, stage or approve.

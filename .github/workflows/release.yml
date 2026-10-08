@@ -5,7 +5,14 @@ on:
       operation:
         required: true
         type: choice
-        options: [prepare-draft, consume-intent]
+        options:
+          [
+            prepare-draft,
+            consume-intent,
+            prepare-probe,
+            consume-probe,
+            reconcile-probe,
+          ]
       candidate-run-id:
         required: true
         type: string
@@ -34,7 +41,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-candidate:
-    if: github.ref == 'refs/tags/v0.1.0'
+    if: github.ref == 'refs/tags/v0.1.0' || (github.ref == 'refs/heads/main' && contains(fromJSON('["prepare-probe","consume-probe","reconcile-probe"]'), inputs.operation))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -50,12 +57,14 @@ jobs:
       - name: Require nonprivileged semantic admission
         run: node scripts/record-release-stage.mjs --verify-admission
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: github.ref == 'refs/tags/v0.1.0'
         with:
           name: release-certified-candidate
           path: artifacts/release-candidate
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
-      - run: >-
+      - if: github.ref == 'refs/tags/v0.1.0'
+        run: >-
           node scripts/verify-release-candidate.mjs
           --artifact-root artifacts/release-candidate
           --manifest-relative candidate-manifest.json
@@ -65,7 +74,40 @@ jobs:
           --source-revision "$GITHUB_SHA" --protected-tag v0.1.0
         env:
           CANDIDATE_MANIFEST_DIGEST: ${{ inputs.candidate-manifest-digest }}
+      - if: inputs.operation == 'prepare-probe'
+        run: npm install -g npm@11.17.0 --ignore-scripts
+      - if: inputs.operation == 'prepare-probe'
+        run: node scripts/record-release-stage.mjs --prepare-probe
+      - if: inputs.operation == 'prepare-probe'
+        run: npm pack ./artifacts/release-probe-source --ignore-scripts --json --pack-destination ./artifacts/release-probe
+      - if: inputs.operation == 'prepare-probe'
+        run: node scripts/record-release-stage.mjs --verify-probe
+      - if: inputs.operation == 'prepare-probe'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-inert-probe
+          path: artifacts/release-probe
+          if-no-files-found: error
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-inert-probe
+          path: artifacts/release-probe
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - if: inputs.operation == 'consume-probe'
+        run: node scripts/record-release-stage.mjs --verify-probe
+      - if: inputs.operation == 'reconcile-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-probe-stage-${{ fromJSON(fromJSON(inputs.owner-observation).probePacket).runAttempt }}
+          path: artifacts/reconciled-probe
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - if: inputs.operation == 'reconcile-probe'
+        run: node scripts/record-release-stage.mjs --verify-probe
   prepare-draft:
+    if: inputs.operation != 'prepare-probe'
     needs: verify-candidate
     outputs:
       intent-digest: ${{ steps.record.outputs.intent-digest }}
@@ -83,9 +125,24 @@ jobs:
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: github.ref == 'refs/tags/v0.1.0'
         with:
           name: release-certified-candidate
           path: artifacts/release-candidate
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-inert-probe
+          path: artifacts/release-probe
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - if: inputs.operation == 'reconcile-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-probe-stage-${{ fromJSON(fromJSON(inputs.owner-observation).probePacket).runAttempt }}
+          path: artifacts/reconciled-probe
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
       - id: record
@@ -94,8 +151,20 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           CANDIDATE_MANIFEST_DIGEST: ${{ inputs.candidate-manifest-digest }}
           RELEASE_TRANSACTION_ID: ${{ inputs.transaction-id }}
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-probe-intent-${{ github.run_attempt }}
+          path: artifacts/retained-probe/probe-intent.json
+          if-no-files-found: error
+      - if: inputs.operation == 'reconcile-probe'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-probe-terminal-${{ github.run_attempt }}
+          path: artifacts/retained-probe/probe-terminal-manifest.json
+          if-no-files-found: error
   stage-candidate:
-    if: inputs.operation == 'consume-intent'
+    if: inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe'
     needs: [verify-candidate, prepare-draft]
     environment: npm-release
     runs-on: ubuntu-latest
@@ -115,18 +184,31 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: npm install -g npm@11.17.0 --ignore-scripts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: github.ref == 'refs/tags/v0.1.0'
         with:
           name: release-certified-candidate
           path: artifacts/release-candidate
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-inert-probe
+          path: artifacts/release-probe
+          run-id: ${{ inputs.candidate-run-id }}
+          github-token: ${{ github.token }}
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-probe-intent-${{ github.run_attempt }}
+          path: artifacts/retained-probe
       - id: stage
         run: node scripts/record-release-stage.mjs --stage
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_INTENT_DIGEST: ${{ needs.prepare-draft.outputs.intent-digest }}
   record-stage:
-    if: always() && inputs.operation == 'consume-intent' && needs.prepare-draft.result == 'success'
+    if: always() && (inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe') && needs.prepare-draft.result == 'success'
     needs: [prepare-draft, stage-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -140,8 +222,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-probe-intent-${{ github.run_attempt }}
+          path: artifacts/retained-probe
       - run: node scripts/record-release-stage.mjs --record-stage
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_INTENT_DIGEST: ${{ needs.prepare-draft.outputs.intent-digest }}
           RELEASE_STAGE_RESULT: ${{ needs.stage-candidate.outputs.stage-result }}
+      - if: inputs.operation == 'consume-probe'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-probe-stage-${{ github.run_attempt }}
+          path: artifacts/retained-probe/probe-stage-packet.json
+          if-no-files-found: error

@@ -71,6 +71,22 @@ function id(value) {
   return value;
 }
 
+// Ancestry only; enforcement is inspected by the existing fresh operator
+// controls checkpoint. This read does not mint probe or publishing authority.
+async function assertMainAncestry(request, sourceRevision) {
+  if (
+    typeof sourceRevision !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(sourceRevision)
+  )
+    fail();
+  const comparison = await request("GET", `/compare/${sourceRevision}...main`);
+  if (
+    !["ahead", "identical"].includes(comparison.status) ||
+    comparison.merge_base_commit?.sha !== sourceRevision
+  )
+    fail();
+}
+
 export function createGitHubReleaseStore({
   token,
   deadline,
@@ -89,6 +105,8 @@ export function createGitHubReleaseStore({
     run: (runId) => request("GET", `/actions/runs/${id(runId)}`),
     approvals: (runId) =>
       request("GET", `/actions/runs/${id(runId)}/approvals`),
+    protectedMainSource: (sourceRevision) =>
+      assertMainAncestry(request, sourceRevision),
     async protectedSource(sourceRevision) {
       if (!/^[a-f0-9]{40}$/u.test(sourceRevision)) fail();
       const ref = await request("GET", "/git/ref/tags/v0.1.0");
@@ -101,15 +119,7 @@ export function createGitHubReleaseStore({
         tag.object.sha !== sourceRevision
       )
         fail();
-      const comparison = await request(
-        "GET",
-        `/compare/${sourceRevision}...main`,
-      );
-      if (
-        !["ahead", "identical"].includes(comparison.status) ||
-        comparison.merge_base_commit?.sha !== sourceRevision
-      )
-        fail();
+      await assertMainAncestry(request, sourceRevision);
     },
     release: (releaseId) => request("GET", `/releases/${id(releaseId)}`),
     releases: () => request("GET", "/releases?per_page=100"),

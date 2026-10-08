@@ -18,6 +18,8 @@ import { parse, stringify } from "yaml";
 
 import {
   resolveContainedArtifactPath,
+  inspectCandidateTarball,
+  verifyInertProbeTarball,
   verifyCandidateArtifact,
 } from "../release-lane/candidate.mjs";
 import {
@@ -211,6 +213,114 @@ test("verifies one exact certified agentscope-cli tarball without rebuilding", (
     sourceRevision,
     version: "0.1.0",
   });
+});
+
+test("inert probe reuses bounded inspection without product certification", () => {
+  const manifest = {
+    name: "agentscope-cli",
+    version: "0.0.0-oidc-probe.nonce-1",
+    description: "Inert trusted-publisher check; not the Agentscope product",
+  };
+  const fixture = createCandidateFixture({
+    omitBin: true,
+    packageManifest: manifest,
+  });
+  const inspected = inspectCandidateTarball(fixture.tarballPath);
+  const binding = {
+    kind: "probe",
+    transactionId: "probe-nonce-1",
+    candidateManifestDigest,
+    tarballSha256: inspected.sha256,
+    integrity: inspected.integrity,
+    sourceRevision,
+    protectedTag: null,
+    package: "agentscope-cli",
+    version: manifest.version,
+    distTag: "oidc-probe",
+    workflowDigest,
+    releaseScriptsDigest: workflowDigest,
+    ownerCheckpointDigest: workflowDigest,
+  };
+  assert.deepEqual(
+    verifyInertProbeTarball({
+      tarballPath: fixture.tarballPath,
+      tuple: binding,
+    }),
+    inspected,
+  );
+  for (const field of [
+    "bin",
+    "scripts",
+    "dependencies",
+    "optionalDependencies",
+    "publishConfig",
+  ]) {
+    const unsafe = createCandidateFixture({
+      omitBin: true,
+      packageManifest: { ...manifest, [field]: {} },
+    });
+    const facts = inspectCandidateTarball(unsafe.tarballPath);
+    assert.throws(
+      () =>
+        verifyInertProbeTarball({
+          tarballPath: unsafe.tarballPath,
+          tuple: {
+            ...binding,
+            tarballSha256: facts.sha256,
+            integrity: facts.integrity,
+          },
+        }),
+      /publishing metadata/u,
+    );
+  }
+  const executable = createCandidateFixture({ packageManifest: manifest });
+  const facts = inspectCandidateTarball(executable.tarballPath);
+  assert.throws(
+    () =>
+      verifyInertProbeTarball({
+        tarballPath: executable.tarballPath,
+        tuple: {
+          ...binding,
+          tarballSha256: facts.sha256,
+          integrity: facts.integrity,
+        },
+      }),
+    /inventory drifted/u,
+  );
+  assert.throws(
+    () =>
+      verifyInertProbeTarball({
+        tarballPath: fixture.tarballPath,
+        tuple: { ...binding, tarballSha256: candidateTarballSha256 },
+      }),
+    /identity/u,
+  );
+  assert.throws(
+    () =>
+      verifyInertProbeTarball({
+        tarballPath: fixture.tarballPath,
+        tuple: {
+          ...binding,
+          kind: "product",
+          version: "0.1.0",
+          distTag: "alpha",
+          protectedTag: "v0.1.0",
+        },
+      }),
+    /product tuple/u,
+  );
+  const linked = join(fixture.root, "linked-probe.tgz");
+  symlinkSync(fixture.tarballPath, linked);
+  assert.throws(
+    () => verifyInertProbeTarball({ tarballPath: linked, tuple: binding }),
+    /regular tarball/u,
+  );
+  const oversized = join(fixture.root, "oversized-probe.tgz");
+  writeFileSync(oversized, Buffer.alloc(65_537));
+  assert.throws(
+    () => verifyInertProbeTarball({ tarballPath: oversized, tuple: binding }),
+    /bounded regular/u,
+  );
 });
 
 test("resolves only regular files contained by the downloaded artifact root", () => {
