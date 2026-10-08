@@ -50,7 +50,7 @@ const authenticationSource = [
 describe("pinned upstream final-ledger lifecycle transformations", () => {
   it("retains exact raw bytes only on the existing recorded-request serializer path", () => {
     const source =
-      'boolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));';
+      'import java.util.Arrays;\nboolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));';
     const patched = patches.jsonBody(source);
     expect(patched).toBe(
       'boolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBody.getRawBytes() != null;',
@@ -82,6 +82,13 @@ describe("pinned upstream final-ledger lifecycle transformations", () => {
       patches.jsonBody(source.replace(" != null", " == null")),
     ).toThrow();
     expect(() => patches.jsonBody(`${source}\n${source}`)).toThrow();
+    expect(patched).not.toContain("import java.util.Arrays;");
+    expect(() =>
+      patches.jsonBody(source.replace("import java.util.Arrays;\n", "")),
+    ).toThrow();
+    expect(() =>
+      patches.jsonBody(`import java.util.Arrays;\n${source}`),
+    ).toThrow();
   });
   it("admits only the six exact source members, never an arbitrary Java preimage", () => {
     expect(lifecycleSourcePins).toHaveLength(6);
@@ -183,6 +190,21 @@ describe("single upstream received-request capture and closure", () => {
     );
     expect(patched).toContain("requests.size() > 16");
     expect(patched).toContain(".map(this::finalLedgerRequest)");
+    for (const guard of [
+      "|| status < 100 || status > 599) {",
+      "if (body == null || body.length > 1024 * 1024) {",
+      "if (!(received.getHttpRequest() instanceof HttpRequest)) {",
+      'if ("agentscope-final-control".equals(received.getMessageFormat())) {',
+      "if (correlation == null || correlation.isEmpty()) {",
+      "if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {",
+      "if (status == null || status < 100 || status > 599) {",
+      "if (requests.size() > 16) {",
+    ]) {
+      expect(patched).toContain(guard);
+    }
+    expect(patched).toContain(
+      "} else {\n                    finalRecordedRequests =",
+    );
   });
   it("refuses missing or duplicated exact transformation anchors", () => {
     expect(() =>
@@ -208,14 +230,24 @@ describe("terminal persistence and existing stop barrier", () => {
     ].join("\n");
     const patched = patches.persistence(input);
     expect(patched).toContain(
-      "try { writer.close(); } catch (Throwable throwable) { if (firstFailure == null)",
+      "try { writer.close(); } catch (Throwable throwable) {\n                if (firstFailure == null)",
     );
-    expect(patched).toContain("if (firstFailure != null) throw firstFailure;");
+    expect(patched).toContain(
+      "if (firstFailure == null) {\n                    firstFailure = throwable;\n                }",
+    );
+    expect(patched).toContain(
+      "if (firstFailure != null) { throw firstFailure; }",
+    );
     expect(patched).toContain(
       "!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null",
     );
     expect(patched).toContain('equals("/control/private/requests.json")');
-    expect(patched).toContain("if (bytes.length > 1024 * 1024) return;");
+    expect(patched).toContain(
+      'equals("/control/private/requests.json")) {\n                return;',
+    );
+    expect(patched).toContain(
+      "if (bytes.length > 1024 * 1024) {\n                return;",
+    );
     expect(patched.indexOf("Files.write(filePath")).toBeLessThan(
       patched.indexOf("receipt.write"),
     );
@@ -253,7 +285,7 @@ describe("terminal persistence and existing stop barrier", () => {
       ].join("\n"),
     );
     expect(lifecycle).toContain(
-      "if (remaining > 0) finalLedgerFailure = true;",
+      "if (remaining > 0) { finalLedgerFailure = true; }",
     );
     expect(lifecycle).toContain(
       "httpState.completeRecordedLedger(!finalLedgerFailure && requestsInFlight.get() == 0);",
