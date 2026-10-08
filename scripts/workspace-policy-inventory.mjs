@@ -19,6 +19,7 @@ export const purePolicyFiles = Object.freeze([
   "release-controls.test.mjs",
   "release-github-store.test.mjs",
   "release-lane-substrate.test.mjs",
+  "release-npm-stage-producer.test.mjs",
   "release-operator-controls.test.mjs",
   "release-production-recorder.test.mjs",
   "release-production-recording.test.mjs",
