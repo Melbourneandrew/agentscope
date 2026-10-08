@@ -4,7 +4,7 @@ export const supplierGlobalMavenSettings: string;
 export const supplierMavenGoals: readonly string[];
 export function createSupplierGoalObservation(): (
   channel: 0 | 1,
-  chunk: Buffer,
+  chunk: string | Buffer,
 ) => string | undefined;
 export const mockServerSupplierLayout: Readonly<{
   source: string;

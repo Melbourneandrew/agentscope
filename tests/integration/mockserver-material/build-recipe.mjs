@@ -32,10 +32,13 @@ export const createSupplierGoalObservation = () => {
     if (
       (channel !== 0 && channel !== 1) ||
       types.isProxy(chunk) ||
-      !Buffer.isBuffer(chunk)
+      (typeof chunk !== "string" && !Buffer.isBuffer(chunk))
     )
       return;
-    bytes += chunk.length;
+    bytes +=
+      typeof chunk === "string"
+        ? Buffer.byteLength(chunk, "utf8")
+        : chunk.length;
     if (bytes > 8 * 1024 * 1024) return;
     let entered;
     for (const character of chunk.toString("utf8")) {
