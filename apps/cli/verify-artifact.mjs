@@ -421,6 +421,15 @@ try {
         state: "absent",
         version: null,
       },
+      {
+        configurationLocationCount: 1,
+        configurationPresentCount: 0,
+        harness: "claude-code",
+        harnessType: "@agentscope/harness-claude-code",
+        reason: "not-found",
+        state: "absent",
+        version: null,
+      },
     ],
     schema: "agentscope.cli.result.v1",
   });

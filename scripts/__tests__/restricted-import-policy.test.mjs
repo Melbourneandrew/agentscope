@@ -428,6 +428,47 @@ test("permits exactly one production Agentscope home authority", () => {
   }
 });
 
+test("permits home inputs only in canonical typed test fixtures without widening import authority", () => {
+  const value = fixture();
+  try {
+    const directory = join(value.root, "apps/cli/src/__tests__");
+    mkdirSync(directory, { recursive: true });
+    const helper = join(directory, "product-harness-fixture.ts");
+    writeFileSync(
+      helper,
+      'const environment = { AGENTSCOPE_HOME: "fixture-root" };\nvoid environment;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    for (const path of [
+      "apps/cli/src/product-harness-fixture.ts",
+      "apps/cli/src/__tests__/production.ts",
+      "apps/cli/src/__tests__/product-harness-fixture.mts",
+    ]) {
+      const file = join(value.root, path);
+      writeFileSync(file, 'const value = "AGENTSCOPE_HOME";\nvoid value;\n');
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /home must be injected/u,
+      );
+      rmSync(file);
+    }
+    for (const [source, refusal] of [
+      ['import "@agentscope/protocol/core-finalization";\n', /Core-only/u],
+      ['import "@agentscope/protocol/testing";\n', /test-only/u],
+      ['const name = "module"; void import(name);\n', /computed module load/u],
+      ["void createOwnedHookEntryAuthorityForCli;\n", /forbidden mint/u],
+    ]) {
+      writeFileSync(helper, source);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        refusal,
+      );
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("rejects escaped test-only module specifiers", () => {
   const value = fixture();
   try {

@@ -225,15 +225,15 @@ importers:
 
   packages/harnesses/claude-code:
     dependencies:
-      "@agentscope/core":
-        specifier: workspace:*
-        version: link:../../core
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../core
       "@agentscope/protocol":
         specifier: workspace:*
         version: link:../../protocol
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
     devDependencies:
       typescript:
         specifier: ^5.9.2

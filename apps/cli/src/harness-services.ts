@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import {
   applyHarnessInstallation,
   discoverHarness,
@@ -116,12 +118,16 @@ const functionRecord = (
   return Object.freeze(output);
 };
 
-const snapshotTargetPaths = (value: unknown): readonly string[] | undefined => {
+const snapshotTargetPaths = (
+  value: unknown,
+  minimum = 1,
+): readonly string[] | undefined => {
   try {
     if (
+      types.isProxy(value) ||
       !Array.isArray(value) ||
       Object.getPrototypeOf(value) !== Array.prototype ||
-      value.length < 1 ||
+      value.length < minimum ||
       value.length > 16 ||
       Reflect.ownKeys(Object.getOwnPropertyDescriptors(value)).length !==
         value.length + 1
@@ -149,19 +155,35 @@ const createPlanInput = async (
   operation: "install" | "migrate" | "uninstall",
 ): Promise<HarnessInstallationPlanInput | undefined> => {
   try {
-    const record = dataRecord(
-      await adapter.createInstallationInput(operation),
-      ["manifestPath", "operation", "planner", "targetPaths"],
-    );
+    const input = await adapter.createInstallationInput(operation);
+    const record =
+      dataRecord(input, [
+        "manifestPath",
+        "operation",
+        "planner",
+        "targetPaths",
+      ]) ??
+      dataRecord(input, [
+        "directoryPaths",
+        "manifestPath",
+        "operation",
+        "planner",
+        "targetPaths",
+      ]);
     const targetPaths = record
       ? snapshotTargetPaths(record.targetPaths)
       : undefined;
+    const directoryPaths =
+      record && "directoryPaths" in record
+        ? snapshotTargetPaths(record.directoryPaths, 0)
+        : undefined;
     if (
       !record ||
       record.operation !== operation ||
       typeof record.manifestPath !== "string" ||
       typeof record.planner !== "function" ||
-      !targetPaths
+      !targetPaths ||
+      ("directoryPaths" in record && !directoryPaths)
     )
       return undefined;
     return Object.freeze({
@@ -169,6 +191,7 @@ const createPlanInput = async (
       operation,
       planner: record.planner as HarnessInstallationPlanInput["planner"],
       targetPaths,
+      ...(directoryPaths === undefined ? {} : { directoryPaths }),
     });
   } catch {
     return undefined;

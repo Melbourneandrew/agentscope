@@ -44,16 +44,14 @@ const expectedInternalDependencies = new Map([
     "@agentscope/harness-codex",
     ["@agentscope/harnesses-core", "@agentscope/protocol"],
   ],
-  ...["claude-code", "gemini-cli", "hermes", "opencode", "openclaw", "pi"].map(
-    (harness) => [
-      `@agentscope/harness-${harness}`,
-      [
-        "@agentscope/core",
-        "@agentscope/harnesses-core",
-        "@agentscope/protocol",
-      ],
-    ],
-  ),
+  [
+    "@agentscope/harness-claude-code",
+    ["@agentscope/harnesses-core", "@agentscope/protocol"],
+  ],
+  ...["gemini-cli", "hermes", "opencode", "openclaw", "pi"].map((harness) => [
+    `@agentscope/harness-${harness}`,
+    ["@agentscope/core", "@agentscope/harnesses-core", "@agentscope/protocol"],
+  ]),
   ["@agentscope/integration", ["@agentscope/testkit"]],
 ]);
 

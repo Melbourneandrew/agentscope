@@ -2,6 +2,17 @@ export const claudeCodeHarnessPackageId =
   "@agentscope/harness-claude-code" as const;
 
 export {
+  createClaudeCodeDiscoveryContextFactory,
+  prepareClaudeCodeInstallationContext,
+  type ClaudeCodeInstallationContext,
+} from "./discovery/context-factory.js";
+export type {
+  ClaudeCodeDiscoveryReadCapabilities,
+  ClaudeCodePathObservation,
+} from "./discovery/capabilities.js";
+export type { ClaudeDiscoveryPolicy } from "./discovery/claude-discovery.js";
+
+export {
   CLAUDE_CODE_COMPONENT_VERSION,
   CLAUDE_CODE_EVIDENCE_SLOT,
   claudeCodeDescriptor,

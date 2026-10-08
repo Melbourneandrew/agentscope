@@ -23,6 +23,7 @@ const testingSpecifiers = [
   "@agentscope/protocol/testing",
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
+const homeFixtureSource = /(?:^|\/)__tests__\/(?:[^/]+\/)*[^/]+-fixture\.ts$/u;
 const testEntrypointSource =
   /(?:^|\/)src\/testing\.ts$|(?:^|\/)packages\/destinations\/langfuse\/src\/(?:compatibility-fixtures|mock-roundtrip)\.ts$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
@@ -163,6 +164,7 @@ const assertSingleHomeAuthority = (source, file) => {
   if (
     file === homeAuthoritySource ||
     testSource.test(file) ||
+    homeFixtureSource.test(file) ||
     artifactVerifier.test(file) ||
     !applicationSource.test(file)
   )
