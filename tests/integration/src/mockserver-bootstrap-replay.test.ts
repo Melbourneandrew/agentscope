@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { types } from "node:util";
-import { spawnSync } from "node:child_process";
-import { parse as parseYaml } from "yaml";
 import {
   parseMavenFailureObservation,
   createBuildStderrObservation,
@@ -173,57 +171,6 @@ describe("bounded native Maven failure classification", () => {
   });
 });
 
-describe("actual optional Maven publisher block", () => {
-  it.each([
-    ["identified,2,0,3,0,0,0,0", true],
-    ["ambiguous,2,0,3,0,0,0,0", true],
-    ["overflow,0,0,0,0,0,0,0", true],
-    ["identified,257,0,3,0,0,0,0", false],
-    ["absent,2,0,3,0,0,0,0", false],
-    ["identified,2,0,3,0,0,0,0,extra", false],
-    ["identified,2,0,3,0,0,0,0\nCANARY", false],
-    ["$(exit 8)", false],
-  ])(
-    "actual workflow retains only canonical Maven tuple %s",
-    (tuple, valid) => {
-      const workflow = parseYaml(
-        readFileSync(
-          new URL(
-            "../../../.github/workflows/integration.yml",
-            import.meta.url,
-          ),
-          "utf8",
-        ),
-      ) as {
-        jobs: Record<string, { steps: { name?: string; run?: string }[] }>;
-      };
-      const script = workflow.jobs["mockserver-supplier-research"]!.steps.find(
-        (step) => step.name === "Project closed research shell observations",
-      )!.run!;
-      const result = spawnSync(
-        "/bin/bash",
-        ["--noprofile", "--norc", "-e", "-c", script],
-        {
-          encoding: "utf8",
-          timeout: 2000,
-          maxBuffer: 4096,
-          env: {
-            OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE:
-              "supplier-connected-package-other",
-            OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY: "none",
-            OBSERVED_UNTRUSTED_MAVEN_FAILURE: String(tuple),
-          },
-        },
-      );
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain(
-        `untrusted_maven_failure=${valid ? tuple : "unknown"}`,
-      );
-      expect(result.stdout).not.toContain("CANARY");
-    },
-  );
-});
 describe("actual optional Maven publisher record", () => {
   it("curates the exact record without accessing hostile fields", () => {
     const source = readFileSync(

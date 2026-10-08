@@ -183,7 +183,9 @@ import { verifyMavenArchiveBytes } from "../../../mockserver-material/build-tool
 import { verifyBootstrapArchive } from "../../../mockserver-material/bootstrap-archive.mjs";
 import { patchCallbackSource } from "../../../mockserver-material/callback-patch.mjs";
 import {
+  firstSupplierCheckstyleObservation,
   lifecycleSourcePins,
+  supplierSourceUnit,
   patchMockServerLifecycleSource,
 } from "../../../mockserver-material/lifecycle-patch.mjs";
 import { inventoryMockServerSupplier } from "../../../mockserver-material/supplier-inventory.mjs";
@@ -200,7 +202,14 @@ export const workerSource = fs.readFileSync(
 );
 export const classifyPackageFailure = runInNewContext(
   `${workerSource.slice(workerSource.indexOf("const mavenGoals ="), workerSource.indexOf("const packageFailureStage ="))}\npackageFailureRecord`,
-  { types, Buffer, lifecycleSourcePins, maximumOutputBytes: 8 * 1024 * 1024 },
+  {
+    types,
+    Buffer,
+    lifecycleSourcePins,
+    firstSupplierCheckstyleObservation,
+    supplierSourceUnit,
+    maximumOutputBytes: 8 * 1024 * 1024,
+  },
 ) as (error: unknown) => (string | number)[];
 export const privateWorker = runInNewContext(
   `${workerSource.slice(workerSource.indexOf("const environment ="), workerSource.indexOf("export const runMockServerSupplierResearch"))}\nrunSupplier`,
@@ -208,6 +217,8 @@ export const privateWorker = runInNewContext(
     ...fs,
     types,
     Buffer,
+    firstSupplierCheckstyleObservation,
+    supplierSourceUnit,
     maximumOutputBytes: 8 * 1024 * 1024,
     verifyMockServerSourceArchive,
     verifyMavenArchiveBytes,
