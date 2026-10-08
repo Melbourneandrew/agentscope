@@ -1,4 +1,5 @@
 import { canonicalJson, sha256 } from "./validation.mjs";
+import { projectOperatorControlsReport } from "./admission.mjs";
 import {
   recorderExactKeys,
   snapshotRecorderInput,
@@ -43,12 +44,14 @@ function validateHead(head, tuple) {
     "schemaVersion",
     "sequence",
     "digest",
+    "previousDigest",
     "transition",
     "transactionId",
     "draftReleaseDatabaseId",
     "candidateManifestDigest",
     "sourceRevision",
     "kind",
+    "ownerCheckpointDigest",
   ]);
   if (
     head.schemaVersion !== 1 ||
@@ -56,7 +59,9 @@ function validateHead(head, tuple) {
     head.sequence < 1 ||
     head.sequence >= Number.MAX_SAFE_INTEGER ||
     !digest.test(head.digest) ||
-    head.transition !== "draft-prepared" ||
+    !digest.test(head.previousDigest) ||
+    head.transition !== "pre-stage-intent" ||
+    head.ownerCheckpointDigest !== tuple.ownerCheckpointDigest ||
     head.transactionId !== tuple.transactionId ||
     head.candidateManifestDigest !== tuple.candidateManifestDigest ||
     head.sourceRevision !== tuple.sourceRevision ||
@@ -81,16 +86,39 @@ function validateCheckpoint(checkpoint, head, tuple, observedAt) {
     "consumedAt",
     "state",
     "authenticationDigest",
+    "phase",
+    "sourceRevision",
+    "candidateManifestDigest",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "controlsReport",
+    "controlsReportDigest",
+    "controlsInspectedAt",
   ]);
   if (
     checkpoint.transactionId !== tuple.transactionId ||
     checkpoint.draftReleaseDatabaseId !== head.draftReleaseDatabaseId ||
-    typeof checkpoint.ownerIdentity !== "string" ||
-    !identifier.test(checkpoint.ownerIdentity) ||
+    checkpoint.ownerIdentity !== "Melbourneandrew" ||
     checkpoint.pendingStagesState !== "none-conflicting" ||
     checkpoint.state !== "consumed-for-stage" ||
+    checkpoint.phase !== "pre-stage" ||
+    checkpoint.sourceRevision !== tuple.sourceRevision ||
+    checkpoint.candidateManifestDigest !== tuple.candidateManifestDigest ||
+    checkpoint.expectedSequence !== head.sequence - 1 ||
+    checkpoint.expectedPriorDigest !== head.previousDigest ||
     !digest.test(checkpoint.authenticationDigest) ||
     sha256(canonicalJson(checkpoint)) !== tuple.ownerCheckpointDigest
+  )
+    fail();
+  const controls = projectOperatorControlsReport(
+    checkpoint.controlsReport,
+    checkpoint.expiresAt,
+    checkpoint.consumedAt,
+  );
+  if (
+    controls.controlsReportDigest !== checkpoint.controlsReportDigest ||
+    controls.controlsInspectedAt !== checkpoint.controlsInspectedAt ||
+    controls.controlsInspectedAt !== checkpoint.issuedAt
   )
     fail();
   checkpointWindow(checkpoint, observedAt);

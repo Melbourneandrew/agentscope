@@ -6,7 +6,10 @@ import {
   requiredPolicyFiles,
 } from "../workspace-policy-inventory.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
-import { validateStageResult } from "../release-lane/stage-result.mjs";
+import {
+  projectNpmStageResponse,
+  validateStageResult,
+} from "../release-lane/stage-result.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
 const tuple = (kind = "product") => ({
@@ -29,6 +32,74 @@ const result = (binding, response = "received") => ({
   tuple: binding,
   response,
   stageId: response === "received" ? "stage-1" : null,
+});
+
+const npmResponse = (binding, change = {}) =>
+  Buffer.from(
+    JSON.stringify({
+      [binding.package]: {
+        id: `${binding.package}@${binding.version}`,
+        name: binding.package,
+        version: binding.version,
+        integrity: binding.integrity,
+        stageId: "stage-1",
+        ...change,
+      },
+    }),
+  );
+test.each(["product", "probe"])(
+  "projects standard npm JSON for %s through the shared result",
+  (kind) => {
+    const binding = tuple(kind);
+    const projected = projectNpmStageResponse(npmResponse(binding), binding);
+    assert.equal(projected.response, "received");
+    assert.equal(projected.stageId, "stage-1");
+    assert.equal(validateStageResult(projected, binding).stageId, "stage-1");
+  },
+);
+test.each([
+  { id: "other@0.1.0" },
+  { name: "other" },
+  { version: "0.1.1" },
+  { integrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}` },
+  { stageId: null },
+  { stageId: "" },
+  { stageId: "unsafe/stage" },
+])("mismatched npm receipt remains ambiguous %j", (change) => {
+  const binding = tuple();
+  const projected = projectNpmStageResponse(
+    npmResponse(binding, change),
+    binding,
+  );
+  assert.equal(projected.response, "ambiguous");
+  assert.equal(projected.stageId, null);
+});
+test("empty, malformed, mixed and oversized npm outputs never authorize another stage", () => {
+  const binding = tuple();
+  assert.equal(
+    projectNpmStageResponse(Buffer.alloc(0), binding).response,
+    "missing",
+  );
+  for (const output of [
+    Buffer.from("{"),
+    Buffer.from("[]"),
+    Buffer.from([0xff]),
+    Buffer.alloc(1_048_577),
+    Buffer.from(
+      JSON.stringify({
+        ...JSON.parse(npmResponse(binding)),
+        other: {},
+      }),
+    ),
+  ]) {
+    const projected = projectNpmStageResponse(output, binding);
+    assert.equal(projected.response, "ambiguous");
+    assert.equal(projected.stageId, null);
+    assert.doesNotThrow(() => validateStageResult(projected, binding));
+  }
+  assert.throws(() =>
+    projectNpmStageResponse(Buffer.alloc(0), { ...binding, distTag: "latest" }),
+  );
 });
 
 test.each(["product", "probe"])(
