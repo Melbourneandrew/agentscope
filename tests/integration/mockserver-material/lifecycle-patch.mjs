@@ -109,7 +109,9 @@ const finalLedgerCapture = `
             // The fresh request has no caller headers, body, JWT or authorization material.
             add(new LogEntry().setType(RECEIVED_REQUEST).setLogLevel(org.slf4j.event.Level.INFO).setHttpRequest(observed)
                 .setMessageFormat("agentscope-final-control"));
-        } catch (Throwable throwable) { finalLedgerFailure = true; }
+        } catch (Throwable throwable) {
+            finalLedgerFailure = true;
+        }
     }
 
     private RequestDefinition finalLedgerRequest(LogEntry received) {
@@ -156,7 +158,10 @@ ${finalLedgerCapture}`,
     source,
     "    public void add(LogEntry logEntry) {",
     `    public synchronized void add(LogEntry logEntry) {
-        if (finalLedgerStopped) { finalLedgerFailure = true; return; }`,
+        if (finalLedgerStopped) {
+            finalLedgerFailure = true;
+            return;
+        }`,
   );
   source = once(
     source,
@@ -164,7 +169,9 @@ ${finalLedgerCapture}`,
     `    public void stop() {
         // Close the existing publisher before joining its consumer. A publisher
         // already inside add finishes before this flag; later publication fails closed.
-        synchronized (this) { finalLedgerStopped = true; }
+        synchronized (this) {
+            finalLedgerStopped = true;
+        }
         try {`,
   );
   source = once(
@@ -277,19 +284,27 @@ const persistence = (source) => {
   source = once(
     source,
     "        writeOrderLock.lock();\n        try {\n            // use the redaction-aware",
-    "        writeOrderLock.lock();\n        try {\n            if (recordedPersistenceClosed) { recordedPersistenceFailed = true; return; }\n            // use the redaction-aware",
+    "        writeOrderLock.lock();\n        try {\n            if (recordedPersistenceClosed) {\n                recordedPersistenceFailed = true;\n                return;\n            }\n            // use the redaction-aware",
   );
   source = once(
     source,
     "            writer.flush();\n            writer.close();",
     `            Throwable firstFailure = null;
-            try { writer.flush(); } catch (Throwable throwable) { firstFailure = throwable; }
-            try { writer.close(); } catch (Throwable throwable) {
+            try {
+                writer.flush();
+            } catch (Throwable throwable) {
+                firstFailure = throwable;
+            }
+            try {
+                writer.close();
+            } catch (Throwable throwable) {
                 if (firstFailure == null) {
                     firstFailure = throwable;
                 }
             }
-            if (firstFailure != null) { throw firstFailure; }
+            if (firstFailure != null) {
+                throw firstFailure;
+            }
             recordedPersistenceClosed = true;`,
   );
   return once(
@@ -313,20 +328,25 @@ const httpState = (source) => {
     `    private volatile boolean finalControlCaptureFailed;
 
     public void recordFinalControlObservation(HttpRequest request, String role, int status) {
-        try { getMockServerLog().recordFinalControlObservation(request, role, status); }
-        catch (Throwable throwable) { finalControlCaptureFailed = true; }
+        try {
+            getMockServerLog().recordFinalControlObservation(request, role, status);
+        } catch (Throwable throwable) {
+            finalControlCaptureFailed = true;
+        }
     }
 
     private ControlPlaneAuthDecision finalControlDecision(HttpRequest request, ControlPlaneAuthDecision decision) {
         try {
-        String role = decision.isAllowed() ? "allowed"
-            : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? "forbidden" : "unauthenticated";
-        int status = decision.isAllowed()
-            ? request.getPath().getValue().equals("/_mockserver_callback_websocket") ? 101
-                : request.getPath().getValue().equals("/mockserver/expectation") ? 201 : 200
-            : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? 403 : 401;
-        recordFinalControlObservation(request, role, status);
-        } catch (Throwable throwable) { finalControlCaptureFailed = true; }
+            String role = decision.isAllowed() ? "allowed"
+                : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? "forbidden" : "unauthenticated";
+            int status = decision.isAllowed()
+                ? request.getPath().getValue().equals("/_mockserver_callback_websocket") ? 101
+                    : request.getPath().getValue().equals("/mockserver/expectation") ? 201 : 200
+                : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? 403 : 401;
+            recordFinalControlObservation(request, role, status);
+        } catch (Throwable throwable) {
+            finalControlCaptureFailed = true;
+        }
         return decision;
     }
 
@@ -376,7 +396,7 @@ const lifeCycle = (source) => {
   source = once(
     source,
     "        int remaining = requestsInFlight.get();",
-    "        int remaining = requestsInFlight.get();\n        if (remaining > 0) { finalLedgerFailure = true; }",
+    "        int remaining = requestsInFlight.get();\n        if (remaining > 0) {\n            finalLedgerFailure = true;\n        }",
   );
   return once(
     source,

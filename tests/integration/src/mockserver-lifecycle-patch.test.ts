@@ -349,10 +349,10 @@ describe("single upstream received-request capture and closure", () => {
       "public synchronized void add(LogEntry logEntry)",
     );
     expect(patched).toContain(
-      "if (finalLedgerStopped) { finalLedgerFailure = true; return; }",
+      "if (finalLedgerStopped) {\n            finalLedgerFailure = true;\n            return;\n        }",
     );
     const closed = patched.indexOf(
-      "synchronized (this) { finalLedgerStopped = true; }",
+      "synchronized (this) {\n            finalLedgerStopped = true;\n        }",
     );
     const joined = patched.indexOf("disruptor.shutdown(2, SECONDS)");
     const snapshot = patched.indexOf(
@@ -432,15 +432,13 @@ describe("terminal persistence and existing stop barrier", () => {
       "    public void stop() {",
     ].join("\n");
     const patched = patches.persistence(input);
-    expect(patched).toContain(
-      "try { writer.close(); } catch (Throwable throwable) {\n                if (firstFailure == null)",
-    );
-    expect(patched).toContain(
+    for (const block of [
+      "try {\n                writer.close();\n            } catch (Throwable throwable) {\n                if (firstFailure == null)",
       "if (firstFailure == null) {\n                    firstFailure = throwable;\n                }",
-    );
-    expect(patched).toContain(
-      "if (firstFailure != null) { throw firstFailure; }",
-    );
+      "if (firstFailure != null) {\n                throw firstFailure;\n            }",
+    ])
+      expect(patched).toContain(block);
+    expect(patched).not.toMatch(/\{[^\n{}]*\S[^\n{}]*\}/u);
     expect(patched).toContain(
       "!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null",
     );
@@ -473,8 +471,9 @@ describe("terminal persistence and existing stop barrier", () => {
       5,
     );
     expect(state).toContain("return decision;");
+    expect(state).not.toMatch(/\{[^\n{}]*\S[^\n{}]*\}/u);
     expect(state).toContain(
-      "catch (Throwable throwable) { finalControlCaptureFailed = true; }",
+      "catch (Throwable throwable) {\n            finalControlCaptureFailed = true;\n        }",
     );
     for (const original of authenticationSource.split("\n"))
       expect(state).not.toContain(original);
@@ -488,7 +487,7 @@ describe("terminal persistence and existing stop barrier", () => {
       ].join("\n"),
     );
     expect(lifecycle).toContain(
-      "if (remaining > 0) { finalLedgerFailure = true; }",
+      "if (remaining > 0) {\n            finalLedgerFailure = true;\n        }",
     );
     expect(lifecycle).toContain(
       "httpState.completeRecordedLedger(!finalLedgerFailure && requestsInFlight.get() == 0);",
