@@ -711,8 +711,7 @@ console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringif
     integrationRunId,
   );
 };
-const recordModelBaseline = () => {
-  const records = readCodexSessionLedgerRecords(homeDescriptor);
+const recordModelBaseline = (records) => {
   if (records.length !== 1) throw new Error("integration.codex.session-ledger");
   codexSessionId = codexSessionIdentity(records);
   const newline = records[0].content.indexOf("\n");
@@ -814,12 +813,14 @@ const projectUninstall = (records) => {
   };
 };
 const waitForCodexTurnTerminal = async (traceDeadline) => {
-  if (codexLedgerBaseline === undefined)
-    throw new Error("integration.codex.session-ledger");
   while (true) {
     if (bootNow() >= traceDeadline)
       throw new Error("integration.codex.trace-deadline");
     const records = readCodexSessionLedgerRecords(homeDescriptor);
+    // A fresh Codex rollout is materialized by the first submitted turn,
+    // not by idle readiness or the process-topology checkpoint. Bind its
+    // actual byte-zero metadata only inside this existing observation path.
+    if (codexLedgerBaseline === undefined) recordModelBaseline(records);
     const turnId = codexTurnTerminalIdAfterBaseline(
       records,
       codexLedgerBaseline,
@@ -1106,7 +1107,6 @@ try {
   recordInteractivePhase("tui-checkpoint");
   preArmExitPhase = "tui-exit-before-arm";
   recordInteractivePhase("model-gate-arm-start");
-  recordModelBaseline();
   armPending = false;
   recordInteractivePhase("model-gate-arm-complete");
   await waitForModelRequestBeforeDeadline({
