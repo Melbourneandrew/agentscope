@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { test, expect } from "vitest";
 import { parse } from "yaml";
 const source = readFileSync(
@@ -229,18 +230,55 @@ test("semantic admission receives no administrative or publication credential", 
   writable.jobs["verify-candidate"].permissions.contents = "write";
   expect(() => requireNonprivilegedAdmission(writable)).toThrow();
 });
-test("missing actual semantic evidence stops before protected store mutation", () => {
+test("missing actual semantic evidence stops before protected store mutation", async () => {
   const entry = readFileSync(
     new URL("../record-release-stage.mjs", import.meta.url),
     "utf8",
   );
-  expect(entry.indexOf("requireActualSemanticAdmission();")).toBeLessThan(
-    entry.indexOf("createGitHubReleaseStore({"),
-  );
+  const guard = entry.indexOf("if (!probeOperation) {");
+  const store = entry.indexOf("const store = createGitHubReleaseStore({");
+  const draft = entry.indexOf("await prepareDraft(");
+  expect(guard).toBeGreaterThan(0);
+  expect(store).toBeGreaterThan(guard);
+  expect(draft).toBeGreaterThan(store);
   expect(entry).toContain('from "./release-lane/admission.mjs"');
-  expect(entry.indexOf("requireActualSemanticAdmission();")).toBeLessThan(
-    entry.indexOf("await prepareDraft("),
+  const calls = [];
+  const denied = Error("synthetic missing genuine semantic input");
+  const start = entry.indexOf("// Acquiring read-only artifact metadata");
+  const end = entry.indexOf("const run = await store.run(", store);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(store);
+  const invocation = runInNewContext(
+    `(async () => { ${entry.slice(start, end)} })()`,
+    {
+      readBounded: () =>
+        Buffer.from('{"inputs":{"operation":"prepare-draft"}}'),
+      readAdmissionCandidate: () => {
+        calls.push("held-candidate");
+        return {};
+      },
+      verifyAdmission: () => {
+        calls.push("semantic-binding");
+        throw denied;
+      },
+      assembleReleaseCandidate: () => {
+        throw Error("assembly must not follow missing semantic input");
+      },
+      createGitHubReleaseStore: () => {
+        calls.push("store");
+        return {};
+      },
+      process: {
+        argv: ["node", "entry"],
+        env: {
+          GITHUB_REF: "refs/tags/v0.1.0",
+          GITHUB_EVENT_PATH: "held-event",
+        },
+      },
+    },
   );
+  await expect(invocation).rejects.toBe(denied);
+  expect(calls).toEqual(["held-candidate", "semantic-binding"]);
   expect(entry).not.toContain("inspectReleaseControls");
   expect(entry).toContain("return requireActualSemanticAdmission(accepted)");
   expect(entry).toContain("bindScenarioEvidence(");
