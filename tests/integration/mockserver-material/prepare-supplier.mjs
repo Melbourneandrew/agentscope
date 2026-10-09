@@ -211,13 +211,30 @@ const supplierPrimaryFailure = (error, signal, workSignal) => {
     preparationAborted: workSignal.aborted,
   };
 };
-const observeSupplierFailure = (phase, dockerClient, failure) => {
+const supplierFailureTiming = (started, buildEntered, deadline) => {
+  const failed = performance.now();
+  const bounded = (value) => Math.min(300_000, Math.max(0, Math.floor(value)));
+  return {
+    elapsedMilliseconds: bounded(failed - started),
+    buildEntryElapsedMilliseconds:
+      buildEntered === undefined ? null : bounded(buildEntered - started),
+    buildEntryRemainingMilliseconds:
+      buildEntered === undefined
+        ? null
+        : bounded(deadline - reserve - buildEntered),
+    buildElapsedMilliseconds:
+      buildEntered === undefined ? null : bounded(failed - buildEntered),
+    remainingMilliseconds: bounded(deadline - failed),
+  };
+};
+const observeSupplierFailure = (phase, dockerClient, failure, timing) => {
   try {
     const bytes = Buffer.from(
       `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({
         phase,
         imagePreparation: preparedDockerClientDiagnostic(dockerClient) ?? null,
         primaryFailure: supplierPrimaryFailure(...failure),
+        timing,
       })}\n`,
     );
     if (bytes.length > 4096) return;
@@ -227,6 +244,21 @@ const observeSupplierFailure = (phase, dockerClient, failure) => {
   }
 };
 
+const cleanupFailedSupplierContext = (
+  owned,
+  created,
+  dockerClient,
+  deadline,
+) => {
+  if (owned !== undefined) {
+    try {
+      cleanup(owned, deadline);
+    } catch {
+      markPreparedDockerClientForOuterHostRetirement(dockerClient);
+    }
+  } else if (created)
+    markPreparedDockerClientForOuterHostRetirement(dockerClient);
+};
 const prepareSupplier = async (input, service) => {
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserve - performance.now();
@@ -241,6 +273,8 @@ const prepareSupplier = async (input, service) => {
     resolve(privateRoot) !== privateRoot
   )
     fail();
+  const started = performance.now();
+  let buildEntered;
   const work = new AbortController();
   const timer = setTimeout(() => work.abort(), Math.floor(budget));
   const workSignal = AbortSignal.any([signal, work.signal]);
@@ -289,6 +323,7 @@ const prepareSupplier = async (input, service) => {
     check(workSignal, deadline - reserve);
     phase = "supplier-build";
     publishMaterialResearchPhase("supplier-build");
+    buildEntered = performance.now();
     const inventory = await buildPreparedDockerImage(dockerClient, {
       buildArguments: { BASE_IMAGE: base },
       buildNetwork: "default",
@@ -335,15 +370,13 @@ const prepareSupplier = async (input, service) => {
           bootstrapVerification: bootstrap.verification,
         });
   } catch (error) {
-    observeSupplierFailure(phase, dockerClient, [error, signal, workSignal]);
-    if (owned !== undefined) {
-      try {
-        cleanup(owned, deadline);
-      } catch {
-        markPreparedDockerClientForOuterHostRetirement(dockerClient);
-      }
-    } else if (created)
-      markPreparedDockerClientForOuterHostRetirement(dockerClient);
+    observeSupplierFailure(
+      phase,
+      dockerClient,
+      [error, signal, workSignal],
+      supplierFailureTiming(started, buildEntered, deadline),
+    );
+    cleanupFailedSupplierContext(owned, created, dockerClient, deadline);
     throw error;
   } finally {
     clearTimeout(timer);
