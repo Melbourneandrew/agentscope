@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
+import { runInNewContext } from "node:vm";
 
 import { describe, expect, it } from "vitest";
 
@@ -18,6 +19,32 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const actualImmutablePrincipalProfile = (
+  scenarioId: string,
+): "ordinary" | "codex-controller" => {
+  const source = readFileSync(
+    new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+    "utf8",
+  );
+  const authorityStart = source.indexOf(
+    "const createImmutableCandidateAuthority =",
+  );
+  const start = source.indexOf("  const profile =", authorityStart);
+  const end = source.indexOf("  const initial =", start);
+  expect(authorityStart).toBeGreaterThan(0);
+  expect(start).toBeGreaterThan(authorityStart);
+  expect(end).toBeGreaterThan(start);
+  const profile: unknown = runInNewContext(
+    `${source.slice(start, end)}; profile`,
+    {
+      record: { scenarioId },
+    },
+  );
+  if (profile !== "ordinary" && profile !== "codex-controller")
+    throw new Error("test.profile.invalid");
+  return profile;
+};
 
 it("classifies only exact frozen checkpoint topology facts", () => {
   const root = { pid: 21, parentPid: 1, startIdentity: "21:1", state: "T" };
@@ -203,6 +230,23 @@ describe("selected PTY transport", () => {
       "",
     ].join("\n"),
   });
+  const controllerPrincipalFacts = () => {
+    const ordinary = principalFacts();
+    return {
+      ...ordinary,
+      profile: "codex-controller" as const,
+      uid: 0,
+      euid: 0,
+      gid: 0,
+      egid: 0,
+      groups: [0],
+      status: ordinary.status
+        .replaceAll("1000", "0")
+        .replaceAll("CapEff:\t0000000000000000", "CapEff:\t00000000000000e3")
+        .replaceAll("CapPrm:\t0000000000000000", "CapPrm:\t00000000000000e3")
+        .replaceAll("CapBnd:\t0000000000000000", "CapBnd:\t00000000000000e3"),
+    };
+  };
 
   // eslint-disable-next-line max-lines-per-function -- one challenge-gated checkpoint lifecycle
   it("rejects a fixed readiness marker before the per-run challenge", async () => {
@@ -1022,21 +1066,7 @@ describe("selected PTY transport", () => {
   });
 
   it("admits only the exact Codex controller capability set", () => {
-    const ordinary = principalFacts();
-    const controller = {
-      ...ordinary,
-      profile: "codex-controller" as const,
-      uid: 0,
-      euid: 0,
-      gid: 0,
-      egid: 0,
-      groups: [0],
-      status: ordinary.status
-        .replaceAll("1000", "0")
-        .replaceAll("CapEff:\t0000000000000000", "CapEff:\t00000000000000e3")
-        .replaceAll("CapPrm:\t0000000000000000", "CapPrm:\t00000000000000e3")
-        .replaceAll("CapBnd:\t0000000000000000", "CapBnd:\t00000000000000e3"),
-    };
+    const controller = controllerPrincipalFacts();
     expect(validateSelectedContainerPrincipalFactsForTest(controller)).toBe(
       true,
     );
@@ -1056,6 +1086,65 @@ describe("selected PTY transport", () => {
       }),
     ).toThrow("testkit.pty.immutable-candidate");
   });
+
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "binds actual %s selection to the exact admitted controller principal",
+    (scenarioId) => {
+      const controller = {
+        ...controllerPrincipalFacts(),
+        profile: actualImmutablePrincipalProfile(scenarioId),
+      };
+      expect(validateSelectedContainerPrincipalFactsForTest(controller)).toBe(
+        true,
+      );
+      for (const status of [
+        controller.status.replace(
+          "CapBnd:\t00000000000000e3",
+          "CapBnd:\t00000000000000e2",
+        ),
+        controller.status.replace(
+          "CapEff:\t00000000000000e3",
+          "CapEff:\t00000000000000e7",
+        ),
+        controller.status.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+      ])
+        expect(() =>
+          validateSelectedContainerPrincipalFactsForTest({
+            ...controller,
+            status,
+          }),
+        ).toThrow("testkit.pty.immutable-candidate");
+      expect(() =>
+        validateSelectedContainerPrincipalFactsForTest({
+          ...controller,
+          groups: [0, 1000],
+        }),
+      ).toThrow("testkit.pty.immutable-candidate");
+    },
+  );
+  it.each([
+    "fixture-process-smoke",
+    "fixture-process-interactive",
+    "claude-interactive-trace-smoke-extra",
+  ])(
+    "keeps actual %s selection ordinary and rejects a root substitution",
+    (scenarioId) => {
+      const profile = actualImmutablePrincipalProfile(scenarioId);
+      expect(profile).toBe("ordinary");
+      expect(
+        validateSelectedContainerPrincipalFactsForTest({
+          ...principalFacts(),
+          profile,
+        }),
+      ).toBe(true);
+      expect(() =>
+        validateSelectedContainerPrincipalFactsForTest({
+          ...controllerPrincipalFacts(),
+          profile,
+        }),
+      ).toThrow("testkit.pty.immutable-candidate");
+    },
+  );
 
   it.each(["uid", "gid", "groups", "status"] as const)(
     "rejects causal immutable principal %s substitution",
