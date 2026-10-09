@@ -26,6 +26,7 @@ export const purePolicyFiles = Object.freeze([
   "release-production-recording.test.mjs",
   "release-production-workflow.test.mjs",
   "release-stage-result.test.mjs",
+  "release-terminal-probe.test.mjs",
   "restricted-import-policy.test.mjs",
   "workspace-cleanup-fixture.test.mjs",
   "workspace-dependency-policy.test.mjs",
