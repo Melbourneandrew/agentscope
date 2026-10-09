@@ -470,6 +470,10 @@ function verifyAdmission(candidateInput = readAdmissionCandidate()) {
           fixtureBytes: componentBytes("fixture"),
           adapterBytes: componentBytes("adapterArtifact"),
           mappingBytes: componentBytes("mappingArtifact"),
+          controllerBytes: readBounded(
+            "tests/integration/harness-material-command.mjs",
+            1_048_576,
+          ),
         },
       ),
     );

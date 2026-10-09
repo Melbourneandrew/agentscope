@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { readFileSync } from "node:fs";
 
 import {
   proposeStageRecord,
@@ -10,6 +11,17 @@ import {
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 
 const hash = `sha256:${"a".repeat(64)}`;
+test("semantic material binder receives the fixed held controller source", () => {
+  const source = readFileSync(
+    new URL("../record-release-stage.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /controllerBytes: readBounded\(\s*"tests\/integration\/harness-material-command\.mjs",\s*1_048_576,/u,
+  );
+  assert.equal((source.match(/controllerBytes:/gu) ?? []).length, 1);
+});
 test("probe material binds actual preparation run/attempt, not a fabricated product", () => {
   const material = {
     schemaVersion: 1,

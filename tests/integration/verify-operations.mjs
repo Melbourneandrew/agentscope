@@ -19,6 +19,13 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { compileIsolationEvidence } from "./dist/index.js";
 
 const execute = promisify(execFile);
+// Operational isolation validation does not authenticate prepared material.
+// Remove only its explicitly composed product member; unknown extras still fail.
+const operationalIsolationEvidence = (value) => {
+  const isolation = { ...value };
+  delete isolation.preparedHarnessMaterial;
+  return compileIsolationEvidence(isolation);
+};
 const wait = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 const integrationRoot = import.meta.dirname;
@@ -94,7 +101,7 @@ try {
   if (!sidecarFailureRejected || failedRuns.length !== 1)
     throw new Error("integration.operations.failure-evidence");
   const failedDirectory = resolve(runsRoot, failedRuns[0]);
-  const failedEvidence = compileIsolationEvidence(
+  const failedEvidence = operationalIsolationEvidence(
     JSON.parse(readFileSync(resolve(failedDirectory, "evidence.json"), "utf8")),
   );
   const failedLifecycle = JSON.parse(
@@ -126,7 +133,7 @@ try {
     if (!/^[a-f\d]{16}$/u.test(runId))
       throw new Error("integration.operations.repetition");
     const directory = resolve(runsRoot, runId);
-    const evidence = compileIsolationEvidence(
+    const evidence = operationalIsolationEvidence(
       JSON.parse(readFileSync(resolve(directory, "evidence.json"), "utf8")),
     );
     if (evidence.runId !== runId || evidence.outcome !== "passed")

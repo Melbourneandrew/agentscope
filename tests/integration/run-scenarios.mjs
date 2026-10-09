@@ -2815,10 +2815,18 @@ const recordEvidence = async (evidence) => {
     mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
   });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
+  const admission = admissionByRunId.get(verifiedEvidence.runId);
+  const retainedEvidence =
+    admission === undefined
+      ? verifiedEvidence
+      : {
+          ...verifiedEvidence,
+          preparedHarnessMaterial: admission.preparedHarnessMaterial,
+        };
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     resolve(directory, "evidence.json"),
-    `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
+    `${JSON.stringify(retainedEvidence, undefined, 2)}\n`,
   );
   scenarioOutcomes.set(verifiedEvidence.runId, verifiedEvidence.outcome);
   const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
@@ -2867,7 +2875,6 @@ const recordEvidence = async (evidence) => {
     if (result.certificationReadiness === null)
       fixtureResults.delete(verifiedEvidence.runId);
   }
-  const admission = admissionByRunId.get(verifiedEvidence.runId);
   if (admission !== undefined) {
     if (
       result === undefined ||
@@ -2913,6 +2920,7 @@ const recordEvidence = async (evidence) => {
           mockServerImageIdentity: verifiedEvidence.mockServerImageIdentity,
           receipt,
           scenarioId: verifiedEvidence.scenarioId,
+          preparedHarnessMaterial: admission.preparedHarnessMaterial,
         },
       },
       outcome: verifiedEvidence.outcome,
@@ -3389,6 +3397,7 @@ try {
     admissionByRunId.set(plan.runId, {
       evidence,
       materialIdentity: materialAuthority.materialIdentity,
+      preparedHarnessMaterial: materialAuthority,
       seed: {
         candidateDigest: candidate.bundleIdentity,
         componentFixture: readAdmissionComponentFixture(evidence),

@@ -2,6 +2,7 @@ import { test, expect } from "vitest";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { resolve as resolvePath } from "node:path";
 import {
   bindPreparedCliEvidence,
   bindCodexScenarioEvidence,
@@ -14,6 +15,10 @@ import {
 } from "../release-lane/admission.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 import { deriveIdentityBundle } from "@agentscope/protocol";
+import {
+  compileVerifiedNpmHarnessMaterial,
+  compileVerifiedSignedManifestHarnessMaterial,
+} from "../../tests/integration/src/harness-material.ts";
 
 const entrySource = readFileSync(
   new URL("../record-release-stage.mjs", import.meta.url),
@@ -570,6 +575,8 @@ function codexSupportFixture(f, family = "codex") {
     ].map((key) => [key, evidence[key]]),
   );
   execution.receipt = receipt;
+  if (Object.hasOwn(evidence, "preparedHarnessMaterial"))
+    execution.preparedHarnessMaterial = evidence.preparedHarnessMaterial;
   const binding = {
     seed,
     controller: {
@@ -762,11 +769,197 @@ test("preserves additional matched Claude requests instead of filtering to a two
   f.support = codexSupportFixture(f, "claude-code");
   expect(() => bindClaude(f)).toThrow();
 });
-function sourceMaterialFixture(f, family) {
+test("retains only the privately prepared record in evidence and the same completion preimage", async () => {
+  const source = readFileSync(
+    new URL("../../tests/integration/run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const recordEvidence = async");
+  const end = source.indexOf("const failureCode =", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const record = compiledNpmFixture("codex").record;
+  const admission = {
+    preparedHarnessMaterial: record,
+    materialIdentity: record.materialIdentity,
+    seed: { preparedImage: {} },
+    evidence: {},
+    scenario: {},
+  };
+  const writes = new Map();
+  let completion;
+  const result = {
+    resultStatus: "complete",
+    modelLedger: {},
+    destinationLedger: {},
+    lifecycle: [],
+    eventKinds: [],
+    certificationReadiness: null,
+    preparedHarnessMaterial: { materialIdentity: "adapter-forgery" },
+  };
+  const evidence = {
+    runId: "0123456789abcdef",
+    outcome: "passed",
+    baseImage: "base",
+    mockServerImage: "mock",
+    builtImageDigest: `sha256-${"a".repeat(64)}`,
+    executionMode: "interactive",
+    ptyTerminalReceipt: { requestFingerprint: `sha256-${"b".repeat(64)}` },
+    cleanup: {},
+  };
+  const context = {
+    compileIsolationEvidence: (value) => value,
+    preparedIdentityFor: () => ({}),
+    artifactsRoot: "/owned",
+    resolve: resolvePath,
+    mkdirSync: () => {},
+    writeFileSync: (path, bytes) => writes.set(path, JSON.parse(bytes)),
+    admissionByRunId: new Map([[evidence.runId, admission]]),
+    scenarioOutcomes: new Map(),
+    preparedDockerClientDiagnostic: () => undefined,
+    preparedDockerClient: {},
+    fixtureResults: new Map([[evidence.runId, result]]),
+    admissionMaterialRecords: new WeakMap(),
+    compileHarnessAdmissionSeed: (value) => value,
+    beginRealHarnessAdmission: () => ({}),
+    admissionTerminalRecords: new WeakMap(),
+    completeRealHarnessAdmission: () => {},
+    compileHarnessAdmissionCompletion: (value) => {
+      completion = value;
+      return value;
+    },
+  };
+  const settle = runInNewContext(
+    `${source.slice(start, end)}; recordEvidence`,
+    context,
+  );
+  await settle(evidence);
+  expect(
+    writes.get("/owned/runs/0123456789abcdef/evidence.json")
+      .preparedHarnessMaterial,
+  ).toEqual(record);
+  expect(completion?.observation.execution.preparedHarnessMaterial).toBe(
+    record,
+  );
+  expect(completion?.observation.execution.preparedHarnessMaterial).not.toBe(
+    result.preparedHarnessMaterial,
+  );
+});
+function compiledNpmFixture(family) {
+  const archive = Buffer.from("inert compiler archive");
+  const controllerBytes = Buffer.from("held material controller source");
+  const descriptor = {
+    packageName: `@vendor/${family}`,
+    installName: `@vendor/${family}`,
+    version: "1.0.0",
+    bytes: archive.length,
+    integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
+    shasum: createHash("sha1").update(archive).digest("hex"),
+    attestations: {},
+  };
+  const bundles = [
+    {
+      predicateType:
+        "https://github.com/npm/attestation/tree/main/specs/publish/v0.1",
+      bundle: {},
+      signedAccessSignatureUrl: "",
+    },
+    {
+      predicateType: "https://slsa.dev/provenance/v1",
+      bundle: {
+        dsseEnvelope: {
+          payloadType: "application/vnd.in-toto+json",
+          payload: Buffer.from(
+            JSON.stringify({
+              _type: "https://in-toto.io/Statement/v1",
+              subject: [
+                {
+                  name: `pkg:npm/%40vendor/${family}@1.0.0`,
+                  digest: {
+                    sha512: Buffer.from(
+                      descriptor.integrity.slice(7),
+                      "base64",
+                    ).toString("hex"),
+                  },
+                },
+              ],
+              predicateType: "https://slsa.dev/provenance/v1",
+              predicate: {
+                buildDefinition: {
+                  externalParameters: {
+                    workflow: {
+                      repository: "https://github.com/vendor/harness",
+                      ref: "refs/tags/v1.0.0",
+                      path: "release.yml",
+                    },
+                  },
+                  resolvedDependencies: [
+                    { digest: { gitCommit: "a".repeat(40) } },
+                  ],
+                },
+              },
+            }),
+          ).toString("base64"),
+          signatures: [{ keyid: "", sig: "inert verified audit" }],
+        },
+      },
+      signedAccessSignatureUrl: "",
+    },
+  ];
+  descriptor.attestations.bundleDigest = createHash("sha256")
+    .update(canonicalJson(bundles))
+    .digest("hex");
   const material = {
     kind: "npm",
     platformIdentity: `sha256-${"9".repeat(64)}`,
+    packages: [descriptor],
+    verifierImage: `node@sha256:${"f".repeat(64)}`,
+    verifierNpmVersion: "11.19.1",
+    registry: "https://registry.npmjs.org/",
+    provenance: {
+      repository: "https://github.com/vendor/harness",
+      tag: "v1.0.0",
+      workflowPath: "release.yml",
+      sourceCommit: "a".repeat(40),
+    },
   };
+  const record = compileVerifiedNpmHarnessMaterial({
+    evidenceId: family,
+    material,
+    tarballs: new Map([[`@vendor/${family}@1.0.0`, archive]]),
+    audit: {
+      invalid: [],
+      missing: [],
+      verified: [
+        {
+          name: descriptor.packageName,
+          version: "1.0.0",
+          location: `node_modules/${descriptor.installName}`,
+          registry: material.registry,
+          attestations: {
+            url: `https://registry.npmjs.org/-/npm/v1/attestations/@vendor%2f${family}@1.0.0`,
+            provenance: { predicateType: "https://slsa.dev/provenance/v1" },
+          },
+          attestationBundles: bundles,
+        },
+      ],
+    },
+    verifier: {
+      controllerSha256: createHash("sha256")
+        .update(controllerBytes)
+        .digest("hex"),
+      image: material.verifierImage,
+      imageConfigDigest: `sha256:${"b".repeat(64)}`,
+      imageId: `sha256-${"c".repeat(64)}`,
+      imageManifestDigest: `sha256:${"e".repeat(64)}`,
+      name: "npm",
+    },
+  });
+  return { record, material, controllerBytes };
+}
+function sourceMaterialFixture(f, family) {
+  const { record, material, controllerBytes } = compiledNpmFixture(family);
+  f.evidence.preparedHarnessMaterial = record;
   const admission = {
     evidenceSlot: `${family}-component`,
     eligibleRange: { minimumInclusive: "1.0.0", maximumExclusive: "2.0.0" },
@@ -795,6 +988,7 @@ function sourceMaterialFixture(f, family) {
     fixtureBytes: encode(fixture),
     adapterBytes: Buffer.from("synthetic adapter bytes"),
     mappingBytes: Buffer.from("synthetic mapping bytes"),
+    controllerBytes,
   };
   const component = {
     componentEvidenceDigest: `component-sha256-${"8".repeat(64)}`,
@@ -845,7 +1039,9 @@ function bindSourceFixture(f, family, source, catalog) {
     registryIdentity: row.harnessPackage,
     exactVersion: row.representativeVersion,
     distributionReference: row.admission.distributionReference,
-    artifactDigest: source.substitutedMaterialDigest ?? digest(row.material),
+    artifactDigest:
+      source.substitutedMaterialDigest ??
+      f.evidence.preparedHarnessMaterial.materialIdentity,
     evidenceSlot: row.admission.evidenceSlot,
     eligibleRange: row.admission.eligibleRange,
   };
@@ -940,6 +1136,119 @@ test("synthetic component and runtime-shape coverage requires both bound familie
   ])
     expect(() => requireActualSemanticAdmission(wrong)).toThrow();
 });
+test("joins the actual signed compiler preimage rather than its acquisition descriptor", () => {
+  const values = twoFamilySourceFixture(({ sources, fixtures }) => {
+    const source = sources[1],
+      f = fixtures[1];
+    const binary = Buffer.from("inert signed binary"),
+      signature = Buffer.from("inert signature"),
+      key = Buffer.from("inert public key");
+    const hash = (value) => createHash("sha256").update(value).digest("hex");
+    const manifest = encode({
+      platforms: { "linux-x64": { checksum: hash(binary) } },
+    });
+    const material = {
+      kind: "signed-release-manifest",
+      platformIdentity: source.row.material.platformIdentity,
+      version: "1.0.0",
+      platform: "linux-x64",
+      verifierImage: source.row.material.verifierImage,
+      binary: {
+        bytes: binary.length,
+        sha256: hash(binary),
+        executableName: "claude",
+      },
+      manifest: { bytes: manifest.length, sha256: hash(manifest) },
+      signature: { bytes: signature.length, sha256: hash(signature) },
+      signingKey: {
+        bytes: key.length,
+        sha256: hash(key),
+        fingerprint: "A".repeat(40),
+        signerFingerprint: "A".repeat(40),
+        signatureHashAlgorithm: "sha512",
+        uid: "Synthetic Release <test@example.invalid>",
+      },
+      platformPackage: {
+        memberName: "package/claude",
+        memberBytes: binary.length,
+        memberSha256: hash(binary),
+        version: "1.0.0",
+      },
+    };
+    f.evidence.preparedHarnessMaterial =
+      compileVerifiedSignedManifestHarnessMaterial({
+        binary,
+        evidenceId: source.row.evidenceId,
+        material,
+        manifestBytes: manifest,
+        signatureBytes: signature,
+        signingKeyBytes: key,
+        verification: {
+          primaryFingerprint: material.signingKey.fingerprint,
+          signerFingerprint: material.signingKey.signerFingerprint,
+          uid: material.signingKey.uid,
+          manifestSha256: hash(manifest),
+          signatureHashAlgorithm: "sha512",
+          verifier: {
+            ...f.evidence.preparedHarnessMaterial.verifier,
+            name: "gpg",
+          },
+        },
+      });
+    source.row.material = material;
+    expect(f.evidence.preparedHarnessMaterial.materialIdentity).not.toBe(
+      digest(material),
+    );
+  });
+  expect(requireActualSemanticAdmission(values)).toHaveLength(2);
+});
+test("completion binds every retained verifier fact before source admission", () => {
+  const f = codexFixture();
+  f.evidence.preparedHarnessMaterial = compiledNpmFixture("codex").record;
+  f.support = codexSupportFixture(f);
+  expect(bindCodex(f).family).toBe("codex");
+  const changed = JSON.parse(
+    JSON.stringify(f.evidence.preparedHarnessMaterial),
+  );
+  changed.verifier.imageConfigDigest = `sha256:${"0".repeat(64)}`;
+  f.evidence.preparedHarnessMaterial = changed;
+  expect(() => bindCodex(f)).toThrow();
+});
+test.each([
+  (f) => {
+    delete f.evidence.preparedHarnessMaterial;
+  },
+  (f) => {
+    f.evidence.preparedHarnessMaterial = {
+      ...f.evidence.preparedHarnessMaterial,
+      materialIdentity: digest({}),
+    };
+  },
+  (f) => {
+    f.evidence.preparedHarnessMaterial = {
+      ...f.evidence.preparedHarnessMaterial,
+      evidenceId: "other",
+    };
+  },
+  (_f, source) => {
+    source.bytes.controllerBytes = Buffer.from("substituted controller");
+  },
+  (_f, source) => {
+    source.row.material.packages[0].integrity = "sha512-other";
+  },
+  (_f, source) => {
+    source.row.material.packages[0].attestations.bundleDigest = "0".repeat(64);
+  },
+])(
+  "rehashed support cannot excuse missing or substituted actual material %#",
+  (change) => {
+    expect(() =>
+      twoFamilySourceFixture(({ fixtures, sources }) =>
+        change(fixtures[0], sources[0]),
+      ),
+    ).toThrow();
+  },
+);
 test("authenticated component metadata does not supply runtime material authority", () => {
   const values = twoFamilySourceFixture(({ sources }) => {
     for (const source of sources) {
