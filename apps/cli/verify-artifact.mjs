@@ -18,6 +18,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
+import { inspectCandidateTarball } from "../../scripts/release-lane/candidate.mjs";
+import { createReleaseMaterialRoles } from "./scripts/release-materials.mjs";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 import { verifyInstalledNativeArtifacts } from "./scripts/directory-artifact.mjs";
@@ -122,6 +124,35 @@ try {
   assert.equal(packReport.length, 1);
   const tarball = join(artifactDirectory, packReport[0].filename);
   assert.ok(existsSync(tarball));
+  const observedBuild = JSON.parse(
+    readFileSync(
+      resolve(
+        repositoryRoot,
+        "artifacts/cli-build-materials/observed-build.json",
+      ),
+      "utf8",
+    ),
+  );
+  const materialRoles = createReleaseMaterialRoles({
+    build: observedBuild,
+    inspected: inspectCandidateTarball(tarball),
+    directoryRecords: Object.fromEntries(
+      ["sbom.spdx.json", "provenance.json", "release-materials.json"].map(
+        (name) => [
+          name,
+          readFileSync(
+            resolve(
+              stagingRoot,
+              "dist/internal/directory-runtime/records",
+              name,
+            ),
+          ),
+        ],
+      ),
+    ),
+  });
+  for (const [name, bytes] of Object.entries(materialRoles))
+    writeFileSync(join(artifactDirectory, name), bytes);
 
   run(
     "npm",
