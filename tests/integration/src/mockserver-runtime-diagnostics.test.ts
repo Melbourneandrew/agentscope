@@ -29,10 +29,7 @@ const load = (
 ) => {
   const source = runtimeSource();
   const start = source.indexOf("const mockServerNetworkObservation =");
-  const end = source.indexOf(
-    "// eslint-disable-next-line complexity -- exact closed container terminal witness",
-    start,
-  );
+  const end = source.indexOf("const operationFailureSlots =", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const controls = new Map([["run", {}]]);
