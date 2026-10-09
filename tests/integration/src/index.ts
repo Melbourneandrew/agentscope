@@ -65,3 +65,4 @@ export type {
   LocalSelection,
   SanitizedFixtureResult,
 } from "./operations.js";
+export { observeSelectedWriterOtlp } from "./selected-otlp-observation.js";
