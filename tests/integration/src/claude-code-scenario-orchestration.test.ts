@@ -1,4 +1,15 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import { sanitizeFixtureResult } from "./operations.js";
@@ -10,9 +21,95 @@ const source = readFileSync(
   "utf8",
 );
 const start = source.indexOf("const waitForClaudeModelPair =");
-const end = source.indexOf("\nif (", start);
+const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
+
+describe("Claude actual module entry", () => {
+  it("executes the same environment refusal through direct and aliased entries", () => {
+    const target = fileURLToPath(
+      new URL("../claude-code-scenario.mjs", import.meta.url),
+    );
+    const directory = mkdtempSync(join(tmpdir(), "agentscope-claude-entry-"));
+    const alias = join(directory, "entry.mjs");
+    try {
+      symlinkSync(target, alias);
+      for (const entry of [target, alias]) {
+        // Invalid arguments/environment refuse before any vendor execution.
+        const result = spawnSync(process.execPath, [entry], {
+          env: {},
+          encoding: "utf8",
+          maxBuffer: 1024,
+          timeout: 5000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(result.signal).toBeNull();
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("integration.claude-code.scenario\n");
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([undefined, process.execPath, "missing"])(
+    "keeps ordinary library import inert (entry=%s)",
+    (candidate) => {
+      const directory = mkdtempSync(
+        join(tmpdir(), "agentscope-claude-import-"),
+      );
+      try {
+        const entry =
+          candidate === "missing" ? join(directory, "missing.mjs") : candidate;
+        const target = new URL("../claude-code-scenario.mjs", import.meta.url);
+        const result = spawnSync(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            `await import(${JSON.stringify(target.href)})`,
+            ...(entry === undefined ? [] : [entry]),
+          ],
+          { env: {}, encoding: "utf8", maxBuffer: 1024, timeout: 5000 },
+        );
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.signal).toBeNull();
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "executes the environment refusal through an inherited procfs descriptor",
+    () => {
+      const descriptor = openSync(
+        new URL("../claude-code-scenario.mjs", import.meta.url),
+        "r",
+      );
+      try {
+        const result = spawnSync(process.execPath, ["/proc/self/fd/3"], {
+          env: {},
+          stdio: ["ignore", "pipe", "pipe", descriptor],
+          encoding: "utf8",
+          maxBuffer: 1024,
+          timeout: 5000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(result.signal).toBeNull();
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toBe("integration.claude-code.scenario\n");
+      } finally {
+        closeSync(descriptor);
+      }
+    },
+  );
+});
 
 describe("Claude selected PTY input", () => {
   it("reuses the selected challenge only for the exact Claude evidence and scenario", () => {
