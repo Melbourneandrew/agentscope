@@ -156,6 +156,21 @@ jobs:
           path: artifacts/integration/certification/replay-${{ matrix.replay }}.json
           if-no-files-found: error
           retention-days: 7
+      - name: Upload bounded successful scenario evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
+          path: |
+            artifacts/integration/certification/replay-${{ matrix.replay }}.json
+            artifacts/integration/harness-support-evidence.json
+            artifacts/integration/runs/*/evidence.json
+            artifacts/integration/runs/*/harness-observation.json
+            artifacts/integration/runs/*/model-ledger.json
+            artifacts/integration/runs/*/destination-ledger.json
+            artifacts/integration/runs/*/fixture-lifecycle.json
+          if-no-files-found: error
+          retention-days: 7
   controlled-negative:
     if: ${{ !inputs.mockserver_research }}
     name: Substrate rejects ${{ matrix.case }}

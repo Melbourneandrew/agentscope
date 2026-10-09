@@ -8,6 +8,7 @@ import {
   appendFileSync,
   mkdirSync,
   writeFileSync,
+  readdirSync,
 } from "node:fs";
 import {
   resolveContainedArtifactPath,
@@ -35,7 +36,12 @@ import {
   continuePublication,
 } from "./release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "./release-lane/validation.mjs";
-import { requireActualSemanticAdmission } from "./release-lane/admission.mjs";
+import {
+  requireActualSemanticAdmission,
+  parseAdmissionDocument,
+  bindIntegrationArtifacts,
+  bindCodexScenarioEvidence,
+} from "./release-lane/admission.mjs";
 import { validateStageResult } from "./release-lane/stage-result.mjs";
 import {
   validateProbeMaterial,
@@ -78,10 +84,6 @@ function readBounded(path, limit) {
     closeSync(fd);
   }
 }
-// The actual OTLP semantic producer is still absent. Do not substitute a
-// successful job, digest or caller certification label for that prerequisite.
-// rk8.6 consumes the reviewed producer when available; no live entry meanwhile.
-requireActualSemanticAdmission();
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
   process.env.GITHUB_REPOSITORY !== "Melbourneandrew/agentscope" ||
@@ -90,10 +92,203 @@ if (
   !/^[a-f0-9]{40}$/u.test(process.env.GITHUB_SHA ?? "")
 )
   fail();
+async function admissionMetadata(path) {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0 || !process.env.GITHUB_TOKEN) fail();
+  const response = await fetch(
+    `https://api.github.com/repos/Melbourneandrew/agentscope/${path}`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))),
+    },
+  );
+  if (response.status !== 200 || !response.body) fail();
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.byteLength;
+    if (size > 1_048_576 || performance.now() >= deadline) fail();
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+async function prepareAdmission() {
+  const event = parseAdmissionDocument(
+    readBounded(process.env.GITHUB_EVENT_PATH, 65_536),
+  );
+  const idText = event.inputs?.["candidate-run-id"];
+  if (typeof idText !== "string" || !/^[1-9][0-9]{0,15}$/u.test(idText)) fail();
+  const id = Number(idText);
+  if (!Number.isSafeInteger(id) || id < 1) fail();
+  const runBytes = await admissionMetadata(`actions/runs/${id}`);
+  const run = parseAdmissionDocument(runBytes);
+  if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) fail();
+  const jobs = await admissionMetadata(
+    `actions/runs/${id}/attempts/${run.run_attempt}/jobs?per_page=100`,
+  );
+  const artifacts = await admissionMetadata(
+    `actions/runs/${id}/artifacts?per_page=100`,
+  );
+  const selected = bindIntegrationArtifacts(
+    runBytes,
+    jobs,
+    artifacts,
+    id,
+    process.env.GITHUB_SHA,
+  );
+  const current = parseAdmissionDocument(
+    await admissionMetadata(`actions/runs/${id}`),
+  );
+  if (
+    current.run_attempt !== selected.runAttempt ||
+    current.status !== "completed" ||
+    current.conclusion !== "success" ||
+    current.head_sha !== process.env.GITHUB_SHA
+  )
+    fail();
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    `candidate-artifact-id=${selected.candidateArtifactId}\nscenario-artifact-id=${selected.scenarioArtifactId}\n`,
+  );
+}
+function admissionInventory(root, allowed, prefix = "", count = { value: 0 }) {
+  const directory = `${root}${prefix ? `/${prefix}` : ""}`;
+  if (
+    !lstatSync(directory).isDirectory() ||
+    lstatSync(directory).isSymbolicLink()
+  )
+    fail();
+  const files = [];
+  for (const name of readdirSync(directory)) {
+    if (
+      ++count.value > 512 ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$/u.test(name)
+    )
+      fail();
+    const path = prefix ? `${prefix}/${name}` : name;
+    const status = lstatSync(`${root}/${path}`);
+    if (
+      status.isDirectory() &&
+      !status.isSymbolicLink() &&
+      path.split("/").length < 4
+    )
+      files.push(...admissionInventory(root, allowed, path, count));
+    else if (status.isFile() && !status.isSymbolicLink() && allowed(path))
+      files.push(path);
+    else fail();
+  }
+  return files.sort();
+}
+function verifyAdmission() {
+  const root = "artifacts/semantic-candidate";
+  const pointer = parseAdmissionDocument(
+    readBounded(`${root}/current-candidate.json`, 16_384),
+  );
+  if (
+    pointer.pointerVersion !== 1 ||
+    !/^sha256-[a-f0-9]{64}$/u.test(pointer.bundleIdentity) ||
+    pointer.candidateRevision !== process.env.GITHUB_SHA
+  )
+    fail();
+  const candidateRoot = `${root}/candidates/${pointer.bundleIdentity}`;
+  const preparedBytes = readBounded(
+    `${candidateRoot}/evidence.json`,
+    1_048_576,
+  );
+  const prepared = parseAdmissionDocument(preparedBytes);
+  if (
+    prepared.bundleIdentity !== pointer.bundleIdentity ||
+    !Array.isArray(prepared.artifacts)
+  )
+    fail();
+  const expected = [
+    "current-candidate.json",
+    `candidates/${pointer.bundleIdentity}/evidence.json`,
+  ];
+  let total = 0;
+  for (const file of [prepared.lockfile, ...prepared.artifacts]) {
+    if (
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$/u.test(file?.fileName) ||
+      !Number.isSafeInteger(file.bytes) ||
+      file.bytes < 1 ||
+      (total += file.bytes) > 268_435_456
+    )
+      fail();
+    const path = `candidates/${pointer.bundleIdentity}/files/${file.fileName}`;
+    const bytes = readBounded(`${root}/${path}`, file.bytes);
+    if (
+      bytes.length !== file.bytes ||
+      sha256(bytes).replace("sha256:", "sha256-") !== file.sha256
+    )
+      fail();
+    expected.push(path);
+  }
+  if (
+    canonicalJson(
+      admissionInventory(root, (path) => expected.includes(path)),
+    ) !== canonicalJson(expected.sort())
+  )
+    fail();
+  const semanticRoot = "artifacts/semantic-scenarios";
+  const files = admissionInventory(
+    semanticRoot,
+    (path) =>
+      path === "harness-support-evidence.json" ||
+      path === "certification/replay-1.json" ||
+      /^runs\/[a-f0-9]{16}\/(?:evidence|harness-observation|model-ledger|destination-ledger|fixture-lifecycle)\.json$/u.test(
+        path,
+      ),
+  );
+  const supportBytes = readBounded(
+    `${semanticRoot}/harness-support-evidence.json`,
+    1_048_576,
+  );
+  const support = parseAdmissionDocument(supportBytes);
+  if (!Array.isArray(support.entries) || support.entries.length > 32) fail();
+  for (const entry of support.entries) {
+    if (entry.harnessType !== "@agentscope/harness-codex") continue;
+    const runId = entry.binding?.seed?.runId;
+    if (!/^[a-f0-9]{16}$/u.test(runId)) fail();
+    const read = (name) => {
+      const path = `runs/${runId}/${name}.json`;
+      if (!files.includes(path)) fail();
+      return readBounded(`${semanticRoot}/${path}`, 1_048_576);
+    };
+    bindCodexScenarioEvidence(
+      preparedBytes,
+      supportBytes,
+      Object.fromEntries(
+        [
+          "evidence",
+          "fixture-lifecycle",
+          "model-ledger",
+          "destination-ledger",
+          "harness-observation",
+        ].map((name) => [`${name}.json`, read(name)]),
+      ),
+    );
+  }
+  requireActualSemanticAdmission();
+}
+if (process.argv.length === 3 && process.argv[2] === "--prepare-admission") {
+  await prepareAdmission();
+  process.exit(0);
+}
+if (process.argv.length === 3 && process.argv[2] === "--verify-admission") {
+  verifyAdmission();
+  process.exit(0);
+}
+// Acquiring read-only artifact metadata does not grant publication authority.
+// All existing protected modes still stop before token/store mutation.
+requireActualSemanticAdmission();
 // Semantic verification is nonprivileged. Administrative settings are inspected
 // through the existing operator session and bound to the authenticated stage
 // checkpoint; the read-only Actions token cannot inspect those settings.
-if (process.argv[2] === "--verify-admission") process.exit(0);
 const eventBytes = readBounded(process.env.GITHUB_EVENT_PATH, 65_536);
 const event = JSON.parse(eventBytes.toString("utf8"));
 const mode = process.argv[2];

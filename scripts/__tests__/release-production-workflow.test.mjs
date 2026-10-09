@@ -219,7 +219,7 @@ test("semantic admission receives no administrative or publication credential", 
   writable.jobs["verify-candidate"].permissions.contents = "write";
   expect(() => requireNonprivilegedAdmission(writable)).toThrow();
 });
-test("missing actual semantic evidence stops before token or API acquisition", () => {
+test("missing actual semantic evidence stops before protected store mutation", () => {
   const entry = readFileSync(
     new URL("../record-release-stage.mjs", import.meta.url),
     "utf8",
@@ -235,6 +235,104 @@ test("missing actual semantic evidence stops before token or API acquisition", (
   expect(
     entry.indexOf('process.argv[2] === "--verify-admission"'),
   ).toBeLessThan(entry.indexOf("createGitHubReleaseStore({"));
+});
+
+const requireSemanticAcquisition = (workflow) => {
+  const steps = workflow.jobs["verify-candidate"].steps;
+  const auth = steps.findIndex((step) => step.id === "admission-artifacts");
+  expect(steps[auth].run).toBe(
+    "node scripts/record-release-stage.mjs --prepare-admission",
+  );
+  expect(steps[auth].env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
+  const verify = steps.findIndex(
+    (step) =>
+      step.run === "node scripts/record-release-stage.mjs --verify-admission",
+  );
+  for (const [offset, output, path] of [
+    [1, "candidate", "artifacts/semantic-candidate"],
+    [2, "scenario", "artifacts/semantic-scenarios"],
+  ]) {
+    expect(auth + offset).toBeLessThan(verify);
+    expect(steps[auth + offset].with).toEqual({
+      "artifact-ids": `\${{ steps.admission-artifacts.outputs.${output}-artifact-id }}`,
+      path,
+      "run-id": "${{ inputs.candidate-run-id }}",
+      "github-token": "${{ github.token }}",
+      "merge-multiple": true,
+    });
+  }
+  for (const job of Object.values(workflow.jobs))
+    expect(
+      job.steps.filter((step) => step.run === "pnpm build:release-admission"),
+    ).toHaveLength(1);
+};
+test("bounded admission downloads immutable IDs before guard without publication credentials", () => {
+  requireSemanticAcquisition(parse(source));
+  for (const change of [
+    (w) => {
+      w.jobs["verify-candidate"].steps.find(
+        (s) => s.name === "Download bounded scenario evidence",
+      ).with["artifact-ids"] = "${{ inputs.stage-tuple }}";
+    },
+    (w) => {
+      w.jobs["verify-candidate"].steps.find(
+        (s) => s.name === "Download exact prepared candidate",
+      ).with["run-id"] = "${{ github.run_id }}";
+    },
+    (w) => {
+      w.jobs["verify-candidate"].steps.find(
+        (s) => s.id === "admission-artifacts",
+      ).env.GITHUB_TOKEN = "${{ secrets.NPM_TOKEN }}";
+    },
+  ]) {
+    const workflow = parse(source);
+    change(workflow);
+    expect(() => requireSemanticAcquisition(workflow)).toThrow();
+  }
+});
+test("Integration success retains only bounded existing files and preserves certification fan-in", () => {
+  const integration = parse(
+    readFileSync(
+      new URL("../../.github/workflows/integration.yml", import.meta.url),
+      "utf8",
+    ),
+  );
+  const steps = integration.jobs["hermetic-platform"].steps;
+  const success = steps.find(
+    (step) => step.name === "Upload bounded successful scenario evidence",
+  );
+  expect(success.if).toBe("success()");
+  expect(success.with.name).toBe(
+    "integration-${{ matrix.shard.name }}-${{ matrix.replay }}",
+  );
+  expect(success.with["if-no-files-found"]).toBe("error");
+  expect(success.with.path.trim().split("\n")).toEqual([
+    "artifacts/integration/certification/replay-${{ matrix.replay }}.json",
+    "artifacts/integration/harness-support-evidence.json",
+    ...[
+      "evidence",
+      "harness-observation",
+      "model-ledger",
+      "destination-ledger",
+      "fixture-lifecycle",
+    ].map((name) => `artifacts/integration/runs/*/${name}.json`),
+  ]);
+  const failure = steps.find(
+    (step) => step.name === "Upload sanitized failure evidence",
+  );
+  expect(failure.if).toBe(
+    "failure() && steps.failure_evidence.outcome == 'success'",
+  );
+  expect(failure.with.name).toBe(success.with.name);
+  const certification = steps.find(
+    (step) => step.name === "Upload clean certification receipt",
+  );
+  expect(certification.with.path).toBe(
+    "artifacts/integration/certification/replay-${{ matrix.replay }}.json",
+  );
+  expect(certification.with.name).toBe(
+    "substrate-certification-replay-${{ matrix.replay }}-${{ github.sha }}",
+  );
 });
 
 const requirePublicationSeparation = (workflow) => {

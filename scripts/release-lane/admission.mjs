@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { types } from "node:util";
+import { deriveIdentityBundle } from "@agentscope/protocol";
 import { canonicalJson, sha256 } from "./validation.mjs";
 
 const reject = () => {
@@ -230,9 +231,453 @@ export function bindPreparedCliEvidence(evidenceBytes, manifestBytes, tarball) {
   });
 }
 
-// No retained producer currently supplies the genuine OTLP semantic graph
-// required by 7z5. Missing actual evidence is a concrete prerequisite, not an
-// assertion that existing byte/digest or scenario records certify it.
+const integrationDigest = (value) =>
+  sha256(canonicalJson(value)).replace("sha256:", "sha256-");
+const equal = (left, right) => canonicalJson(left) === canonicalJson(right);
+
+// Inputs are bounded server response bytes acquired by the fixed read-only
+// entry. Job success authenticates provenance, never native semantics.
+export function bindIntegrationArtifacts(
+  runBytes,
+  jobsBytes,
+  artifactsBytes,
+  id,
+  revision,
+) {
+  const run = parseAdmissionDocument(runBytes);
+  const jobs = parseAdmissionDocument(jobsBytes);
+  const artifacts = parseAdmissionDocument(artifactsBytes);
+  if (
+    !Number.isSafeInteger(id) ||
+    id < 1 ||
+    typeof revision !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(revision) ||
+    run.id !== id ||
+    run.head_sha !== revision ||
+    run.repository?.full_name !== "Melbourneandrew/agentscope" ||
+    run.head_repository?.full_name !== "Melbourneandrew/agentscope" ||
+    run.path !== ".github/workflows/integration.yml" ||
+    run.event !== "push" ||
+    run.head_branch !== "main" ||
+    run.status !== "completed" ||
+    run.conclusion !== "success" ||
+    !Number.isSafeInteger(run.run_attempt) ||
+    run.run_attempt < 1
+  )
+    reject();
+  for (const [list, field] of [
+    [jobs, "jobs"],
+    [artifacts, "artifacts"],
+  ])
+    if (
+      !Array.isArray(list[field]) ||
+      list.total_count !== list[field].length ||
+      list.total_count > 100
+    )
+      reject();
+  const select = (name, jobName) => {
+    const found = artifacts.artifacts.filter((item) => item.name === name);
+    const producers = jobs.jobs.filter((job) => job.name === jobName);
+    if (found.length !== 1 || producers.length !== 1) reject();
+    const artifact = found[0];
+    const job = producers[0];
+    const times = [
+      job.started_at,
+      artifact.created_at,
+      artifact.updated_at,
+      job.completed_at,
+    ].map(Date.parse);
+    if (
+      [
+        job.started_at,
+        artifact.created_at,
+        artifact.updated_at,
+        job.completed_at,
+      ].some((time) => typeof time !== "string") ||
+      job.run_id !== id ||
+      (job.run_attempt !== undefined && job.run_attempt !== run.run_attempt) ||
+      job.head_sha !== revision ||
+      job.status !== "completed" ||
+      job.conclusion !== "success" ||
+      times.some((time) => !Number.isFinite(time)) ||
+      times.some((time, index) => index > 0 && time < times[index - 1]) ||
+      artifact.expired !== false ||
+      artifact.workflow_run?.id !== id ||
+      artifact.workflow_run?.head_sha !== revision ||
+      !Number.isSafeInteger(artifact.id) ||
+      artifact.id < 1 ||
+      !Number.isSafeInteger(artifact.size_in_bytes) ||
+      artifact.size_in_bytes < 1 ||
+      artifact.size_in_bytes > 268_435_456 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(artifact.digest)
+    )
+      reject();
+    return artifact.id;
+  };
+  return Object.freeze({
+    candidateArtifactId: select(
+      `integration-candidate-${revision}`,
+      "Prepare immutable candidate",
+    ),
+    scenarioArtifactId: select(
+      "integration-0-of-1-1",
+      "Hermetic shard 0-of-1 replay 1",
+    ),
+    runAttempt: run.run_attempt,
+  });
+}
+
+function codexObservation(observation) {
+  keys(observation, [
+    "observationVersion",
+    "kind",
+    "nativeSessionId",
+    "nativeTurnId",
+    "nativeModelName",
+    "modelRequestBodySha256",
+    "traceId",
+    "canonicalGraphDigest",
+    "spanIds",
+    "contextDisposition",
+    "resourceSpanCount",
+    "spanNames",
+    "parentLinked",
+    "doctorErrors",
+    "uninstallDisposition",
+    "sessionStartCommandDurationMilliseconds",
+  ]);
+  if (
+    observation.observationVersion !== 1 ||
+    observation.kind !== "codex-tui-trace" ||
+    [
+      observation.nativeSessionId,
+      observation.nativeTurnId,
+      observation.nativeModelName,
+    ].some(
+      (part) =>
+        typeof part !== "string" || part.length < 1 || part.length > 256,
+    ) ||
+    !/^[a-f0-9]{64}$/u.test(observation.modelRequestBodySha256) ||
+    !/^[a-f0-9]{64}$/u.test(observation.canonicalGraphDigest) ||
+    observation.contextDisposition !== "unversioned-workspace-redacted" ||
+    observation.resourceSpanCount !== 1 ||
+    !equal(observation.spanNames, ["codex.turn", "codex.response"]) ||
+    observation.parentLinked !== true ||
+    observation.doctorErrors !== 0 ||
+    observation.uninstallDisposition !== "committed" ||
+    !(
+      observation.sessionStartCommandDurationMilliseconds === null ||
+      (Number.isFinite(observation.sessionStartCommandDurationMilliseconds) &&
+        observation.sessionStartCommandDurationMilliseconds >= 0)
+    )
+  )
+    reject();
+  const turn = `codex:${observation.nativeTurnId}`;
+  const identity = deriveIdentityBundle({
+    harnessRegistryId: "codex",
+    operationIdScope: "session-global",
+    session: { kind: "boundary-scoped" },
+    boundary: {
+      kind: "hook-invocation",
+      id: turn,
+      generation: 0,
+      positionKind: "sequence",
+      exclusiveEndPosition: 1,
+    },
+    operations: [
+      {
+        logicalKey: "codex-turn",
+        locator: { kind: "native-operation", nativeId: turn },
+      },
+      {
+        logicalKey: "codex-llm",
+        parentLogicalKey: "codex-turn",
+        locator: { kind: "native-operation", nativeId: `${turn}:llm` },
+      },
+    ],
+  });
+  if (
+    observation.traceId !== identity.traceId ||
+    !equal(observation.spanIds, [
+      identity.spans["codex-turn"],
+      identity.spans["codex-llm"],
+    ])
+  )
+    reject();
+}
+
+function cleanCodexTerminal(evidence) {
+  const receipt = evidence.ptyTerminalReceipt;
+  keys(evidence.cleanup, ["outcome", "removalFailureCount", "remaining"]);
+  keys(evidence.cleanup.remaining, [
+    "containers",
+    "networks",
+    "images",
+    "volumes",
+    "buildContexts",
+    "activeRunMarkers",
+  ]);
+  if (
+    evidence.evidenceVersion !== 2 ||
+    evidence.outcome !== "passed" ||
+    evidence.executionMode !== "interactive" ||
+    evidence.headlessTerminalReceipt !== null ||
+    evidence.cleanup.outcome !== "complete" ||
+    evidence.cleanup.removalFailureCount !== 0 ||
+    Object.values(evidence.cleanup.remaining).some((count) => count !== 0) ||
+    receipt?.receiptVersion !== 1 ||
+    receipt.transport !== "pty" ||
+    receipt.runId !== evidence.runId ||
+    receipt.scenarioId !== evidence.scenarioId ||
+    receipt.outcome !== "completed" ||
+    receipt.exitCode !== 0 ||
+    receipt.signal !== null ||
+    receipt.cleanup !== "clean" ||
+    receipt.residualProcessCount !== 0 ||
+    receipt.finalSnapshot?.semanticState !== "completed" ||
+    [
+      receipt.processJoined,
+      receipt.terminalInputJoined,
+      receipt.terminalOutputJoined,
+      receipt.terminalTransportClosed,
+    ].some((joined) => joined !== true) ||
+    !Number.isFinite(receipt.returnedAtMs) ||
+    !Number.isFinite(receipt.request?.process?.monotonicShutdownDeadlineMs) ||
+    receipt.returnedAtMs >
+      receipt.request.process.monotonicShutdownDeadlineMs ||
+    receipt.processRequestFingerprint !==
+      receipt.request.process.requestFingerprint ||
+    receipt.requestFingerprint !==
+      sha256(
+        JSON.stringify({
+          processRequestFingerprint: receipt.processRequestFingerprint,
+          completion: receipt.request.completion,
+          readiness: receipt.request.readiness,
+          initialGeometry: receipt.request.initialGeometry,
+          interaction: {
+            actions: receipt.request.interaction.actions,
+            trigger: receipt.request.interaction.trigger,
+          },
+          interpreter: receipt.request.interpreter,
+          scriptSha256: receipt.request.scriptSha256,
+          inputBytes: receipt.inputBytes,
+          inputSha256: receipt.inputSha256,
+        }),
+      )
+  )
+    reject();
+  return receipt;
+}
+
+function codexLifecycle(evidence, lifecycle) {
+  keys(lifecycle, [
+    "evidenceVersion",
+    "resultStatus",
+    "scenarioId",
+    "artifactFileName",
+    "certificationReadiness",
+    "lifecycle",
+    "eventKinds",
+  ]);
+  if (
+    lifecycle.evidenceVersion !== 1 ||
+    lifecycle.scenarioId !== evidence.scenarioId ||
+    lifecycle.resultStatus !== "complete" ||
+    lifecycle.certificationReadiness !== null ||
+    !equal(lifecycle.lifecycle, [
+      "install",
+      "configure",
+      "hook",
+      "execute",
+      "export",
+      "retrieve",
+      "uninstall",
+    ]) ||
+    !equal(lifecycle.eventKinds, ["hook", "model", "destination"])
+  )
+    reject();
+}
+function codexLedgers(modelLedger, destinationLedger, scenarioId) {
+  keys(modelLedger, ["ledgerVersion", "scenarioId", "entries"]);
+  keys(destinationLedger, [
+    "ledgerVersion",
+    "scenarioId",
+    "ingestion",
+    "retrieval",
+  ]);
+  if (
+    modelLedger.ledgerVersion !== 1 ||
+    modelLedger.scenarioId !== scenarioId ||
+    !Array.isArray(modelLedger.entries) ||
+    modelLedger.entries.length < 1 ||
+    modelLedger.entries.length > 32 ||
+    destinationLedger.ledgerVersion !== 1 ||
+    destinationLedger.scenarioId !== scenarioId ||
+    !Array.isArray(destinationLedger.ingestion) ||
+    destinationLedger.ingestion.length !== 1 ||
+    !equal(destinationLedger.retrieval, []) ||
+    destinationLedger.ingestion[0].operation !== "otlp" ||
+    destinationLedger.ingestion[0].method !== "POST" ||
+    destinationLedger.ingestion[0].path !== "/api/public/otel/v1/traces" ||
+    destinationLedger.ingestion[0].outcome !== "accepted" ||
+    !Number.isSafeInteger(destinationLedger.ingestion[0].bodyBytes) ||
+    destinationLedger.ingestion[0].bodyBytes < 1 ||
+    destinationLedger.ingestion[0].bodyBytes > 1_048_576
+  )
+    reject();
+  keys(destinationLedger.ingestion[0], [
+    "operation",
+    "method",
+    "path",
+    "bodyBytes",
+    "outcome",
+  ]);
+  for (const model of modelLedger.entries) {
+    keys(model, ["routeId", "provider", "method", "path", "bodyBytes"]);
+    if (
+      model.routeId !== "codex-tui-responses" ||
+      model.provider !== "openai" ||
+      model.method !== "POST" ||
+      model.path !== "/v1/responses" ||
+      !Number.isSafeInteger(model.bodyBytes) ||
+      model.bodyBytes < 1 ||
+      model.bodyBytes > 1_048_576
+    )
+      reject();
+  }
+}
+function codexCompletion(entry, evidence, native, receipt, prepared) {
+  const { seed, controller, completion } = entry.binding;
+  const execution = Object.fromEntries(
+    [
+      "baseImageIdentity",
+      "builtImageDigest",
+      "candidateBundleIdentity",
+      "executionMode",
+      "manifestIdentity",
+      "mockServerImageIdentity",
+      "scenarioId",
+    ].map((key) => [key, evidence[key]]),
+  );
+  execution.receipt = receipt;
+  if (
+    seed.productIdentity !== "agentscope-cli" ||
+    seed.candidateDigest !== prepared.bundleIdentity ||
+    seed.manifestIdentity !== evidence.manifestIdentity ||
+    seed.scenarioId !== evidence.scenarioId ||
+    seed.execution?.mode !== "interactive" ||
+    seed.execution.outputContract !== "semantic-pty" ||
+    seed.harness?.registryIdentity !== "@agentscope/harness-codex" ||
+    seed.preparedImage?.scenarioImageDigest !== evidence.builtImageDigest ||
+    controller?.hostKind !== "github-hosted" ||
+    controller.workspaceRevision !== prepared.candidateRevision ||
+    completion?.completionVersion !== 1 ||
+    completion.runId !== evidence.runId ||
+    completion.requestFingerprint !== receipt.requestFingerprint ||
+    completion.observationPlaneDigest !==
+      integrationDigest({ native, execution }) ||
+    completion.cleanupEvidenceDigest !== integrationDigest(evidence.cleanup) ||
+    completion.scenarioImageDigest !== evidence.builtImageDigest ||
+    completion.outcome !== "scenario-terminal-clean" ||
+    completion.remainingOwnedResources !== 0 ||
+    entry.realScenarioDigest !== integrationDigest(entry.binding)
+  )
+    reject();
+  return completion;
+}
+// A transient map of owned file-byte snapshots, never a persisted evidence DTO.
+function codexDocuments(files) {
+  if (types.isProxy(files) || !files || typeof files !== "object") reject();
+  if (Object.getOwnPropertySymbols(files).length !== 0) reject();
+  keys(files, [
+    "evidence.json",
+    "fixture-lifecycle.json",
+    "model-ledger.json",
+    "destination-ledger.json",
+    "harness-observation.json",
+  ]);
+  const descriptors = Object.getOwnPropertyDescriptors(files);
+  const read = (name) => {
+    if (!Object.hasOwn(descriptors[name], "value")) reject();
+    return parseAdmissionDocument(descriptors[name].value);
+  };
+  const evidence = read("evidence.json"),
+    lifecycle = read("fixture-lifecycle.json");
+  const modelLedger = read("model-ledger.json"),
+    destinationLedger = read("destination-ledger.json"),
+    harnessObservation = read("harness-observation.json");
+  codexLifecycle(evidence, lifecycle);
+  codexLedgers(modelLedger, destinationLedger, evidence.scenarioId);
+  codexObservation(harnessObservation);
+  return {
+    evidence,
+    native: {
+      ...lifecycle,
+      modelLedger,
+      destinationLedger,
+      harnessObservation,
+    },
+  };
+}
+// Reconstruct ONLY existing completion preimages from owned snapshots. This
+// binds the bounded Codex projection, not a new support certificate or graph.
+export function bindCodexScenarioEvidence(preparedBytes, supportBytes, files) {
+  const prepared = parseAdmissionDocument(preparedBytes);
+  preparedEvidence(prepared);
+  const { bundleIdentity, ...material } = prepared;
+  if (integrationDigest(material) !== bundleIdentity) reject();
+  const support = parseAdmissionDocument(supportBytes);
+  keys(support, [
+    "manifestVersion",
+    "disposition",
+    "manifestIdentity",
+    "entries",
+  ]);
+  if (
+    support.manifestVersion !== 1 ||
+    support.disposition !== "real-scenario-evidence-awaiting-release-gate" ||
+    !Array.isArray(support.entries) ||
+    support.entries.length < 1 ||
+    support.entries.length > 32 ||
+    support.manifestIdentity !==
+      integrationDigest({
+        manifestVersion: support.manifestVersion,
+        disposition: support.disposition,
+        entries: support.entries,
+      })
+  )
+    reject();
+  const { evidence, native } = codexDocuments(files);
+  if (
+    !/^[a-f0-9]{16}$/u.test(evidence.runId) ||
+    evidence.candidateBundleIdentity !== bundleIdentity ||
+    evidence.candidateRevision !== prepared.candidateRevision
+  )
+    reject();
+  const receipt = cleanCodexTerminal(evidence);
+  const entries = support.entries.filter(
+    (entry) =>
+      entry.harnessType === "@agentscope/harness-codex" &&
+      entry.binding?.seed?.runId === evidence.runId,
+  );
+  if (entries.length !== 1) reject();
+  const completion = codexCompletion(
+    entries[0],
+    evidence,
+    native,
+    receipt,
+    prepared,
+  );
+  return Object.freeze({
+    runId: evidence.runId,
+    scenarioId: evidence.scenarioId,
+    candidateBundleIdentity: bundleIdentity,
+    observationPlaneDigest: completion.observationPlaneDigest,
+  });
+}
+
+// No actual Claude producer or genuine private completion is admitted yet.
+// Bounded Codex binding, job success and byte digests cannot supply those facts.
 export function requireActualSemanticAdmission() {
   throw new Error("release.admission.actual-otlp-evidence-missing");
 }
