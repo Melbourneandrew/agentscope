@@ -49,6 +49,7 @@ export const readRetainedFixtureOutput = (
   fixtureResultPath,
   scenarioId,
   afterDescriptorAuthenticationForTest,
+  observeRefusal,
 ) => {
   if (
     typeof fixtureResultPath !== "string" ||
@@ -62,20 +63,26 @@ export const readRetainedFixtureOutput = (
     throw new Error("integration.runner.fixture-result");
 
   let descriptor;
+  let refusalStage = "open";
   try {
     descriptor = openSync(
       fixtureResultPath,
       constants.O_RDONLY | constants.O_NOFOLLOW,
     );
+    refusalStage = "status";
     const before = fstatSync(descriptor, { bigint: true });
     validateStatus(before, BigInt(expectedOwner));
     afterDescriptorAuthenticationForTest?.();
+    refusalStage = "read";
     const bytes = readBounded(descriptor);
+    refusalStage = "status";
     const after = fstatSync(descriptor, { bigint: true });
     validateStatus(after, BigInt(expectedOwner));
+    refusalStage = "identity";
     if (!sameIdentity(before, after) || BigInt(bytes.length) !== after.size)
       throw new Error("integration.runner.fixture-result");
 
+    refusalStage = "envelope";
     const retained = JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(bytes),
     );
@@ -91,6 +98,11 @@ export const readRetainedFixtureOutput = (
       throw new Error("integration.runner.fixture-result");
     return `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
   } catch {
+    try {
+      observeRefusal?.(refusalStage);
+    } catch {
+      // Optional same-process observation cannot replace the existing refusal.
+    }
     throw new Error("integration.runner.fixture-result");
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);

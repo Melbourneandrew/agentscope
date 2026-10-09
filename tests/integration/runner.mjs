@@ -410,6 +410,7 @@ let fixtureOutput;
 let fixtureFailure;
 let recoveryAttempted = false;
 let recoverySucceeded = false;
+let recoveryStage = null;
 let interactiveFailureDiagnostic;
 let codexPtyFailureHint =
   scenarioId === "codex-tui-trace-smoke" ? "arm-pty-before-call" : undefined;
@@ -424,7 +425,14 @@ const emitCodexPtyFailureHint = () => {
   }
 };
 const recoverRetainedFixtureOutput = () =>
-  readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
+  readRetainedFixtureOutput(
+    join(ledger, "fixture-result.json"),
+    scenarioId,
+    undefined,
+    (stage) => {
+      recoveryStage = stage;
+    },
+  );
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -839,6 +847,7 @@ if (
       runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
       recoveryAttempted,
       recoverySucceeded,
+      recoveryStage,
     })}`;
     if (Buffer.byteLength(observation) <= 256) console.log(observation);
   } catch {

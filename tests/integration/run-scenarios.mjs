@@ -2814,19 +2814,42 @@ const retainedRecoveryObservation = (output, runId, receipt) => {
     const lines = output.split("\n").filter((line) => line.startsWith(prefix));
     if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
     const value = JSON.parse(lines[0].slice(prefix.length));
+    const keys = ["recoveryAttempted", "recoverySucceeded", "runId"];
+    if (Object.hasOwn(value ?? {}, "recoveryStage")) keys.push("recoveryStage");
     if (
       !value ||
       JSON.stringify(Object.keys(value).sort()) !==
-        JSON.stringify(["recoveryAttempted", "recoverySucceeded", "runId"]) ||
+        JSON.stringify(keys.sort()) ||
       value.runId !== runId ||
       typeof value.recoveryAttempted !== "boolean" ||
       typeof value.recoverySucceeded !== "boolean" ||
-      (value.recoverySucceeded && !value.recoveryAttempted)
+      (value.recoverySucceeded && !value.recoveryAttempted) ||
+      (Object.hasOwn(value, "recoveryStage") &&
+        value.recoveryStage !== null &&
+        (!value.recoveryAttempted ||
+          value.recoverySucceeded ||
+          !new Set([
+            "open",
+            "status",
+            "read",
+            "identity",
+            "envelope",
+            "unknown",
+          ]).has(value.recoveryStage)))
     )
       return;
     return {
       attempted: value.recoveryAttempted,
       succeeded: value.recoverySucceeded,
+      ...(Object.hasOwn(value, "recoveryStage")
+        ? { stage: value.recoveryStage }
+        : {}),
+      exitCode:
+        Number.isInteger(receipt.exitCode) &&
+        receipt.exitCode >= 0 &&
+        receipt.exitCode <= 255
+          ? receipt.exitCode
+          : null,
       outcome: new Set([
         "exited",
         "timed-out",
