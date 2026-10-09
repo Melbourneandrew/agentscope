@@ -253,6 +253,7 @@ test.each([
   "duplicate",
   "pagination",
   "failure",
+  "timestamp-array",
 ])("retained candidate %s cannot authenticate by artifact name", (kind) => {
   const value = retainedCandidateMetadata();
   if (kind === "attempt") value.job.run_attempt = 2;
@@ -266,6 +267,8 @@ test.each([
   }
   if (kind === "pagination") value.jobs.total_count = 101;
   if (kind === "failure") value.job.conclusion = "failure";
+  if (kind === "timestamp-array")
+    value.artifact.created_at = [value.artifact.created_at];
   expect(() => value.select(value.run, value.jobs, value.artifacts)).toThrow();
 });
 

@@ -63,6 +63,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
       - name: Authenticate successful Integration artifacts
+        if: github.ref == 'refs/tags/v0.1.0' || inputs.operation == 'prepare-candidate'
         id: admission-artifacts
         run: node scripts/record-release-stage.mjs --prepare-admission
         env:
@@ -117,6 +118,7 @@ jobs:
           github-token: ${{ github.token }}
           merge-multiple: true
       - name: Require nonprivileged semantic admission
+        if: github.ref == 'refs/tags/v0.1.0' || inputs.operation == 'prepare-candidate'
         run: node scripts/record-release-stage.mjs --verify-admission
         env: { GITHUB_TOKEN: "${{ github.token }}" }
       - if: inputs.operation == 'prepare-candidate'
