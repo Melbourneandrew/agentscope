@@ -251,15 +251,27 @@ ${finalLedgerCapture}`,
   );
 };
 const persistenceCompletion = `
+    private void observeFinalLedgerRefusal(boolean publication, boolean terminal, boolean snapshotAvailable) {
+        try {
+            System.err.printf("[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b]\\n",
+                publication ? "publication" : "eligibility", terminal, snapshotAvailable,
+                recordedPersistenceClosed, recordedPersistenceFailed);
+        } catch (Throwable ignored) {
+            // Optional fixed observation cannot change persistence or completion.
+        }
+    }
+
     public void completeFinalLedger(String snapshot, boolean terminal) {
         writeOrderLock.lock();
         try {
             if (!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null
                 || filePath == null || !filePath.toString().equals("/control/private/requests.json")) {
+                observeFinalLedgerRefusal(false, terminal, snapshot != null);
                 return;
             }
             byte[] bytes = (snapshot + "\\n").getBytes(UTF_8);
             if (bytes.length > 1024 * 1024) {
+                observeFinalLedgerRefusal(false, terminal, snapshot != null);
                 return;
             }
             Path complete = filePath.resolveSibling("requests.complete");
@@ -276,6 +288,7 @@ const persistenceCompletion = `
             Files.move(temporary, complete, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
         } catch (Throwable throwable) {
             recordedPersistenceFailed = true;
+            observeFinalLedgerRefusal(true, terminal, snapshot != null);
         } finally {
             writeOrderLock.unlock();
         }
