@@ -43,6 +43,283 @@ const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
   };
 
 const completionContainerId = "c".repeat(64);
+const collectorPhases = [
+  "held-identity",
+  "https-exec",
+  "snapshot",
+  "terminal-wait",
+  "terminal-witness",
+] as const;
+const collectorTerminal = {
+  Id: completionContainerId,
+  Name: "/owned",
+  Config: { Labels: { "com.agentscope.integration.run": "a".repeat(16) } },
+  State: {
+    Status: "exited",
+    Running: false,
+    OOMKilled: false,
+    Paused: false,
+    Restarting: false,
+    Dead: false,
+    ExitCode: 0,
+    Pid: 0,
+    Error: "",
+  },
+};
+type CollectorFunctions = {
+  joinCollectorObservations: (
+    plan: object,
+    signal: AbortSignal,
+    deadline: number,
+    observe: (phase: string) => void,
+  ) => Promise<Buffer[]>;
+  joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+  publishOperationFailureDiagnostic: (
+    slot: string,
+    error: unknown,
+    plan: object,
+    context: object,
+  ) => void;
+};
+const collectorTestSource = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const collectorStart = source.indexOf("const decodeCollectorSnapshot =");
+  const collectorEnd = source.indexOf(
+    "const mockServerNetworkObservation =",
+    collectorStart,
+  );
+  const diagnosticStart = source.indexOf("const operationFailureSlots =");
+  const diagnosticEnd = source.indexOf(
+    "/* eslint-disable complexity",
+    diagnosticStart,
+  );
+  const joinStart = source.indexOf("const joinMockServer =");
+  const joinEnd = source.indexOf("const createScenarioContainer =", joinStart);
+  expect(collectorEnd).toBeGreaterThan(collectorStart);
+  expect(diagnosticEnd).toBeGreaterThan(diagnosticStart);
+  expect(joinEnd).toBeGreaterThan(joinStart);
+  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
+};
+const actualCollectorObservation = (failure: string, sinkFails = false) => {
+  const plan = {
+    runId: "a".repeat(16),
+    collectorName: "owned",
+    scenarioId: "codex-tui-trace-smoke",
+  };
+  const output: string[] = [],
+    calls: string[][] = [];
+  const original = new Error("PRIVATE PROCESS FAILURE");
+  let phase: string | undefined,
+    now = 0;
+  const functions = runInNewContext(collectorTestSource(), {
+    Buffer,
+    AbortSignal,
+    types,
+    knownFailureCode,
+    preparedDockerClient: {},
+    preparedDockerClientRequiresOuterHostRetirement: () => false,
+    linuxBootMonotonicMilliseconds: () => now,
+    scenarioContainerIdentities: new Map([["owned", completionContainerId]]),
+    mockServerContainerIdentities: new Map([[plan.runId, "b".repeat(64)]]),
+    mockServerJoinDeadlines: new Map([[plan.runId, 1000]]),
+    mockServerControls: new Map([[plan.runId, {}]]),
+    assertControlVolumeCurrent: () => {},
+    openMockServerControl: () => ({
+      stop: () => ({ status: 200 }),
+      snapshot: () => ({ entries: [] }),
+    }),
+    verifyMockServerControlBoundary: () => {},
+    assertJoinedMockServerTerminal: () => {},
+    createFinalMockServerLedgerDirectory: () => "/synthetic",
+    resolve: (_root: string, name: string) => `/synthetic/${name}`,
+    readMockServerFinalLedger: () => Buffer.from("[]"),
+    projectMockServerRequests: () => [],
+    assertMockServerFinalLedger: () => {},
+    fixtureResults: new Map(),
+    fixtureTrafficObservations: new Map(),
+    modelRoutes: {},
+    manifest: { scenarios: [plan] },
+    ISOLATION_EXECUTOR_LIMITS: {
+      containers: { collector: {} },
+      requests: { destinationServerMaximumBytes: 1048576 },
+    },
+    assertContainer: () =>
+      failure === "held-identity" ? "d".repeat(64) : completionContainerId,
+    writeSync: (_fd: number, bytes: Buffer) => {
+      if (sinkFails) throw Error("PRIVATE SINK");
+      output.push(bytes.toString());
+    },
+    dockerWithSignal: (
+      args: string[],
+      signal: AbortSignal,
+      options: unknown,
+    ) => {
+      calls.push(args);
+      expect(signal.aborted).toBe(false);
+      expect(options).toMatchObject({ terminal: true });
+      if (
+        args[0] === "logs" ||
+        args[0] === "cp" ||
+        args.includes("b".repeat(64))
+      )
+        return { stdout: "", stderr: "" };
+      if (args[0] === "exec") {
+        expect(args.slice(0, 5)).toEqual([
+          "exec",
+          completionContainerId,
+          "/usr/local/bin/node",
+          "--input-type=module",
+          "-e",
+        ]);
+        expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
+        if (failure === "https-exec") throw original;
+        if (failure === "expired") now = 1000;
+        return {
+          stdout:
+            failure === "snapshot"
+              ? "PRIVATE INVALID"
+              : JSON.stringify({
+                  observationVersion: 2,
+                  scenarioId: plan.scenarioId,
+                  batches: ["e30="],
+                  aggregateBytes: 2,
+                }),
+        };
+      }
+      if (args[1] === "wait") {
+        if (failure === "terminal-wait") throw original;
+        if (failure === "expired") throw original;
+        return { stdout: "0\n" };
+      }
+      if (failure === "terminal-witness") return { stdout: "[]" };
+      return { stdout: JSON.stringify([collectorTerminal]) };
+    },
+  }) as CollectorFunctions;
+  return {
+    functions,
+    plan,
+    original,
+    output,
+    calls,
+    phase: () => phase,
+    observe: (value: string) => {
+      phase = value;
+    },
+  };
+};
+describe("actual collector failure phase observation", () => {
+  it("wires the actual Codex outer catch to the same original collector error", async () => {
+    const f = actualCollectorObservation("terminal-wait");
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toBe(f.original);
+    expect(f.output).toHaveLength(1);
+    expect(f.output[0]).toContain('"collector":{"phase":"terminal-wait"}');
+    expect(f.output[0]).not.toContain("PRIVATE");
+  });
+  it("preserves success/order and swallows a refused optional observer", async () => {
+    const f = actualCollectorObservation("success");
+    expect(
+      await f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        () => {
+          throw Error("PRIVATE OBSERVER");
+        },
+      ),
+    ).toEqual([Buffer.from("{}")]);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "wait", "inspect"]);
+    expect(f.output).toEqual([]);
+  });
+  it("preserves the original remaining deadline when exec work consumes it", async () => {
+    const f = actualCollectorObservation("expired");
+    await expect(
+      f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        f.observe,
+      ),
+    ).rejects.toBe(f.original);
+    expect(f.phase()).toBe("terminal-wait");
+    expect(f.calls).toHaveLength(2);
+  });
+  it("keeps sink failure optional and excludes unknown phases/other slots", () => {
+    const f = actualCollectorObservation("success", true);
+    expect(() => {
+      f.functions.publishOperationFailureDiagnostic(
+        "join-collector-read",
+        f.original,
+        f.plan,
+        { collectorPhase: "snapshot" },
+      );
+    }).not.toThrow();
+    expect(f.output).toEqual([]);
+    const ordinary = actualCollectorObservation("success");
+    ordinary.functions.publishOperationFailureDiagnostic(
+      "join-collector-read",
+      ordinary.original,
+      ordinary.plan,
+      { collectorPhase: "PRIVATE UNKNOWN" },
+    );
+    ordinary.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      ordinary.original,
+      ordinary.plan,
+      { collectorPhase: "snapshot" },
+    );
+    expect(ordinary.output).toHaveLength(2);
+    for (const line of ordinary.output) {
+      expect(line).not.toContain('collector":');
+      expect(line).not.toContain("PRIVATE");
+    }
+  });
+  it.each(collectorPhases)(
+    "keeps the original %s failure and bounds its existing diagnostic",
+    async (phase) => {
+      const f = actualCollectorObservation(phase);
+      let error: unknown;
+      try {
+        await f.functions.joinCollectorObservations(
+          f.plan,
+          new AbortController().signal,
+          1000,
+          f.observe,
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      if (phase === "terminal-wait") expect(error).toBe(f.original);
+      else
+        expect(error).toMatchObject({
+          message: "integration.isolation.collector-terminal",
+        });
+      expect(f.phase()).toBe(phase);
+      f.functions.publishOperationFailureDiagnostic(
+        "join-collector-read",
+        error,
+        f.plan,
+        { collectorPhase: f.phase() },
+      );
+      expect(f.output).toHaveLength(1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      const row = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      ) as { collector: object };
+      expect(row.collector).toEqual({ phase });
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain(completionContainerId);
+      if (phase === "held-identity") expect(f.calls).toEqual([]);
+    },
+  );
+});
 const ledgerReasons = [
   "none",
   "late-publish",
