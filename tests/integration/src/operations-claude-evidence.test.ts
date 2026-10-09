@@ -1,6 +1,126 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+// @ts-expect-error private checksum-bound scenario module has no declaration
+import * as scenarioModule from "../claude-code-scenario.mjs";
+// @ts-expect-error private checksum-bound oracle module has no declaration
+import * as oracleModule from "../claude-code-platform-oracle.mjs";
+const { claudeCodeReadStimulus } = scenarioModule as {
+  claudeCodeReadStimulus: Readonly<{ path: string; prompt: string }>;
+};
+const { inspectClaudeCodeModelRequests } = oracleModule as {
+  inspectClaudeCodeModelRequests: (
+    bytes: Buffer,
+    stimulus: typeof claudeCodeReadStimulus,
+  ) => Readonly<{ modelRequestBodySha256: readonly string[] }> | undefined;
+};
 
 import { sanitizeFixtureResult } from "./operations.js";
+
+describe("Claude actual request-pair projection (synthetic upstream rows only)", () => {
+  const bodies = () => {
+    const first = {
+      model: "synthetic-model",
+      stream: true,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: claudeCodeReadStimulus.prompt }],
+        },
+      ],
+    };
+    const second = {
+      ...first,
+      messages: [
+        ...first.messages,
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_agentscope_claude_read_1",
+              name: "Read",
+              input: { file_path: claudeCodeReadStimulus.path },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_agentscope_claude_read_1",
+              content: "synthetic-private-result",
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    };
+    return [first, second];
+  };
+  const encode = (values: unknown[]) =>
+    Buffer.from(
+      JSON.stringify(
+        values.map((value) => ({
+          method: "POST",
+          path: "/v1/messages",
+          body: { type: "STRING", string: JSON.stringify(value) },
+        })),
+      ),
+    );
+  it("binds ordered original body bytes, not normalized or caller-provided hashes", () => {
+    const values = bodies();
+    const observed = inspectClaudeCodeModelRequests(
+      encode(values),
+      claudeCodeReadStimulus,
+    );
+    expect(observed?.modelRequestBodySha256).toEqual(
+      values.map((value) =>
+        createHash("sha256").update(JSON.stringify(value)).digest("hex"),
+      ),
+    );
+    expect(JSON.stringify(observed)).not.toContain("synthetic-private-result");
+    expect(observed).not.toHaveProperty("complete");
+    expect(
+      inspectClaudeCodeModelRequests(
+        encode(values.slice(0, 1)),
+        claudeCodeReadStimulus,
+      ),
+    ).toBeUndefined();
+  });
+  it("refuses failed/missing/wrong/reordered native tool results and extra primaries", () => {
+    for (const replacement of [
+      { is_error: true },
+      { tool_use_id: "other" },
+      { type: "text" },
+    ]) {
+      const values = bodies();
+      Object.assign(values[1]!.messages[2]!.content[0]!, replacement);
+      expect(() =>
+        inspectClaudeCodeModelRequests(encode(values), claudeCodeReadStimulus),
+      ).toThrow();
+    }
+    const values = bodies();
+    expect(() =>
+      inspectClaudeCodeModelRequests(
+        encode([...values].reverse()),
+        claudeCodeReadStimulus,
+      ),
+    ).toThrow();
+    expect(() =>
+      inspectClaudeCodeModelRequests(
+        encode([...values, values[1]]),
+        claudeCodeReadStimulus,
+      ),
+    ).toThrow();
+    expect(() =>
+      inspectClaudeCodeModelRequests(
+        Buffer.alloc(1024 * 1024 + 1),
+        claudeCodeReadStimulus,
+      ),
+    ).toThrow();
+  });
+});
 
 // This component fixture exercises retained shape only. Actual native facts,
 // four graphs and request association are verified by the outer caller.
@@ -81,6 +201,49 @@ const reject = (input: unknown) => {
 };
 
 describe("Claude content-free retained observation", () => {
+  it.each([false, true])(
+    "retains bounded native line facts without minting fixture governance (%s)",
+    (complete) => {
+      const input = fixture(complete);
+      const range = {
+        nativeFormat: "claude-code-2.1.245-jsonl",
+        boundaryKind: "transcript-range",
+        positionKind: "line",
+        availableStartPosition: 0,
+        exclusiveEndPosition: 5,
+        toolUsePosition: 2,
+        toolResultPosition: 3,
+        finalAssistantPosition: 4,
+        sourceGeneration: null,
+      };
+      const withRange = (fields: object) => ({
+        ...input,
+        harnessObservation: {
+          ...input.harnessObservation,
+          nativeTranscriptRange: { ...range, ...fields },
+        },
+      });
+      const retained = sanitizeFixtureResult(withRange({}), input.scenarioId);
+      expect(retained).toEqual(withRange({}));
+      expect(retained.harnessObservation).not.toHaveProperty("governance");
+      for (const fields of [
+        { nativeFormat: "other" },
+        { positionKind: "sequence" },
+        { boundaryKind: "hook-invocation" },
+        { sourceGeneration: 0 },
+        { availableStartPosition: 1 },
+        { exclusiveEndPosition: 129 },
+        { toolUsePosition: -1 },
+        { toolResultPosition: 2 },
+        { finalAssistantPosition: 5 },
+        { toolUsePosition: 2.5 },
+        { text: "private" },
+        { path: "/worktree" },
+        { records: [] },
+      ])
+        reject(withRange(fields));
+    },
+  );
   it.each([false, true])(
     "retains frozen exact %s completion with optional actual model",
     (complete) => {

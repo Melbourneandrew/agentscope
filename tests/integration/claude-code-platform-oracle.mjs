@@ -190,6 +190,7 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
 export const observeClaudeCodeNativeTurn = (
   claudeCodeReadStimulus,
   pending = false,
+  retainTranscriptRange = false,
 ) => {
   const opened = [];
   const openDirectory = (path) => {
@@ -279,6 +280,7 @@ export const observeClaudeCodeNativeTurn = (
       files[0].slice(0, -6),
       claudeCodeReadStimulus,
       pending,
+      retainTranscriptRange,
     );
   } finally {
     for (const descriptor of opened.reverse()) closeSync(descriptor);
@@ -345,6 +347,7 @@ const inspectClaudeCodeNativeRecords = (
   sessionId,
   claudeCodeReadStimulus,
   pending = false,
+  retainTranscriptRange = false,
 ) => {
   const state = { toolIndex: -1, resultIndex: -1, finalIndex: -1 };
   let promptSeen = false;
@@ -389,6 +392,23 @@ const inspectClaudeCodeNativeRecords = (
     nativeSessionId: sessionId,
     nativeToolUseId: "toolu_agentscope_claude_read_1",
     ...(model === undefined ? {} : { nativeModelName: model }),
+    // Only the strict post-join read retains line facts. They are not hook
+    // payload positions; this native format emits no source generation.
+    ...(!pending && retainTranscriptRange === true
+      ? {
+          nativeTranscriptRange: Object.freeze({
+            nativeFormat: "claude-code-2.1.245-jsonl",
+            boundaryKind: "transcript-range",
+            positionKind: "line",
+            availableStartPosition: 0,
+            exclusiveEndPosition: records.length,
+            toolUsePosition: state.toolIndex,
+            toolResultPosition: state.resultIndex,
+            finalAssistantPosition: state.finalIndex,
+            sourceGeneration: null,
+          }),
+        }
+      : {}),
   });
 };
 
