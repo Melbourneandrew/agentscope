@@ -105,14 +105,14 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.15.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -121,7 +121,7 @@ jobs:
       - name: Build workspace fixture code
         run: pnpm build
       - name: Download exact prepared candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: integration-candidate-${{ github.sha }}
           path: artifacts/integration
@@ -145,7 +145,7 @@ jobs:
         run: node tests/integration/verify-substrate-certification.mjs failure
       - name: Upload sanitized failure evidence
         if: failure() && steps.failure_evidence.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
           path: |
@@ -155,7 +155,7 @@ jobs:
           retention-days: 7
       - name: Upload clean certification receipt
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: substrate-certification-replay-${{ matrix.replay }}-${{ github.sha }}
           path: artifacts/integration/certification/replay-${{ matrix.replay }}.json
@@ -163,7 +163,7 @@ jobs:
           retention-days: 7
       - name: Upload bounded successful scenario evidence
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
           path: |
@@ -210,14 +210,14 @@ jobs:
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.15.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -226,7 +226,7 @@ jobs:
       - name: Build workspace fixture code
         run: pnpm build
       - name: Download exact prepared candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: integration-candidate-${{ github.sha }}
           path: artifacts/integration
@@ -253,7 +253,7 @@ jobs:
           node tests/integration/verify-substrate-certification.mjs negative
       - name: Upload sanitized controlled-rejection evidence
         if: success() && matrix.case != 'credential-presence'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: substrate-certification-negative-${{ matrix.case }}-${{ github.sha }}
           path: |
@@ -263,7 +263,7 @@ jobs:
           retention-days: 7
       - name: Upload sanitized preflight rejection evidence
         if: success() && matrix.case == 'credential-presence'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: substrate-certification-negative-${{ matrix.case }}-${{ github.sha }}
           path: artifacts/integration/controller-preflight-failure.json
@@ -276,14 +276,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9.15.0
           run_install: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -292,7 +292,7 @@ jobs:
       - name: Build certification verifier
         run: pnpm --filter '@agentscope/integration...' build
       - name: Download exactly three clean receipts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: substrate-certification-replay-*-${{ github.sha }}
           path: artifacts/integration/certification-fan-in
