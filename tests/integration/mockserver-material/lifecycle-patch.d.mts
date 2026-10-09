@@ -4,7 +4,9 @@ export type LifecycleSourceName =
   | "persistence"
   | "lifeCycle"
   | "jsonBody"
-  | "requestHandler";
+  | "requestHandler"
+  | "actionHandler"
+  | "logger";
 export const lifecycleSourcePins: readonly Readonly<{
   name: LifecycleSourceName;
   path: string;
