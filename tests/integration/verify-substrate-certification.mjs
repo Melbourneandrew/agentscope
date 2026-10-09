@@ -124,96 +124,109 @@ const reconciliationReason = new Set([
   "identity-substitution",
   "late-publication",
 ]);
-const validBuilderCleanup = (value, authority, runId) =>
-  exactKeys(value, [
-    "diagnosticVersion",
-    "expectedResourceCount",
-    "expectedResourceDigest",
-    "identityDigests",
-    "observedResourceCount",
-    "observedResourceDigest",
-    "operationKind",
-    "outcome",
-    "process",
-    "reconciliationReasons",
-    "responseBytes",
-    "responseTruncated",
-    "stage",
-  ]) &&
-  value.diagnosticVersion === 1 &&
-  value.stage === "builder-reconciliation" &&
-  ["builder-create", "builder-bootstrap", "image-build"].includes(
-    value.operationKind,
-  ) &&
-  // A settled failed build remains failure evidence, not retirement or success.
-  ["retired-failure", "failed-settled"].includes(value.outcome) &&
-  exactKeys(value.identityDigests, [
-    "builder",
-    "daemon",
-    "image",
-    "platform",
-    "runGeneration",
-  ]) &&
-  Object.values(value.identityDigests).every(
-    (identity) => typeof identity === "string" && digest.test(identity),
-  ) &&
-  value.identityDigests.builder === diagnosticDigest(`agentscope-${runId}`) &&
-  value.identityDigests.daemon === authority.daemon &&
-  value.identityDigests.image === authority.buildkitImage &&
-  value.identityDigests.platform === authority.buildkitPlatform &&
-  value.identityDigests.runGeneration === diagnosticDigest(runId) &&
-  exactKeys(value.process, [
-    "exited",
-    "joined",
-    "observed",
-    "outputBytes",
-    "outputTruncated",
-    "signaled",
-    "stderrClass",
-    "timedOut",
-  ]) &&
-  [
-    value.process.exited,
-    value.process.joined,
-    value.process.observed,
-    value.process.outputTruncated,
-    value.process.signaled,
-    value.process.timedOut,
-    value.responseTruncated,
-  ].every((flag) => typeof flag === "boolean") &&
-  [
-    value.process.outputBytes,
-    value.responseBytes,
-    value.expectedResourceCount,
-    value.observedResourceCount,
-  ].every(
-    (count) => Number.isSafeInteger(count) && count >= 0 && count <= 16_777_216,
-  ) &&
-  value.expectedResourceCount === 2 &&
-  value.observedResourceCount <= 2 &&
-  value.responseTruncated === false &&
-  typeof value.process.stderrClass === "string" &&
-  /^[a-z-]{1,64}$/u.test(value.process.stderrClass) &&
-  typeof value.expectedResourceDigest === "string" &&
-  value.expectedResourceDigest ===
-    diagnosticDigest([
-      `buildx_buildkit_agentscope-${runId}0`,
-      `buildx_buildkit_agentscope-${runId}0_state`,
-    ]) &&
-  typeof value.observedResourceDigest === "string" &&
-  digest.test(value.observedResourceDigest) &&
-  exactKeys(value.reconciliationReasons, [
-    "builderContainer",
-    "builderVolume",
-    "builtTag",
-  ]) &&
-  Object.values(value.reconciliationReasons).every(
-    (reason) => typeof reason === "string" && reconciliationReason.has(reason),
+const validBuilderCleanup = (value, authority, runIds) => {
+  const owners = runIds.filter(
+    (runId) =>
+      typeof runId === "string" &&
+      /^[a-f0-9]{16}$/u.test(runId) &&
+      value?.identityDigests?.runGeneration === diagnosticDigest(runId),
   );
-const validPrivateCleanup = (value, authority, runId) =>
+  if (owners.length !== 1) return false;
+  const [runId] = owners;
+  return (
+    exactKeys(value, [
+      "diagnosticVersion",
+      "expectedResourceCount",
+      "expectedResourceDigest",
+      "identityDigests",
+      "observedResourceCount",
+      "observedResourceDigest",
+      "operationKind",
+      "outcome",
+      "process",
+      "reconciliationReasons",
+      "responseBytes",
+      "responseTruncated",
+      "stage",
+    ]) &&
+    value.diagnosticVersion === 1 &&
+    value.stage === "builder-reconciliation" &&
+    ["builder-create", "builder-bootstrap", "image-build"].includes(
+      value.operationKind,
+    ) &&
+    // A settled failed build remains failure evidence, not retirement or success.
+    ["retired-failure", "failed-settled"].includes(value.outcome) &&
+    exactKeys(value.identityDigests, [
+      "builder",
+      "daemon",
+      "image",
+      "platform",
+      "runGeneration",
+    ]) &&
+    Object.values(value.identityDigests).every(
+      (identity) => typeof identity === "string" && digest.test(identity),
+    ) &&
+    value.identityDigests.builder === diagnosticDigest(`agentscope-${runId}`) &&
+    value.identityDigests.daemon === authority.daemon &&
+    value.identityDigests.image === authority.buildkitImage &&
+    value.identityDigests.platform === authority.buildkitPlatform &&
+    value.identityDigests.runGeneration === diagnosticDigest(runId) &&
+    exactKeys(value.process, [
+      "exited",
+      "joined",
+      "observed",
+      "outputBytes",
+      "outputTruncated",
+      "signaled",
+      "stderrClass",
+      "timedOut",
+    ]) &&
+    [
+      value.process.exited,
+      value.process.joined,
+      value.process.observed,
+      value.process.outputTruncated,
+      value.process.signaled,
+      value.process.timedOut,
+      value.responseTruncated,
+    ].every((flag) => typeof flag === "boolean") &&
+    [
+      value.process.outputBytes,
+      value.responseBytes,
+      value.expectedResourceCount,
+      value.observedResourceCount,
+    ].every(
+      (count) =>
+        Number.isSafeInteger(count) && count >= 0 && count <= 16_777_216,
+    ) &&
+    value.expectedResourceCount === 2 &&
+    value.observedResourceCount <= 2 &&
+    value.responseTruncated === false &&
+    typeof value.process.stderrClass === "string" &&
+    /^[a-z-]{1,64}$/u.test(value.process.stderrClass) &&
+    typeof value.expectedResourceDigest === "string" &&
+    value.expectedResourceDigest ===
+      diagnosticDigest([
+        `buildx_buildkit_agentscope-${runId}0`,
+        `buildx_buildkit_agentscope-${runId}0_state`,
+      ]) &&
+    typeof value.observedResourceDigest === "string" &&
+    digest.test(value.observedResourceDigest) &&
+    exactKeys(value.reconciliationReasons, [
+      "builderContainer",
+      "builderVolume",
+      "builtTag",
+    ]) &&
+    Object.values(value.reconciliationReasons).every(
+      (reason) =>
+        typeof reason === "string" && reconciliationReason.has(reason),
+    )
+  );
+};
+const validPrivateCleanup = (value, authority, runIds) =>
   value === null ||
   validScenarioCleanup(value, authority) ||
-  validBuilderCleanup(value, authority, runId);
+  validBuilderCleanup(value, authority, runIds);
 
 const artifactsRoot = resolve("artifacts/integration");
 // The verifier intentionally validates the complete closed record in one pass.
@@ -312,7 +325,7 @@ const verifyFailureEvidence = (expectedCase) => {
       !validPrivateCleanup(
         record.privateCleanup,
         manifest.preparedAuthorityDigests,
-        identity.runId,
+        manifest.runIds,
       ) ||
       !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
       !(
