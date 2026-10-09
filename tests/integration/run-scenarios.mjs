@@ -16,11 +16,13 @@ import {
   readSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
 import { deriveIdentityBundle } from "@agentscope/protocol";
+import { knownFailureCode } from "./dist/controller-failure-diagnostic.js";
 
 import {
   compileIsolationEvidence,
@@ -1419,27 +1421,37 @@ const inspectDockerRuntimeIdentity = async (signal) => {
   };
 };
 const buildImage = async (plan, signal) => {
-  requireSettledMockServerClients();
-  await preparedImageFor(plan.baseImage, signal);
-  const { context, requiresHarnessBuildContextBound } = stageBuildContext(plan);
-  return buildPreparedDockerImage(preparedDockerClient, {
-    buildArguments: { BASE_IMAGE: plan.baseImage },
-    context,
-    dockerfile: "Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": plan.runId,
-    },
-    maximumMilliseconds: Math.min(
-      scenarioTimeoutMilliseconds,
-      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
-    ),
-    maximumBuildContextBytes: requiresHarnessBuildContextBound
-      ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
-      : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
-    signal,
-    tag: plan.imageTag,
-  });
+  let failureSlot = "candidate-client";
+  try {
+    requireSettledMockServerClients();
+    failureSlot = "candidate-prepared-image";
+    await preparedImageFor(plan.baseImage, signal);
+    failureSlot = "candidate-context-staging";
+    const { context, requiresHarnessBuildContextBound } =
+      stageBuildContext(plan);
+    failureSlot = "candidate-image-build";
+    return await buildPreparedDockerImage(preparedDockerClient, {
+      buildArguments: { BASE_IMAGE: plan.baseImage },
+      context,
+      dockerfile: "Dockerfile",
+      labels: {
+        "com.agentscope.integration": "true",
+        "com.agentscope.integration.run": plan.runId,
+      },
+      maximumMilliseconds: Math.min(
+        scenarioTimeoutMilliseconds,
+        IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+      ),
+      maximumBuildContextBytes: requiresHarnessBuildContextBound
+        ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
+        : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
+      signal,
+      tag: plan.imageTag,
+    });
+  } catch (error) {
+    publishOperationFailureDiagnostic(failureSlot, error, plan);
+    throw error;
+  }
 };
 const prepareMockServerImage = async (plan, signal) => {
   requireSettledMockServerClients();
@@ -2288,38 +2300,62 @@ const completeClaudeCollectorFixture = (plan, batches, ledger) => {
     ),
   );
 };
-// eslint-disable-next-line complexity -- exact closed container terminal witness
-const joinMockServer = async (plan, signal) => {
-  const containerId = mockServerContainerIdentities.get(plan.runId);
-  const deadline = mockServerJoinDeadlines.get(plan.runId);
-  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "") || !Number.isFinite(deadline))
-    throw new Error("integration.isolation.mockserver-terminal");
-  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
-  if (remaining <= 0)
-    throw new Error("integration.isolation.mockserver-terminal");
-  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
-  await assertControlVolumeCurrent(plan, joinSignal);
-  const authority = mockServerControls.get(plan.runId);
-  const control = openMockServerControl({
-    runId: plan.runId,
-    host: authority?.host,
-    deadline,
-    now: linuxBootMonotonicMilliseconds,
-    material: authority?.material,
-  });
-  await verifyMockServerControlBoundary(control);
-  if ((await control.stop()).status !== 200)
-    throw new Error("integration.isolation.mockserver-terminal");
-  const waited = await dockerWithSignal(
-    ["container", "wait", containerId],
-    joinSignal,
-    { terminal: true },
-  );
-  const inspected = await dockerWithSignal(
-    ["container", "inspect", containerId],
-    joinSignal,
-    { terminal: true },
-  );
+const operationFailureSlots = new Set([
+  "join-identity",
+  "join-deadline",
+  "join-control-volume",
+  "join-control-open",
+  "join-control-boundary",
+  "join-control-stop",
+  "join-container-wait",
+  "join-container-inspect",
+  "join-terminal-witness",
+  "join-ledger-directory",
+  "join-ledger-requests",
+  "join-ledger-complete",
+  "join-ledger-read",
+  "join-ledger-assert",
+  "join-collector-read",
+  "join-collector-project",
+  "candidate-client",
+  "candidate-prepared-image",
+  "candidate-context-staging",
+  "candidate-image-build",
+  "runtime-original",
+  "cleanup-images",
+  "cleanup-materials",
+  "cleanup-client",
+]);
+const publishOperationFailureDiagnostic = (slot, error, plan) => {
+  try {
+    if (!operationFailureSlots.has(slot)) return;
+    const runId = plan?.runId ?? null;
+    if (
+      runId !== null &&
+      (typeof runId !== "string" || !/^[a-f0-9]{16}$/u.test(runId))
+    )
+      return;
+    const bytes = Buffer.from(
+      `integration.isolation.operation-diagnostic:${JSON.stringify({
+        slot,
+        runId,
+        code: knownFailureCode(error),
+        clientRetirementRequired:
+          preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
+      })}\n`,
+    );
+    if (bytes.length <= 512) writeSync(2, bytes);
+  } catch {
+    // Optional content-free observation cannot replace the original error.
+  }
+};
+/* eslint-disable complexity -- exact closed container terminal witness */
+const assertJoinedMockServerTerminal = (
+  plan,
+  containerId,
+  waited,
+  inspected,
+) => {
   let records;
   try {
     records = JSON.parse(inspected.stdout);
@@ -2351,53 +2387,131 @@ const joinMockServer = async (plan, signal) => {
     )
   )
     throw new Error("integration.isolation.mockserver-terminal");
-  const ledgerDirectory = resolve(
+};
+/* eslint-enable complexity */
+const createFinalMockServerLedgerDirectory = (plan) => {
+  const directory = resolve(
     artifactsRoot,
     "contexts",
     plan.runId,
     "final-ledger",
   );
-  mkdirSync(ledgerDirectory, { mode: 0o700 });
-  for (const name of ["requests.json", "requests.complete"])
-    await dockerWithSignal(
-      [
-        "cp",
-        `${containerId}:/control/private/${name}`,
-        resolve(ledgerDirectory, name),
-      ],
-      joinSignal,
-      { terminal: true, mutationCapable: true },
-    );
-  const ledger = projectMockServerRequests(
-    readMockServerFinalLedger({
-      directory: ledgerDirectory,
+  mkdirSync(directory, { mode: 0o700 });
+  return directory;
+};
+const joinMockServer = async (plan, signal) => {
+  let failureSlot = "join-identity";
+  try {
+    const containerId = mockServerContainerIdentities.get(plan.runId);
+    const deadline = mockServerJoinDeadlines.get(plan.runId);
+    if (
+      !/^[a-f0-9]{64}$/u.test(containerId ?? "") ||
+      !Number.isFinite(deadline)
+    )
+      throw new Error("integration.isolation.mockserver-terminal");
+    failureSlot = "join-deadline";
+    const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+    if (remaining <= 0)
+      throw new Error("integration.isolation.mockserver-terminal");
+    const joinSignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(remaining),
+    ]);
+    failureSlot = "join-control-volume";
+    await assertControlVolumeCurrent(plan, joinSignal);
+    failureSlot = "join-control-open";
+    const authority = mockServerControls.get(plan.runId);
+    const control = openMockServerControl({
+      runId: plan.runId,
+      host: authority?.host,
       deadline,
       now: linuxBootMonotonicMilliseconds,
-    }),
-  );
-  assertMockServerFinalLedger(
-    ledger,
-    fixtureResults.get(plan.runId),
-    modelRoutes,
-    manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId),
-    {
-      traffic: {
-        runId: plan.runId,
-        entries: [
-          ...(fixtureTrafficObservations.get(plan.runId)?.entries ?? []),
-          ...control.snapshot().entries,
+      material: authority?.material,
+    });
+    failureSlot = "join-control-boundary";
+    await verifyMockServerControlBoundary(control);
+    failureSlot = "join-control-stop";
+    if ((await control.stop()).status !== 200)
+      throw new Error("integration.isolation.mockserver-terminal");
+    failureSlot = "join-container-wait";
+    const waited = await dockerWithSignal(
+      ["container", "wait", containerId],
+      joinSignal,
+      { terminal: true },
+    );
+    failureSlot = "join-container-inspect";
+    const inspected = await dockerWithSignal(
+      ["container", "inspect", containerId],
+      joinSignal,
+      { terminal: true },
+    );
+    failureSlot = "join-terminal-witness";
+    assertJoinedMockServerTerminal(plan, containerId, waited, inspected);
+    failureSlot = "join-ledger-directory";
+    const ledgerDirectory = createFinalMockServerLedgerDirectory(plan);
+    for (const name of ["requests.json", "requests.complete"]) {
+      failureSlot =
+        name === "requests.json"
+          ? "join-ledger-requests"
+          : "join-ledger-complete";
+      await dockerWithSignal(
+        [
+          "cp",
+          `${containerId}:/control/private/${name}`,
+          resolve(ledgerDirectory, name),
         ],
+        joinSignal,
+        { terminal: true, mutationCapable: true },
+      );
+    }
+    failureSlot = "join-ledger-read";
+    const ledger = projectMockServerRequests(
+      readMockServerFinalLedger({
+        directory: ledgerDirectory,
+        deadline,
+        now: linuxBootMonotonicMilliseconds,
+      }),
+    );
+    failureSlot = "join-ledger-assert";
+    assertMockServerFinalLedger(
+      ledger,
+      fixtureResults.get(plan.runId),
+      modelRoutes,
+      manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId),
+      {
+        traffic: {
+          runId: plan.runId,
+          entries: [
+            ...(fixtureTrafficObservations.get(plan.runId)?.entries ?? []),
+            ...control.snapshot().entries,
+          ],
+        },
+        runId: plan.runId,
       },
-      runId: plan.runId,
-    },
-  );
-  if (plan.scenarioId === "codex-tui-trace-smoke") {
-    const batches = await joinCollectorObservations(plan, joinSignal, deadline);
-    completeCodexCollectorFixture(plan, batches);
-  }
-  if (plan.scenarioId === "claude-interactive-trace-smoke") {
-    const batches = await joinCollectorObservations(plan, joinSignal, deadline);
-    completeClaudeCollectorFixture(plan, batches, ledger);
+    );
+    if (plan.scenarioId === "codex-tui-trace-smoke") {
+      failureSlot = "join-collector-read";
+      const batches = await joinCollectorObservations(
+        plan,
+        joinSignal,
+        deadline,
+      );
+      failureSlot = "join-collector-project";
+      completeCodexCollectorFixture(plan, batches);
+    }
+    if (plan.scenarioId === "claude-interactive-trace-smoke") {
+      failureSlot = "join-collector-read";
+      const batches = await joinCollectorObservations(
+        plan,
+        joinSignal,
+        deadline,
+      );
+      failureSlot = "join-collector-project";
+      completeClaudeCollectorFixture(plan, batches, ledger);
+    }
+  } catch (error) {
+    publishOperationFailureDiagnostic(failureSlot, error, plan);
+    throw error;
   }
 };
 const createScenarioContainer = async (
@@ -3489,6 +3603,7 @@ try {
   }
   terminalEvidence = evidence;
 } catch (error) {
+  publishOperationFailureDiagnostic("runtime-original", error);
   publishScenarioContextRefusals();
   if (
     [...mockServerBuiltImages.values()].some(({ client }) =>
@@ -3530,6 +3645,7 @@ try {
         await retireMockServerImage(plan, signal, deadline);
     }
   } catch (error) {
+    publishOperationFailureDiagnostic("cleanup-images", error);
     retirementRequired = true;
     cleanupError = error;
     primaryError ??= error;
@@ -3538,6 +3654,7 @@ try {
     for (const material of preparedHarnessMaterials.values())
       retirePreparedHarnessMaterial(material);
   } catch (error) {
+    publishOperationFailureDiagnostic("cleanup-materials", error);
     cleanupError ??= error;
     primaryError ??= error;
   }
@@ -3545,6 +3662,7 @@ try {
     try {
       closePreparedDockerClient(preparedDockerClient);
     } catch (error) {
+      publishOperationFailureDiagnostic("cleanup-client", error);
       cleanupError ??= error;
       primaryError ??= error;
     }
