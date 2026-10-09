@@ -1,4 +1,5 @@
 import type * as NodeFs from "node:fs";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
@@ -11,6 +12,112 @@ const { claudeCodeReadStimulus } = scenarioModule as {
 
 // @ts-expect-error private checksum-bound scenario module has no declaration
 import * as oracleModule from "../claude-code-platform-oracle.mjs";
+
+const lifecycleSource = readFileSync(
+  new URL("../claude-code-lifecycle.mjs", import.meta.url),
+  "utf8",
+);
+const snapshotSource = lifecycleSource
+  .slice(
+    lifecycleSource.indexOf("export const readClaudeCodeInstalledSettings ="),
+  )
+  .replace("export const", "const");
+const installedSettingsFixture = () => {
+  const events = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"];
+  const value = {
+    hooks: Object.fromEntries(
+      events.map((event) => [
+        event,
+        [
+          {
+            agentscope: {
+              contractVersion: 1,
+              event,
+              harnessType: "@agentscope/harness-claude-code",
+              ownershipIdentity: `agentscope-hook-v1-sha256-${"a".repeat(64)}`,
+            },
+            hooks: [
+              {
+                type: "command",
+                command: "/opt/agentscope/bin/owned-hook",
+                args: [],
+                timeout: 4,
+              },
+            ],
+          },
+        ],
+      ]),
+    ),
+  };
+  const bytes = () => Buffer.from(JSON.stringify(value));
+  const closed: number[] = [];
+  const status = () => ({
+    isFile: () => true,
+    uid: 1000,
+    nlink: 1,
+    mode: 0o100600,
+    size: bytes().length,
+    dev: 1,
+    ino: 2,
+    mtimeMs: 3,
+    ctimeMs: 4,
+  });
+  const read = runInNewContext(
+    `${snapshotSource}; readClaudeCodeInstalledSettings;`,
+    {
+      Buffer,
+      TextDecoder,
+      constants: { O_RDONLY: 1, O_NOFOLLOW: 2, O_NONBLOCK: 4 },
+      openSync: (path: string, flags: number) => {
+        expect(path).toBe("/harness-home/settings.json");
+        expect(flags).toBe(7);
+        return 41;
+      },
+      fstatSync: status,
+      lstatSync: status,
+      readSync: (
+        _fd: number,
+        output: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => bytes().copy(output, offset, position, position + length),
+      closeSync: (fd: number) => {
+        closed.push(fd);
+      },
+    },
+  ) as () => Buffer;
+  return { value, bytes, closed, read };
+};
+
+describe("Claude installed launcher snapshot", () => {
+  it("holds the exact four CLI-owned metadata/command bytes and closes the descriptor", () => {
+    const fixture = installedSettingsFixture();
+    expect(fixture.read()).toEqual(fixture.bytes());
+    expect(fixture.closed).toEqual([41]);
+  });
+  it("refuses event, ownership, contract and command substitutions without exporting settings", () => {
+    for (const mutate of [
+      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
+        value.hooks.Stop![0]!.agentscope.event = "SessionEnd";
+      },
+      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
+        value.hooks.Stop![0]!.agentscope.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
+      },
+      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
+        value.hooks.Stop![0]!.agentscope.contractVersion = 2;
+      },
+      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
+        value.hooks.Stop![0]!.hooks[0]!.command = "/replacement";
+      },
+    ]) {
+      const fixture = installedSettingsFixture();
+      mutate(fixture.value);
+      expect(() => fixture.read()).toThrow("integration.claude-code.settings");
+      expect(fixture.closed).toEqual([41]);
+    }
+  });
+});
 
 type HookFacts = Readonly<{
   eventName: string;

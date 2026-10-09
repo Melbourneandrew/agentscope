@@ -304,12 +304,16 @@ const waitForClaudeNativeFinalTurn = async (turn, deadline) => {
     throw new Error("integration.claude-code.native-early-exit");
   });
   for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (monotonicNow() >= deadline)
+      throw new Error("integration.claude-code.native-final-turn");
     const observed = await Promise.race([
       Promise.resolve().then(() =>
         observeClaudeCodeNativeTurn(claudeCodeReadStimulus, true),
       ),
       earlyExit,
     ]);
+    if (monotonicNow() >= deadline)
+      throw new Error("integration.claude-code.native-final-turn");
     if (observed !== undefined) return;
     const remaining = deadline - monotonicNow();
     if (remaining <= 0 || attempt === 4)

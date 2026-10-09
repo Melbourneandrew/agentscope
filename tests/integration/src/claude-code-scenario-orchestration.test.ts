@@ -14,112 +14,6 @@ const end = source.indexOf("\nif (", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
 
-const lifecycleSource = readFileSync(
-  new URL("../claude-code-lifecycle.mjs", import.meta.url),
-  "utf8",
-);
-const snapshotSource = lifecycleSource
-  .slice(
-    lifecycleSource.indexOf("export const readClaudeCodeInstalledSettings ="),
-  )
-  .replace("export const", "const");
-const installedSettingsFixture = () => {
-  const events = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"];
-  const value = {
-    hooks: Object.fromEntries(
-      events.map((event) => [
-        event,
-        [
-          {
-            agentscope: {
-              contractVersion: 1,
-              event,
-              harnessType: "@agentscope/harness-claude-code",
-              ownershipIdentity: `agentscope-hook-v1-sha256-${"a".repeat(64)}`,
-            },
-            hooks: [
-              {
-                type: "command",
-                command: "/opt/agentscope/bin/owned-hook",
-                args: [],
-                timeout: 4,
-              },
-            ],
-          },
-        ],
-      ]),
-    ),
-  };
-  const bytes = () => Buffer.from(JSON.stringify(value));
-  const closed: number[] = [];
-  const status = () => ({
-    isFile: () => true,
-    uid: 1000,
-    nlink: 1,
-    mode: 0o100600,
-    size: bytes().length,
-    dev: 1,
-    ino: 2,
-    mtimeMs: 3,
-    ctimeMs: 4,
-  });
-  const read = runInNewContext(
-    `${snapshotSource}; readClaudeCodeInstalledSettings;`,
-    {
-      Buffer,
-      TextDecoder,
-      constants: { O_RDONLY: 1, O_NOFOLLOW: 2, O_NONBLOCK: 4 },
-      openSync: (path: string, flags: number) => {
-        expect(path).toBe("/harness-home/settings.json");
-        expect(flags).toBe(7);
-        return 41;
-      },
-      fstatSync: status,
-      lstatSync: status,
-      readSync: (
-        _fd: number,
-        output: Buffer,
-        offset: number,
-        length: number,
-        position: number,
-      ) => bytes().copy(output, offset, position, position + length),
-      closeSync: (fd: number) => {
-        closed.push(fd);
-      },
-    },
-  ) as () => Buffer;
-  return { value, bytes, closed, read };
-};
-
-describe("Claude installed launcher snapshot", () => {
-  it("holds the exact four CLI-owned metadata/command bytes and closes the descriptor", () => {
-    const fixture = installedSettingsFixture();
-    expect(fixture.read()).toEqual(fixture.bytes());
-    expect(fixture.closed).toEqual([41]);
-  });
-  it("refuses event, ownership, contract and command substitutions without exporting settings", () => {
-    for (const mutate of [
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.event = "SessionEnd";
-      },
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
-      },
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.contractVersion = 2;
-      },
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.hooks[0]!.command = "/replacement";
-      },
-    ]) {
-      const fixture = installedSettingsFixture();
-      mutate(fixture.value);
-      expect(() => fixture.read()).toThrow("integration.claude-code.settings");
-      expect(fixture.closed).toEqual([41]);
-    }
-  });
-});
-
 describe("Claude selected PTY input", () => {
   it("reuses the selected challenge only for the exact Claude evidence and scenario", () => {
     const runnerSource = readFileSync(
@@ -261,11 +155,30 @@ const selectedProcess = {
 
 // Real orchestration source with fake boundary results: this proves ordering,
 // not a vendor turn, credentials, provider compatibility or actual OTLP.
-const fixture = (failure?: string, pendingReads = 0, deferred = false) => {
+const nativeObserver =
+  (record: (event: string) => void, pendingReads: number, expire: () => void) =>
+  (_stimulus: unknown, pending = false) => {
+    if (pending) {
+      record("native-final-readiness");
+      expire();
+      if (pendingReads-- > 0) return undefined;
+    } else record("held-native");
+    return {
+      nativeSessionId: "01234567-89ab-cdef-0123-456789abcdef",
+      nativeToolUseId: "toolu_agentscope_claude_read_1",
+    };
+  };
+const fixture = (
+  failure?: string,
+  pendingReads = 0,
+  deferred = false,
+  expired?: "before" | "during",
+) => {
   const events: string[] = [];
   const writes: Array<{ path: string; text: string; options: unknown }> = [];
   let joined!: () => void;
   let finalResponse!: () => void;
+  let clock = 1000;
   const record = (event: string) => {
     events.push(event);
     if (failure === event) throw new Error(`synthetic-${event}`);
@@ -273,7 +186,7 @@ const fixture = (failure?: string, pendingReads = 0, deferred = false) => {
   const context = {
     Buffer,
     process: selectedProcess,
-    monotonicNow: () => 1000,
+    monotonicNow: () => clock,
     readClaudeCodeReadinessChallenge: () => Promise.resolve("b".repeat(64)),
     prepareClaudeCodePackedCli: () => {
       record("installed-settings");
@@ -329,6 +242,7 @@ const fixture = (failure?: string, pendingReads = 0, deferred = false) => {
     }),
     inspectClaudeCodeModelRequests: () => {
       record("matched-request-pair");
+      if (expired === "before") clock = 2000;
       return { modelRequestBodySha256: ["c".repeat(64), "d".repeat(64)] };
     },
     projectMockServerRequests: () => [],
@@ -336,16 +250,9 @@ const fixture = (failure?: string, pendingReads = 0, deferred = false) => {
       if (deferred) finalResponse = callback;
       else callback();
     },
-    observeClaudeCodeNativeTurn: (_stimulus: unknown, pending = false) => {
-      if (pending) {
-        record("native-final-readiness");
-        if (pendingReads-- > 0) return undefined;
-      } else record("held-native");
-      return {
-        nativeSessionId: "01234567-89ab-cdef-0123-456789abcdef",
-        nativeToolUseId: "toolu_agentscope_claude_read_1",
-      };
-    },
+    observeClaudeCodeNativeTurn: nativeObserver(record, pendingReads, () => {
+      if (expired === "during") clock = 2000;
+    }),
     retireClaudeCodePackedCli: () => {
       record("verified-retirement");
       return Promise.resolve();
@@ -458,6 +365,17 @@ describe("Claude selected scenario native-only orchestration", () => {
     expect(input.events).not.toContain("terminal-marker");
     expect(input.writes).toEqual([]);
   });
+  it.each(["before", "during"] as const)(
+    "completed native observation expired %s the read cannot release terminal control",
+    async (expired) => {
+      const input = fixture(undefined, 0, false, expired);
+      await expect(input.execute()).rejects.toThrow(
+        "integration.claude-code.native-final-turn",
+      );
+      expect(input.events).not.toContain("terminal-marker");
+      expect(input.writes).toEqual([]);
+    },
+  );
   it.each([
     "configure",
     "candidate-denials",
