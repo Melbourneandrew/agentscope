@@ -52,7 +52,11 @@ describe("selected compact JSON writer privacy boundary", () => {
 });
 
 describe("outer collector create failure privacy", () => {
-  it.each(["codex-tui-trace-smoke", "fixture-process-smoke"])(
+  it.each([
+    "codex-tui-trace-smoke",
+    "claude-interactive-trace-smoke",
+    "fixture-process-smoke",
+  ])(
     "collapses argv-bearing errors only for selected TLS collector %s",
     async (scenarioId) => {
       const source = readFileSync(
@@ -63,13 +67,17 @@ describe("outer collector create failure privacy", () => {
       const end = source.indexOf("const startCollector =", start);
       expect(start).toBeGreaterThan(0);
       expect(end).toBeGreaterThan(start);
+      const predicateStart = source.indexOf("const isNativeTraceScenario =");
+      const predicateEnd = source.indexOf("const isGateCapableMockServer =");
+      expect(predicateStart).toBeGreaterThan(0);
+      expect(predicateEnd).toBeGreaterThan(predicateStart);
       const original = Object.assign(Error("PRIVATE_TEST_KEY"), {
         stdout: "PRIVATE_TEST_KEY",
         stderr: "PRIVATE_TEST_KEY",
       });
       const calls: string[][] = [];
       const run = runInNewContext(
-        `${source.slice(start, end)}; startDestinationSidecar`,
+        `${source.slice(predicateStart, predicateEnd)}\n${source.slice(start, end)}; startDestinationSidecar`,
         {
           collectorTlsCertificate: "PUBLIC_CERTIFICATE",
           collectorTlsKey: "PRIVATE_TEST_KEY",
@@ -97,7 +105,7 @@ describe("outer collector create failure privacy", () => {
         {},
         "ingestion",
       ).catch((error: unknown) => error);
-      if (scenarioId === "codex-tui-trace-smoke") {
+      if (scenarioId !== "fixture-process-smoke") {
         expect(result).toMatchObject({
           message: "integration.isolation.collector-create",
         });

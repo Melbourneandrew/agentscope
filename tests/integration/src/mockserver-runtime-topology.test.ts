@@ -168,6 +168,10 @@ describe("fixed sidecar runtime topology", () => {
     const end = source.indexOf("const startMockServer =", start);
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
+    const predicateStart = source.indexOf("const isNativeTraceScenario =");
+    const predicateEnd = source.indexOf("const isGateCapableMockServer =");
+    expect(predicateStart).toBeGreaterThan(0);
+    expect(predicateEnd).toBeGreaterThan(predicateStart);
     const calls: unknown[][] = [];
     const limits = {
       collector: { id: "collector" },
@@ -182,7 +186,7 @@ describe("fixed sidecar runtime topology", () => {
       imageTag: "image",
     };
     const functions = runInNewContext(
-      `${source.slice(start, end)}; ({ startCollector, startRetrieval, startDestinationSidecar })`,
+      `${source.slice(predicateStart, predicateEnd)}\n${source.slice(start, end)}; ({ startCollector, startRetrieval, startDestinationSidecar })`,
       {
         canonicalImagePlatform: "linux/amd64",
         ISOLATION_EXECUTOR_LIMITS: {
