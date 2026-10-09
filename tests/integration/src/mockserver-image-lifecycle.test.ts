@@ -233,6 +233,81 @@ const lifecycleFixture = () => {
   };
 };
 
+describe("final prepared image retirement timer", () => {
+  it("the real timeout rejects a fractional duration before retirement", () => {
+    expect(() => AbortSignal.timeout(19.5)).toThrow(RangeError);
+  });
+  it.each([
+    [0, 30_000],
+    [0.5, 29_999],
+    [29_980.5, 19],
+    [29_999.5, null],
+    [30_000, null],
+    [30_001, null],
+  ])(
+    "bounds the final timer after %s ms without extending the original deadline",
+    async (elapsed, expected) => {
+      const source = runtimeSource();
+      const start = source.indexOf("  let cleanupError;");
+      const end = source.indexOf("  try {\n    for (const material", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const calls: unknown[][] = [];
+      const helperStart = source.indexOf("const mockServerRetirementSignal =");
+      const helperEnd = source.indexOf(
+        "const requireSettledMockServerClients",
+        helperStart,
+      );
+      expect(helperStart).toBeGreaterThan(0);
+      expect(helperEnd).toBeGreaterThan(helperStart);
+      let clockReads = 0;
+      const primary = new Error("fixed-primary");
+      const result = await runInNewContext(
+        `${source.slice(helperStart, helperEnd)}; (async () => { let primaryError = primary; let retirementRequired = false; ${source.slice(start, end)}; return { primaryError, cleanupError, retirementRequired }; })()`,
+        {
+          primary,
+          plans: ["first", "second"],
+          mockServerBuiltImages: new Map([["first", {}]]),
+          requireSettledMockServerClients: () => undefined,
+          remainingIntegrationOperationMilliseconds: () => 30_000,
+          performance: { now: () => 100 + (clockReads++ === 0 ? 0 : elapsed) },
+          AbortSignal: {
+            timeout: (budget: number) => {
+              calls.push(["timer", budget]);
+              return AbortSignal.timeout(budget);
+            },
+          },
+          retireMockServerImage: (...args: unknown[]) =>
+            calls.push(["retire", ...args]),
+        },
+      );
+      expect(result.primaryError).toBe(primary);
+      if (expected === null) {
+        expect(calls).toEqual([]);
+        expect(result.cleanupError.message).toBe("integration.images.deadline");
+        expect(result.retirementRequired).toBe(true);
+      } else {
+        expect(calls[0]).toEqual(["timer", expected]);
+        expect(
+          calls
+            .slice(1)
+            .map(([kind, plan, signal, deadline]) => [
+              kind,
+              plan,
+              signal instanceof AbortSignal,
+              deadline,
+            ]),
+        ).toEqual([
+          ["retire", "first", true, 30_100],
+          ["retire", "second", true, 30_100],
+        ]);
+        expect(result.cleanupError).toBeUndefined();
+        expect(result.retirementRequired).toBe(false);
+      }
+    },
+  );
+});
+
 describe("existing prepared image client lifecycle", () => {
   it("keeps two sequential Mock pending images separate from candidate building and retires before closing", async () => {
     const f = lifecycleFixture();
@@ -370,8 +445,13 @@ describe("preactivation image settlement", () => {
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     const deadlines: number[] = [];
+    const helperStart = f.source.indexOf("const mockServerRetirementSignal =");
+    const helperEnd = f.source.indexOf(
+      "const requireSettledMockServerClients",
+      helperStart,
+    );
     const result = await runInNewContext(
-      `(async () => { let primaryError = failure; let retirementRequired = false; ${f.source.slice(start, end)}; return {primaryError, cleanupError, retirementRequired}; })()`,
+      `${f.source.slice(helperStart, helperEnd)}; (async () => { let primaryError = failure; let retirementRequired = false; ${f.source.slice(start, end)}; return {primaryError, cleanupError, retirementRequired}; })()`,
       {
         failure: f.failure,
         plans: f.plans,
