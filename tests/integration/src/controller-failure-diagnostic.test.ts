@@ -18,6 +18,7 @@ import {
   settleAbortableOperation,
 } from "./controller.js";
 import type { IntegrationStageDependencies } from "./controller.js";
+import { SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES } from "./substrate-certification.js";
 // @ts-expect-error private transport diagnostic has no public declaration
 import * as requestDiagnosticModule from "../image-preparation/boundary.mjs";
 const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
@@ -120,6 +121,66 @@ const controllerCodes = (primaryCause: unknown, cleanupCause?: unknown) => {
   });
   return readControllerFailureDiagnostic(failure).firstCodes;
 };
+describe("closed certification failure codes", () => {
+  it.each(Object.values(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES))(
+    "projects only the existing exact certification code %s",
+    (primary) => {
+      expect(controllerCodes(new Error(primary))).toEqual({
+        primary,
+        causal: "unknown",
+        cleanup: "unknown",
+      });
+      expect(
+        controllerCodes(
+          new Error("integration.controller.unsettled-operation", {
+            cause: new Error(primary),
+          }),
+          new Error(primary),
+        ),
+      ).toEqual({
+        primary: "integration.controller.unsettled-operation",
+        causal: primary,
+        cleanup: primary,
+      });
+      for (const value of [
+        `${primary}.PRIVATE`,
+        `${primary}\nPRIVATE`,
+        "integration.certification.unlisted",
+      ])
+        expect(controllerCodes(new Error(value))).toBeUndefined();
+      expect(controllerCodes({ message: primary })).toBeUndefined();
+      expect(
+        controllerCodes(
+          new Error("UNKNOWN", {
+            cause: new Error(primary),
+          }),
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not read substituted certification messages through accessors or proxies", () => {
+    const primary = SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["leaked-child"];
+    let reads = 0;
+    const accessor = new Error(primary);
+    Object.defineProperty(accessor, "message", {
+      get: () => {
+        reads += 1;
+        return primary;
+      },
+    });
+    const proxy = new Proxy(new Error(primary), {
+      get: () => {
+        reads += 1;
+        return primary;
+      },
+    });
+    expect(controllerCodes(accessor)).toBeUndefined();
+    expect(controllerCodes(proxy)).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+});
+
 describe("closed first controller failure codes", () => {
   it.each([
     "integration.harness-scenario-admission.invalid",
