@@ -8,6 +8,42 @@ import {
 const runId = "0123456789abcdef";
 const hash = (bytes: string | Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
+describe("bounded client pathname projection", () => {
+  const observe = (path: string) =>
+    snapshotMockServerTraffic(
+      {
+        runId,
+        entries: [
+          {
+            method: "POST",
+            path,
+            role: "data-plane",
+            status: 200,
+            bodyBytes: 0,
+            bodySha256: hash(""),
+          },
+        ],
+      },
+      runId,
+    );
+  it("retains the actual Gemini method pathname without accepting query material", () => {
+    const path = "/v1beta/models/fixture-model:generateContent";
+    expect(observe(path).entries[0]?.path).toBe(path);
+    expect(observe(`/${"a".repeat(255)}`).entries[0]?.path).toHaveLength(256);
+  });
+  it.each([
+    "/v1beta/models/fixture-model:generateContent?key=DUMMY",
+    "/v1beta/models/fixture-model:generateContent#fragment",
+    "/v1beta/models/fixture-model%3AgenerateContent",
+    "/v1beta/models/fixture model:generateContent",
+    "/v1beta/models/fixture-model:generateContent\n",
+    "http://foreign.invalid/v1beta/models/model:generateContent",
+    `/${"a".repeat(256)}`,
+    "/",
+  ])("refuses non-pathname or oversized input %s", (path) => {
+    expect(() => observe(path)).toThrow("integration.mockserver.control");
+  });
+});
 const finalLedgerFixture = () => {
   const routes = [
     {
