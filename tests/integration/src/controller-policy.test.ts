@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -656,20 +657,74 @@ describe("integration cleanup authority", () => {
     );
   });
 
-  it("settles empty npm configuration identity despite a restrictive umask", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-npm-config-"));
-    const target = resolve(directory, "npm-userconfig");
-    const priorUmask = process.umask(0o777);
+  it.each([0o600, 0o644, 0o444] as const)(
+    "settles exact file mode %s despite a restrictive umask",
+    (mode) => {
+      const directory = mkdtempSync(
+        resolve(tmpdir(), "agentscope-npm-config-"),
+      );
+      const target = resolve(directory, "npm-userconfig");
+      const priorUmask = process.umask(0o777);
+      try {
+        writeExactRegularFile(target, Buffer.alloc(0), mode);
+        const status = lstatSync(target);
+        expect(status.isFile()).toBe(true);
+        expect(status.isSymbolicLink()).toBe(false);
+        expect(status.size).toBe(0);
+        expect(status.mode & 0o777).toBe(mode);
+      } finally {
+        process.umask(priorUmask);
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+  );
+  it("stages the actual read-only collector CA caller without relaxing exclusive file identity", () => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf(
+      "  if (gateCapableMockServer)\n    writeExactRegularFile(",
+    );
+    const end = source.indexOf("  stageEsmPackageBoundary(context);", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const directory = mkdtempSync(
+      resolve(tmpdir(), "agentscope-collector-ca-"),
+    );
+    const target = resolve(directory, "collector-ca.pem");
+    const collectorCa = "synthetic-public-test-ca\n";
     try {
-      writeExactRegularFile(target, Buffer.alloc(0), 0o600);
-      const status = lstatSync(target);
-      expect(status.isFile()).toBe(true);
-      expect(status.isSymbolicLink()).toBe(false);
-      expect(status.size).toBe(0);
-      expect(status.mode & 0o777).toBe(0o600);
+      runInNewContext(source.slice(start, end), {
+        gateCapableMockServer: true,
+        writeExactRegularFile,
+        resolve,
+        context: directory,
+        Buffer,
+        collectorCa,
+      });
+      expect(readFileSync(target, "utf8")).toBe(collectorCa);
+      expect(lstatSync(target).mode & 0o777).toBe(0o444);
+      expect(() => {
+        writeExactRegularFile(target, Buffer.from("replacement"), 0o444);
+      }).toThrow();
+      expect(readFileSync(target, "utf8")).toBe(collectorCa);
+      const alias = resolve(directory, "alias");
+      symlinkSync(target, alias);
+      expect(() => {
+        writeExactRegularFile(alias, Buffer.alloc(0), 0o444);
+      }).toThrow();
+      expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+      for (const mode of [0o400, 0o440, 0o555, 0o666, 0o777]) {
+        const unsupported = resolve(directory, `unsupported-${mode}`);
+        expect(() => {
+          Reflect.apply(writeExactRegularFile, undefined, [
+            unsupported,
+            Buffer.alloc(0),
+            mode,
+          ]);
+        }).toThrow("integration.isolation.context");
+        expect(existsSync(unsupported)).toBe(false);
+      }
     } finally {
-      process.umask(priorUmask);
-      rmSync(directory, { force: true, recursive: true });
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

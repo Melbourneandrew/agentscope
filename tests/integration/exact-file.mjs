@@ -13,7 +13,7 @@ export const writeExactRegularFile = (path, bytes, mode) => {
   if (
     typeof path !== "string" ||
     !Buffer.isBuffer(bytes) ||
-    ![0o600, 0o644].includes(mode)
+    ![0o444, 0o600, 0o644].includes(mode)
   )
     throw new Error("integration.isolation.context");
   const descriptor = openSync(
