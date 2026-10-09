@@ -311,7 +311,10 @@ describe("authenticated harness material runtime", () => {
         runId: "0123456789abcdef",
         signal: AbortSignal.abort(),
       }),
-    ).rejects.toThrow("integration.harness-material.failed");
+    ).rejects.toMatchObject({
+      message: "integration.harness-material.failed",
+      cause: { message: "integration.harness-material.preflight" },
+    });
     expect(existsSync(resolve(privateRoot, "harness-signed-fixture"))).toBe(
       false,
     );

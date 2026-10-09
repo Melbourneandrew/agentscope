@@ -141,6 +141,13 @@ describe("closed first controller failure codes", () => {
   it.each([
     "preflight",
     "validate-package",
+    "validate-descriptors",
+    "download-key",
+    "download-manifest",
+    "download-signature",
+    "download-platform-package",
+    "integrity",
+    "download-binary",
     "download-tarball",
     "download-attestation",
     "compile-audit",
