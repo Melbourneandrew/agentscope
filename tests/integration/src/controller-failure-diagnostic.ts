@@ -95,6 +95,22 @@ const materialPhaseCodes = [
   "compile-authority",
   "publish",
 ].map((phase) => `integration.harness-material.${phase}`);
+// Exact existing settledBuildFailure producer vocabulary, not a prefix policy.
+const settledBuildCodes = [
+  "preflight",
+  "builder-create",
+  "builder-bootstrap",
+  "image-build",
+  "unknown-operation",
+].flatMap((operation) =>
+  [
+    "resource-conflict",
+    "build-failed",
+    "bootstrap-failed",
+    "permission-denied",
+    "unknown",
+  ].map((outcome) => `integration.images.build.${operation}.${outcome}`),
+);
 const knownFailureCodes = new Set([
   ...Object.values(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES),
   "integration.controller.deadline",
@@ -102,6 +118,15 @@ const knownFailureCodes = new Set([
   "integration.controller.failure-evidence",
   "integration.isolation.context",
   "integration.isolation.base-image",
+  "integration.images.build",
+  "integration.images.socket",
+  "integration.images.executable",
+  "integration.images.interrupted",
+  "integration.images.output",
+  "integration.images.teardown",
+  "integration.images.build.context",
+  "integration.images.build.authority",
+  ...settledBuildCodes,
   "integration.images.build.input",
   "integration.images.build.base",
   "integration.images.build.artifact",
