@@ -56,7 +56,7 @@ export const snapshotMockServerTraffic = (value, runId) => {
       typeof row.method !== "string" ||
       typeof row.path !== "string" ||
       !/^(?:GET|PUT|POST)$/u.test(row.method) ||
-      !/^\/[a-zA-Z0-9._/-]{1,255}$/u.test(row.path) ||
+      !/^\/[a-zA-Z0-9._/:-]{1,255}$/u.test(row.path) ||
       ![
         "allowed",
         "forbidden",
