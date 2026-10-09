@@ -408,7 +408,10 @@ describe("integration cleanup authority", () => {
       "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
     );
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
-    expect(outer).not.toContain("process.stderr.write(");
+    expect(outer.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+    expect(outer).toContain(
+      "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
+    );
     expect(authority).toContain("extractUntrustedCodexConfigHint");
     expect(authority).toContain("extractUntrustedCodexGateHint");
     const researchCapture = outer.indexOf(
@@ -928,7 +931,10 @@ describe("integration workflow policy", () => {
       scenarios.indexOf('"USER node"'),
     );
     expect(required).toBeGreaterThanOrEqual(0);
-    expect(scenarios).not.toContain("process.stderr.write(");
+    expect(scenarios.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+    expect(scenarios).toContain(
+      "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
+    );
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
     expect(readinessReleased).toBeGreaterThan(manifest);
