@@ -45,7 +45,8 @@ const returnedHeadlessFixture = async (
   retainedStatus: "complete" | "partial" | "absent" | "malformed",
   observationSinkFails = false,
 ) => {
-  const path = join(createRoot(), "fixture-result.json");
+  const root = createRoot();
+  const path = join(root, "fixture-result.json");
   const readiness = {
     readinessVersion: 1,
     certificationCase: "leaked-child",
@@ -97,8 +98,12 @@ const returnedHeadlessFixture = async (
   expect(observationEnd).toBeGreaterThan(observationStart);
   const receipts: string[] = [];
   let reads = 0;
+  const helperStart = source.indexOf("const recoverRetainedFixtureOutput =");
+  const helperEnd = source.indexOf("\ntry {", helperStart);
+  expect(helperStart).toBeGreaterThan(0);
+  expect(helperEnd).toBeGreaterThan(helperStart);
   const result = (await runInNewContext(
-    `(async () => { let fixtureOutput; let fixtureFailure; let recoveryAttempted = false; let recoverySucceeded = false; ${source.slice(start, end)}; const originalFailure = fixtureFailure; ${source.slice(observationStart, observationEnd)}; return {fixtureOutput, fixtureFailure, originalFailure}; })()`,
+    `(async () => { let fixtureOutput; let fixtureFailure; let recoveryAttempted = false; let recoverySucceeded = false; let recoveryStage = null; ${source.slice(helperStart, helperEnd)} ${source.slice(start, end)}; const originalFailure = fixtureFailure; ${source.slice(observationStart, observationEnd)}; return {fixtureOutput, fixtureFailure, originalFailure}; })()`,
     {
       executeSelectedHeadlessProcess: () => Promise.resolve(trace),
       headlessCapability: {},
@@ -123,9 +128,22 @@ const returnedHeadlessFixture = async (
       substrateCertificationCase: certificationCase,
       scenario: { executionMode: "headless" },
       requiredEnvironment: () => "a".repeat(16),
-      recoverRetainedFixtureOutput: () => {
+      join,
+      ledger: root,
+      scenarioId,
+      readRetainedFixtureOutput: (
+        resultPath: string,
+        selectedScenarioId: string,
+        test: undefined,
+        observer: (stage: string) => void,
+      ) => {
         reads++;
-        return readRetainedFixtureOutput(path, scenarioId);
+        return readRetainedFixtureOutput(
+          resultPath,
+          selectedScenarioId,
+          test,
+          observer,
+        );
       },
     },
   )) as {
@@ -163,7 +181,7 @@ describe("actual runner failed-return retained readiness", () => {
     );
     expect(f.reads).toBe(1);
     expect(f.receipts[1]).toBe(
-      `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: "a".repeat(16), recoveryAttempted: true, recoverySucceeded: true })}`,
+      `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: "a".repeat(16), recoveryAttempted: true, recoverySucceeded: true, recoveryStage: null })}`,
     );
     expect(f.result.fixtureFailure?.message).toBe(
       "integration.runner.fixture-failed",
@@ -206,6 +224,9 @@ describe("actual runner failed-return retained readiness", () => {
       expect(f.receipts[1]).toContain(
         `"recoverySucceeded":${status === "partial"}`,
       );
+      expect(f.receipts[1]).toContain(
+        `"recoveryStage":${status === "absent" ? '"open"' : status === "malformed" ? '"envelope"' : "null"}`,
+      );
       expect(f.result.fixtureFailure?.message).toBe(
         "integration.runner.fixture-failed",
       );
@@ -243,6 +264,51 @@ afterEach(() => {
 });
 
 describe("retained fixture-result authority", () => {
+  it.each(["open", "status", "read", "identity", "envelope"] as const)(
+    "observes only the fixed %s refusal boundary, preserving rejection when observer throws",
+    (stage) => {
+      const root = createRoot();
+      const path = join(root, "fixture-result.json");
+      if (stage !== "open")
+        writeResult(path, stage === "envelope" ? "{}" : record());
+      if (stage === "status") chmodSync(path, 0o644);
+      const alter =
+        stage === "read"
+          ? () => {
+              writeResult(path, "x".repeat(1024 * 1024 + 1));
+            }
+          : stage === "identity"
+            ? () => {
+                renameSync(path, join(root, "renamed.json"));
+              }
+            : undefined;
+      const observed: string[] = [];
+      expect(() =>
+        readRetainedFixtureOutput(path, scenarioId, alter, (value: string) => {
+          observed.push(value);
+          throw new Error("PRIVATE observer");
+        }),
+      ).toThrow("integration.runner.fixture-result");
+      expect(observed).toEqual([stage]);
+      expect(observed.join("")).not.toContain("PRIVATE");
+    },
+  );
+  it("does not observe a refusal for authenticated successful bytes", () => {
+    const path = join(createRoot(), "fixture-result.json");
+    writeResult(path);
+    const observed: string[] = [];
+    expect(
+      readRetainedFixtureOutput(
+        path,
+        scenarioId,
+        undefined,
+        (value: string) => {
+          observed.push(value);
+        },
+      ),
+    ).toBe("AGENTSCOPE_FIXTURE_RESULT=exact_evidence\n");
+    expect(observed).toEqual([]);
+  });
   it("rejects absent or malformed success evidence", () => {
     const path = join(createRoot(), "fixture-result.json");
     expect(() => readRetainedFixtureOutput(path, scenarioId)).toThrow(

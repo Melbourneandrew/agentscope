@@ -507,12 +507,84 @@ describe("actual-source retained recovery diagnostic projection", () => {
       expect(copyRow(f.output)).toHaveProperty("leakedChild.recovery", {
         attempted: true,
         succeeded,
+        exitCode: null,
         ...receipt,
       });
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
       expect(f.predicates).toEqual([]);
     },
   );
+});
+describe("actual-source reader refusal stage diagnostic", () => {
+  it.each(["open", "status", "read", "identity", "envelope", "unknown"])(
+    "projects only closed reader stage %s and the authenticated receipt exit code",
+    (stage) => {
+      const f = leakedChildPredicateFixture({ resultStatus: "partial" });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: false,
+        recoveryStage: stage,
+      })}`;
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          {
+            outcome: "exited",
+            cleanup: "clean",
+            exitCode: 1,
+            termRequested: false,
+            killRequested: false,
+          },
+          true,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.stage",
+        stage,
+      );
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.exitCode",
+        1,
+      );
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+  it.each([-1, 256, 0.5, "1", null])(
+    "leaves invalid receipt exit code %s unavailable",
+    (exitCode) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: f.plan.runId, recoveryAttempted: true, recoverySucceeded: false, recoveryStage: "open" })}`;
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          { exitCode },
+          false,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.exitCode",
+        null,
+      );
+    },
+  );
+  it.each(["PRIVATE", "open-extra", 1, {}, ["open"]])(
+    "rejects foreign reader stage %s without reflection",
+    (recoveryStage) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: f.plan.runId, recoveryAttempted: true, recoverySucceeded: false, recoveryStage })}`;
+      expect(() => {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false, line);
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).not.toHaveProperty("leakedChild.recovery");
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+});
+describe("actual-source malformed recovery diagnostics", () => {
   it.each([
     "absent",
     "malformed",
