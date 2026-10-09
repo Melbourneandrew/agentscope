@@ -19,6 +19,222 @@ import { describe, expect, it } from "vitest";
 import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
+import { sanitizeFixtureResult } from "./operations.js";
+import { snapshotMockServerTraffic } from "../mockserver-control.mjs";
+
+const mixedArtifactPartialOutput = () => {
+  const platform = readFileSync(
+    resolve(import.meta.dirname, "../platform-fixture.mjs"),
+    "utf8",
+  );
+  const plan = {
+    runId: "a".repeat(16),
+    scenarioId: "fixture-codex-smoke",
+    executionMode: "headless",
+  };
+  let output = "";
+  runInNewContext(
+    `${platform.slice(platform.indexOf("const trafficEvidence ="), platform.indexOf('emitEvidence("partial");'))};emitEvidence("partial");`,
+    {
+      snapshotMockServerTraffic,
+      integrationRunId: plan.runId,
+      mockTraffic: [],
+      Buffer,
+      basename: () => "pnpm-lock.yaml",
+      artifactPath: "/prepared/pnpm-lock.yaml",
+      scenarioId: plan.scenarioId,
+      observedLifecycle: [],
+      certificationReadiness: null,
+      partial: {
+        eventKinds: [],
+        modelLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          entries: [],
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: [],
+          retrieval: [],
+        },
+      },
+      interactive: false,
+      console: {
+        log: (value: string) => {
+          output = value;
+        },
+      },
+    },
+  );
+  return { output, plan };
+};
+const mixedArtifactCaptureFixture = () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const { output, plan } = mixedArtifactPartialOutput();
+  const observed: string[] = [];
+  const context = {
+    Buffer,
+    createHash,
+    snapshotMockServerTraffic,
+    sanitizeFixtureResult,
+    fixtureTrafficObservations: new Map(),
+    fixtureResults: new Map(),
+    substrateCertificationCase: "mixed-artifact-digest",
+    testMode: undefined,
+    candidate: {
+      bundleIdentity: "held-bundle",
+      lockfile: { fileName: "pnpm-lock.yaml" },
+    },
+    cliArtifact: { fileName: "agentscope-cli.tgz" },
+    SCENARIO_HOME: "/home/runner",
+    manifest: { scenarios: [{ ...plan, harnessEvidenceId: "fixture" }] },
+    evidenceById: new Map([["fixture", { material: { kind: "npm" } }]]),
+    linuxBootMonotonicMilliseconds: () => 100,
+    SUBSTRATE_CERTIFICATION_PREDICATES: {
+      "mixed-artifact-digest": "artifact-digest-mismatch",
+    },
+    observeSubstrateCertificationPredicate: (
+      _runId: string,
+      predicate: string,
+    ) => observed.push(predicate),
+  };
+  const definitions = [
+    source.slice(
+      source.indexOf("const fingerprintHeadlessRequest ="),
+      source.indexOf("const fingerprintSelectedPtyAuthority ="),
+    ),
+    source.slice(
+      source.indexOf("const expectedHeadlessEnvironment ="),
+      source.indexOf("const activeMarkerFor ="),
+    ),
+    source.slice(
+      source.indexOf("const captureFixtureResult ="),
+      source.indexOf(
+        "// eslint-disable-next-line complexity -- exact closed receipt predicate",
+      ),
+    ),
+  ].join("\n");
+  const helpers = runInNewContext(
+    `${definitions};({expectedNegativeHeadlessRequest, fingerprintHeadlessRequest, captureFixtureResult});`,
+    context,
+  ) as {
+    expectedNegativeHeadlessRequest: (
+      receipt: unknown,
+      plan: unknown,
+    ) => { monotonicShutdownDeadlineMs: number };
+    fingerprintHeadlessRequest: (request: unknown) => string;
+    captureFixtureResult: (output: string, plan: unknown) => boolean;
+  };
+  const receipt = {
+    receiptVersion: 1,
+    runId: plan.runId,
+    outerMonotonicDeadlineMs: 50_000,
+    requestConstructedAtMs: 200,
+    translationBootAtMs: 100,
+    translationLocalAtMs: 100,
+    request: { monotonicShutdownDeadlineMs: 50_000 },
+    returnedAtMs: 300,
+    outcome: "exited",
+    exitCode: 1,
+    signal: null,
+    termRequested: false,
+    killRequested: false,
+    cleanup: "clean",
+    residualProcessCount: 0,
+    processJoined: true,
+    stdinJoined: true,
+    stdoutJoined: true,
+    stderrJoined: true,
+    requestFingerprint: "",
+  };
+  receipt.request = helpers.expectedNegativeHeadlessRequest(receipt, plan);
+  receipt.requestFingerprint = helpers.fingerprintHeadlessRequest(
+    receipt.request,
+  );
+  const branchStart = source.indexOf(
+    '      const output = `${error?.stdout ?? ""}`;',
+  );
+  const branchEnd = source.indexOf("      const receipt =", branchStart);
+  const evaluate = (
+    selectedOutput: string,
+    selectedCase = "mixed-artifact-digest",
+    mode = "headless",
+  ) =>
+    runInNewContext(`${definitions};${source.slice(branchStart, branchEnd)}`, {
+      ...context,
+      substrateCertificationCase: selectedCase,
+      plan: { ...plan, executionMode: mode },
+      outerMonotonicDeadline: 50_000,
+      error: { stdout: selectedOutput },
+    }) as unknown;
+  const encode = (value: unknown) =>
+    `${output}\nAGENTSCOPE_HEADLESS_RECEIPT=${Buffer.from(JSON.stringify(value)).toString("base64url")}\n`;
+  return { output, receipt, observed, helpers, plan, evaluate, encode };
+};
+
+describe("mixed artifact failed-receipt chronology", () => {
+  it("recognizes the exact mutation before parsing actual wrong-artifact partial output", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    expect(() =>
+      fixture.helpers.captureFixtureResult(fixture.output, fixture.plan),
+    ).toThrow("integration.operations.fixture-result");
+    expect(fixture.observed).toEqual([]);
+    expect(() => fixture.evaluate(fixture.encode(fixture.receipt))).toThrow(
+      "integration.certification.mixed-artifact-digest",
+    );
+    expect(fixture.observed).toEqual(["artifact-digest-mismatch"]);
+  });
+
+  it("refuses missing, malformed, foreign and substituted receipts without observing the predicate", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    const substitutedRequest = {
+      ...fixture.receipt.request,
+      arguments: [
+        "/opt/agentscope/scenario-process.mjs",
+        "--artifact",
+        "/foreign/agentscope-cli.tgz",
+      ],
+    };
+    const invalid = [
+      fixture.output,
+      `${fixture.output}\nAGENTSCOPE_HEADLESS_RECEIPT=!`,
+      fixture.encode({ ...fixture.receipt, runId: "b".repeat(16) }),
+      fixture.encode({
+        ...fixture.receipt,
+        requestFingerprint: "sha256:" + "0".repeat(64),
+      }),
+      fixture.encode({ ...fixture.receipt, outerMonotonicDeadlineMs: 50_001 }),
+      fixture.encode({
+        ...fixture.receipt,
+        request: substitutedRequest,
+        requestFingerprint:
+          fixture.helpers.fingerprintHeadlessRequest(substitutedRequest),
+      }),
+    ];
+    for (const output of invalid)
+      expect(() => fixture.evaluate(output)).toThrow(
+        "integration.isolation.headless-receipt",
+      );
+    expect(fixture.observed).toEqual([]);
+  });
+
+  it("does not bypass fixture parsing for ordinary, leaked-child or interactive paths", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    for (const [selectedCase, mode] of [
+      ["ordinary", "headless"],
+      ["leaked-child", "headless"],
+      ["mixed-artifact-digest", "interactive"],
+    ])
+      expect(() =>
+        fixture.evaluate(fixture.encode(fixture.receipt), selectedCase, mode),
+      ).toThrow("integration.operations.fixture-result");
+    expect(fixture.observed).toEqual([]);
+  });
+});
 
 const expectCodexNativeBeforeCollectorCompletion = (scenario: string): void => {
   const terminal = scenario.indexOf(

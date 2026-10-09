@@ -2738,6 +2738,11 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           cause: error,
         });
       const output = `${error?.stdout ?? ""}`;
+      if (
+        substrateCertificationCase === "mixed-artifact-digest" &&
+        plan.executionMode === "headless"
+      )
+        captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,
