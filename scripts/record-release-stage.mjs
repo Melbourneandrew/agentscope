@@ -790,6 +790,7 @@ if (mode === "--prepare-probe" || mode === "--verify-probe") {
 const store = createGitHubReleaseStore({
   token: process.env.GITHUB_TOKEN,
   deadline,
+  ...(probeOperation ? {} : { executingDigests: executingDigests() }),
 });
 const run = await store.run(Number(process.env.GITHUB_RUN_ID));
 if (
@@ -817,6 +818,7 @@ function executingDigests() {
     "scripts/record-release-stage.mjs",
     "scripts/release-lane/production-recording.mjs",
     "scripts/release-lane/github-release-store.mjs",
+    "scripts/release-lane/terminal-probe.mjs",
     "scripts/release-lane/production-recorder.mjs",
     "scripts/release-lane/stage-result.mjs",
     "scripts/release-lane/npm-stage-producer.mjs",

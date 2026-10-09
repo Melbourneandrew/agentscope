@@ -475,8 +475,8 @@ test("product source still requires the exact annotated tag before ancestry", as
       },
     });
     const result = store.protectedSource(source);
-    if (taggedSource === source) await result;
-    else await expect(result).rejects.toThrow("release.store.unresolved");
+    // Even an otherwise valid tag cannot proceed without the bound probe.
+    await expect(result).rejects.toThrow("release.store.unresolved");
     const prefix = "https://api.github.com/repos/Melbourneandrew/agentscope";
     expect(calls).toEqual([
       `${prefix}/git/ref/tags/v0.1.0`,

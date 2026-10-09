@@ -280,6 +280,7 @@ test("missing actual semantic evidence stops before protected store mutation", a
   await expect(invocation).rejects.toBe(denied);
   expect(calls).toEqual(["held-candidate", "semantic-binding"]);
   expect(entry).not.toContain("inspectReleaseControls");
+  expect(entry).toContain('"scripts/release-lane/terminal-probe.mjs"');
   expect(entry).toContain("return requireActualSemanticAdmission(accepted)");
   expect(entry).toContain("bindScenarioEvidence(");
   expect(entry).toMatch(/"@agentscope\/harness-claude-code":\s*"claude-code"/u);
