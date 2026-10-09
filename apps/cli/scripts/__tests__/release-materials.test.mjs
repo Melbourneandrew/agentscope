@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -37,6 +38,14 @@ afterEach(() => {
 });
 
 function prepareFixtureFiles(root) {
+  const workflows = new URL("../../../../.github/workflows/", import.meta.url);
+  for (const name of readdirSync(workflows))
+    if (/\.ya?ml$/u.test(name))
+      put(
+        root,
+        `.github/workflows/${name}`,
+        readFileSync(new URL(name, workflows)),
+      );
   put(root, "package.json", { packageManager: "pnpm@9.15.0" });
   put(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
   put(root, "apps/cli/package.json", {
@@ -201,6 +210,17 @@ async function fixture() {
         : {}),
     });
   const build = recorder.finish();
+  if (build.invocation.environment === "github-actions") {
+    const workflowPath = build.invocation.workflowRef
+      .split("/")
+      .slice(2)
+      .join("/")
+      .split("@")[0];
+    expect(build.invocation.workflowSha256).toBe(
+      sha(readFileSync(join(root, workflowPath))),
+    );
+    expect(build.invocation.authenticated).toBe(false);
+  }
   const packedManifest = {
     name: "agentscope-cli",
     version: "0.1.0",
