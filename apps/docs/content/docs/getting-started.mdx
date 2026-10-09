@@ -9,9 +9,9 @@ Agentscope 0.1.0 is not published yet. Do not install an artifact from an
 untrusted source or treat source-checkout behavior as a support claim. The
 release will name each supported Codex and Claude Code version, mode, platform,
 and credential context only after actual-binary OTLP admission. After
-publication, open the exact version on
-[GitHub Releases](https://github.com/Melbourneandrew/agentscope/releases). The
-attached `support-admission.json` asset is the user-facing support authority.
+admission, final release reconciliation will add the exact supported
+combinations to this guide. None are listed yet, so do not continue with setup
+from this pre-release draft.
 
 The Claude Code 2.1.245 candidate profile under validation covers
 `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not expose
@@ -37,9 +37,10 @@ agentscope --version
 Do not use bare `agentscope-cli` or `npx agentscope-cli`: npm `latest` remains an
 inert ownership bootstrap until a later stable release.
 
-Use only a platform combination listed in that exact release's
-`support-admission.json` asset. If your combination is absent, stop before
-configuring credentials or installing a harness.
+Use only a complete version, mode, platform, credential-context, and OTLP
+combination explicitly listed in this guide after publication. If your exact
+combination is absent, stop before configuring credentials or installing a
+harness.
 
 ## Safe setup sequence
 

@@ -21,10 +21,10 @@ sends them only to destinations you explicitly configure and select.
 ## Alpha status
 
 Agentscope 0.1.0 is not published yet. Codex and Claude Code are the target
-harnesses for the first alpha, but neither is supported until its exact
-version, mode, platform, credential context, and OTLP path appear in the
-`support-admission.json` asset attached to the exact version's
-[GitHub Release](https://github.com/Melbourneandrew/agentscope/releases).
+harnesses for the first alpha, but this pre-release draft makes no support
+claim. Final release reconciliation must replace this paragraph with the exact
+admitted version, mode, platform, credential context, and OTLP combinations
+before publication.
 
 The Claude Code 2.1.245 candidate profile under validation covers
 `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not claim a
