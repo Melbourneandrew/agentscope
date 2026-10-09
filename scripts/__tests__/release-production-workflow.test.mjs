@@ -52,7 +52,11 @@ const requireSeparatedProductJobs = (workflow) => {
     "stage-result": "${{ steps.stage.outputs.stage-result }}",
   });
   expect(recorder.permissions).toEqual({ contents: "write", actions: "read" });
-  expect(recorder.needs).toEqual(["prepare-draft", "stage-candidate"]);
+  expect(recorder.needs).toEqual([
+    "verify-candidate",
+    "prepare-draft",
+    "stage-candidate",
+  ]);
   expect(recorder.if).toBe(
     "always() && (inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe') && needs.prepare-draft.result == 'success'",
   );
@@ -110,6 +114,7 @@ const requireProbeGraph = (workflow) => {
   ]);
   expect(workflow.on.workflow_dispatch.inputs.operation.options).toEqual([
     "prepare-draft",
+    "prepare-candidate",
     "consume-intent",
     "prepare-probe",
     "consume-probe",
@@ -128,7 +133,7 @@ const requireProbeGraph = (workflow) => {
     run: "npm pack ./artifacts/release-probe-source --ignore-scripts --json --pack-destination ./artifacts/release-probe",
   });
   expect(workflow.jobs["prepare-draft"].if).toBe(
-    "inputs.operation != 'prepare-probe' && inputs.operation != 'continue-publication'",
+    "inputs.operation != 'prepare-candidate' && inputs.operation != 'prepare-probe' && inputs.operation != 'continue-publication'",
   );
   for (const name of ["stage-candidate", "record-stage"]) {
     const intent = workflow.jobs[name].steps.find(
@@ -198,13 +203,13 @@ const requireNonprivilegedAdmission = (workflow) => {
       step.run === "node scripts/record-release-stage.mjs --verify-admission",
   );
   expect(steps).toHaveLength(1);
-  expect(steps[0].env).toBeUndefined();
+  expect(steps[0].env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
 };
 test("semantic admission receives no administrative or publication credential", () => {
   requireNonprivilegedAdmission(parse(source));
   for (const replacement of [
     {},
-    { GITHUB_TOKEN: "${{ github.token }}" },
+    undefined,
     { GITHUB_TOKEN: "${{ secrets.NPM_TOKEN }}" },
   ]) {
     const workflow = parse(source);
@@ -392,5 +397,59 @@ test("installed registry verification is separate from no-OIDC same-tag publicat
     const workflow = parse(source);
     mutate(workflow);
     expect(() => requirePublicationSeparation(workflow)).toThrow();
+  }
+});
+
+test("protected-main assembly retains the exact candidate before any protected job", () => {
+  const workflow = parse(source);
+  const verifier = workflow.jobs["verify-candidate"];
+  expect(verifier.if).toContain('"prepare-candidate"');
+  expect(verifier.environment).toBeUndefined();
+  expect(verifier.permissions).toEqual({ contents: "read", actions: "read" });
+  const upload = verifier.steps.find(
+    (step) => step.with?.name === "release-certified-candidate",
+  );
+  expect(upload.if).toBe("inputs.operation == 'prepare-candidate'");
+  expect(upload.with).toEqual({
+    name: "release-certified-candidate",
+    path: "artifacts/release-candidate",
+    "if-no-files-found": "error",
+  });
+  expect(verifier.steps.indexOf(upload)).toBeGreaterThan(
+    verifier.steps.findIndex((step) =>
+      step.run?.endsWith("--verify-admission"),
+    ),
+  );
+  expect(workflow.jobs["prepare-draft"].if).toContain(
+    "inputs.operation != 'prepare-candidate'",
+  );
+  for (const name of [
+    "prepare-draft",
+    "stage-candidate",
+    "record-stage",
+    "verify-publication",
+    "continue-publication",
+  ]) {
+    const steps = workflow.jobs[name].steps;
+    const retained = steps.find(
+      (step) => step.with?.path === "artifacts/release-candidate",
+    );
+    expect(retained.with["artifact-ids"]).toBe(
+      "${{ needs.verify-candidate.outputs.candidate-artifact-id }}",
+    );
+    expect(retained.with["run-id"]).toBe("${{ inputs.candidate-run-id }}");
+    expect(steps.some((step) => step.run?.endsWith("--prepare-semantic"))).toBe(
+      true,
+    );
+    for (const path of [
+      "artifacts/semantic-candidate",
+      "artifacts/semantic-scenarios",
+    ]) {
+      const download = steps.find((step) => step.with?.path === path);
+      expect(download.with["run-id"]).toBe(
+        "${{ steps.semantic-artifacts.outputs.integration-run-id }}",
+      );
+      expect(download.if).toBe("github.ref == 'refs/tags/v0.1.0'");
+    }
   }
 });

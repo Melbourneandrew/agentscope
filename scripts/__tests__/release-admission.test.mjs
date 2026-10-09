@@ -1,5 +1,7 @@
 import { test, expect } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   bindPreparedCliEvidence,
   bindCodexScenarioEvidence,
@@ -12,6 +14,260 @@ import {
 } from "../release-lane/admission.mjs";
 import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 import { deriveIdentityBundle } from "@agentscope/protocol";
+
+const entrySource = readFileSync(
+  new URL("../record-release-stage.mjs", import.meta.url),
+  "utf8",
+);
+function releaseFanInBoundary() {
+  const source = entrySource.slice(
+    entrySource.indexOf("function bindReleaseSbom("),
+    entrySource.indexOf("function retainReleaseCandidate("),
+  );
+  const tarball = Buffer.from(
+    "synthetic trusted packaging seam, not admission",
+  );
+  const inspected = {
+    sha256: sha256(tarball),
+    bytes: tarball.length,
+    integrity: "synthetic",
+    inventory: [
+      {
+        path: "package/dist/bin/agentscope.js",
+        sha256: sha256(Buffer.from("bin")),
+      },
+    ],
+  };
+  const selected = {
+    runId: 5,
+    runAttempt: 1,
+    candidateArtifactId: 6,
+    scenarioArtifactId: 7,
+  };
+  const revision = "a".repeat(40);
+  const sbom = {
+    spdxVersion: "SPDX-2.3",
+    packages: [
+      {
+        SPDXID: "SPDXRef-Package",
+        name: "agentscope-cli",
+        versionInfo: "0.1.0",
+        checksums: [
+          { algorithm: "SHA256", checksumValue: inspected.sha256.slice(7) },
+        ],
+      },
+    ],
+    files: [
+      {
+        fileName: "dist/bin/agentscope.js",
+        checksums: [
+          {
+            algorithm: "SHA256",
+            checksumValue: inspected.inventory[0].sha256.slice(7),
+          },
+        ],
+      },
+    ],
+  };
+  const statements = [
+    {
+      _type: "https://in-toto.io/Statement/v1",
+      subject: [
+        {
+          name: "agentscope-cli-0.1.0.tgz",
+          digest: { sha256: inspected.sha256.slice(7) },
+        },
+      ],
+      predicateType: "https://slsa.dev/provenance/v1",
+      predicate: {
+        buildDefinition: {
+          externalParameters: { sourceRevision: revision },
+          internalParameters: {
+            observedInvocation: {
+              environment: "github-actions",
+              authenticated: false,
+              repository: "Melbourneandrew/agentscope",
+              runId: "5",
+              runAttempt: "1",
+              sourceRevision: revision,
+            },
+          },
+        },
+      },
+    },
+  ];
+  const candidateInput = {
+    tarball,
+    tarballPath: "held",
+    preparedBytes: Buffer.from("prepared"),
+    evidenceFiles: [
+      {
+        name: "runs/held/evidence.json",
+        bytes: 1,
+        digest: sha256(Buffer.from("e")),
+      },
+    ],
+    roleBytes: {
+      "sbom.json": Buffer.from(JSON.stringify(sbom)),
+      "attestations.json": Buffer.from(JSON.stringify(statements)),
+    },
+  };
+  const calls = [];
+  const functions = runInNewContext(
+    source + "\n({bindReleaseMaterials, assembleReleaseCandidate});",
+    {
+      Buffer,
+      TextDecoder,
+      canonicalJson,
+      sha256,
+      process: { env: { GITHUB_SHA: revision } },
+      fail: () => {
+        throw new Error("release.recording.unresolved");
+      },
+      inspectCandidateTarball: () => inspected,
+      assembleCandidateAssets: (input) => {
+        calls.push(input);
+        return { manifest: { sourceRevision: revision } };
+      },
+      bindPreparedCliEvidence: (...input) => calls.push(input),
+    },
+  );
+  return { functions, candidateInput, selected, sbom, statements, calls };
+}
+test("actual entry material projection uses the same held tar and preserves unsigned role bytes", () => {
+  const value = releaseFanInBoundary();
+  const roles = { ...value.candidateInput.roleBytes };
+  value.functions.assembleReleaseCandidate(
+    value.candidateInput,
+    [{ family: "codex" }, { family: "claude-code" }],
+    value.selected,
+  );
+  expect(value.calls).toHaveLength(2);
+  expect(value.calls[0].tarball).toBe(value.candidateInput.tarball);
+  for (const [name, bytes] of Object.entries(roles))
+    expect(value.calls[0].roleBytes[name]).toBe(bytes);
+  expect(Object.keys(value.calls[0].roleBytes).sort()).toEqual([
+    "attestations.json",
+    "checksum-manifest.json",
+    "evidence-index.json",
+    "sbom.json",
+    "support-admission.json",
+  ]);
+  const index = JSON.parse(value.calls[0].roleBytes["evidence-index.json"]);
+  expect(index.producingRun).toEqual(value.selected);
+  expect(index.files).toEqual(value.candidateInput.evidenceFiles);
+  expect(value.calls[1][0]).toBe(value.candidateInput.preparedBytes);
+});
+test.each([
+  "tar",
+  "sbom-hash",
+  "sbom-files",
+  "subject",
+  "source",
+  "run",
+  "attempt",
+  "authority",
+])("material %s substitution refuses before assembly", (kind) => {
+  const value = releaseFanInBoundary();
+  if (kind === "tar") value.candidateInput.tarball = Buffer.from("substituted");
+  if (kind === "sbom-hash")
+    value.sbom.packages[0].checksums[0].checksumValue = "b".repeat(64);
+  if (kind === "sbom-files") value.sbom.files = [];
+  if (kind === "subject")
+    value.statements[0].subject[0].digest.sha256 = "b".repeat(64);
+  if (kind === "source")
+    value.statements[0].predicate.buildDefinition.externalParameters.sourceRevision =
+      "b".repeat(40);
+  const invocation =
+    value.statements[0].predicate.buildDefinition.internalParameters
+      .observedInvocation;
+  if (kind === "run") invocation.runId = "8";
+  if (kind === "attempt") invocation.runAttempt = "2";
+  if (kind === "authority") invocation.authenticated = true;
+  value.candidateInput.roleBytes["sbom.json"] = Buffer.from(
+    JSON.stringify(value.sbom),
+  );
+  value.candidateInput.roleBytes["attestations.json"] = Buffer.from(
+    JSON.stringify(value.statements),
+  );
+  expect(() =>
+    value.functions.assembleReleaseCandidate(
+      value.candidateInput,
+      [],
+      value.selected,
+    ),
+  ).toThrow();
+  expect(value.calls).toEqual([]);
+});
+function retainedCandidateMetadata() {
+  const start = entrySource.indexOf("function selectRetainedCandidate(");
+  const body = entrySource.slice(
+    start,
+    entrySource.indexOf("async function prepareSemantic(", start),
+  );
+  const select = runInNewContext(body + "\nselectRetainedCandidate;", {
+    fail: () => {
+      throw new Error("metadata");
+    },
+  });
+  const run = { id: 5, run_attempt: 1, head_sha: "a".repeat(40) };
+  const job = {
+    name: "verify-candidate",
+    run_id: 5,
+    run_attempt: 1,
+    head_sha: run.head_sha,
+    status: "completed",
+    conclusion: "success",
+    started_at: "2026-10-08T00:00:00Z",
+    completed_at: "2026-10-08T00:01:00Z",
+  };
+  const artifact = {
+    id: 7,
+    name: "release-certified-candidate",
+    expired: false,
+    size_in_bytes: 100,
+    digest: `sha256:${"b".repeat(64)}`,
+    workflow_run: { id: 5, head_sha: run.head_sha },
+    created_at: "2026-10-08T00:00:30Z",
+    updated_at: "2026-10-08T00:00:30Z",
+  };
+  return {
+    select,
+    run,
+    job,
+    artifact,
+    jobs: { total_count: 1, jobs: [job] },
+    artifacts: { total_count: 1, artifacts: [artifact] },
+  };
+}
+test("retained main candidate selects a unique immutable ID inside its successful job", () => {
+  const value = retainedCandidateMetadata();
+  expect(value.select(value.run, value.jobs, value.artifacts)).toBe(7);
+});
+test.each([
+  "attempt",
+  "source",
+  "run",
+  "expired",
+  "late",
+  "duplicate",
+  "pagination",
+  "failure",
+])("retained candidate %s cannot authenticate by artifact name", (kind) => {
+  const value = retainedCandidateMetadata();
+  if (kind === "attempt") value.job.run_attempt = 2;
+  if (kind === "source") value.artifact.workflow_run.head_sha = "c".repeat(40);
+  if (kind === "run") value.job.run_id = 8;
+  if (kind === "expired") value.artifact.expired = true;
+  if (kind === "late") value.artifact.updated_at = "2026-10-08T00:02:00Z";
+  if (kind === "duplicate") {
+    value.artifacts.artifacts.push({ ...value.artifact });
+    value.artifacts.total_count = 2;
+  }
+  if (kind === "pagination") value.jobs.total_count = 101;
+  if (kind === "failure") value.job.conclusion = "failure";
+  expect(() => value.select(value.run, value.jobs, value.artifacts)).toThrow();
+});
 
 function fixture() {
   const tarball = Buffer.from("synthetic artifact binding only");

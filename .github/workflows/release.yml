@@ -8,6 +8,7 @@ on:
         options:
           [
             prepare-draft,
+            prepare-candidate,
             consume-intent,
             prepare-probe,
             consume-probe,
@@ -45,12 +46,14 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify-candidate:
-    if: github.ref == 'refs/tags/v0.1.0' || (github.ref == 'refs/heads/main' && contains(fromJSON('["prepare-probe","consume-probe","reconcile-probe"]'), inputs.operation))
+    if: github.ref == 'refs/tags/v0.1.0' || (github.ref == 'refs/heads/main' && contains(fromJSON('["prepare-candidate","prepare-probe","consume-probe","reconcile-probe"]'), inputs.operation))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
+    outputs:
+      candidate-artifact-id: ${{ steps.admission-artifacts.outputs.release-candidate-artifact-id }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
@@ -65,6 +68,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - name: Download exact prepared candidate
+        if: inputs.operation == 'prepare-candidate'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ steps.admission-artifacts.outputs.candidate-artifact-id }}
@@ -73,6 +77,7 @@ jobs:
           github-token: ${{ github.token }}
           merge-multiple: true
       - name: Download bounded scenario evidence
+        if: inputs.operation == 'prepare-candidate'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ steps.admission-artifacts.outputs.scenario-artifact-id }}
@@ -80,15 +85,46 @@ jobs:
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
           merge-multiple: true
-      - name: Require nonprivileged semantic admission
-        run: node scripts/record-release-stage.mjs --verify-admission
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        if: github.ref == 'refs/tags/v0.1.0'
+      - if: github.ref == 'refs/tags/v0.1.0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: release-certified-candidate
+          artifact-ids: ${{ steps.admission-artifacts.outputs.release-candidate-artifact-id }}
           path: artifacts/release-candidate
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
+          merge-multiple: true
+      - &semantic-authority
+        if: github.ref == 'refs/tags/v0.1.0'
+        id: semantic-artifacts
+        run: node scripts/record-release-stage.mjs --prepare-semantic
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+      - &semantic-candidate
+        if: github.ref == 'refs/tags/v0.1.0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ steps.semantic-artifacts.outputs.candidate-artifact-id }}
+          path: artifacts/semantic-candidate
+          run-id: ${{ steps.semantic-artifacts.outputs.integration-run-id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+      - &semantic-scenarios
+        if: github.ref == 'refs/tags/v0.1.0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ steps.semantic-artifacts.outputs.scenario-artifact-id }}
+          path: artifacts/semantic-scenarios
+          run-id: ${{ steps.semantic-artifacts.outputs.integration-run-id }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+      - name: Require nonprivileged semantic admission
+        run: node scripts/record-release-stage.mjs --verify-admission
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+      - if: inputs.operation == 'prepare-candidate'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-certified-candidate
+          path: artifacts/release-candidate
+          if-no-files-found: error
       - if: github.ref == 'refs/tags/v0.1.0'
         run: >-
           node scripts/verify-release-candidate.mjs
@@ -133,7 +169,7 @@ jobs:
       - if: inputs.operation == 'reconcile-probe'
         run: node scripts/record-release-stage.mjs --verify-probe
   prepare-draft:
-    if: inputs.operation != 'prepare-probe' && inputs.operation != 'continue-publication'
+    if: inputs.operation != 'prepare-candidate' && inputs.operation != 'prepare-probe' && inputs.operation != 'continue-publication'
     needs: verify-candidate
     outputs:
       intent-digest: ${{ steps.record.outputs.intent-digest }}
@@ -151,13 +187,18 @@ jobs:
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - &retained-candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         if: github.ref == 'refs/tags/v0.1.0'
         with:
-          name: release-certified-candidate
+          artifact-ids: ${{ needs.verify-candidate.outputs.candidate-artifact-id }}
           path: artifacts/release-candidate
           run-id: ${{ inputs.candidate-run-id }}
           github-token: ${{ github.token }}
+          merge-multiple: true
+      - *semantic-authority
+      - *semantic-candidate
+      - *semantic-scenarios
       - if: inputs.operation == 'consume-probe'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -211,13 +252,10 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
       - run: npm install -g npm@11.17.0 --ignore-scripts
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        if: github.ref == 'refs/tags/v0.1.0'
-        with:
-          name: release-certified-candidate
-          path: artifacts/release-candidate
-          run-id: ${{ inputs.candidate-run-id }}
-          github-token: ${{ github.token }}
+      - *retained-candidate
+      - *semantic-authority
+      - *semantic-candidate
+      - *semantic-scenarios
       - if: inputs.operation == 'consume-probe'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -237,7 +275,7 @@ jobs:
           RELEASE_INTENT_DIGEST: ${{ needs.prepare-draft.outputs.intent-digest }}
   record-stage:
     if: always() && (inputs.operation == 'consume-intent' || inputs.operation == 'consume-probe') && needs.prepare-draft.result == 'success'
-    needs: [prepare-draft, stage-candidate]
+    needs: [verify-candidate, prepare-draft, stage-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -251,6 +289,10 @@ jobs:
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
+      - *retained-candidate
+      - *semantic-authority
+      - *semantic-candidate
+      - *semantic-scenarios
       - if: inputs.operation == 'consume-probe'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -286,12 +328,10 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
       - run: npm install -g npm@11.17.0 --ignore-scripts
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: release-certified-candidate
-          path: artifacts/release-candidate
-          run-id: ${{ inputs.candidate-run-id }}
-          github-token: ${{ github.token }}
+      - *retained-candidate
+      - *semantic-authority
+      - *semantic-candidate
+      - *semantic-scenarios
       - id: verify
         run: node scripts/record-release-stage.mjs --verify-publication
         env:
@@ -313,6 +353,10 @@ jobs:
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build:release-admission
+      - *retained-candidate
+      - *semantic-authority
+      - *semantic-candidate
+      - *semantic-scenarios
       - run: node scripts/record-release-stage.mjs
         env:
           GITHUB_TOKEN: ${{ github.token }}
