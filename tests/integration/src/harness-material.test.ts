@@ -185,7 +185,29 @@ describe("signed attestation manifest binding", () => {
         );
       }
     }
-    expect(codex.admission).toBeUndefined();
+    // Both component links are metadata, not material verification or runtime PASS.
+    for (const [evidenceId, evidenceSlot, distributionReference] of [
+      ["codex-0-149-1", "codex-0-149-1", "npm:@openai/codex@0.149.1"],
+      [
+        "claude-code-2-1-245",
+        "claude-code-2-1-245-component",
+        "signed-manifest:claude-code@2.1.245#linux-x64",
+      ],
+    ]) {
+      const admission = compiled.evidence.find(
+        (evidence) => evidence.evidenceId === evidenceId,
+      )!.admission!;
+      expect(admission).toMatchObject({ evidenceSlot, distributionReference });
+      expect(admission.component.componentEvidenceDigest).toMatch(
+        /^component-sha256-[a-f0-9]{64}$/u,
+      );
+      expect(Object.keys(admission).sort()).toEqual([
+        "component",
+        "distributionReference",
+        "eligibleRange",
+        "evidenceSlot",
+      ]);
+    }
   });
 });
 
