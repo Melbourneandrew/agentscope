@@ -17,38 +17,51 @@ const capsule = LANGFUSE_COMPATIBILITY_MANIFEST.capsule;
 const projection = LANGFUSE_COMPATIBILITY_MANIFEST.projection;
 const string = z.string().min(1).max(1024);
 const contextField = z.strictObject({ key: string, value: string });
-const expectedSchema = z.strictObject({
-  harness: z.strictObject({ name: string, version: string }),
-  sessionId: string,
-  modelName: string.optional(),
-  identity: z
-    .strictObject({
-      traceId: z.string().regex(/^[a-f0-9]{32}$/u),
-      spanIds: z
-        .array(z.string().regex(/^[a-f0-9]{16}$/u))
-        .min(1)
-        .max(256),
-    })
-    .optional(),
-  resourceContext: z.array(contextField).max(32).optional(),
-  rootContext: z.array(contextField).max(32).optional(),
-  unavailableContext: z
-    .array(
-      z.strictObject({
-        field: string,
-        source: string,
-        state: z.enum([
-          "unavailable",
-          "not-applicable",
-          "redacted",
-          "observed-empty",
-        ]),
-        reason: string,
-      }),
-    )
-    .max(32)
-    .optional(),
-});
+const expectedSchema = z
+  .strictObject({
+    harness: z.strictObject({ name: string, version: string.optional() }),
+    sessionId: string,
+    modelName: string.optional(),
+    identity: z
+      .strictObject({
+        traceId: z.string().regex(/^[a-f0-9]{32}$/u),
+        spanIds: z
+          .array(z.string().regex(/^[a-f0-9]{16}$/u))
+          .min(1)
+          .max(256),
+      })
+      .optional(),
+    resourceContext: z.array(contextField).max(32).optional(),
+    rootContext: z.array(contextField).max(32).optional(),
+    unavailableContext: z
+      .array(
+        z.strictObject({
+          field: string,
+          source: string,
+          state: z.enum([
+            "unavailable",
+            "not-applicable",
+            "redacted",
+            "observed-empty",
+          ]),
+          reason: string,
+        }),
+      )
+      .max(32)
+      .optional(),
+  })
+  .refine((expected) => {
+    const versions = (expected.unavailableContext ?? []).filter(
+      (entry) => entry.field === "agentscope.harness.version",
+    );
+    if (expected.harness.version !== undefined) return versions.length === 0;
+    return (
+      versions.length === 1 &&
+      versions[0]!.source === "process" &&
+      versions[0]!.state === "unavailable" &&
+      versions[0]!.reason === "not-emitted"
+    );
+  });
 
 // Expectations come from the controller's held native/model/worktree evidence,
 // never candidate success labels. Missing identity does not prove a native turn.

@@ -33,9 +33,112 @@ const field = (attributes: OtlpKeyValue[], key: string) => {
   return result;
 };
 
+const unavailableVersion = {
+  field: "agentscope.harness.version",
+  source: "process",
+  state: "unavailable",
+  reason: "not-emitted",
+} as const;
+type Resource = CanonicalTraceGraph["resourceSpans"][number];
+type VersionChange =
+  "unavailable" | "missing" | "source" | "state" | "reason" | "fabricated";
+const replaceVersion = (primary: Resource, change: VersionChange) => {
+  primary.resource!.attributes = primary.resource!.attributes!.filter(
+    (entry) => entry.key !== unavailableVersion.field,
+  );
+  const root = primary.scopeSpans[0]!.spans[0]!;
+  root.attributes = root.attributes!.filter(
+    (entry) => entry.key !== unavailableVersion.field,
+  );
+  for (const key of [
+    "agentscope.mapping.provenance",
+    "agentscope.mapping.unavailable",
+  ]) {
+    const attribute = field(root.attributes, key);
+    const entries = (
+      JSON.parse(text(attribute)) as {
+        field: string;
+        source?: string;
+        state?: string;
+        reason?: string;
+      }[]
+    ).filter((entry) => entry.field !== unavailableVersion.field);
+    if (change !== "missing")
+      entries.push(
+        key.endsWith("provenance")
+          ? {
+              field: unavailableVersion.field,
+              source: change === "source" ? "harness-config" : "process",
+            }
+          : {
+              field: unavailableVersion.field,
+              state: change === "state" ? "redacted" : "unavailable",
+              reason:
+                change === "state"
+                  ? "policy-redacted"
+                  : change === "reason"
+                    ? "unsupported"
+                    : "not-emitted",
+            },
+      );
+    entries.sort((left, right) => left.field.localeCompare(right.field));
+    attribute.value = { stringValue: JSON.stringify(entries) };
+  }
+  if (change === "fabricated")
+    root.attributes.push({
+      key: unavailableVersion.field,
+      value: { stringValue: "1.2.3" },
+    });
+};
+
+const recomputeCapsule = (primary: Resource, transport: Resource) => {
+  const bytes = Buffer.from(JSON.stringify({ resourceSpans: [primary] }));
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const encoded = bytes.toString("base64url");
+  const chunks = Array.from(
+    { length: Math.ceil(encoded.length / capsule.chunkCharacters) },
+    (_, index) =>
+      encoded.slice(
+        index * capsule.chunkCharacters,
+        (index + 1) * capsule.chunkCharacters,
+      ),
+  );
+  const spans = transport.scopeSpans[0]!.spans;
+  expect(spans.length - 1).toBe(
+    Math.ceil(chunks.length / capsule.maximumChunksPerCarrier),
+  );
+  for (const span of spans)
+    field(span.attributes!, `${prefix}${capsule.keys.graphDigest}`).value = {
+      stringValue: digest,
+    };
+  for (const [key, value] of [
+    [capsule.keys.graphBytes, String(bytes.length)],
+    [capsule.keys.chunkCount, String(chunks.length)],
+  ] as const)
+    field(spans[0]!.attributes!, `${prefix}${key}`).value = {
+      stringValue: value,
+    };
+  for (const [index, span] of spans.slice(1).entries())
+    field(span.attributes!, `${prefix}${capsule.keys.chunks}`).value = {
+      arrayValue: {
+        values: chunks
+          .slice(
+            index * capsule.maximumChunksPerCarrier,
+            (index + 1) * capsule.maximumChunksPerCarrier,
+          )
+          .map((stringValue) => ({ stringValue })),
+      },
+    };
+};
+
 // Start with actual production-writer bytes. The absent-model variant is an
 // explicitly synthetic canonical fixture transformation, not a native run.
-const fixture = async (absent = false, ledger = true) => {
+// Version variants use the same recomputation, never actual CLI output.
+const fixture = async (
+  absent = false,
+  ledger = true,
+  versionChange?: VersionChange,
+) => {
   let body: Buffer | undefined;
   const reporter = createLangfuseReporterTestHarness({
     executor: (request) => {
@@ -82,45 +185,9 @@ const fixture = async (absent = false, ledger = true) => {
         unavailable.value = { stringValue: JSON.stringify(entries) };
       }
     }
-  if (absent) {
-    const bytes = Buffer.from(JSON.stringify({ resourceSpans: [primary] }));
-    const digest = createHash("sha256").update(bytes).digest("hex");
-    const encoded = bytes.toString("base64url");
-    const chunks = Array.from(
-      { length: Math.ceil(encoded.length / capsule.chunkCharacters) },
-      (_, index) =>
-        encoded.slice(
-          index * capsule.chunkCharacters,
-          (index + 1) * capsule.chunkCharacters,
-        ),
-    );
-    const spans = transport.scopeSpans[0]!.spans;
-    expect(spans.length - 1).toBe(
-      Math.ceil(chunks.length / capsule.maximumChunksPerCarrier),
-    );
-    for (const span of spans)
-      field(span.attributes!, `${prefix}${capsule.keys.graphDigest}`).value = {
-        stringValue: digest,
-      };
-    for (const [key, value] of [
-      [capsule.keys.graphBytes, String(bytes.length)],
-      [capsule.keys.chunkCount, String(chunks.length)],
-    ] as const)
-      field(spans[0]!.attributes!, `${prefix}${key}`).value = {
-        stringValue: value,
-      };
-    for (const [index, span] of spans.slice(1).entries())
-      field(span.attributes!, `${prefix}${capsule.keys.chunks}`).value = {
-        arrayValue: {
-          values: chunks
-            .slice(
-              index * capsule.maximumChunksPerCarrier,
-              (index + 1) * capsule.maximumChunksPerCarrier,
-            )
-            .map((stringValue) => ({ stringValue })),
-        },
-      };
-  }
+  if (versionChange !== undefined) replaceVersion(primary, versionChange);
+  if (absent || versionChange !== undefined)
+    recomputeCapsule(primary, transport);
   const sourceGraph =
     createSanitizedRedactedCanonicalTraceFixture(options).graph;
   const version = text(
@@ -191,4 +258,74 @@ describe("selected writer native model unavailability", () => {
       ),
     ).toThrow();
   });
+});
+
+describe("selected writer exact harness version unavailability", () => {
+  const expectedAbsent = (input: Awaited<ReturnType<typeof fixture>>) => ({
+    ...input.expected,
+    harness: { name: options.harnessName },
+    unavailableContext: [unavailableVersion],
+  });
+  it("accepts exact unavailable version without inventing an observed version", async () => {
+    const input = await fixture(false, true, "unavailable");
+    expect(safeParseCanonicalTraceGraph(input.graph).success).toBe(true);
+    expect(
+      observeSelectedWriterOtlp(
+        input.bytes(),
+        ["PRIVATE_CANARY"],
+        expectedAbsent(input),
+      ).graph,
+    ).toEqual(input.graph);
+  });
+  it.each([
+    "missing",
+    "source",
+    "state",
+    "reason",
+    "duplicate",
+    "contradiction",
+  ])(
+    "refuses %s expected absence rather than generally waiving the version",
+    async (kind) => {
+      const input = await fixture(false, true, "unavailable");
+      const entry = { ...unavailableVersion };
+      const expected = {
+        ...expectedAbsent(input),
+        harness: {
+          name: options.harnessName,
+          ...(kind === "contradiction" ? { version: "1.2.3" } : {}),
+        },
+        unavailableContext:
+          kind === "missing"
+            ? []
+            : [
+                {
+                  ...entry,
+                  ...(kind === "source" ? { source: "harness-config" } : {}),
+                  ...(kind === "state" ? { state: "redacted" as const } : {}),
+                  ...(kind === "reason" ? { reason: "unsupported" } : {}),
+                },
+                ...(kind === "duplicate" ? [entry] : []),
+              ],
+      };
+      expect(() =>
+        observeSelectedWriterOtlp(input.bytes(), ["PRIVATE_CANARY"], expected),
+      ).toThrow("integration.operations.otlp-observation");
+    },
+  );
+  it.each(["missing", "source", "state", "reason", "fabricated"] as const)(
+    "refuses %s actual version evidence despite a recomputed valid capsule",
+    async (change) => {
+      const input = await fixture(false, true, change);
+      if (change !== "missing" && change !== "fabricated")
+        expect(safeParseCanonicalTraceGraph(input.graph).success).toBe(true);
+      expect(() =>
+        observeSelectedWriterOtlp(
+          input.bytes(),
+          ["PRIVATE_CANARY"],
+          expectedAbsent(input),
+        ),
+      ).toThrow("integration.operations.otlp-observation");
+    },
+  );
 });

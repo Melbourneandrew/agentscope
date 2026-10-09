@@ -18,6 +18,39 @@ import { createProductionCliServices } from "./production-services.js";
 const roots: string[] = [];
 const presentPlan = (): Promise<void> => Promise.resolve();
 
+// Assert actual product bytes independently of the integration observer. This
+// test has no foreign build prerequisite and does not rewrite the wire graph.
+const expectUnavailableHarnessVersion = (body: Uint8Array) => {
+  type Attribute = { key: string; value: { stringValue?: string } };
+  const batch = JSON.parse(new TextDecoder().decode(body)) as {
+    resourceSpans: {
+      resource: { attributes: Attribute[] };
+      scopeSpans: { spans: { attributes: Attribute[] }[] }[];
+    }[];
+  };
+  const primary = batch.resourceSpans[0]!;
+  const attributes = primary.scopeSpans[0]!.spans[0]!.attributes;
+  const field = "agentscope.harness.version";
+  expect(attributes.some((entry) => entry.key === field)).toBe(false);
+  expect(primary.resource.attributes.some((entry) => entry.key === field)).toBe(
+    false,
+  );
+  const ledger = (key: string) => {
+    const text = attributes.find((entry) => entry.key === key)?.value
+      .stringValue;
+    expect(text).toBeTypeOf("string");
+    return (JSON.parse(text!) as { field: string }[]).filter(
+      (entry) => entry.field === field,
+    );
+  };
+  expect(ledger("agentscope.mapping.provenance")).toEqual([
+    { field, source: "process" },
+  ]);
+  expect(ledger("agentscope.mapping.unavailable")).toEqual([
+    { field, state: "unavailable", reason: "not-emitted" },
+  ]);
+};
+
 afterAll(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
@@ -155,6 +188,7 @@ describe("production Codex hook composition", () => {
     expect(new TextDecoder().decode(requests[0]?.body)).not.toContain(
       "must-not-reach-transport",
     );
+    expectUnavailableHarnessVersion(requests[0]!.body!);
   });
 
   it.each(["SessionStart", "SessionEnd"] as const)(
@@ -270,6 +304,7 @@ describe("production Claude hook composition", () => {
         },
       );
       expect(bodies).toHaveLength(1);
+      expectUnavailableHarnessVersion(bodies[0]!);
       const wire = new TextDecoder().decode(bodies[0]);
       expect(wire).toContain("claude-code");
       if (event === "SessionStart") {

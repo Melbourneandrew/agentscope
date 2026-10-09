@@ -114,6 +114,7 @@ const claudeJoinFixture = () => {
         bytes: Buffer,
         canaries: string[],
         expected: {
+          harness: { name: string; version?: string };
           sessionId: string;
           modelName?: string;
           unavailableContext: unknown[];
@@ -126,7 +127,14 @@ const claudeJoinFixture = () => {
         ]);
         expect(expected.sessionId).toBe(native.nativeSessionId);
         expect(expected.modelName).toBeUndefined();
-        expect(expected.unavailableContext).toHaveLength(6);
+        expect(expected.harness).toEqual({ name: "claude-code" });
+        expect(expected.unavailableContext).toHaveLength(7);
+        expect(expected.unavailableContext).toContainEqual({
+          field: "agentscope.harness.version",
+          source: "process",
+          state: "unavailable",
+          reason: "not-emitted",
+        });
         return graphs[Number(bytes.toString())];
       },
     },
@@ -300,6 +308,7 @@ it("binds outer completion to held native identity and the same observed graph",
   let observedGraph: unknown;
   let expected:
     | {
+        harness: { name: string; version?: string };
         sessionId: string;
         modelName: string;
         identity: { traceId: string; spanIds: string[] };
@@ -348,10 +357,18 @@ it("binds outer completion to held native identity and the same observed graph",
   const plan = { runId: "run-1", scenarioId: "codex-tui-trace-smoke" };
   complete(plan, [Buffer.from("bounded-observed-wire")]);
   expect(expected).toMatchObject({
+    harness: { name: "codex" },
     sessionId: "session-1",
     modelName: "fixture-model",
   });
-  expect(expected?.unavailableContext).toHaveLength(6);
+  expect(expected?.harness.version).toBeUndefined();
+  expect(expected?.unavailableContext).toHaveLength(7);
+  expect(expected?.unavailableContext).toContainEqual({
+    field: "agentscope.harness.version",
+    source: "process",
+    state: "unavailable",
+    reason: "not-emitted",
+  });
   expect(fixtureResults.get(plan.runId)).toMatchObject({
     resultStatus: "complete",
     harnessObservation: {
