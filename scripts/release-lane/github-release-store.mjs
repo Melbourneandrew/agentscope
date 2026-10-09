@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { types } from "node:util";
 import { parseAdmissionDocument } from "./admission.mjs";
+import { snapshotRecorderInput } from "./stage-result.mjs";
+import { assertTerminalProbe } from "./terminal-probe.mjs";
 
 const repository = "/repos/Melbourneandrew/agentscope";
 const fail = () => {
@@ -372,14 +374,44 @@ async function verifyImmutableAttestation(
   }
 }
 
+async function protectedSource(request, sourceRevision, expectedProbeDigests) {
+  if (
+    typeof sourceRevision !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(sourceRevision)
+  )
+    fail();
+  const ref = await request("GET", "/git/ref/tags/v0.1.0");
+  if (ref.object?.type !== "tag" || !/^[a-f0-9]{40}$/u.test(ref.object.sha))
+    fail();
+  const tag = await request("GET", `/git/tags/${ref.object.sha}`);
+  if (
+    tag.tag !== "v0.1.0" ||
+    tag.object?.type !== "commit" ||
+    tag.object.sha !== sourceRevision
+  )
+    fail();
+  await assertMainAncestry(request, sourceRevision);
+  await assertTerminalProbe(request, expectedProbeDigests, {
+    completeTree,
+    mainCommit,
+    assertMainAncestry,
+  });
+  return Object.freeze({ sourceRevision, tagObjectSha: ref.object.sha });
+}
+
 export function createGitHubReleaseStore({
   token,
   deadline,
   fetchImpl = fetch,
   execFileImpl = execFile,
+  executingDigests,
 }) {
   const request = createRequest({ token, deadline, fetchImpl });
   const runGh = createGhRunner(token, deadline, execFileImpl);
+  const expectedProbeDigests =
+    executingDigests === undefined
+      ? undefined
+      : snapshotRecorderInput(executingDigests);
   async function assets(releaseId) {
     const value = await request(
       "GET",
@@ -395,21 +427,8 @@ export function createGitHubReleaseStore({
     protectedMainSource: (sourceRevision) =>
       assertMainAncestry(request, sourceRevision),
     assertNoBootstrapTransaction: () => assertNoBootstrapTransaction(request),
-    async protectedSource(sourceRevision) {
-      if (!/^[a-f0-9]{40}$/u.test(sourceRevision)) fail();
-      const ref = await request("GET", "/git/ref/tags/v0.1.0");
-      if (ref.object?.type !== "tag" || !/^[a-f0-9]{40}$/u.test(ref.object.sha))
-        fail();
-      const tag = await request("GET", `/git/tags/${ref.object.sha}`);
-      if (
-        tag.tag !== "v0.1.0" ||
-        tag.object?.type !== "commit" ||
-        tag.object.sha !== sourceRevision
-      )
-        fail();
-      await assertMainAncestry(request, sourceRevision);
-      return Object.freeze({ sourceRevision, tagObjectSha: ref.object.sha });
-    },
+    protectedSource: (sourceRevision) =>
+      protectedSource(request, sourceRevision, expectedProbeDigests),
     release: (releaseId) => request("GET", `/releases/${id(releaseId)}`),
     releases: () => request("GET", "/releases?per_page=100"),
     verifyAttestationCapability: () => verifyAttestationCapability(runGh),
