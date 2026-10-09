@@ -2132,7 +2132,7 @@ const codexCollectorExpectation = (plan, native) => {
     ],
   });
   return {
-    harness: { name: "codex", version: selected.representativeVersion },
+    harness: { name: "codex" },
     sessionId: native.nativeSessionId,
     modelName: native.nativeModelName,
     identity: {
@@ -2140,6 +2140,12 @@ const codexCollectorExpectation = (plan, native) => {
       spanIds: [identity.spans["codex-turn"], identity.spans["codex-llm"]],
     },
     unavailableContext: [
+      {
+        field: "agentscope.harness.version",
+        source: "process",
+        state: "unavailable",
+        reason: "not-emitted",
+      },
       ...[
         "agentscope.git.worktree",
         "agentscope.git.repository_root",
@@ -2250,15 +2256,17 @@ const completeCodexCollectorFixture = (plan, batches) => {
 const claudeCollectorExpectation = (plan, native) => ({
   harness: {
     name: "claude-code",
-    version: evidenceById.get(
-      manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId)
-        ?.harnessEvidenceId,
-    )?.representativeVersion,
   },
   sessionId: native.nativeSessionId,
   // The public Claude mapper does not emit a model for these hook graphs.
   // An optional actual native transcript model remains independent evidence.
   unavailableContext: [
+    {
+      field: "agentscope.harness.version",
+      source: "process",
+      state: "unavailable",
+      reason: "not-emitted",
+    },
     ...[
       "agentscope.git.worktree",
       "agentscope.git.repository_root",
