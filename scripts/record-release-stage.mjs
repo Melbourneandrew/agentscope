@@ -643,16 +643,8 @@ if (process.argv.length === 3 && process.argv[2] === "--verify-admission") {
 }
 // Acquiring read-only artifact metadata does not grant publication authority.
 // Read-only provenance acquisition precedes the real binding; every protected
-// store/mutation remains after that binding. Public input labels cannot lift it.
-if (process.env.GITHUB_REF === "refs/tags/v0.1.0") {
-  const candidateInput = readAdmissionCandidate();
-  const assembled = assembleReleaseCandidate(
-    candidateInput,
-    verifyAdmission(candidateInput),
-    await prepareSemantic(false),
-  );
-  compareReleaseCandidate(assembled);
-} else requireActualSemanticAdmission();
+// product store/mutation remains after that binding. The closed protected-main
+// inert probe uses its separate existing material and authenticated-run checks.
 // Semantic verification is nonprivileged. Administrative settings are inspected
 // through the existing operator session and bound to the authenticated stage
 // checkpoint; the read-only Actions token cannot inspect those settings.
@@ -681,6 +673,15 @@ if (
   (!probeOperation && process.env.GITHUB_REF !== "refs/tags/v0.1.0")
 )
   fail();
+if (!probeOperation) {
+  const candidateInput = readAdmissionCandidate();
+  const assembled = assembleReleaseCandidate(
+    candidateInput,
+    verifyAdmission(candidateInput),
+    await prepareSemantic(false),
+  );
+  compareReleaseCandidate(assembled);
+}
 if (mode === "--prepare-probe" || mode === "--verify-probe") {
   if (
     !["prepare-probe", "consume-probe", "reconcile-probe"].includes(
