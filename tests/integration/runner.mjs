@@ -738,6 +738,16 @@ try {
       trace.result.killRequested
     )
       fixtureFailure = new Error("integration.runner.fixture-failed");
+    if (
+      fixtureFailure !== undefined &&
+      substrateCertificationCase === "leaked-child"
+    ) {
+      try {
+        fixtureOutput = recoverRetainedFixtureOutput();
+      } catch {
+        // Keep the original failed output when retained bytes cannot authenticate.
+      }
+    }
   }
 } catch (error) {
   emitCodexPtyFailureHint();
