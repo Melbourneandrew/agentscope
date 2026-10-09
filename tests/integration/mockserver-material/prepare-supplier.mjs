@@ -94,7 +94,7 @@ const serviceDockerfile = Buffer.from(
     "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
     "COPY --chmod=0444 expectations.json /config/expectations.json",
     "USER 0:0",
-    "ENTRYPOINT [\"/bin/sh\", \"-ec\", \"printf '[agentscope-mockserver:v1 phase=entry]\\n' >&2; umask 077; mkdir /control/private; printf '[agentscope-mockserver:v1 phase=directory]\\n' >&2; cp /opt/control/control-private.pem /control/private/control-private.pem; printf '[agentscope-mockserver:v1 phase=private-key]\\n' >&2; cp /opt/control/control-jwks.json /control/private/control-jwks.json; printf '[agentscope-mockserver:v1 phase=jwks]\\n' >&2; printf '[agentscope-mockserver:v1 phase=java-entry]\\n' >&2; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080\"]",
+    "ENTRYPOINT [\"/bin/sh\", \"-ec\", \"printf '[agentscope-mockserver:v1 phase=entry]\\n' >&2; umask 077; mkdir /control/private; printf '[agentscope-mockserver:v1 phase=directory]\\n' >&2; cp /opt/control/control-private.pem /control/private/control-private.pem; printf '[agentscope-mockserver:v1 phase=private-key]\\n' >&2; cp /opt/control/control-jwks.json /control/private/control-jwks.json; printf '[agentscope-mockserver:v1 phase=jwks]\\n' >&2; printf '[agentscope-mockserver:v1 phase=java-entry]\\n' >&2; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -jar /opt/mockserver.jar -serverPort 1080\"]",
     "",
   ].join("\n"),
 );

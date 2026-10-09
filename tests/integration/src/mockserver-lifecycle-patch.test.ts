@@ -101,6 +101,8 @@ const noMatchLog = (
                         .setArguments(${arguments_})
                 );
             }`;
+const statusResponse =
+  '                    responseWriter.writeResponse(request, OK, portBindingSerializer.serialize(portBinding(server.getLocalPorts())), "application/json");';
 const noMatchBranches = [
   noMatchLog(
     "NO_MATCH_RESPONSE_ERROR_MESSAGE_FORMAT",
@@ -277,6 +279,7 @@ describe("pinned upstream final-ledger lifecycle transformations", () => {
       "                    } else {",
       '                        responseWriter.writeResponse(request, SERVICE_UNAVAILABLE, "{\\"status\\":\\"NOT_READY\\"}", "application/json");',
       "                    }",
+      statusResponse,
     ].join("\n");
     const output = patches.requestHandler(input);
     for (const [status, response] of [
@@ -292,9 +295,14 @@ describe("pinned upstream final-ledger lifecycle transformations", () => {
       expect(observed).toBeGreaterThan(-1);
       expect(written).toBeGreaterThan(observed);
     }
-    expect(output.replace(/^.*recordFinalControlObservation.*\n/gmu, "")).toBe(
-      input,
-    );
+    const statusGate =
+      "                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {\n                        return;\n                    }\n";
+    expect(output).toContain(statusGate + statusResponse);
+    expect(
+      output
+        .replace(/^.*recordFinalControlObservation.*\n/gmu, "")
+        .replace(statusGate, ""),
+    ).toBe(input);
     expect(() =>
       patches.requestHandler(
         input.replace("isInitializationComplete()", "substituted()"),

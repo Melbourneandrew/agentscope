@@ -247,6 +247,7 @@ export const openMockServerControl = ({
           "/mockserver/expectation",
           "/mockserver/retrieve?type=REQUESTS",
           "/mockserver/configuration",
+          "/mockserver/status",
           "/mockserver/stop",
           "/mockserver/dashboard",
           "/_mockserver_callback_websocket",
@@ -326,6 +327,7 @@ export const verifyMockServerControlBoundary = async (control) => {
     ["GET", "/mockserver/configuration", false],
     ["GET", "/mockserver/dashboard", false],
     ["GET", "/_mockserver_callback_websocket", true],
+    ["PUT", "/mockserver/status", false],
   ]) {
     const result = await control.send(
       method,
@@ -354,11 +356,12 @@ export const probeMockServerCandidate = async ({
   )
     failure();
   const entries = [];
-  for (const [path, upgrade, invalid] of [
-    ["/mockserver/configuration", false, false],
-    ["/mockserver/dashboard", false, false],
-    ["/_mockserver_callback_websocket", true, false],
-    ["/mockserver/configuration", false, true],
+  for (const [method, path, upgrade, invalid] of [
+    ["GET", "/mockserver/configuration", false, false],
+    ["GET", "/mockserver/dashboard", false, false],
+    ["GET", "/_mockserver_callback_websocket", true, false],
+    ["PUT", "/mockserver/status", false, false],
+    ["GET", "/mockserver/configuration", false, true],
   ]) {
     const remaining = Math.floor(deadline - now());
     if (!Number.isFinite(remaining) || remaining < 1) failure();
@@ -373,7 +376,7 @@ export const probeMockServerCandidate = async ({
       });
     const response = await exchangeControlRequest({
       host,
-      method: "GET",
+      method,
       path,
       headers,
       bytes: Buffer.alloc(0),
@@ -385,7 +388,7 @@ export const probeMockServerCandidate = async ({
     if (![401, 403].includes(response.status)) failure();
     entries.push(
       Object.freeze({
-        method: "GET",
+        method,
         path,
         role: response.status === 403 ? "forbidden" : "unauthenticated",
         status: response.status,
@@ -414,7 +417,7 @@ export const observeMockServerCandidateTraffic = async ({
     modelRequestCount < 1
   )
     serviceFailure();
-  const maximumAttempts = 16 - 4 - 4 - modelRequestCount;
+  const maximumAttempts = 16 - 5 - 5 - modelRequestCount;
   if (maximumAttempts < 1) serviceFailure();
   const entries = [];
   for (let attempt = 0; ; attempt++) {
