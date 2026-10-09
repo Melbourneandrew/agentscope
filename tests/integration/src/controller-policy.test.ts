@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { types } from "node:util";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -28,6 +29,11 @@ type OperationDiagnosticFunctions = {
     slot: string,
     error: unknown,
     plan?: object,
+    processContext?: {
+      signal: AbortSignal;
+      joinSignal?: AbortSignal;
+      deadline?: number;
+    },
   ) => void;
 };
 const terminalMockContainer = (containerId: string, runId: string) => ({
@@ -66,12 +72,19 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   const error = new Error("integration.mockserver.control");
   const calls: string[] = [];
   const output: string[] = [];
-  const state = { uncertain: false, observerFails: false };
+  const state = {
+    uncertain: false,
+    observerFails: false,
+    now: 100,
+    failure: error as unknown,
+    beforeFailure: undefined as (() => void) | undefined,
+  };
   const step = (slot: string, value?: unknown) => {
     calls.push(slot);
     if (slot === failAt) {
       state.uncertain = true;
-      throw error;
+      state.beforeFailure?.();
+      throw state.failure;
     }
     return value;
   };
@@ -81,6 +94,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
     {
       Buffer,
       AbortSignal,
+      types,
       knownFailureCode,
       preparedDockerClient: {},
       preparedDockerClientRequiresOuterHostRetirement: () => {
@@ -93,7 +107,10 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
       },
       mockServerContainerIdentities: new Map([[runId, containerId]]),
       mockServerJoinDeadlines: new Map([[runId, 1000]]),
-      linuxBootMonotonicMilliseconds: () => step("join-deadline", 100),
+      linuxBootMonotonicMilliseconds: () => {
+        if (calls.length === 0) step("join-deadline");
+        return state.now;
+      },
       assertControlVolumeCurrent: (_plan: object, signal: AbortSignal) => {
         expect(signal.aborted).toBe(false);
         step("join-control-volume");
@@ -189,6 +206,20 @@ describe("actual-source optional original operation diagnostics", () => {
         runId: f.plan.runId,
         code: "integration.mockserver.control",
         clientRetirementRequired: true,
+        ...(slot === "join-ledger-complete"
+          ? {
+              process: {
+                nativeError: true,
+                exitCode: null,
+                errorCode: "unknown",
+                signal: null,
+                killed: null,
+                originalAborted: false,
+                joinAborted: false,
+                deadline: "live",
+              },
+            }
+          : {}),
       });
     },
   );
@@ -243,6 +274,151 @@ describe("actual-source optional original operation diagnostics", () => {
       expect(f.output).toEqual([]);
     },
   );
+});
+
+const copyRow = (output: string[]) =>
+  JSON.parse(output[0]!.slice(output[0]!.indexOf(":") + 1)) as {
+    process: Record<string, unknown>;
+  };
+describe("content-free exact completion-copy process observation", () => {
+  it.each([
+    [1, null, false, "unknown"],
+    ["ABORT_ERR", "SIGTERM", true, "ABORT_ERR"],
+    ["ENOENT", "SIGKILL", true, "ENOENT"],
+    ["EACCES", "SIGINT", false, "EACCES"],
+    [
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      null,
+      false,
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    ],
+    ["ERR_OUT_OF_RANGE", null, false, "ERR_OUT_OF_RANGE"],
+  ])(
+    "projects only fixed native process scalars for %s",
+    async (code, signal, killed, errorCode) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      Object.assign(f.error, {
+        code,
+        signal,
+        killed,
+        stdout: "PRIVATE",
+        stderr: "PRIVATE",
+      });
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toEqual({
+        nativeError: true,
+        exitCode: typeof code === "number" ? code : null,
+        errorCode,
+        signal,
+        killed,
+        originalAborted: false,
+        joinAborted: false,
+        deadline: "live",
+      });
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain("missing");
+    },
+  );
+  it.each([[-1], [256], [1.5], ["1"]])(
+    "refuses a non-exit scalar %s",
+    async (code) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      Object.assign(f.error, { code });
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toMatchObject({
+        exitCode: null,
+        errorCode: "unknown",
+      });
+    },
+  );
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "distinguishes abort=%s from expired=%s without renewing either",
+    async (abort, expired) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      const controller = new AbortController();
+      f.state.beforeFailure = () => {
+        if (expired) f.state.now = 1000;
+        if (abort) controller.abort();
+      };
+      await expect(
+        f.functions.joinMockServer(f.plan, controller.signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toMatchObject({
+        originalAborted: abort,
+        joinAborted: abort,
+        deadline: expired ? "expired" : "live",
+      });
+    },
+  );
+});
+
+describe("hostile completion-copy observation metadata", () => {
+  it.each(["accessor", "proxy", "plain", "malformed"])(
+    "never reads hostile %s error metadata",
+    async (kind) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      let reads = 0;
+      const getter = () => {
+        reads++;
+        throw new Error("PRIVATE");
+      };
+      if (kind === "accessor") {
+        for (const key of [
+          "code",
+          "signal",
+          "killed",
+          "stdout",
+          "stderr",
+          "cause",
+        ])
+          Object.defineProperty(f.error, key, { get: getter });
+      } else if (kind === "proxy") {
+        f.state.failure = new Proxy(f.error, {
+          get: getter,
+          getOwnPropertyDescriptor: getter,
+        });
+      } else if (kind === "plain") {
+        f.state.failure = {
+          get code() {
+            return getter();
+          },
+        };
+      } else {
+        Object.assign(f.error, {
+          code: [1],
+          signal: { toString: getter },
+          killed: "true",
+        });
+      }
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.state.failure);
+      expect(copyRow(f.output).process).toMatchObject({
+        exitCode: null,
+        errorCode: "unknown",
+        killed: null,
+      });
+      expect(reads).toBe(0);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+  it("does not add copy metadata to another failure slot", async () => {
+    const f = operationDiagnosticFixture("join-ledger-requests");
+    Object.assign(f.error, { code: 1, stderr: "PRIVATE" });
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toBe(f.error);
+    expect(copyRow(f.output)).not.toHaveProperty("process");
+  });
 });
 
 describe("optional direct original and cleanup diagnostic separation", () => {
@@ -344,6 +520,20 @@ describe("actual-source candidate failure diagnostics", () => {
         runId: f.plan.runId,
         code: "integration.isolation.context",
         clientRetirementRequired: false,
+        ...(phase === "build"
+          ? {
+              process: {
+                nativeError: true,
+                exitCode: null,
+                errorCode: "unknown",
+                signal: null,
+                killed: null,
+                originalAborted: false,
+                joinAborted: null,
+                deadline: "unavailable",
+              },
+            }
+          : {}),
       });
     },
   );

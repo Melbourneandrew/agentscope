@@ -1449,7 +1449,7 @@ const buildImage = async (plan, signal) => {
       tag: plan.imageTag,
     });
   } catch (error) {
-    publishOperationFailureDiagnostic(failureSlot, error, plan);
+    publishOperationFailureDiagnostic(failureSlot, error, plan, { signal });
     throw error;
   }
 };
@@ -2326,7 +2326,52 @@ const operationFailureSlots = new Set([
   "cleanup-materials",
   "cleanup-client",
 ]);
-const publishOperationFailureDiagnostic = (slot, error, plan) => {
+const processFailureObservation = (error, context) => {
+  const native = !types.isProxy(error) && types.isNativeError(error);
+  const own = (key) => {
+    if (!native) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  };
+  const code = own("code");
+  const signal = own("signal");
+  const killed = own("killed");
+  return {
+    nativeError: native,
+    exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
+    errorCode: new Set([
+      "ABORT_ERR",
+      "ENOENT",
+      "EACCES",
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      "ERR_OUT_OF_RANGE",
+    ]).has(code)
+      ? code
+      : "unknown",
+    signal:
+      signal === null || signal === undefined
+        ? null
+        : new Set(["SIGTERM", "SIGKILL", "SIGINT"]).has(signal)
+          ? signal
+          : "unknown",
+    killed: typeof killed === "boolean" ? killed : null,
+    originalAborted: context.signal.aborted,
+    joinAborted: context.joinSignal?.aborted ?? null,
+    deadline: !Number.isFinite(context.deadline)
+      ? "unavailable"
+      : linuxBootMonotonicMilliseconds() >= context.deadline
+        ? "expired"
+        : "live",
+  };
+};
+const publishOperationFailureDiagnostic = (
+  slot,
+  error,
+  plan,
+  processContext,
+) => {
   try {
     if (!operationFailureSlots.has(slot)) return;
     const runId = plan?.runId ?? null;
@@ -2342,6 +2387,11 @@ const publishOperationFailureDiagnostic = (slot, error, plan) => {
         code: knownFailureCode(error),
         clientRetirementRequired:
           preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
+        ...((slot === "join-ledger-complete" ||
+          slot === "candidate-image-build") &&
+        processContext
+          ? { process: processFailureObservation(error, processContext) }
+          : {}),
       })}\n`,
     );
     if (bytes.length <= 512) writeSync(2, bytes);
@@ -2401,9 +2451,11 @@ const createFinalMockServerLedgerDirectory = (plan) => {
 };
 const joinMockServer = async (plan, signal) => {
   let failureSlot = "join-identity";
+  let deadline;
+  let joinSignal;
   try {
     const containerId = mockServerContainerIdentities.get(plan.runId);
-    const deadline = mockServerJoinDeadlines.get(plan.runId);
+    deadline = mockServerJoinDeadlines.get(plan.runId);
     if (
       !/^[a-f0-9]{64}$/u.test(containerId ?? "") ||
       !Number.isFinite(deadline)
@@ -2413,10 +2465,7 @@ const joinMockServer = async (plan, signal) => {
     const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
     if (remaining <= 0)
       throw new Error("integration.isolation.mockserver-terminal");
-    const joinSignal = AbortSignal.any([
-      signal,
-      AbortSignal.timeout(remaining),
-    ]);
+    joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
     failureSlot = "join-control-volume";
     await assertControlVolumeCurrent(plan, joinSignal);
     failureSlot = "join-control-open";
@@ -2510,7 +2559,11 @@ const joinMockServer = async (plan, signal) => {
       completeClaudeCollectorFixture(plan, batches, ledger);
     }
   } catch (error) {
-    publishOperationFailureDiagnostic(failureSlot, error, plan);
+    publishOperationFailureDiagnostic(failureSlot, error, plan, {
+      signal,
+      joinSignal,
+      deadline,
+    });
     throw error;
   }
 };
