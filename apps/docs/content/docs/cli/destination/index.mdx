@@ -7,7 +7,11 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 Destination commands operate on named connections described by reviewed first-party descriptors. Core owns the outer configuration document, credential references, and routing invariants; provider packages never own terminal output or configuration transactions.
 
-The packed CLI registers the reviewed Langfuse and Local SQLite descriptors. Langfuse uses the remote descriptor path. Local SQLite configuration, unconfiguration, retained deletion, recovery, and Doctor inspection use its package-owned lifecycle handler and remain available only on an exact admitted candidate tuple. Registration alone does not claim Local Reporter, Retriever, or broad platform support.
+The packed CLI registers the reviewed Langfuse and Local SQLite descriptors.
+Langfuse uses the remote descriptor path. The 0.1.0 alpha does not admit the
+Local SQLite capability: configuration refuses before settings, credentials, a
+plan, or mutation, and its lifecycle commands remain unavailable. Descriptor
+discovery is not a Local Reporter, Retriever, or platform support claim.
 
 ## Syntax
 
@@ -21,7 +25,11 @@ Group help uses `human`. Leaf commands additionally support their declared machi
 
 ## Automation
 
-Configuration accepts non-secret JSON and explicit CI environment references. Secrets are never accepted as settings or rendered in results. Local configuration and retention plans are shown before `--yes`; local data deletion is separate from unconfiguration and always requires `--confirm`. Recovery is a separate explicit command and Doctor never applies it.
+Langfuse configuration accepts non-secret JSON and explicit CI environment
+references. Secrets are never accepted as settings or rendered in results.
+The required Langfuse slot IDs are `public-key` and `secret-key`. Local SQLite
+commands in 0.1.0 fail with `destination.capability-unavailable`; they do not
+present or apply a persistence plan.
 
 ## Diagnostics
 
@@ -31,5 +39,5 @@ Leaf command pages list their exact fixed diagnostics. Group parsing failures us
 
 ```bash
 agentscope destination list
-agentscope destination configure local-sqlite --name local-history
+agentscope destination configure langfuse --name langfuse --credential-env public-key=LANGFUSE_PUBLIC_KEY secret-key=LANGFUSE_SECRET_KEY
 ```

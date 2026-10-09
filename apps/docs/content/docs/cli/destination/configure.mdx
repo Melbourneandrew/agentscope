@@ -38,7 +38,15 @@ JSON, JSONL, and non-terminal invocations never prompt. Supply the complete decl
 
 ## Examples
 
+For CI, put the two Langfuse credential values in the named secret environment
+variables, then store only references to those variables:
+
 ```bash
-agentscope destination configure local-sqlite --name local-history
-agentscope destination configure local-sqlite --name local-history --yes
+agentscope destination configure langfuse --name langfuse --credential-env public-key=LANGFUSE_PUBLIC_KEY secret-key=LANGFUSE_SECRET_KEY
 ```
+
+This uses the descriptor's default Langfuse Cloud settings. Pass reviewed
+non-secret overrides with `--settings`. Local SQLite examples are intentionally
+omitted: every 0.1.0 configure attempt returns
+`destination.capability-unavailable` before settings, credentials, a plan, or
+mutation.
