@@ -47,6 +47,56 @@ const knownStages = new Set<unknown>([
 const objectKey = (value: unknown): value is object =>
   (typeof value === "object" && value !== null) || typeof value === "function";
 
+const otlpReasons = new Set([
+  "record-shape",
+  "record-keys",
+  "list-bound",
+  "attribute-key",
+  "text-value",
+  "number-value",
+  "shape",
+  "expectation",
+  "canonical",
+  "native-context",
+  "context",
+  "unavailable",
+  "identity",
+  "transport-span",
+  "transport-status",
+  "routing",
+  "scope",
+  "span-identity",
+  "header-count",
+  "header-marker",
+  "capsule-integrity",
+  "header-overlay",
+  "carrier-name",
+  "carrier-fields",
+  "carrier-identity",
+  "carrier-index",
+  "carrier-chunks",
+  "projection-exception",
+]);
+const otlpRefusals = new WeakMap<object, string>();
+export const createOtlpObservationFailure = (reason: string): Error => {
+  const error = new Error("integration.operations.otlp-observation");
+  otlpRefusals.set(
+    error,
+    otlpReasons.has(reason) ? reason : "projection-exception",
+  );
+  return error;
+};
+export const readOtlpObservationFailure = (error: unknown): string | null =>
+  objectKey(error) ? (otlpRefusals.get(error) ?? null) : null;
+export const refuseOtlpObservation = (reason = "shape"): never => {
+  throw createOtlpObservationFailure(reason);
+};
+export const rethrowOtlpObservationFailure = (error: unknown): never => {
+  throw readOtlpObservationFailure(error) === null
+    ? createOtlpObservationFailure("projection-exception")
+    : error;
+};
+
 const ownErrorValue = (error: unknown, name: string): unknown => {
   if (!types.isNativeError(error) || types.isProxy(error)) return undefined;
   return Object.getOwnPropertyDescriptor(error, name)?.value as unknown;
@@ -209,6 +259,7 @@ const knownFailureCodes = new Set([
   "integration.isolation.interrupted",
   "integration.mockserver.control",
   "integration.operations.fixture-result",
+  "integration.operations.otlp-observation",
   "integration.certification.predicate",
   "integration.harness-material.failed",
   "integration.harness-scenario-admission.invalid",

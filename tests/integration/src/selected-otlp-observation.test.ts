@@ -10,6 +10,7 @@ import {
   observeSelectedWriterOtlp,
   type SelectedOtlpExpectation,
 } from "./selected-otlp-observation.js";
+import { readOtlpObservationFailure } from "./controller-failure-diagnostic.js";
 
 const contract = LANGFUSE_COMPATIBILITY_MANIFEST.capsule;
 const projection = LANGFUSE_COMPATIBILITY_MANIFEST.projection;
@@ -238,6 +239,17 @@ const fixture = (longNames = false, unversioned = false) => {
 };
 const observe = (input: ReturnType<typeof fixture>) =>
   observeSelectedWriterOtlp(input.bytes(), ["PRIVATE_CANARY"], input.expected);
+const refusalReason = (input: ReturnType<typeof fixture>) => {
+  try {
+    observe(input);
+  } catch (error) {
+    expect((error as Error).message).toBe(
+      "integration.operations.otlp-observation",
+    );
+    return readOtlpObservationFailure(error);
+  }
+  throw new Error("expected refusal");
+};
 
 describe("selected Langfuse wire independent canonical observation", () => {
   it("accounts the actual production writer through an inert public executor", async () => {
@@ -271,6 +283,8 @@ describe("selected Langfuse wire independent canonical observation", () => {
     expect(result.canonicalSpanCount).toBe(3);
     expect(result.resourceCount).toBe(2);
   });
+});
+describe("selected canonical and context observation", () => {
   it("returns the actual frozen graph/context and accounts every transport span", () => {
     const input = fixture();
     const result = observe(input);
@@ -315,6 +329,13 @@ describe("selected Langfuse wire independent canonical observation", () => {
       expect(() => observe(input)).toThrow(
         "integration.operations.otlp-observation",
       );
+      try {
+        observe(input);
+      } catch (error) {
+        expect(readOtlpObservationFailure(error)).toBe(
+          field === "trace" || field === "span" ? "identity" : "native-context",
+        );
+      }
     },
   );
   it("returns Git context and only compares actual independently supplied fields", () => {
@@ -326,6 +347,7 @@ describe("selected Langfuse wire independent canonical observation", () => {
     input.expected.resourceContext = [{ key, value: revision }];
     expect(observe(input).context.resourceContext[key]).toBe(revision);
     input.expected.resourceContext[0]!.value = "other";
+    expect(refusalReason(input)).toBe("context");
     expect(() => observe(input)).toThrow(
       "integration.operations.otlp-observation",
     );
@@ -346,6 +368,7 @@ describe("selected Langfuse wire independent canonical observation", () => {
         reason: "resolution-failed",
       },
     ];
+    expect(refusalReason(input)).toBe("unavailable");
     expect(() => observe(input)).toThrow(
       "integration.operations.otlp-observation",
     );
@@ -386,6 +409,12 @@ describe("selected writer rejects accounting loss", () => {
     "status",
     "event",
     "id",
+    "header-count",
+    "routing",
+    "carrier-name",
+    "carrier-fields",
+    "carrier-identity",
+    "carrier-index",
   ])("refuses %s transport divergence", (field) => {
     const input = fixture();
     if (field === "missing") input.capsule.scopeSpans[0]!.spans.pop();
@@ -401,10 +430,42 @@ describe("selected writer rejects accounting loss", () => {
       Object.assign(input.header, { events: [{ name: "event" }] });
     if (field === "id")
       input.header.spanId = input.primary.scopeSpans[0]!.spans[0]!.spanId;
+    if (field === "header-count") input.header.name = contract.carrierName;
+    if (field === "routing") input.capsule.resource.attributes.pop();
+    if (field === "carrier-name") input.carriers[0]!.name = "unknown";
+    if (field === "carrier-fields") input.carriers[0]!.attributes.pop();
+    if (field === "carrier-identity")
+      (input.carriers[0]!.attributes[0] as { value: unknown }).value = value(
+        "b".repeat(32),
+      );
+    if (field === "carrier-index")
+      (input.carriers[0]!.attributes[3] as { value: unknown }).value =
+        value("1");
+    expect(refusalReason(input)).toBe(
+      {
+        missing: "capsule-integrity",
+        extra: "list-bound",
+        scope: "scope",
+        metadata: "header-overlay",
+        parent: "transport-span",
+        timing: "transport-span",
+        status: "transport-status",
+        event: "transport-span",
+        id: "span-identity",
+        "header-count": "header-count",
+        routing: "routing",
+        "carrier-name": "carrier-name",
+        "carrier-fields": "carrier-fields",
+        "carrier-identity": "carrier-identity",
+        "carrier-index": "carrier-index",
+      }[field],
+    );
     expect(() => observe(input)).toThrow(
       "integration.operations.otlp-observation",
     );
   });
+});
+describe("selected writer rejects capsule integrity loss", () => {
   it.each([
     "digest",
     "bytes",
@@ -442,6 +503,17 @@ describe("selected writer rejects accounting loss", () => {
       input.header.attributes.push(
         metadata(`${projection.modelIndexPrefix}31`, "extra"),
       );
+    expect(refusalReason(input)).toBe(
+      {
+        digest: "capsule-integrity",
+        bytes: "capsule-integrity",
+        chunks: "carrier-chunks",
+        index: "number-value",
+        nonce: "header-marker",
+        duplicate: "span-identity",
+        overlay: "header-overlay",
+      }[field],
+    );
     expect(() => observe(input)).toThrow(
       "integration.operations.otlp-observation",
     );

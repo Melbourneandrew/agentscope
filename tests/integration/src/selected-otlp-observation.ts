@@ -11,6 +11,7 @@ import {
 import { z } from "zod";
 
 import { deepFreeze } from "./canonical.js";
+import * as refusal from "./controller-failure-diagnostic.js";
 import { readSelectedWriterOtlpBatch } from "./operations.js";
 
 const capsule = LANGFUSE_COMPATIBILITY_MANIFEST.capsule;
@@ -67,12 +68,10 @@ const expectedSchema = z
 // never candidate success labels. Missing identity does not prove a native turn.
 export type SelectedOtlpExpectation = z.infer<typeof expectedSchema>;
 type RecordValue = Record<string, unknown>;
-const refuse = (): never => {
-  throw new Error("integration.operations.otlp-observation");
-};
+const refuse = refusal.refuseOtlpObservation;
 const record = (value: unknown): RecordValue => {
   if (value === null || typeof value !== "object" || Array.isArray(value))
-    return refuse();
+    return refuse("record-shape");
   return value as RecordValue;
 };
 const exact = (value: RecordValue, keys: readonly string[]) => {
@@ -80,11 +79,11 @@ const exact = (value: RecordValue, keys: readonly string[]) => {
     Object.keys(value).length !== keys.length ||
     keys.some((key) => !Object.hasOwn(value, key))
   )
-    refuse();
+    refuse("record-keys");
 };
 const list = (value: unknown, maximum: number, minimum = 1): unknown[] => {
   if (!Array.isArray(value) || value.length < minimum || value.length > maximum)
-    return refuse();
+    return refuse("list-bound");
   return value as unknown[];
 };
 const attributes = (value: unknown, maximum: number) => {
@@ -92,7 +91,8 @@ const attributes = (value: unknown, maximum: number) => {
   for (const item of list(value, maximum)) {
     const entry = record(item);
     exact(entry, ["key", "value"]);
-    if (typeof entry.key !== "string" || result.has(entry.key)) refuse();
+    if (typeof entry.key !== "string" || result.has(entry.key))
+      refuse("attribute-key");
     result.set(entry.key as string, entry.value);
   }
   return result;
@@ -100,7 +100,7 @@ const attributes = (value: unknown, maximum: number) => {
 const textValue = (value: unknown): string => {
   const entry = record(value);
   exact(entry, ["stringValue"]);
-  if (typeof entry.stringValue !== "string") return refuse();
+  if (typeof entry.stringValue !== "string") return refuse("text-value");
   return entry.stringValue;
 };
 const stringsValue = (value: unknown): string[] => {
@@ -115,7 +115,7 @@ const metadataKey = (key: string) =>
 const numberValue = (value: unknown, maximum: number) => {
   const text = textValue(value);
   if (!/^(?:0|[1-9][0-9]{0,5})$/u.test(text) || Number(text) > maximum)
-    return refuse();
+    return refuse("number-value");
   return Number(text);
 };
 const digest = (value: string | Uint8Array) =>
@@ -158,10 +158,10 @@ const checkTransportSpan = (input: unknown, root: RecordValue) => {
     !Array.isArray(span.links) ||
     span.links.length !== 0
   )
-    refuse();
+    refuse("transport-span");
   const status = record(span.status);
   exact(status, ["code"]);
-  if (status.code !== 0) refuse();
+  if (status.code !== 0) refuse("transport-status");
   return span;
 };
 
@@ -179,7 +179,7 @@ const checkHeaderOverlays = (
     allowed.add(observation);
     allowed.add(trace);
     const text = textValue(values.get(observation));
-    if (textValue(values.get(trace)) !== text) refuse();
+    if (textValue(values.get(trace)) !== text) refuse("header-overlay");
     return text;
   };
   if (
@@ -187,7 +187,7 @@ const checkHeaderOverlays = (
     mirror(projection.spanCount) !== String(spanCount) ||
     !["ok", "error", "unset"].includes(mirror(projection.status))
   )
-    refuse();
+    refuse("header-overlay");
   for (const key of [
     projection.harness,
     projection.branch,
@@ -207,10 +207,12 @@ const checkHeaderOverlays = (
     ],
   ] as const) {
     const count = mirror(countKey);
-    if (!new RegExp(projection.indexedCountGrammar, "u").test(count)) refuse();
+    if (!new RegExp(projection.indexedCountGrammar, "u").test(count))
+      refuse("header-overlay");
     for (let index = 0; index < Number(count); index++) {
       const value = mirror(`${indexPrefix}${String(index).padStart(2, "0")}`);
-      if (mirror(`${filterPrefix}${digest(value)}`) !== value) refuse();
+      if (mirror(`${filterPrefix}${digest(value)}`) !== value)
+        refuse("header-overlay");
     }
   }
   allowed.add(projection.wire.sessionAttribute);
@@ -219,12 +221,13 @@ const checkHeaderOverlays = (
     mirror(projection.session) !== session ||
     textValue(values.get(projection.wire.sessionAttribute)) !== session
   )
-    refuse();
+    refuse("header-overlay");
   for (const [key, value] of values) {
-    if (!allowed.has(key)) refuse();
+    if (!allowed.has(key)) refuse("header-overlay");
     if (key === projection.wire.sessionAttribute) continue;
     if (key === projection.wire.traceTagsAttribute) {
-      if (stringsValue(value).some((tag) => tag.length > 200)) refuse();
+      if (stringsValue(value).some((tag) => tag.length > 200))
+        refuse("header-overlay");
       continue;
     }
     const text = textValue(value);
@@ -237,7 +240,7 @@ const checkHeaderOverlays = (
         return code < 32 || (code >= 127 && code <= 159);
       })
     )
-      refuse();
+      refuse("header-overlay");
   }
 };
 
@@ -250,7 +253,7 @@ const checkCarriers = (
 ) => {
   const seen = new Set<number>();
   for (const span of spans.filter((item) => item.name !== capsule.headerName)) {
-    if (span.name !== capsule.carrierName) refuse();
+    if (span.name !== capsule.carrierName) refuse("carrier-name");
     const fields = attributes(span.attributes, 5);
     const keys = [
       capsule.keys.nonce,
@@ -260,18 +263,18 @@ const checkCarriers = (
       capsule.keys.chunks,
     ].map(metadataKey);
     if (fields.size !== keys.length || keys.some((key) => !fields.has(key)))
-      refuse();
+      refuse("carrier-fields");
     if (
       textValue(fields.get(keys[0]!)) !== nonce ||
       textValue(fields.get(keys[1]!)) !== capsule.version ||
       textValue(fields.get(keys[2]!)) !== graphDigest
     )
-      refuse();
+      refuse("carrier-identity");
     const index = numberValue(
       fields.get(keys[3]!),
       capsule.maximumCarriers - 1,
     );
-    if (index >= carrierCount || seen.has(index)) refuse();
+    if (index >= carrierCount || seen.has(index)) refuse("carrier-index");
     seen.add(index);
     const expected = chunks.slice(
       index * capsule.maximumChunksPerCarrier,
@@ -281,7 +284,7 @@ const checkCarriers = (
       JSON.stringify(stringsValue(fields.get(keys[4]!))) !==
       JSON.stringify(expected)
     )
-      refuse();
+      refuse("carrier-chunks");
   }
 };
 
@@ -297,28 +300,29 @@ const checkCapsule = (
   exact(resource, ["attributes", "droppedAttributesCount"]);
   const routing = attributes(resource.attributes, 2);
   const originalRouting = attributes(record(primary.resource).attributes, 32);
-  if (resource.droppedAttributesCount !== 0 || routing.size !== 2) refuse();
+  if (resource.droppedAttributesCount !== 0 || routing.size !== 2)
+    refuse("routing");
   for (const key of capsule.transportSpan.resourceAttributeKeys)
     if (
       JSON.stringify(routing.get(key)) !==
       JSON.stringify(originalRouting.get(key))
     )
-      refuse();
+      refuse("routing");
   const scope = record(list(input.scopeSpans, 1)[0]);
   exact(scope, ["scope", "spans"]);
   exact(record(scope.scope), ["name"]);
-  if (record(scope.scope).name !== capsule.scopeName) refuse();
+  if (record(scope.scope).name !== capsule.scopeName) refuse("scope");
   const spans = list(scope.spans, capsule.maximumCarriers + 1).map((span) =>
     checkTransportSpan(span, root),
   );
   const ids = new Set(primarySpans.map((span) => span.spanId as string));
   for (const span of spans) {
     const id = span.spanId as string;
-    if (ids.has(id)) refuse();
+    if (ids.has(id)) refuse("span-identity");
     ids.add(id);
   }
   const headers = spans.filter((span) => span.name === capsule.headerName);
-  if (headers.length !== 1) refuse();
+  if (headers.length !== 1) refuse("header-count");
   const header = attributes(
     headers[0]!.attributes,
     projection.maximumWireOverlayAttributes + 8,
@@ -331,7 +335,7 @@ const checkCapsule = (
     textValue(value(capsule.keys.marker)) !== capsule.marker ||
     textValue(value(capsule.keys.version)) !== capsule.version
   )
-    refuse();
+    refuse("header-marker");
   const bytes = Buffer.from(JSON.stringify({ resourceSpans: [primary] }));
   const graphDigest = digest(bytes);
   const encoded = bytes.toString("base64url");
@@ -356,7 +360,7 @@ const checkCapsule = (
       carrierCount ||
     spans.length !== carrierCount + 1
   )
-    refuse();
+    refuse("capsule-integrity");
   for (const key of [
     capsule.keys.marker,
     capsule.keys.nonce,
@@ -380,7 +384,7 @@ const checkCapsule = (
         ? projected !== undefined
         : textValue(projected) !== textValue(original)
     )
-      refuse();
+      refuse("header-overlay");
   }
   checkCarriers(spans, chunks, nonce, graphDigest, carrierCount);
   return { graphBytes: bytes.length, graphSha256: graphDigest, carrierCount };
@@ -407,14 +411,11 @@ const checkContext = (
     JSON.parse(rootContext["agentscope.mapping.provenance"]!),
     192,
   ).map(record);
-  const unavailable =
-    rootContext["agentscope.mapping.unavailable"] === undefined
-      ? []
-      : list(
-          JSON.parse(rootContext["agentscope.mapping.unavailable"]),
-          192,
-          0,
-        ).map(record);
+  const unavailable = list(
+    JSON.parse(rootContext["agentscope.mapping.unavailable"] ?? "[]"),
+    192,
+    0,
+  ).map(record);
   const models = spans.flatMap((span) => {
     const model = stringAttributes(span.attributes)["llm.model_name"];
     return model === undefined ? [] : [model];
@@ -426,13 +427,13 @@ const checkContext = (
     (models.length === 0) !== (expected.modelName === undefined) ||
     models.some((model) => model !== expected.modelName)
   )
-    refuse();
+    refuse("native-context");
   for (const [fields, actual] of [
     [expected.resourceContext, resourceContext],
     [expected.rootContext, rootContext],
   ] as const)
     for (const field of fields ?? [])
-      if (actual[field.key] !== field.value) refuse();
+      if (actual[field.key] !== field.value) refuse("context");
   for (const field of expected.unavailableContext ?? []) {
     if (
       rootContext[field.field] !== undefined ||
@@ -447,7 +448,7 @@ const checkContext = (
         (entry) => entry.field === field.field && entry.source === field.source,
       )
     )
-      refuse();
+      refuse("unavailable");
   }
   if (
     expected.identity !== undefined &&
@@ -455,7 +456,7 @@ const checkContext = (
       JSON.stringify(spans.map((span) => span.spanId)) !==
         JSON.stringify(expected.identity.spanIds))
   )
-    refuse();
+    refuse("identity");
   return { rootContext, resourceContext, models, provenance, unavailable };
 };
 
@@ -468,30 +469,32 @@ export const observeSelectedWriterOtlp = (
     // All raw privacy checks precede ANY schema normalization or partition.
     const batch = record(readSelectedWriterOtlpBatch(bytes, canaries));
     exact(batch, ["resourceSpans"]);
-    if (types.isProxy(expectedInput)) refuse();
-    const expected = expectedSchema.parse(expectedInput);
+    if (types.isProxy(expectedInput)) refuse("expectation");
+    const parsed = expectedSchema.safeParse(expectedInput);
+    if (!parsed.success) return refuse("expectation");
+    const expected = parsed.data;
     const resources = list(batch.resourceSpans, 2, 2);
     const primary = resources.map(record).find((resource) => {
       const scopes = list(resource.scopeSpans, 1);
       return record(record(scopes[0]).scope).name !== capsule.scopeName;
     });
-    if (primary === undefined) return refuse();
+    if (primary === undefined) return refuse("canonical");
     if (!safeParseCanonicalTraceGraph({ resourceSpans: [primary] }).success)
-      refuse();
+      refuse("canonical");
     const read = readExternalOtlpJson(
       JSON.stringify({ resourceSpans: [primary] }),
     );
-    if (!read.ok) return refuse();
-    if (read.batch.units.length !== 1) return refuse();
+    if (!read.ok) return refuse("canonical");
+    if (read.batch.units.length !== 1) return refuse("canonical");
     const unit = read.batch.units[0]!;
-    if (unit.status !== "canonical") return refuse();
+    if (unit.status !== "canonical") return refuse("canonical");
     const graph = unit.graph;
     const context = checkContext(graph, expected);
     const spans = list(record(list(primary.scopeSpans, 1)[0]).spans, 256).map(
       record,
     );
     const root = spans.find((span) => span.parentSpanId === undefined);
-    if (root === undefined) return refuse();
+    if (root === undefined) return refuse("canonical");
     const transport = checkCapsule(
       record(resources.find((item) => item !== primary)),
       primary,
@@ -507,7 +510,7 @@ export const observeSelectedWriterOtlp = (
       canonicalSpanCount: spans.length,
       transportSpanCount: transport.carrierCount + 1,
     });
-  } catch {
-    return refuse();
+  } catch (error) {
+    return refusal.rethrowOtlpObservationFailure(error);
   }
 };

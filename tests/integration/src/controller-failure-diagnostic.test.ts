@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { types } from "node:util";
 import { EventEmitter } from "node:events";
+import { ScriptTarget, transpileModule } from "typescript";
 import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-preparation.mjs";
 import {
   createPullOperation,
@@ -14,6 +15,9 @@ import {
   completionCopySourceMissingResponseMatches,
   formatControllerFailureDiagnostic,
   knownFailureCode,
+  createOtlpObservationFailure,
+  readOtlpObservationFailure,
+  rethrowOtlpObservationFailure,
   readControllerFailureDiagnostic,
 } from "./controller-failure-diagnostic.js";
 import {
@@ -44,6 +48,83 @@ const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
   };
 
 const completionContainerId = "c".repeat(64);
+describe("private selected-writer refusal projection", () => {
+  it.each([
+    ["record", [null], "record-shape"],
+    ["exact", [{ unexpected: true }, []], "record-keys"],
+    ["list", [[], 1], "list-bound"],
+    ["attributes", [[{ key: 1, value: {} }], 1], "attribute-key"],
+    ["textValue", [{ stringValue: 1 }], "text-value"],
+    ["numberValue", [{ stringValue: "01" }, 10], "number-value"],
+  ])(
+    "locates existing scalar guard %s without copying its input",
+    (name, args, reason) => {
+      const source = readFileSync(
+        new URL("./selected-otlp-observation.ts", import.meta.url),
+        "utf8",
+      );
+      const start = source.indexOf("const record ="),
+        end = source.indexOf("const digest =", start);
+      expect(end).toBeGreaterThan(start);
+      const compiled = transpileModule(
+        `${source.slice(start, end)}; ({record,exact,list,attributes,textValue,numberValue})`,
+        {
+          compilerOptions: { target: ScriptTarget.ES2022 },
+        },
+      ).outputText;
+      const helpers = runInNewContext(compiled, {
+        refuse: (code: string) => {
+          throw createOtlpObservationFailure(code);
+        },
+      }) as Record<string, (...args: unknown[]) => unknown>;
+      try {
+        helpers[name]!(...(args as unknown[]));
+      } catch (error) {
+        expect(readOtlpObservationFailure(error)).toBe(reason);
+        expect(JSON.stringify(error)).not.toContain("unexpected");
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+  it("preserves the same refusal and rejects foreign error metadata", () => {
+    const error = createOtlpObservationFailure("identity");
+    expect(knownFailureCode(error)).toBe(
+      "integration.operations.otlp-observation",
+    );
+    expect(readOtlpObservationFailure(error)).toBe("identity");
+    try {
+      rethrowOtlpObservationFailure(error);
+    } catch (caught) {
+      expect(caught).toBe(error);
+    }
+    const forged = Object.assign(new Error(error.message), {
+      reason: "identity",
+    });
+    const accessor = Object.defineProperty(new Error(error.message), "reason", {
+      get() {
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(error, {
+      get() {
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const foreign of [forged, accessor, proxy, null, "PRIVATE"]) {
+      expect(readOtlpObservationFailure(foreign)).toBeNull();
+      try {
+        rethrowOtlpObservationFailure(foreign);
+      } catch (caught) {
+        expect(readOtlpObservationFailure(caught)).toBe("projection-exception");
+        expect((caught as Error).message).toBe(error.message);
+      }
+    }
+    expect(
+      readOtlpObservationFailure(createOtlpObservationFailure("PRIVATE")),
+    ).toBe("projection-exception");
+  });
+});
 const collectorPhases = [
   "held-identity",
   "https-exec",
@@ -171,6 +252,7 @@ const actualCollectorObservation = (
     AbortSignal,
     types,
     knownFailureCode,
+    readOtlpObservationFailure,
     preparedDockerClient: {},
     preparedDockerClientRequiresOuterHostRetirement: () => false,
     linuxBootMonotonicMilliseconds: () => now,
@@ -600,6 +682,42 @@ describe("actual collector HTTPS hostile process projection", () => {
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
     }
     expect(traps).toBe(0);
+  });
+});
+describe("actual collector refusal guard observation", () => {
+  it("projects only privately recorded finite refusals at the existing slot", () => {
+    const f = actualCollectorObservation("success");
+    const original = createOtlpObservationFailure("identity");
+    f.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      original,
+      f.plan,
+      {},
+    );
+    expect(f.output).toHaveLength(1);
+    expect(f.output[0]).toContain('"collectorRefusal":"identity"');
+    expect(f.output[0]).toContain(
+      '"code":"integration.operations.otlp-observation"',
+    );
+    expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    const foreign = actualCollectorObservation("success");
+    foreign.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      new Error("PRIVATE"),
+      foreign.plan,
+      {},
+    );
+    expect(foreign.output[0]).toContain('"collectorRefusal":null');
+    expect(foreign.output[0]).not.toContain("PRIVATE");
+    const refusedSink = actualCollectorObservation("success", true);
+    expect(() => {
+      refusedSink.functions.publishOperationFailureDiagnostic(
+        "join-collector-project",
+        original,
+        f.plan,
+        {},
+      );
+    }).not.toThrow();
   });
 });
 describe("actual collector failure phase observation", () => {
@@ -1106,6 +1224,7 @@ const actualCompletionObservation = (sinkFails = false, producerLine = "") => {
       AbortSignal,
       completionCopySourceMissingResponseMatches,
       knownFailureCode,
+      readOtlpObservationFailure,
       preparedDockerClient: {},
       preparedDockerClientRequiresOuterHostRetirement: () => state.retired,
       linuxBootMonotonicMilliseconds: () => state.now,

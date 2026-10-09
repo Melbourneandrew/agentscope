@@ -25,6 +25,7 @@ import { deriveIdentityBundle } from "@agentscope/protocol";
 import {
   completionCopySourceMissingResponseMatches,
   knownFailureCode,
+  readOtlpObservationFailure,
 } from "./dist/controller-failure-diagnostic.js";
 
 import {
@@ -2494,6 +2495,9 @@ const publishOperationFailureDiagnostic = (
         slot,
         runId,
         code: knownFailureCode(error),
+        ...(slot === "join-collector-project"
+          ? { collectorRefusal: readOtlpObservationFailure(error) }
+          : {}),
         clientRetirementRequired:
           preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
         ...(slot === "join-collector-read" &&
