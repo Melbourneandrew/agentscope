@@ -22,6 +22,13 @@ import type { IntegrationStageDependencies } from "./controller.js";
 import { SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES } from "./substrate-certification.js";
 // @ts-expect-error private transport diagnostic has no public declaration
 import * as requestDiagnosticModule from "../image-preparation/boundary.mjs";
+import {
+  buildPhaseFailure,
+  settledBuildFailure,
+} from "../image-preparation/build-policy.mjs";
+const { fixedError } = requestDiagnosticModule as {
+  fixedError: (code: string, timedOut?: boolean) => Error & { code?: string };
+};
 const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
   requestDiagnosticModule as {
     readImageRequestDiagnostic: (error: unknown) => unknown;
@@ -122,6 +129,107 @@ const controllerCodes = (primaryCause: unknown, cleanupCause?: unknown) => {
   });
   return readControllerFailureDiagnostic(failure).firstCodes;
 };
+describe("actual fixed image failure producer vocabulary", () => {
+  it.each([
+    "integration.images.build",
+    "integration.images.socket",
+    "integration.images.executable",
+    "integration.images.interrupted",
+    "integration.images.output",
+    "integration.images.teardown",
+  ])(
+    "preserves actual fixedError %s with no numeric process metadata",
+    (code) => {
+      const error = fixedError(code);
+      expect(Object.getOwnPropertyDescriptor(error, "code")).toBeUndefined();
+      expect(knownFailureCode(error)).toBe(code);
+      expect(controllerCodes(error)).toEqual({
+        primary: code,
+        causal: "unknown",
+        cleanup: "unknown",
+      });
+    },
+  );
+  it.each(["context", "authority"])(
+    "preserves the actual %s wrapper without expanding causes",
+    (phase) => {
+      const error = buildPhaseFailure(new Error("PRIVATE"), phase, []);
+      expect(knownFailureCode(error)).toBe(`integration.images.build.${phase}`);
+      expect(knownFailureCode(new Error("PRIVATE", { cause: error }))).toBe(
+        "unknown",
+      );
+    },
+  );
+  it("preserves the existing timed-out teardown code without converting it into an exit", () => {
+    const error = fixedError("integration.images.teardown", true);
+    expect(error.code).toBe("ETIMEDOUT");
+    expect(knownFailureCode(error)).toBe("integration.images.teardown");
+  });
+});
+
+describe("actual settled build failure finite vocabulary", () => {
+  const cases = [
+    "preflight",
+    "builder-create",
+    "builder-bootstrap",
+    "image-build",
+    "unknown-operation",
+  ].flatMap((operation) =>
+    [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].map((outcome) => [operation, outcome] as const),
+  );
+  it.each(cases)(
+    "retains actual producer %s/%s and rejects extensions",
+    (operation, outcome) => {
+      const error = settledBuildFailure(
+        {
+          firstFailureDiagnostic: {
+            operationKind: operation,
+            process: { stderrClass: outcome },
+          },
+        },
+        new Error("PRIVATE"),
+      );
+      const code = `integration.images.build.${operation}.${outcome}`;
+      expect(knownFailureCode(error)).toBe(code);
+      expect(knownFailureCode(new Error(`${code}.PRIVATE`))).toBe("unknown");
+      expect(knownFailureCode(new Error(`${code}\n`))).toBe("unknown");
+      expect(knownFailureCode({ message: code })).toBe("unknown");
+    },
+  );
+  it.each([
+    "integration.images.build.other.build-failed",
+    "integration.images.build.image-build.other",
+    "integration.images.socket.PRIVATE",
+    "integration.images.platform-identity",
+  ])("keeps unapproved %s unknown", (code) => {
+    expect(knownFailureCode(new Error(code))).toBe("unknown");
+  });
+  it("does not invoke new-message accessors or Proxy traps", () => {
+    let reads = 0;
+    const getter = () => {
+      reads++;
+      throw new Error("PRIVATE");
+    };
+    const accessor = new Error("integration.images.build.authority");
+    Object.defineProperty(accessor, "message", { get: getter });
+    const proxy = new Proxy(
+      new Error("integration.images.build.image-build.build-failed"),
+      {
+        get: getter,
+        getOwnPropertyDescriptor: getter,
+      },
+    );
+    for (const error of [accessor, proxy])
+      expect(knownFailureCode(error)).toBe("unknown");
+    expect(reads).toBe(0);
+  });
+});
 describe("direct source-derived operation failure codes", () => {
   it.each([
     "integration.mockserver.control",
