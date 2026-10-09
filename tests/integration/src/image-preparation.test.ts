@@ -19,11 +19,14 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
+import { runInNewContext } from "node:vm";
 import { get as httpsGet, createServer as createHttpsServer } from "node:https";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { PreparedDockerImageSet } from "../image-preparation.mjs";
+import { readImagePreparationDiagnostic } from "../image-preparation/preparation.mjs";
 
 import {
   assertImagePreparationPlatformForTesting,
@@ -283,6 +286,7 @@ const readReadyDescendant = (directory: string) => {
 };
 
 type Request = {
+  requestPhase?: string;
   body?: Buffer;
   method: string;
   origin?: URL;
@@ -919,6 +923,85 @@ const removeRetainedRoot = (value: string | undefined) => {
   roots.splice(roots.indexOf(value), 1);
 };
 
+describe("subprocess-free owned image preparation transport refusals", () => {
+  it.each([
+    {
+      phase: "daemon-version",
+      status: 503,
+      message: "integration.images.daemon",
+      outcome: "unexpected-status",
+    },
+    {
+      phase: "daemon-version",
+      status: 0,
+      message: "integration.images.transport",
+      outcome: "malformed-response",
+    },
+    {
+      phase: "registry-auth",
+      status: 503,
+      message: "integration.images.registry",
+      outcome: "unexpected-status",
+    },
+    {
+      phase: "registry-config",
+      status: 503,
+      message: "integration.images.config",
+      outcome: "unexpected-status",
+    },
+  ])(
+    "binds actual $phase rejection $outcome and preserves cleanup",
+    async ({ phase, status, message, outcome }) => {
+      const engine = engineFixture();
+      const registry = registryFixture();
+      const rejectSelected =
+        (fallback: (request: Request) => Promise<Response>) =>
+        (request: Request) =>
+          request.requestPhase === phase
+            ? Promise.resolve({
+                statusCode: status,
+                body: "PRIVATE_BODY",
+                headers: {},
+              })
+            : fallback(request);
+      let ownedRoot: string | undefined;
+      let failure: unknown;
+      try {
+        await preparePinnedDockerImages([image], {
+          ...options(engine, registry),
+          engineRequestForTesting: rejectSelected(engine.request),
+          registryRequestForTesting: rejectSelected(registry.request),
+          afterPrivateRootCreatedForTesting(value: string) {
+            ownedRoot = value;
+            roots.push(value);
+          },
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ message });
+      expect(readImagePreparationDiagnostic(failure)?.request).toEqual({
+        phase,
+        outcome,
+        ...(status === 0 ? {} : { status }),
+      });
+      if (phase === "daemon-version") expect(registry.requests).toEqual([]);
+      expect(ownedRoot).toBeTypeOf("string");
+      if (ownedRoot === undefined)
+        throw new Error("missing owned private root");
+      expect(existsSync(ownedRoot)).toBe(true);
+      expect(readImagePreparationDiagnostic(failure)?.cleanup).toBe("none");
+      expect(readdirSync(ownedRoot).sort()).toEqual(
+        "buildx docker gitconfig home npm-cache npmrc tmp xdg".split(" "),
+      );
+      expect(
+        JSON.stringify(readImagePreparationDiagnostic(failure)),
+      ).not.toContain("PRIVATE");
+      removeRetainedRoot(ownedRoot);
+      expect(existsSync(ownedRoot)).toBe(false);
+    },
+  );
+});
 describe("subprocess-free owned image preparation transport", () => {
   it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
     const engine = engineFixture();
@@ -958,6 +1041,20 @@ describe("subprocess-free owned image preparation transport", () => {
     expect(engine.requests.every(({ origin }) => origin === undefined)).toBe(
       true,
     );
+    expect(engine.requests.map(({ requestPhase }) => requestPhase)).toEqual([
+      "daemon-version",
+      "daemon-info",
+      "local-image-inspect",
+      "daemon-final-version",
+      "daemon-final-info",
+    ]);
+    expect(registry.requests.map(({ requestPhase }) => requestPhase)).toEqual([
+      "registry-manifest",
+      "registry-auth",
+      "registry-manifest",
+      "registry-manifest",
+      "registry-config",
+    ]);
     expect(
       registry.requests.every(
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
@@ -974,6 +1071,133 @@ describe("subprocess-free owned image preparation transport", () => {
     removeRetainedRoot(ownedRoot);
     expect(existsSync(ownedRoot)).toBe(false);
     expect(existsSync(unrelated)).toBe(true);
+  });
+});
+
+const requestDiagnosticFixture = () => {
+  const source = readFileSync(
+    new URL("../image-preparation/boundary.mjs", import.meta.url),
+    "utf8",
+  );
+  const request = new EventEmitter() as EventEmitter & {
+    destroy: () => void;
+    end: () => void;
+  };
+  let respond!: (
+    response: EventEmitter & { statusCode?: number; headers: object },
+  ) => void;
+  request.destroy = () => {
+    queueMicrotask(() => request.emit("close"));
+  };
+  request.end = () => undefined;
+  const diagnostics = source
+    .slice(
+      source.indexOf("const requestDiagnostics ="),
+      source.indexOf("const timeoutSourcesForTesting ="),
+    )
+    .replaceAll("export const", "const");
+  const transport = source
+    .slice(
+      source.indexOf("export const boundedRequest ="),
+      source.indexOf("export const daemonIdentity ="),
+    )
+    .replaceAll("export const", "const");
+  const api = runInNewContext(
+    `${diagnostics}\n${transport}\n({boundedRequest,readImageRequestDiagnostic});`,
+    {
+      Buffer,
+      performance,
+      setTimeout,
+      clearTimeout,
+      maximumHeaderBytes: 16384,
+      rootCertificates: [],
+      fixedError: (message: string) => new Error(message),
+      httpRequest: (_options: unknown, callback: typeof respond) => {
+        respond = callback;
+        return request;
+      },
+    },
+  ) as {
+    boundedRequest: (input: unknown) => Promise<unknown>;
+    readImageRequestDiagnostic: (error: unknown) => unknown;
+  };
+  return {
+    request,
+    respond: () => {
+      const response = Object.assign(new EventEmitter(), {
+        statusCode: 502,
+        headers: {},
+      });
+      respond(response);
+      return response;
+    },
+    read: api.readImageRequestDiagnostic,
+    run: (signal?: AbortSignal) =>
+      api.boundedRequest({
+        deadline: performance.now() + 1000,
+        signal,
+        socketPath: "/synthetic-socket",
+        method: "GET",
+        path: "/private",
+        maximumBytes: 32,
+        requestPhase: "daemon-version",
+      }),
+  };
+};
+
+describe("actual transport content-free first outcome", () => {
+  it.each(["request-error", "response-error", "incomplete-close"])(
+    "retains %s only after request close",
+    async (outcome) => {
+      const input = requestDiagnosticFixture();
+      let settled = false;
+      const result = input.run().catch((error: unknown) => {
+        settled = true;
+        return error;
+      });
+      if (outcome === "request-error")
+        input.request.emit("error", new Error("PRIVATE-TOKEN"));
+      else if (outcome === "response-error")
+        input.respond().emit("error", new Error("PRIVATE-HEADER"));
+      else input.request.emit("close");
+      expect(settled).toBe(false);
+      const failure = await result;
+      expect(input.read(failure)).toEqual({ phase: "daemon-version", outcome });
+      expect(JSON.stringify(input.read(failure))).not.toMatch(
+        /PRIVATE|socket|path/u,
+      );
+    },
+  );
+  it("preserves first request error over a later response error and never supplies a guessed status", async () => {
+    const input = requestDiagnosticFixture();
+    const result = input.run().catch((error: unknown) => error);
+    input.request.emit(
+      "error",
+      Object.defineProperty({}, "message", {
+        get: () => {
+          throw new Error("must-not-read");
+        },
+      }),
+    );
+    input.respond().emit("error", new Error("PRIVATE"));
+    expect(input.read(await result)).toEqual({
+      phase: "daemon-version",
+      outcome: "request-error",
+    });
+  });
+  it("does not relabel interruption as transport when destroy subsequently emits an error", async () => {
+    const input = requestDiagnosticFixture();
+    const controller = new AbortController();
+    const result = input
+      .run(controller.signal)
+      .catch((error: unknown) => error);
+    controller.abort();
+    input.request.emit("error", new Error("PRIVATE"));
+    const failure = await result;
+    expect(failure).toMatchObject({
+      message: "integration.images.interrupted",
+    });
+    expect(input.read(failure)).toBeUndefined();
   });
 });
 

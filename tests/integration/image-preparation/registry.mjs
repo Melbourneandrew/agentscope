@@ -13,6 +13,7 @@ import {
   maximumTokenBytes,
   normalizePlatform,
   requestWith,
+  recordImageRequestDiagnostic,
   samePlatform,
 } from "./boundary.mjs";
 
@@ -233,6 +234,7 @@ const fetchRegistryManifest = async (
       method: "GET",
       origin: parsed.origin,
       path,
+      requestPhase: "registry-manifest",
       signal,
       maximumBytes: maximumManifestBytes,
     });
@@ -249,11 +251,17 @@ const fetchRegistryManifest = async (
       method: "GET",
       origin: challenge.origin,
       path: challenge.path,
+      requestPhase: "registry-auth",
       signal,
       maximumBytes: maximumTokenBytes,
     });
     if (tokenResponse.statusCode !== 200)
-      throw fixedError("integration.images.registry");
+      throw recordImageRequestDiagnostic(
+        fixedError("integration.images.registry"),
+        "registry-auth",
+        "unexpected-status",
+        tokenResponse.statusCode,
+      );
     const tokenValue = jsonRecord(
       tokenResponse.body,
       "integration.images.registry",
@@ -265,7 +273,12 @@ const fetchRegistryManifest = async (
     response = await perform(token);
   }
   if (response.statusCode !== 200)
-    throw fixedError("integration.images.registry");
+    throw recordImageRequestDiagnostic(
+      fixedError("integration.images.registry"),
+      "registry-manifest",
+      "unexpected-status",
+      response.statusCode,
+    );
   const contentType = response.headers["content-type"]?.split(";", 1)[0];
   if (![...indexMediaTypes, ...manifestMediaTypes].includes(contentType))
     throw fixedError("integration.images.manifest");
@@ -301,6 +314,7 @@ const fetchRegistryBlob = async ({
     method: "GET",
     origin: parsed.origin,
     path: `/v2/${parsed.name}/blobs/${digest}`,
+    requestPhase: "registry-config",
     signal,
     maximumBytes,
   });
@@ -312,6 +326,7 @@ const fetchRegistryBlob = async ({
       method: "GET",
       origin: location,
       path: `${location.pathname}${location.search}`,
+      requestPhase: "registry-config",
       signal,
       maximumBytes,
     });
@@ -324,7 +339,14 @@ const fetchRegistryBlob = async ({
     (response.headers["docker-content-digest"] !== undefined &&
       response.headers["docker-content-digest"] !== digest)
   )
-    throw fixedError("integration.images.config");
+    throw response.statusCode !== 200
+      ? recordImageRequestDiagnostic(
+          fixedError("integration.images.config"),
+          "registry-config",
+          "unexpected-status",
+          response.statusCode,
+        )
+      : fixedError("integration.images.config");
   return response.body;
 };
 
