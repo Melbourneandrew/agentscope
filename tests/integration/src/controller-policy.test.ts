@@ -26,7 +26,10 @@ import {
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./substrate-certification.js";
 import { sanitizeFixtureResult } from "./operations.js";
-import { knownFailureCode } from "./controller-failure-diagnostic.js";
+import {
+  completionCopySourceMissingResponseMatches,
+  knownFailureCode,
+} from "./controller-failure-diagnostic.js";
 
 type OperationDiagnosticFunctions = {
   joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
@@ -108,6 +111,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
       Buffer,
       AbortSignal,
       types,
+      completionCopySourceMissingResponseMatches,
       knownFailureCode,
       preparedDockerClient: {},
       preparedDockerClientRequiresOuterHostRetirement: () => {
@@ -230,6 +234,7 @@ describe("actual-source optional original operation diagnostics", () => {
                 originalAborted: false,
                 joinAborted: false,
                 deadline: "live",
+                completionSourceMissingResponse: false,
               },
             }
           : {}),
@@ -329,6 +334,7 @@ describe("content-free exact completion-copy process observation", () => {
         originalAborted: false,
         joinAborted: false,
         deadline: "live",
+        completionSourceMissingResponse: false,
       });
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
       expect(f.output[0]).not.toContain("PRIVATE");

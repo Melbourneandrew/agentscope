@@ -52,6 +52,41 @@ const ownErrorValue = (error: unknown, name: string): unknown => {
   return Object.getOwnPropertyDescriptor(error, name)?.value as unknown;
 };
 
+// Match-only observation of the fixed upstream response, never copy authority.
+// Producer reference: docker/cli f9ced58158d5e0b358052432244b483774a1983d
+// and moby/moby af898abe44662d9554fb15ee4d4a7307f1b8e315 (not hosted versions).
+export const completionCopySourceMissingResponseMatches = (
+  error: unknown,
+  context: Readonly<{
+    containerId: unknown;
+    originalAborted: unknown;
+    joinAborted: unknown;
+    deadline: unknown;
+  }>,
+): boolean => {
+  if (
+    types.isProxy(error) ||
+    !types.isNativeError(error) ||
+    typeof context.containerId !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(context.containerId) ||
+    context.originalAborted !== false ||
+    context.joinAborted !== false ||
+    context.deadline !== "live"
+  )
+    return false;
+  const stderr = ownErrorValue(error, "stderr");
+  return (
+    typeof stderr === "string" &&
+    stderr.length <= 256 &&
+    stderr ===
+      `Error response from daemon: Could not find the file /control/private/requests.complete in container ${context.containerId}\n` &&
+    ownErrorValue(error, "stdout") === "" &&
+    ownErrorValue(error, "code") === 1 &&
+    ownErrorValue(error, "signal") === null &&
+    ownErrorValue(error, "killed") === false
+  );
+};
+
 const cleanupCodes = [
   "scenario-container",
   "collector-container",

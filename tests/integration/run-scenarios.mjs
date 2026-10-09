@@ -22,7 +22,10 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
 import { deriveIdentityBundle } from "@agentscope/protocol";
-import { knownFailureCode } from "./dist/controller-failure-diagnostic.js";
+import {
+  completionCopySourceMissingResponseMatches,
+  knownFailureCode,
+} from "./dist/controller-failure-diagnostic.js";
 
 import {
   compileIsolationEvidence,
@@ -2327,7 +2330,7 @@ const operationFailureSlots = new Set([
   "cleanup-materials",
   "cleanup-client",
 ]);
-const processFailureObservation = (error, context) => {
+const processFailureObservation = (error, context, slot) => {
   const native = !types.isProxy(error) && types.isNativeError(error);
   const own = (key) => {
     if (!native) return undefined;
@@ -2339,7 +2342,7 @@ const processFailureObservation = (error, context) => {
   const code = own("code");
   const signal = own("signal");
   const killed = own("killed");
-  return {
+  const observation = {
     nativeError: native,
     exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
     errorCode: new Set([
@@ -2366,6 +2369,20 @@ const processFailureObservation = (error, context) => {
         ? "expired"
         : "live",
   };
+  return {
+    ...observation,
+    ...(slot === "join-ledger-complete"
+      ? {
+          completionSourceMissingResponse:
+            completionCopySourceMissingResponseMatches(error, {
+              containerId: context.containerId,
+              originalAborted: observation.originalAborted,
+              joinAborted: observation.joinAborted,
+              deadline: observation.deadline,
+            }),
+        }
+      : {}),
+  };
 };
 const publishOperationFailureDiagnostic = (
   slot,
@@ -2391,7 +2408,7 @@ const publishOperationFailureDiagnostic = (
         ...((slot === "join-ledger-complete" ||
           slot === "candidate-image-build") &&
         processContext
-          ? { process: processFailureObservation(error, processContext) }
+          ? { process: processFailureObservation(error, processContext, slot) }
           : {}),
         ...(slot === "runtime-original" && processContext?.leakedChild
           ? {
@@ -2465,8 +2482,9 @@ const joinMockServer = async (plan, signal) => {
   let failureSlot = "join-identity";
   let deadline;
   let joinSignal;
+  let containerId;
   try {
-    const containerId = mockServerContainerIdentities.get(plan.runId);
+    containerId = mockServerContainerIdentities.get(plan.runId);
     deadline = mockServerJoinDeadlines.get(plan.runId);
     if (
       !/^[a-f0-9]{64}$/u.test(containerId ?? "") ||
@@ -2572,6 +2590,7 @@ const joinMockServer = async (plan, signal) => {
     }
   } catch (error) {
     publishOperationFailureDiagnostic(failureSlot, error, plan, {
+      containerId,
       signal,
       joinSignal,
       deadline,
