@@ -43,6 +43,7 @@ const returnedHeadlessFixture = async (
   certificationCase: string,
   outcome: string,
   retainedStatus: "complete" | "partial" | "absent" | "malformed",
+  observationSinkFails = false,
 ) => {
   const path = join(createRoot(), "fixture-result.json");
   const readiness = {
@@ -82,31 +83,56 @@ const returnedHeadlessFixture = async (
     "    const trace = await executeSelectedHeadlessProcess(",
   );
   const end = source.indexOf("\n  }\n} catch (error) {", start);
+  const observationStart = source.indexOf(
+    '\nif (\n  scenario.executionMode === "headless" &&\n  substrateCertificationCase === "leaked-child"\n) {',
+    end,
+  );
+  const observationEnd = source.indexOf(
+    "const fixtureResult =",
+    observationStart,
+  );
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
+  expect(observationStart).toBeGreaterThan(end);
+  expect(observationEnd).toBeGreaterThan(observationStart);
   const receipts: string[] = [];
   let reads = 0;
   const result = (await runInNewContext(
-    `(async () => { let fixtureOutput; let fixtureFailure; ${source.slice(start, end)}; return {fixtureOutput, fixtureFailure}; })()`,
+    `(async () => { let fixtureOutput; let fixtureFailure; let recoveryAttempted = false; let recoverySucceeded = false; ${source.slice(start, end)}; const originalFailure = fixtureFailure; ${source.slice(observationStart, observationEnd)}; return {fixtureOutput, fixtureFailure, originalFailure}; })()`,
     {
       executeSelectedHeadlessProcess: () => Promise.resolve(trace),
       headlessCapability: {},
       request: {},
       TextDecoder,
       Buffer,
-      console: { log: (line: string) => receipts.push(line) },
+      console: {
+        log: (line: string) => {
+          if (
+            observationSinkFails &&
+            line.startsWith("AGENTSCOPE_RETAINED_RECOVERY=")
+          )
+            throw new Error("PRIVATE optional sink");
+          receipts.push(line);
+        },
+      },
       headlessOuterDeadline: 150,
       now: 1,
       headlessTranslationBootAt: 1,
       headlessTranslationLocalAt: 1,
       serializedProcessRequest: { fixed: "actual-request" },
       substrateCertificationCase: certificationCase,
+      scenario: { executionMode: "headless" },
+      requiredEnvironment: () => "a".repeat(16),
       recoverRetainedFixtureOutput: () => {
         reads++;
         return readRetainedFixtureOutput(path, scenarioId);
       },
     },
-  )) as { fixtureOutput: string; fixtureFailure?: Error };
+  )) as {
+    fixtureOutput: string;
+    fixtureFailure?: Error;
+    originalFailure?: Error;
+  };
   const observed = JSON.parse(
     Buffer.from(
       result.fixtureOutput.trim().slice("AGENTSCOPE_FIXTURE_RESULT=".length),
@@ -117,6 +143,18 @@ const returnedHeadlessFixture = async (
 };
 
 describe("actual runner failed-return retained readiness", () => {
+  it("keeps identical original failure and recovered evidence when optional sink throws", async () => {
+    const f = await returnedHeadlessFixture(
+      "leaked-child",
+      "cleanup-failed",
+      "complete",
+      true,
+    );
+    expect(f.result.fixtureFailure).toBe(f.result.originalFailure);
+    expect(f.observed.resultStatus).toBe("complete");
+    expect(f.receipts).toHaveLength(1);
+    expect(f.receipts.join("")).not.toContain("PRIVATE");
+  });
   it("recovers authenticated complete readiness without changing failed receipt or outcome", async () => {
     const f = await returnedHeadlessFixture(
       "leaked-child",
@@ -124,6 +162,9 @@ describe("actual runner failed-return retained readiness", () => {
       "complete",
     );
     expect(f.reads).toBe(1);
+    expect(f.receipts[1]).toBe(
+      `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: "a".repeat(16), recoveryAttempted: true, recoverySucceeded: true })}`,
+    );
     expect(f.result.fixtureFailure?.message).toBe(
       "integration.runner.fixture-failed",
     );
@@ -162,6 +203,9 @@ describe("actual runner failed-return retained readiness", () => {
         status,
       );
       expect(f.reads).toBe(1);
+      expect(f.receipts[1]).toContain(
+        `"recoverySucceeded":${status === "partial"}`,
+      );
       expect(f.result.fixtureFailure?.message).toBe(
         "integration.runner.fixture-failed",
       );
@@ -181,6 +225,9 @@ describe("actual runner failed-return retained readiness", () => {
   ])("does not recover for case %s outcome %s", async (caseName, outcome) => {
     const f = await returnedHeadlessFixture(caseName, outcome, "complete");
     expect(f.reads).toBe(0);
+    if (caseName === "leaked-child")
+      expect(f.receipts[1]).toContain('"recoveryAttempted":false');
+    else expect(f.receipts).toHaveLength(1);
     expect(f.observed.resultStatus).toBe("partial");
     if (outcome === "exited") expect(f.result.fixtureFailure).toBeUndefined();
     else

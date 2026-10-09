@@ -447,7 +447,7 @@ const leakedChildPredicateFixture = (
 ) => {
   const f = operationDiagnosticFixture("", sinkFails);
   const source = readIntegration("run-scenarios.mjs");
-  const start = source.indexOf("const observeNegativeScenarioReceipt =");
+  const start = source.indexOf("const retainedRecoveryObservation =");
   const end = source.indexOf("const contentFreeChildFailureCode =", start);
   const diagnosed: unknown[] = [];
   const predicates: unknown[] = [];
@@ -455,6 +455,7 @@ const leakedChildPredicateFixture = (
     `${source.slice(start, end)}; observeNegativeScenarioReceipt`,
     {
       Error,
+      Buffer,
       substrateCertificationCase: certificationCase,
       fixtureResults: new Map([[f.plan.runId, result]]),
       leakedChildReadinessIsValid,
@@ -471,9 +472,91 @@ const leakedChildPredicateFixture = (
         f.functions.publishOperationFailureDiagnostic(...args);
       },
     },
-  ) as (plan: object, receipt: object, captured: unknown) => void;
+  ) as (
+    plan: object,
+    receipt: object,
+    captured: unknown,
+    output?: string,
+  ) => void;
   return { ...f, observe, diagnosed, predicates };
 };
+describe("actual-source retained recovery diagnostic projection", () => {
+  it.each([true, false])(
+    "projects recovery success %s without changing refusal",
+    (succeeded) => {
+      const f = leakedChildPredicateFixture({ resultStatus: "partial" });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: succeeded,
+      })}`;
+      const receipt = {
+        outcome: "cleanup-failed",
+        cleanup: "residual",
+        termRequested: true,
+        killRequested: true,
+      };
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          receipt,
+          true,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty("leakedChild.recovery", {
+        attempted: true,
+        succeeded,
+        ...receipt,
+      });
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+  it.each([
+    "absent",
+    "malformed",
+    "duplicate",
+    "foreign",
+    "extra",
+    "oversized",
+    "contradictory",
+  ])(
+    "leaves %s optional recovery unknown without replacing failure",
+    (kind) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const value = {
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: false,
+      };
+      if (kind === "foreign") value.runId = "b".repeat(16);
+      if (kind === "contradictory")
+        Object.assign(value, {
+          recoveryAttempted: false,
+          recoverySucceeded: true,
+        });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${kind === "malformed" ? "{" : JSON.stringify(kind === "extra" ? { ...value, private: "PRIVATE" } : value)}`;
+      const output =
+        kind === "absent"
+          ? ""
+          : kind === "duplicate"
+            ? `${line}\n${line}`
+            : kind === "oversized"
+              ? `${line}${"PRIVATE".repeat(64)}`
+              : line;
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false, output);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(copyRow(f.output)).not.toHaveProperty("leakedChild.recovery");
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+});
 describe("actual-source leaked-child predicate observation", () => {
   const readiness = {
     readinessVersion: 1,
