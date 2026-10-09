@@ -25,21 +25,10 @@ const componentFixture = (version = "1.2.3") => {
     harnessVersion: version,
     governance: {
       ...base.governance,
-      provenance: {
-        captureKind: "disposable-hermetic",
-        sourceReference: "https://vendor.example/capture",
-        captureRecipe: "unit-capture",
-        artifactAuthority: { status: "authenticated", digest: digest("8") },
-      },
-      license: {
-        redistribution: "reviewed-for-repository",
-        reviewedLicenseId: "Apache-2.0",
-        sourceReference: "https://vendor.example/license",
-      },
       representative: {
-        scenarioId: "codex-headless",
+        scenarioId: "codex-component-case",
         representativeVersion: version,
-        evidenceSlot: "codex-headless-v1",
+        evidenceSlot: "codex-component-v1",
       },
     },
   };
@@ -194,22 +183,12 @@ it("consumes reviewed governance identity, not the test-only native payload gram
 
 // eslint-disable-next-line max-lines-per-function -- complete bridge matrix
 describe("real harness scenario admission bridge", () => {
-  it("refuses missing, synthetic, foreign and unbound component fixtures", () => {
+  it("refuses missing, malformed, foreign and version-unbound component fixtures", () => {
     const input = fixture();
     const genuine = componentFixture();
-    const synthetic: unknown = JSON.parse(
-      readFileSync(
-        resolve(
-          import.meta.dirname,
-          "../../../packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
-        ),
-        "utf8",
-      ),
-    );
     for (const value of [
       undefined,
       {},
-      synthetic,
       { ...genuine, harnessId: "claude-code" },
       { ...genuine, harnessVersion: "9.9.9" },
       {
@@ -218,7 +197,7 @@ describe("real harness scenario admission bridge", () => {
           ...genuine.governance,
           representative: {
             ...genuine.governance.representative,
-            scenarioId: "other",
+            scenarioId: "invalid/case",
           },
         },
       },
@@ -228,7 +207,7 @@ describe("real harness scenario admission bridge", () => {
           ...genuine.governance,
           representative: {
             ...genuine.governance.representative,
-            evidenceSlot: "other",
+            evidenceSlot: "invalid/slot",
           },
         },
       },
@@ -252,8 +231,69 @@ describe("real harness scenario admission bridge", () => {
     const seed = compileHarnessAdmissionSeed(input);
     expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
     expect(seed.component.fixtureDigest).toBe(digest("3"));
+    expect(seed.scenarioId).toBe(input.scenario.scenarioId);
+    expect(seed.harness.evidenceSlot).toBe(
+      input.evidence.admission.evidenceSlot,
+    );
+    expect(seed.execution.mode).toBe(input.scenario.executionMode);
     expect(seed.catalogRowIdentity).toMatch(/^sha256-[a-f0-9]{64}$/u);
     expect(Object.isFrozen(seed)).toBe(true);
+  });
+
+  it("does not use authenticated component provenance as prepared runtime authority", () => {
+    const input = fixture();
+    const component = input.componentFixture;
+    const seed = compileHarnessAdmissionSeed({
+      ...input,
+      componentFixture: {
+        ...component,
+        governance: {
+          ...component.governance,
+          provenance: {
+            captureKind: "disposable-hermetic",
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    });
+    expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+    expect(seed.harness.artifactDigest).not.toBe(digest("f"));
+  });
+
+  it.each([
+    {
+      captureKind: "unknown",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "synthetic",
+      artifactAuthority: { status: "unresolved", reason: "other" },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: "malformed" },
+    },
+  ])("refuses malformed component provenance %#", (provenance) => {
+    const input = fixture();
+    expect(() =>
+      compileHarnessAdmissionSeed({
+        ...input,
+        componentFixture: {
+          ...input.componentFixture,
+          governance: { ...input.componentFixture.governance, provenance },
+        },
+      }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
   });
 
   it("rejects certification fixtures and cross-scenario material", () => {

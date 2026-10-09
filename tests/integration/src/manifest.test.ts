@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+import { transpileModule } from "typescript";
+import { z } from "zod";
 
 import { describe, expect, it } from "vitest";
 
@@ -32,6 +35,143 @@ const withIdentity = (
 ): CapabilityManifest => ({
   ...value,
   manifestIdentity: capabilityManifestIdentity(value),
+});
+
+const verifyActualComponentMetadata = (fixture: unknown): void => {
+  const source = readFileSync(
+    new URL("./manifest.ts", import.meta.url),
+    "utf8",
+  );
+  const schemas = source.slice(
+    source.indexOf("const id ="),
+    source.indexOf("const dockerImage ="),
+  );
+  const verifier = source.slice(
+    source.indexOf("const verifyComponentFixture ="),
+    source.indexOf("export const verifyManifestEvidence ="),
+  );
+  expect(schemas).not.toBe("");
+  expect(verifier).not.toBe("");
+  runInNewContext(
+    transpileModule(
+      `${schemas}\n${verifier}\nverifyComponentFixture(bytes, evidence);`,
+      {},
+    ).outputText,
+    {
+      z,
+      bytes: Buffer.from(JSON.stringify(fixture)),
+      evidence: {
+        harnessId: "codex",
+        representativeVersion: "1.2.3",
+        evidenceId: "runtime",
+        admission: { evidenceSlot: "codex-interactive" },
+      },
+    },
+    { timeout: 1000 },
+  );
+};
+
+describe("component metadata does not own runtime scenario admission", () => {
+  const component = () => ({
+    fixtureVersion: 1,
+    harnessId: "codex",
+    harnessVersion: "1.2.3",
+    governance: {
+      provenance: {
+        captureKind: "synthetic",
+        artifactAuthority: {
+          status: "unresolved",
+          reason: "independent-integrity-unavailable",
+        },
+      },
+      representative: {
+        scenarioId: "codex-unit-case",
+        representativeVersion: "1.2.3",
+        evidenceSlot: "codex-component",
+      },
+    },
+  });
+  it("accepts synthetic component regression metadata without a live scenario or slot alias", () => {
+    expect(() => {
+      verifyActualComponentMetadata(component());
+    }).not.toThrow();
+  });
+  it("accepts authenticated component provenance without treating its digest as runtime authority", () => {
+    const fixture = component();
+    expect(() => {
+      verifyActualComponentMetadata({
+        ...fixture,
+        governance: {
+          ...fixture.governance,
+          provenance: {
+            captureKind: "disposable-hermetic",
+            artifactAuthority: {
+              status: "authenticated",
+              digest: `sha256-${"f".repeat(64)}`,
+            },
+          },
+        },
+      });
+    }).not.toThrow();
+  });
+  it.each([
+    {
+      captureKind: "synthetic",
+      artifactAuthority: {
+        status: "authenticated",
+        digest: `sha256-${"f".repeat(64)}`,
+      },
+    },
+    {
+      captureKind: "synthetic",
+      artifactAuthority: { status: "unresolved", reason: "other" },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: "bad" },
+    },
+  ])("rejects malformed provenance %#", (provenance) => {
+    const fixture = component();
+    expect(() => {
+      verifyActualComponentMetadata({
+        ...fixture,
+        governance: { ...fixture.governance, provenance },
+      });
+    }).toThrow("integration.manifest.fixture-provenance");
+  });
+  it.each([
+    { harnessId: "claude-code" },
+    { harnessVersion: "9.9.9" },
+    {
+      governance: {
+        ...component().governance,
+        representative: {
+          ...component().governance.representative,
+          representativeVersion: "9.9.9",
+        },
+      },
+    },
+    {
+      governance: {
+        ...component().governance,
+        representative: {
+          ...component().governance.representative,
+          evidenceSlot: "invalid/slot",
+        },
+      },
+    },
+  ])("rejects component identity/version drift %#", (change) => {
+    expect(() => {
+      verifyActualComponentMetadata({ ...component(), ...change });
+    }).toThrow("integration.manifest.fixture-provenance");
+  });
 });
 
 // eslint-disable-next-line max-lines-per-function -- closed manifest boundary matrix

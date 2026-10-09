@@ -46,14 +46,31 @@ const consumedFixtureMetadata = (value: unknown) => {
   const representative = metadataRecord(governance.representative);
   const identity = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
   const version = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
+  // Component provenance describes regression inputs, not runtime authority.
+  z.discriminatedUnion("captureKind", [
+    z.strictObject({
+      captureKind: z.literal("synthetic"),
+      artifactAuthority: z.strictObject({
+        status: z.literal("unresolved"),
+        reason: z.literal("independent-integrity-unavailable"),
+      }),
+    }),
+    z.strictObject({
+      captureKind: z.literal("disposable-hermetic"),
+      artifactAuthority: z.strictObject({
+        status: z.literal("authenticated"),
+        digest: z.string().regex(/^sha256-[a-f\d]{64}$/u),
+      }),
+    }),
+  ]).parse({
+    captureKind: provenance.captureKind,
+    artifactAuthority: authority,
+  });
   return z
     .strictObject({
       fixtureVersion: z.literal(1),
       harnessId: identity,
       harnessVersion: version,
-      captureKind: z.literal("disposable-hermetic"),
-      authorityStatus: z.literal("authenticated"),
-      authorityDigest: z.string().regex(/^sha256-[a-f\d]{64}$/u),
       scenarioId: identity,
       representativeVersion: version,
       evidenceSlot: identity,
@@ -62,9 +79,6 @@ const consumedFixtureMetadata = (value: unknown) => {
       fixtureVersion: fixture.fixtureVersion,
       harnessId: fixture.harnessId,
       harnessVersion: fixture.harnessVersion,
-      captureKind: provenance.captureKind,
-      authorityStatus: authority.status,
-      authorityDigest: authority.digest,
       scenarioId: representative.scenarioId,
       representativeVersion: representative.representativeVersion,
       evidenceSlot: representative.evidenceSlot,
@@ -100,12 +114,9 @@ export const compileHarnessAdmissionSeed = (
     return invalid();
   }
   if (
-    fixture.authorityDigest !== input.materialIdentity ||
     fixture.harnessId !== input.evidence.harnessId ||
     fixture.harnessVersion !== input.evidence.representativeVersion ||
-    fixture.representativeVersion !== input.evidence.representativeVersion ||
-    fixture.scenarioId !== input.scenario.scenarioId ||
-    fixture.evidenceSlot !== admission.evidenceSlot
+    fixture.representativeVersion !== input.evidence.representativeVersion
   )
     return invalid();
   if (material.kind === "npm") {

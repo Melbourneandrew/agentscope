@@ -525,7 +525,6 @@ const evidencePath = (root: string, relativePath: string): string => {
 const verifyComponentFixture = (
   artifactBytes: Buffer,
   evidence: CapabilityManifest["evidence"][number],
-  scenarios: CapabilityManifest["scenarios"],
 ): void => {
   let fixture;
   try {
@@ -536,13 +535,22 @@ const verifyComponentFixture = (
         harnessId: id,
         harnessVersion: semver,
         governance: z.object({
-          provenance: z.object({
-            captureKind: z.literal("disposable-hermetic"),
-            artifactAuthority: z.object({
-              status: z.literal("authenticated"),
-              digest,
+          provenance: z.discriminatedUnion("captureKind", [
+            z.object({
+              captureKind: z.literal("synthetic"),
+              artifactAuthority: z.strictObject({
+                status: z.literal("unresolved"),
+                reason: z.literal("independent-integrity-unavailable"),
+              }),
             }),
-          }),
+            z.object({
+              captureKind: z.literal("disposable-hermetic"),
+              artifactAuthority: z.strictObject({
+                status: z.literal("authenticated"),
+                digest,
+              }),
+            }),
+          ]),
           representative: z.object({
             representativeVersion: semver,
             scenarioId: id,
@@ -554,21 +562,11 @@ const verifyComponentFixture = (
   } catch {
     throw new Error("integration.manifest.fixture-provenance");
   }
-  const provenance = fixture.governance.provenance;
   if (
-    provenance.captureKind !== "disposable-hermetic" ||
-    provenance.artifactAuthority.status !== "authenticated" ||
     fixture.harnessId !== evidence.harnessId ||
     fixture.harnessVersion !== evidence.representativeVersion ||
     fixture.governance.representative.representativeVersion !==
-      evidence.representativeVersion ||
-    fixture.governance.representative.evidenceSlot !==
-      evidence.admission!.evidenceSlot ||
-    !scenarios.some(
-      (scenario) =>
-        scenario.harnessEvidenceId === evidence.evidenceId &&
-        scenario.scenarioId === fixture.governance.representative.scenarioId,
-    )
+      evidence.representativeVersion
   )
     throw new Error("integration.manifest.fixture-provenance");
 };
@@ -631,7 +629,7 @@ export const verifyManifestEvidence = (
         if (artifactDigest !== artifact.sha256)
           throw new Error("integration.manifest.evidence-digest");
         if (artifact === evidence.admission.component.fixture) {
-          verifyComponentFixture(artifactBytes, evidence, manifest.scenarios);
+          verifyComponentFixture(artifactBytes, evidence);
         }
       }
     }
