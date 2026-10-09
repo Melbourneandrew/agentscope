@@ -3127,7 +3127,11 @@ const armSelectedPty = (
               );
               // eslint-disable-next-line max-depth -- arm only after the exact completed submission input
               if (
-                isBracketedPasteEnter &&
+                (isBracketedPasteEnter ||
+                  (request.readiness.kind === "challenge-marker" &&
+                    readinessObserved &&
+                    request.interaction.actions[actionIndex + 1]?.action ===
+                      "wait-for-semantic-completion")) &&
                 semanticCompletionObservedAtOutputBytes < 0
               )
                 safeReflectApply(
@@ -5020,6 +5024,7 @@ type SelectedPtyTestSeed =
   | "adopted-zombie-reap-failure"
   | "blocked-input-completion"
   | "challenge-marker-prompt"
+  | "challenge-marker-title"
   | "clean"
   | "close-failure"
   | "completion-before-readiness"
@@ -5371,7 +5376,12 @@ const selectedPtyRuntimeForTest = (
                   ? safeBufferFrom("\u001b[")
                   : seed === "unsupported-control"
                     ? safeBufferFrom("\u001b[?9999h")
-                    : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+                    : seed === "challenge-marker-title" &&
+                        readiness.kind === "challenge-marker"
+                      ? safeBufferFrom(
+                          `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
+                        )
+                      : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
           ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m ${readiness.requiredText}`
@@ -5647,7 +5657,8 @@ const selectedPtyRuntimeForTest = (
                       ? [synchronizedPromptRendered]
                       : []),
                   ]
-          : seed === "challenge-marker-prompt"
+          : seed === "challenge-marker-prompt" ||
+              seed === "challenge-marker-title"
             ? [ready, safeBufferFrom("prompt-accepted"), output]
             : terminalQueryHandshake
               ? [
@@ -5751,6 +5762,8 @@ const selectedPtyRuntimeForTest = (
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
+      let markerTitleInputBytes = 0;
+      let markerTitleEchoedBytes = 0;
       let immediateActionApplied = false;
       let priorInputTransportReads = -1;
       let transportReads = 0;
@@ -5853,6 +5866,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
           seed !== "challenge-marker-prompt" &&
+          seed !== "challenge-marker-title" &&
           seed !== "terminal-redraw-enter-fragmented" &&
           seed !== "terminal-prompt-partial" &&
           seed !== "terminal-post-wait-pacing" &&
@@ -5950,9 +5964,20 @@ const selectedPtyRuntimeForTest = (
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
           if (
-            (seed === "terminal-post-wait-pacing" ||
-              seed === "challenge-marker-prompt") &&
+            seed === "challenge-marker-title" &&
+            chunkIndex === chunks.length &&
+            markerTitleInputBytes > markerTitleEchoedBytes &&
             inputCalls >= 4
+          ) {
+            markerTitleEchoedBytes = markerTitleInputBytes;
+            return { status: "data" as const, bytes: safeBufferFrom(".") };
+          }
+          if (
+            ((seed === "terminal-post-wait-pacing" ||
+              seed === "challenge-marker-prompt") &&
+              inputCalls >= 4) ||
+            (seed === "challenge-marker-title" &&
+              markerTitleInputBytes === request.stdin.length)
           ) {
             processes.clear();
             terminal = true;
@@ -5998,7 +6023,8 @@ const selectedPtyRuntimeForTest = (
           )
             return { status: "would-block" as const };
           if (
-            seed === "challenge-marker-prompt" &&
+            (seed === "challenge-marker-prompt" ||
+              seed === "challenge-marker-title") &&
             ((chunkIndex === 1 && inputCalls < 2) ||
               (chunkIndex === 2 && inputCalls < 3))
           )
@@ -6116,6 +6142,8 @@ const selectedPtyRuntimeForTest = (
           if (seed === "terminal-no-prompt" && inputCalls >= 1)
             throw new Error("testkit.pty.test-prompt-after-terminal-close");
           inputCalls += 1;
+          if (seed === "challenge-marker-title")
+            markerTitleInputBytes += bytes.length;
           if (inputCalls === 2) promptInputObserved = true;
           const submissionResult = observeSubmissionInputWrite(
             bytes,

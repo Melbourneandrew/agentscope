@@ -288,6 +288,33 @@ const boundedNegativePostSubmissionRequest =
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
+  it("completes the genuine Claude compiler plan through a submitted challenge title", async () => {
+    const selected = compiledManifestRequest("claude-interactive-trace-smoke");
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...selected,
+        process: {
+          ...selected.process,
+          monotonicStartupDeadlineMs: now + 500,
+          monotonicExecutionDeadlineMs: now + 1_000,
+          monotonicShutdownDeadlineMs: now + 2_000,
+        },
+      },
+      "challenge-marker-title",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      readinessObserved: true,
+      finalSnapshot: { semanticState: "completed" },
+    });
+    expect(receipt.actions.map(({ action }) => action)).toEqual(
+      selected.interaction.actions.map(({ action }) => action),
+    );
+    expect(receipt.inputBytesWritten).toBe(selected.process.stdin.length);
+  });
+
   it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"] as const)(
     "snapshots the genuine %s compiler request before cancellation",
     async (scenarioId) => {

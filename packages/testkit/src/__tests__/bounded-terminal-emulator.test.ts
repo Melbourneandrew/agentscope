@@ -142,6 +142,82 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(true);
   });
 
+  it("recognizes a fragmented challenge completion title only after submission", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes(`\u001b]2;AGENTSCOPE_PTY_COM`));
+    expect(terminal.completionObserved()).toBe(false);
+    terminal.write(bytes(`PLETE:${challenge}\u001b\\`));
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
+  it.each([
+    "pre-submission",
+    "no-readiness",
+    "foreign",
+    "malformed",
+    "duplicate",
+    "wrong-selector",
+  ])("refuses %s challenged completion titles", (kind) => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    if (kind !== "no-readiness")
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    if (kind !== "pre-submission") terminal.armPostSubmissionIdleObservation();
+    const title = `AGENTSCOPE_PTY_COMPLETE:${kind === "foreign" ? "b".repeat(64) : challenge}${kind === "malformed" ? "x" : ""}`;
+    const sequence = `\u001b]${kind === "wrong-selector" ? "0" : "2"};${title}\u001b\\`;
+    terminal.write(bytes(sequence));
+    if (kind === "duplicate") terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
+
+  it("keeps unrelated titles inert for challenged completion", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes("\u001b]2;ordinary title\u001b\\"));
+    expect(terminal.end()).toMatchObject({
+      semanticState: "ready",
+      unsupportedControlCount: 0,
+    });
+  });
+
+  it.each([1, 2, 19])(
+    "refuses a completion title begun before submission (prefix=%s)",
+    (prefix) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 40, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      const sequence = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+      terminal.write(
+        bytes(
+          `AGENTSCOPE_PTY_READY:${challenge}\r\n${sequence.slice(0, prefix)}`,
+        ),
+      );
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(sequence.slice(prefix)));
+      expect(terminal.end().semanticState).not.toBe("completed");
+    },
+  );
+
   it("holds challenged input until the exact styled TUI prompt", () => {
     const challenge = "a".repeat(64);
     const terminal = new BoundedTerminalEmulator(
