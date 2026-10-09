@@ -210,6 +210,7 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
         "HttpRequestHandler.java",
         "HttpActionHandler.java",
         "MockServerLogger.java",
+        "JsonBodyDTOSerializer.java",
       ]);
       expect(state.writes.some(([path]) => path.startsWith("/out/"))).toBe(
         false,
