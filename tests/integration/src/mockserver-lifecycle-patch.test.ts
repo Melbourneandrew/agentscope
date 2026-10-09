@@ -57,7 +57,9 @@ const patches = runInNewContext(
   | "httpState"
   | "lifeCycle"
   | "jsonBody"
-  | "requestHandler",
+  | "requestHandler"
+  | "actionHandler"
+  | "logger",
   (value: string) => string
 >;
 const eventSource = [
@@ -84,6 +86,131 @@ const authenticationSource = [
   "return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);",
   "return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);",
 ].join("\n");
+const noMatchLog = (
+  message: string,
+  arguments_: string,
+) => `            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(NO_MATCH_RESPONSE)
+                        .setLogLevel(Level.INFO)
+                        .setCorrelationId(request.getLogCorrelationId())
+                        .setHttpRequest(request)
+                        .setHttpResponse(notFoundResponse())
+                        .setMessageFormat(${message})
+                        .setArguments(${arguments_})
+                );
+            }`;
+const noMatchBranches = [
+  noMatchLog(
+    "NO_MATCH_RESPONSE_ERROR_MESSAGE_FORMAT",
+    "error, request, notFoundResponse()",
+  ),
+  noMatchLog(
+    "NO_MATCH_RESPONSE_NO_EXPECTATION_MESSAGE_FORMAT",
+    "request, notFoundResponse()",
+  ),
+];
+const loggerSource = `        if (logEntry.getType() == RECEIVED_REQUEST
+            || logEntry.getType() == FORWARDED_REQUEST
+            || logEntry.getType() == EXPECTATION_RESPONSE
+            || logEntry.isAlwaysLog()
+            || isEnabledForInstance(logEntry.getLogLevel())) {
+            retain(logEntry);
+        }
+        if (isEnabledForInstance(logEntry.getLogLevel())) {
+            console(logEntry);
+        }`;
+describe("pinned upstream unmatched-response evidence transformations", () => {
+  it("retains both normal and error no-match responses without changing their wire records", () => {
+    const input = noMatchBranches.join("\n");
+    const output = patches.actionHandler(input);
+    const expected = noMatchBranches
+      .map((branch) =>
+        branch
+          .split("\n")
+          .slice(1, -1)
+          .map((line) => line.slice(4))
+          .join("\n"),
+      )
+      .join("\n");
+    expect(output).toBe(expected);
+    expect(output).not.toContain("isEnabledForInstance");
+    for (const branch of noMatchBranches) {
+      expect(() => patches.actionHandler(input.replace(branch, ""))).toThrow();
+      expect(() => patches.actionHandler(`${input}\n${branch}`)).toThrow();
+      expect(() =>
+        patches.actionHandler(
+          input.replace(
+            branch,
+            branch.replace("notFoundResponse()", "changedResponse()"),
+          ),
+        ),
+      ).toThrow();
+    }
+  });
+  it("admits no-match evidence at WARN while keeping console output suppressed", () => {
+    const output = patches.logger(loggerSource);
+    expect(output).toBe(
+      loggerSource.replace(
+        "            || logEntry.getType() == EXPECTATION_RESPONSE",
+        "            || logEntry.getType() == EXPECTATION_RESPONSE\n            || logEntry.getType() == NO_MATCH_RESPONSE",
+      ),
+    );
+    const condition = output.slice(
+      output.indexOf("if (") + 4,
+      output.indexOf(") {"),
+    );
+    for (const type of [
+      "RECEIVED_REQUEST",
+      "FORWARDED_REQUEST",
+      "EXPECTATION_RESPONSE",
+      "NO_MATCH_RESPONSE",
+      "SERVER_CONFIGURATION",
+    ]) {
+      const context = {
+        RECEIVED_REQUEST: "RECEIVED_REQUEST",
+        FORWARDED_REQUEST: "FORWARDED_REQUEST",
+        EXPECTATION_RESPONSE: "EXPECTATION_RESPONSE",
+        NO_MATCH_RESPONSE: "NO_MATCH_RESPONSE",
+        logEntry: {
+          getType: () => type,
+          isAlwaysLog: () => false,
+          getLogLevel: () => "INFO",
+        },
+        isEnabledForInstance: () => false,
+      };
+      expect(runInNewContext(condition, context)).toBe(
+        type !== "SERVER_CONFIGURATION",
+      );
+      expect(
+        runInNewContext(
+          "isEnabledForInstance(logEntry.getLogLevel())",
+          context,
+        ),
+      ).toBe(false);
+    }
+    expect(() =>
+      patches.logger(loggerSource.replace("EXPECTATION_RESPONSE", "CHANGED")),
+    ).toThrow();
+    expect(() => patches.logger(`${loggerSource}\n${loggerSource}`)).toThrow();
+  });
+  it("closes new source ordinals without expanding the fixed parser beyond eight", () => {
+    for (const [file, ordinal] of [
+      ["HttpActionHandler.java", 7],
+      ["MockServerLogger.java", 8],
+    ] as const) {
+      expect(supplierSourceUnit(file)).toBe(ordinal);
+      expect(
+        parseMavenFailureObservation(`identified,2,0,5,${ordinal},1,0,12`)
+          ?.unit,
+      ).toBe(ordinal);
+    }
+    expect(
+      parseMavenFailureObservation("identified,2,0,5,9,1,0,12"),
+    ).toBeUndefined();
+  });
+});
 describe("pinned upstream final-ledger lifecycle transformations", () => {
   it("retains exact raw bytes only on the existing recorded-request serializer path", () => {
     const source =
@@ -127,9 +254,9 @@ describe("pinned upstream final-ledger lifecycle transformations", () => {
       patches.jsonBody(`import java.util.Arrays;\n${source}`),
     ).toThrow();
   });
-  it("admits only the six exact source members, never an arbitrary Java preimage", () => {
-    expect(lifecycleSourcePins).toHaveLength(6);
-    expect(new Set(lifecycleSourcePins.map(({ path }) => path)).size).toBe(6);
+  it("admits only the eight exact source members, never an arbitrary Java preimage", () => {
+    expect(lifecycleSourcePins).toHaveLength(8);
+    expect(new Set(lifecycleSourcePins.map(({ path }) => path)).size).toBe(8);
     for (const pin of lifecycleSourcePins) {
       expect(pin.sha256).toMatch(/^[a-f0-9]{64}$/u);
       expect(() =>

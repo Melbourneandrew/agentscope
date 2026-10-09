@@ -40,6 +40,18 @@ export const lifecycleSourcePins = Object.freeze([
     bytes: 53826,
     sha256: "f8953a1c8405fe31d9956e47dc9f9fe4efefbf9dc1d449ebbb83ad9ff1d4e7a6",
   }),
+  Object.freeze({
+    name: "actionHandler",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/mock/action/http/HttpActionHandler.java`,
+    bytes: 273335,
+    sha256: "8542f1614e484b64127b8c8d11fdfbe236870b91821f3b1c79fd3ff6ef38ed6b",
+  }),
+  Object.freeze({
+    name: "logger",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/logging/MockServerLogger.java`,
+    bytes: 12584,
+    sha256: "d69533a68139ba799d3213bd7e78379c888aec3013c2cba4be77f7bbee74052e",
+  }),
 ]);
 // Pinned checkstyle.xml rule types, not configured instance counts. The two
 // RegexpSingleline instances share one type ordinal; messages never escape.
@@ -429,6 +441,49 @@ const requestHandler = (source) => {
   }
   return source;
 };
+const actionHandler = (source) => {
+  // The ordinary final ledger includes unmatched traffic. Console severity must
+  // not suppress the response half of an otherwise retained received request.
+  for (const [message, arguments_] of [
+    [
+      "NO_MATCH_RESPONSE_ERROR_MESSAGE_FORMAT",
+      "error, request, notFoundResponse()",
+    ],
+    [
+      "NO_MATCH_RESPONSE_NO_EXPECTATION_MESSAGE_FORMAT",
+      "request, notFoundResponse()",
+    ],
+  ]) {
+    const before = `            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(NO_MATCH_RESPONSE)
+                        .setLogLevel(Level.INFO)
+                        .setCorrelationId(request.getLogCorrelationId())
+                        .setHttpRequest(request)
+                        .setHttpResponse(notFoundResponse())
+                        .setMessageFormat(${message})
+                        .setArguments(${arguments_})
+                );
+            }`;
+    source = once(
+      source,
+      before,
+      before
+        .split("\n")
+        .slice(1, -1)
+        .map((line) => line.slice(4))
+        .join("\n"),
+    );
+  }
+  return source;
+};
+const logger = (source) =>
+  once(
+    source,
+    "            || logEntry.getType() == EXPECTATION_RESPONSE\n            || logEntry.isAlwaysLog()",
+    "            || logEntry.getType() == EXPECTATION_RESPONSE\n            || logEntry.getType() == NO_MATCH_RESPONSE\n            || logEntry.isAlwaysLog()",
+  );
 const patches = Object.freeze({
   eventLog,
   persistence,
@@ -436,6 +491,8 @@ const patches = Object.freeze({
   lifeCycle,
   jsonBody,
   requestHandler,
+  actionHandler,
+  logger,
 });
 export const patchMockServerLifecycleSource = (name, input) => {
   const pin = lifecycleSourcePins.find((entry) => entry.name === name);
