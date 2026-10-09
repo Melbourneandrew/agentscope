@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { types } from "node:util";
+import { EventEmitter } from "node:events";
 import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-preparation.mjs";
 import {
   createPullOperation,
@@ -103,7 +104,11 @@ const collectorTestSource = () => {
   expect(joinEnd).toBeGreaterThan(joinStart);
   return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
 };
-const actualCollectorObservation = (failure: string, sinkFails = false) => {
+const actualCollectorObservation = (
+  failure: string,
+  sinkFails = false,
+  execError?: Error,
+) => {
   const plan = {
     runId: "a".repeat(16),
     collectorName: "owned",
@@ -175,7 +180,8 @@ const actualCollectorObservation = (failure: string, sinkFails = false) => {
           "-e",
         ]);
         expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
-        if (failure === "https-exec") throw original;
+        if (failure === "https-exec")
+          return Promise.reject(execError ?? original);
         if (failure === "expired") now = 1000;
         return {
           stdout:
@@ -210,6 +216,112 @@ const actualCollectorObservation = (failure: string, sinkFails = false) => {
     },
   };
 };
+describe("actual collector HTTPS marker projection", () => {
+  it.each(["request-error", "response-error", "http-rejected", "output-bound"])(
+    "projects only the exact native %s HTTPS marker through the existing line",
+    async (reason) => {
+      const native = Object.assign(new Error("PRIVATE TRANSPORT"), {
+        stderr: `[agentscope-collector-https:v1 ${reason}]\n`,
+        stdout: "",
+        code: 1,
+        signal: null,
+        killed: false,
+      });
+      const f = actualCollectorObservation("https-exec", false, native);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      expect(f.output[0]).toContain(
+        `"collector":{"phase":"https-exec","httpsFailure":"${reason}"}`,
+      );
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain(completionContainerId);
+    },
+  );
+});
+describe("actual collector HTTPS hostile process projection", () => {
+  it("keeps malformed, hostile, and unsettled process projections unknown", async () => {
+    const marker = "[agentscope-collector-https:v1 request-error]\n";
+    const native = () =>
+      Object.assign(new Error("PRIVATE TRANSPORT"), {
+        stderr: marker,
+        stdout: "",
+        code: 1,
+        signal: null,
+        killed: false,
+      });
+    let traps = 0;
+    const accessor = native();
+    Object.defineProperty(accessor, "stderr", {
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE GETTER");
+      },
+    });
+    const inherited = native();
+    Reflect.deleteProperty(inherited, "stderr");
+    Object.setPrototypeOf(
+      inherited,
+      Object.assign(new Error(), { stderr: marker }),
+    );
+    const proxy = new Proxy(native(), {
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+      getOwnPropertyDescriptor: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+    });
+    const coercion = {
+      toString: () => {
+        traps++;
+        throw new Error("PRIVATE COERCION");
+      },
+    };
+    const cases: unknown[] = [
+      { stderr: marker, stdout: "", code: 1, signal: null, killed: false },
+      accessor,
+      inherited,
+      proxy,
+      ...[
+        { stderr: marker.trimEnd() },
+        { stderr: `${marker}${marker}` },
+        { stderr: `PRIVATE ${marker}` },
+        { stderr: `${marker}PRIVATE` },
+        { stderr: "x".repeat(65) },
+        { stderr: "[agentscope-collector-https:v1 PRIVATE]\n" },
+        { stderr: coercion },
+        { stdout: "PRIVATE BODY" },
+        { code: 2 },
+        { signal: "SIGTERM" },
+        { killed: true },
+      ].map((change) => Object.assign(native(), change)),
+    ];
+    for (const error of cases) {
+      const f = Reflect.apply(actualCollectorObservation, undefined, [
+        "https-exec",
+        false,
+        error,
+      ]) as ReturnType<typeof actualCollectorObservation>;
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      expect(f.output[0]).toContain('"httpsFailure":null');
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    }
+    expect(traps).toBe(0);
+  });
+});
 describe("actual collector failure phase observation", () => {
   it("wires the actual Codex outer catch to the same original collector error", async () => {
     const f = actualCollectorObservation("terminal-wait");
@@ -313,12 +425,123 @@ describe("actual collector failure phase observation", () => {
       const row = JSON.parse(
         f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
       ) as { collector: object };
-      expect(row.collector).toEqual({ phase });
+      expect(row.collector).toEqual({
+        phase,
+        ...(phase === "https-exec" ? { httpsFailure: null } : {}),
+      });
       expect(f.output[0]).not.toContain("PRIVATE");
       expect(f.output[0]).not.toContain(completionContainerId);
       if (phase === "held-identity") expect(f.calls).toEqual([]);
     },
   );
+});
+const collectorHttpsScript = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const script = /\n {8}'(import \{get\} from "node:https";[^\n]+)',\n/u.exec(
+    source,
+  )?.[1];
+  if (script === undefined) throw new Error("missing-collector-https-script");
+  return script
+    .replace('import {get} from "node:https"; ', "")
+    .replace('import {readFileSync} from "node:fs"; ', "");
+};
+const runCollectorHttpsScript = (sinkFails = false) => {
+  const request = new EventEmitter();
+  const response = Object.assign(new EventEmitter(), { statusCode: 200 });
+  const stderr: string[] = [],
+    stdout: Buffer[] = [];
+  const process = {
+    exitCode: 0,
+    stderr: {
+      write: (text: string) => {
+        if (sinkFails) throw new Error("PRIVATE SINK");
+        stderr.push(text);
+      },
+    },
+    stdout: { write: (bytes: Buffer) => stdout.push(bytes) },
+  };
+  let callback!: (received: typeof response) => void;
+  let destroys = 0;
+  Object.assign(request, {
+    destroy: () => {
+      destroys++;
+      request.emit("error", new Error("PRIVATE DESTROY"));
+    },
+  });
+  runInNewContext(collectorHttpsScript(), {
+    Buffer,
+    process,
+    readFileSync: (path: string) => {
+      expect(path).toBe("/opt/agentscope/collector-ca.pem");
+      return "PUBLIC TEST CA";
+    },
+    get: (url: string, options: object, supplied: typeof callback) => {
+      expect(url).toBe("https://127.0.0.1:4318/observations");
+      expect(options).toEqual({ ca: "PUBLIC TEST CA", agent: false });
+      callback = supplied;
+      return request;
+    },
+  });
+  return {
+    request,
+    response,
+    process,
+    stderr,
+    stdout,
+    respond: () => {
+      callback(response);
+    },
+    destroys: () => destroys,
+  };
+};
+describe("actual extracted collector HTTPS child", () => {
+  it.each(["request-error", "response-error", "http-rejected", "output-bound"])(
+    "keeps exit one and emits only one fixed %s marker",
+    (reason) => {
+      const f = runCollectorHttpsScript();
+      if (reason === "request-error")
+        f.request.emit("error", new Error("PRIVATE REQUEST"));
+      else {
+        f.respond();
+        if (reason === "response-error")
+          f.response.emit("error", new Error("PRIVATE RESPONSE"));
+        else if (reason === "http-rejected") {
+          f.response.statusCode = 409;
+          f.response.emit("data", Buffer.from("PRIVATE REJECTED BODY"));
+          f.response.emit("end");
+        } else {
+          f.response.emit("data", Buffer.alloc(12 * 1024 * 1024 + 1, 65));
+          expect(f.destroys()).toBe(1);
+        }
+      }
+      expect(f.process.exitCode).toBe(1);
+      expect(f.stderr).toEqual([`[agentscope-collector-https:v1 ${reason}]\n`]);
+      expect(f.stdout).toEqual([]);
+    },
+  );
+  it("keeps success silent and emits the exact original bounded snapshot bytes", () => {
+    const f = runCollectorHttpsScript();
+    f.respond();
+    const snapshot = Buffer.from('{"observationVersion":2}');
+    f.response.emit("data", snapshot);
+    f.response.emit("end");
+    expect(f.process.exitCode).toBe(0);
+    expect(f.stderr).toEqual([]);
+    expect(f.stdout).toEqual([snapshot]);
+    expect(f.destroys()).toBe(0);
+  });
+  it("keeps exit one even when the optional child marker sink refuses", () => {
+    const f = runCollectorHttpsScript(true);
+    expect(() =>
+      f.request.emit("error", new Error("PRIVATE REQUEST")),
+    ).not.toThrow();
+    expect(f.process.exitCode).toBe(1);
+    expect(f.stderr).toEqual([]);
+    expect(f.stdout).toEqual([]);
+  });
 });
 const ledgerReasons = [
   "none",

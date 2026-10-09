@@ -1776,15 +1776,39 @@ const decodeCollectorSnapshot = (output, plan) => {
     throw refuse();
   return batches;
 };
+const collectorHttpsFailureObservation = (error) => {
+  if (types.isProxy(error) || !types.isNativeError(error)) return null;
+  const own = (key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  };
+  const stderr = own("stderr");
+  if (
+    own("code") !== 1 ||
+    own("stdout") !== "" ||
+    own("signal") !== null ||
+    own("killed") !== false ||
+    typeof stderr !== "string" ||
+    Buffer.byteLength(stderr) > 64
+  )
+    return null;
+  return (
+    ["request-error", "response-error", "http-rejected", "output-bound"].find(
+      (reason) => stderr === `[agentscope-collector-https:v1 ${reason}]\n`,
+    ) ?? null
+  );
+};
 const joinCollectorObservations = async (
   plan,
   signal,
   deadline,
   observePhase,
 ) => {
-  const observe = (phase) => {
+  const observe = (phase, httpsFailure) => {
     try {
-      observePhase?.(phase);
+      observePhase?.(phase, httpsFailure);
     } catch {
       // Optional observation cannot alter collector acceptance or errors.
     }
@@ -1814,12 +1838,13 @@ const joinCollectorObservations = async (
         "/usr/local/bin/node",
         "--input-type=module",
         "-e",
-        'import {get} from "node:https"; import {readFileSync} from "node:fs"; const request=get("https://127.0.0.1:4318/observations",{ca:readFileSync("/opt/agentscope/collector-ca.pem"),agent:false},response=>{let bytes=0;const chunks=[];response.on("data",chunk=>{bytes+=chunk.length;if(bytes>12*1024*1024)request.destroy();else chunks.push(chunk);});response.once("end",()=>{if(response.statusCode!==200)process.exitCode=1;else process.stdout.write(Buffer.concat(chunks));});response.once("error",()=>{process.exitCode=1;});});request.once("error",()=>{process.exitCode=1;});',
+        'import {get} from "node:https"; import {readFileSync} from "node:fs"; let failed=false;const fail=reason=>{process.exitCode=1;if(!failed){failed=true;try{process.stderr.write("[agentscope-collector-https:v1 "+reason+"]"+String.fromCharCode(10));}catch{}}};const request=get("https://127.0.0.1:4318/observations",{ca:readFileSync("/opt/agentscope/collector-ca.pem"),agent:false},response=>{let bytes=0;const chunks=[];response.on("data",chunk=>{if(failed)return;bytes+=chunk.length;if(bytes>12*1024*1024){fail("output-bound");request.destroy();}else chunks.push(chunk);});response.once("end",()=>{if(response.statusCode!==200)fail("http-rejected");else if(!failed)process.stdout.write(Buffer.concat(chunks));});response.once("error",()=>{fail("response-error");});});request.once("error",()=>{fail("request-error");});',
       ],
       joinSignal,
       { terminal: true, maxBuffer: 12 * 1024 * 1024 },
     );
-  } catch {
+  } catch (error) {
+    observe("https-exec", collectorHttpsFailureObservation(error));
     // Native exec errors can contain original received bytes; never propagate
     // output or cause through the controller's diagnostic error boundary.
     throw refuse();
@@ -2430,7 +2455,23 @@ const publishOperationFailureDiagnostic = (
           "terminal-wait",
           "terminal-witness",
         ].includes(processContext?.collectorPhase)
-          ? { collector: { phase: processContext.collectorPhase } }
+          ? {
+              collector: {
+                phase: processContext.collectorPhase,
+                ...(processContext.collectorPhase === "https-exec"
+                  ? {
+                      httpsFailure: [
+                        "request-error",
+                        "response-error",
+                        "http-rejected",
+                        "output-bound",
+                      ].includes(processContext.collectorHttpsFailure)
+                        ? processContext.collectorHttpsFailure
+                        : null,
+                    }
+                  : {}),
+              },
+            }
           : {}),
         ...((slot === "join-ledger-complete" ||
           slot === "candidate-image-build") &&
@@ -2624,7 +2665,8 @@ const createFinalMockServerLedgerDirectory = (plan) => {
 };
 const joinMockServer = async (plan, signal) => {
   let failureSlot = "join-identity";
-  let deadline, joinSignal, containerId, refusal, collectorPhase;
+  let deadline, joinSignal, containerId, refusal;
+  let collectorPhase, collectorHttpsFailure;
   try {
     containerId = mockServerContainerIdentities.get(plan.runId);
     deadline = mockServerJoinDeadlines.get(plan.runId);
@@ -2712,8 +2754,9 @@ const joinMockServer = async (plan, signal) => {
       },
     );
     const read = joinCollectorObservations;
-    const note = (phase) => {
+    const note = (phase, httpsFailure) => {
       collectorPhase = phase;
+      collectorHttpsFailure = httpsFailure;
     };
     if (plan.scenarioId === "codex-tui-trace-smoke") {
       failureSlot = "join-collector-read";
@@ -2730,6 +2773,7 @@ const joinMockServer = async (plan, signal) => {
   } catch (error) {
     const context = { containerId, signal, joinSignal, deadline };
     context.collectorPhase = collectorPhase;
+    context.collectorHttpsFailure = collectorHttpsFailure;
     publishOperationFailureDiagnostic(failureSlot, error, plan, context);
     if (failureSlot === "join-ledger-complete")
       publishMockServerProducerRefusalDiagnostic(plan, refusal);

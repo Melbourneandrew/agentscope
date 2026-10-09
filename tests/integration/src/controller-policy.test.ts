@@ -353,13 +353,28 @@ const expectCanonicalCollectorRead = (outer: string) => {
     1,
   );
   expect(outer).toContain(
-    "const note = (phase) => {\n      collectorPhase = phase;\n    };",
+    "const note = (phase, httpsFailure) => {\n      collectorPhase = phase;\n      collectorHttpsFailure = httpsFailure;\n    };",
   );
   expect(
     outer.match(
       /const batches = await read\(plan, joinSignal, deadline, note\);/gu,
     ),
   ).toHaveLength(2);
+};
+const expectCollectorWriterOwnership = (source: string) => {
+  const child = /\n {8}'(import \{get\} from "node:https";[^\n]+)',\n/u.exec(
+    source,
+  );
+  expect(child).not.toBeNull();
+  const childScript = child![1]!;
+  expect(childScript.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+  expect(childScript).toContain(
+    'process.stderr.write("[agentscope-collector-https:v1 "+reason+"]"+String.fromCharCode(10))',
+  );
+  const parent =
+    source.slice(0, child!.index) +
+    source.slice(child!.index + child![0].length);
+  expect(parent.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
 };
 const producerRefusalLine = (
   stage = "eligibility",
@@ -1862,7 +1877,7 @@ describe("integration cleanup authority", () => {
       "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
     );
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
-    expect(outer.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+    expectCollectorWriterOwnership(outer);
     expect(outer).toContain(
       "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
     );
@@ -2481,7 +2496,7 @@ describe("integration workflow policy", () => {
       scenarios.indexOf('"USER node"'),
     );
     expect(required).toBeGreaterThanOrEqual(0);
-    expect(scenarios.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+    expectCollectorWriterOwnership(scenarios);
     expect(scenarios).toContain(
       "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
     );
