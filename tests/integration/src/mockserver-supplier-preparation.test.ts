@@ -189,10 +189,10 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         "java-entry",
       ]);
       expect(entrypoint[2]).toMatch(
-        /; exec \/opt\/java\/bin\/java -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
+        /; exec \/opt\/java\/bin\/java -Dmockserver\.startupWarmup=false -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
       );
       expect(entrypoint[2]!.replace(/printf '[^']*' >&2; /gu, "")).toBe(
-        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -jar /opt/mockserver.jar -serverPort 1080",
+        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -jar /opt/mockserver.jar -serverPort 1080",
       );
       expect(readFileSync(resolve(context, "control-private.pem"))).toEqual(
         service.privateKey,

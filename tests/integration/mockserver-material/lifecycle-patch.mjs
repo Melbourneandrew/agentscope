@@ -439,7 +439,14 @@ const requestHandler = (source) => {
           );
     source = once(source, condition, replacement);
   }
-  return source;
+  const statusResponse =
+    '                    responseWriter.writeResponse(request, OK, portBindingSerializer.serialize(portBinding(server.getLocalPorts())), "application/json");';
+  return once(
+    source,
+    statusResponse,
+    "                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {\n                        return;\n                    }\n" +
+      statusResponse,
+  );
 };
 const actionHandler = (source) => {
   // The ordinary final ledger includes unmatched traffic. Console severity must

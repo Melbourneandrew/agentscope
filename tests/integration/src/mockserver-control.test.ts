@@ -18,6 +18,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   createMockServerControlMaterial,
+  mockServerTrafficRow,
   openMockServerControl,
   projectMockServerRequests,
   readMockServerFinalLedger,
@@ -344,7 +345,7 @@ describe("ordinary upstream control and complete ledger (no service execution)",
   });
 });
 describe("upstream control observations and terminal ledger refusal", () => {
-  it("binds the four fixed candidate denials to UID1000 without passing private authority", async () => {
+  it("binds the five fixed candidate denials to UID1000 without passing private authority", async () => {
     const source = readIntegration("mockserver-control.mjs");
     const start = source.indexOf("export const probeMockServerCandidate =");
     const end = source.indexOf("/** Fixed ordinary candidate recipe", start);
@@ -376,22 +377,30 @@ describe("upstream control observations and terminal ledger refusal", () => {
     const input = { runId, host: "mockserver", deadline: 10, now: () => 0 };
     const raw: unknown = await Reflect.apply(actual, undefined, [input]);
     const observed = snapshotMockServerTraffic(raw, runId);
-    expect(observed.entries).toHaveLength(4);
+    expect(observed.entries).toHaveLength(5);
     expect(requests.map((row) => row.path)).toEqual([
       "/mockserver/configuration",
       "/mockserver/dashboard",
       "/_mockserver_callback_websocket",
+      "/mockserver/status",
       "/mockserver/configuration",
     ]);
     expect(
       requests.map(
         (row) => (row.headers as Record<string, string>).authorization,
       ),
-    ).toEqual([undefined, undefined, undefined, "Bearer invalid"]);
+    ).toEqual([undefined, undefined, undefined, undefined, "Bearer invalid"]);
+    expect(requests.map((row) => row.method)).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "PUT",
+      "GET",
+    ]);
     expect(JSON.stringify(observed)).not.toContain("Bearer");
     uid = 0;
     await expect(Reflect.apply(actual, undefined, [input])).rejects.toThrow();
-    expect(requests).toHaveLength(4);
+    expect(requests).toHaveLength(5);
     uid = 1000;
     responseStatus = 200;
     await expect(Reflect.apply(actual, undefined, [input])).rejects.toThrow();
@@ -449,6 +458,79 @@ describe("closed untrusted fixture traffic observations", () => {
     expect(reads).toBe(0);
   });
 });
+describe("ordinary candidate traffic room", () => {
+  it.each([1, 2, 5, 6])(
+    "reserves five candidate and five owner rows within sixteen (models=%s)",
+    async (models) => {
+      const source = readIntegration("mockserver-control.mjs");
+      const start = source.indexOf(
+        "export const observeMockServerCandidateTraffic =",
+      );
+      const end = source.indexOf(
+        "/** Call only after exact service join",
+        start,
+      );
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const factory: unknown =
+        runInThisContext(`((process, fetch, readMockServerBootClock, mockServerTrafficRow, probeMockServerCandidate, setTimeout, AbortSignal, runPattern) => {
+        ${source.slice(start, end).replace("export const", "const")}
+        return observeMockServerCandidateTraffic;
+      })`);
+      if (typeof factory !== "function") throw new Error("review.vm-binding");
+      const maximum = 16 - 5 - 5 - models;
+      for (const ready of [true, false]) {
+        let attempts = 0;
+        const probe = vi.fn(() => ({
+          entries: Array.from({ length: 5 }, () =>
+            mockServerTrafficRow(
+              "GET",
+              "/mockserver/configuration",
+              "unauthenticated",
+              401,
+            ),
+          ),
+        }));
+        const actual: unknown = Reflect.apply(factory, undefined, [
+          { getuid: () => 1000, getgid: () => 1000 },
+          () => {
+            attempts++;
+            return Promise.resolve({
+              status: ready && attempts === maximum ? 200 : 503,
+              body: { cancel: () => Promise.resolve() },
+            });
+          },
+          () => 0,
+          mockServerTrafficRow,
+          probe,
+          (resolve: () => void) => {
+            resolve();
+          },
+          { timeout: () => undefined },
+          /^[a-f0-9]{16}$/u,
+        ]);
+        if (typeof actual !== "function") throw new Error("review.vm-binding");
+        const result: unknown = Reflect.apply(actual, undefined, [
+          {
+            runId,
+            modelRequestCount: models,
+            deadline: 100,
+          },
+        ]);
+        if (ready && maximum > 0) {
+          const entries: unknown = await result;
+          if (!Array.isArray(entries)) throw new Error("review.vm-binding");
+          expect(entries.length + 5 + models).toBe(16);
+          expect(probe).toHaveBeenCalledOnce();
+        } else {
+          await expect(result).rejects.toThrow("integration.fixture.service");
+          expect(probe).not.toHaveBeenCalled();
+        }
+        expect(attempts).toBe(Math.max(0, maximum));
+      }
+    },
+  );
+});
 describe("upstream control observations and terminal ledger refusal", () => {
   it("uses exactly one controller-positive set; candidate denials are separately UID-bound", async () => {
     const send = vi.fn(
@@ -469,11 +551,18 @@ describe("upstream control observations and terminal ledger refusal", () => {
         "/mockserver/configuration",
         "/mockserver/dashboard",
         "/_mockserver_callback_websocket",
+        "/mockserver/status",
       ].map((path) => [path, "controller"]),
     );
     expect(
       send.mock.calls.some((call) => String(call[1]).includes("status")),
-    ).toBe(false);
+    ).toBe(true);
+    expect(send.mock.calls.map((call) => call[0])).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "PUT",
+    ]);
     await expect(
       verifyMockServerControlBoundary({
         send: () => Promise.resolve({ status: 200 }),
