@@ -2111,6 +2111,9 @@ const completeCodexCollectorFixture = (plan, batches) => {
           nativeSessionId: native.nativeSessionId,
           nativeTurnId: native.nativeTurnId,
           nativeModelName: native.nativeModelName,
+          ...(native.nativeTranscriptRange === undefined
+            ? {}
+            : { nativeTranscriptRange: native.nativeTranscriptRange }),
           modelRequestBodySha256: native.modelRequestBodySha256,
           traceId: expected.identity.traceId,
           resourceSpanCount: observed.graph.resourceSpans.length,

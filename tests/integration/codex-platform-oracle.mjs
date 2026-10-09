@@ -175,6 +175,9 @@ export const correlateCodexNativeObservations = (
       nativeSessionId: observation.native.sessionId,
       nativeTurnId: observation.native.turnId,
       nativeModelName: observation.native.modelName,
+      ...(observation.native.nativeTranscriptRange === undefined
+        ? {}
+        : { nativeTranscriptRange: observation.native.nativeTranscriptRange }),
       modelRequestBodySha256: request.bodySha256,
       doctorErrors: observation.doctor.errors,
       uninstallDisposition: observation.uninstall.uninstall.disposition,

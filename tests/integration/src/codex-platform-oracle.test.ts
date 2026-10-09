@@ -81,6 +81,59 @@ const correlateNative = (value = nativeRaw()) =>
     scenarioId: "codex-tui-trace-smoke",
   });
 
+const transcriptRange = () => ({
+  nativeFormat: "codex-0.149.1-rollout-jsonl",
+  boundaryKind: "transcript-range",
+  positionKind: "line",
+  availableStartPosition: 0,
+  exclusiveEndPosition: 4,
+  sessionMetaPosition: 0,
+  turnContextPosition: 2,
+  taskCompletePosition: 3,
+  sourceGeneration: null,
+});
+describe("bounded Codex native transcript range translation", () => {
+  it("preserves the frozen content-free projection without asserting full completion", () => {
+    const range = transcriptRange();
+    const raw = nativeRaw();
+    const translated = translateCodexNativeObservations({
+      ...raw,
+      native: { ...raw.native, nativeTranscriptRange: range },
+    });
+    range.turnContextPosition = 99;
+    expect(translated.native.nativeTranscriptRange.turnContextPosition).toBe(2);
+    const result = correlateCodexNativeObservations(translated, {
+      artifactFileName: "agentscope-cli-0.1.0.tgz",
+      expectedPromptSha256: promptSha256,
+      scenarioId: "codex-tui-trace-smoke",
+    });
+    expect(result.resultStatus).toBe("partial");
+    expect(result.harnessObservation.nativeTranscriptRange).toEqual(
+      transcriptRange(),
+    );
+    expect(Object.isFrozen(translated.native.nativeTranscriptRange)).toBe(true);
+  });
+  it.each([
+    { sourceGeneration: 0 },
+    { positionKind: "sequence" },
+    { turnContextPosition: 3 },
+    { taskCompletePosition: 4 },
+    { exclusiveEndPosition: 4097 },
+    { content: "private" },
+  ])("refuses non-observed or non-closed range %j", (delta) => {
+    const raw = nativeRaw();
+    expect(() =>
+      translateCodexNativeObservations({
+        ...raw,
+        native: {
+          ...raw.native,
+          nativeTranscriptRange: { ...transcriptRange(), ...delta },
+        },
+      }),
+    ).toThrow("integration.codex.adapter-observation");
+  });
+});
+
 describe("independently held native completion awaiting outer OTLP join", () => {
   it("cannot assert destination delivery or CLI retrieval", () => {
     expect(correlateNative()).toMatchObject({

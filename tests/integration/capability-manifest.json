@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-645baaee0b958196523ba331b83fce4d9cf4fbc3f0731e0099d0e9c77480d4af",
+  "manifestIdentity": "sha256-c643b643f997dde06e5b6f503ec621925b534a1d3a9b47dd16a502025220b236",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -215,15 +215,15 @@
       "destinations": ["langfuse"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "f0f55569d74869f45b961ec0c1c214a1751b4fc9595d550ea6ce5768078ec3ac"
+        "sha256": "418be7110a443454c112b93cbca6ec293aff0c364616fc29613e463b2a4dd9dc"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "e64fc33a578dbc1c0aad80f28fe981ae2ee506712c218881c61faadba858a7a6"
+        "sha256": "bdbce0c17dea279ed12dd401fe435bf1806d05685674db01f645ee3e719ff3bb"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "bd2cfc375817fc7ddae9555432f7ba0c212eb5d6355296fefa5d6771bab1127f"
+        "sha256": "7b781666eaaa91417dc6c06d76d07ba7a65f81bc0e378899f29e779bcb4a82ac"
       },
       "runtimeArtifacts": [
         {
@@ -240,7 +240,7 @@
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "25fc45764c02d25fdfe8a070abe1f09324753a9e9d8a0897c358cac2ae496d43"
+          "sha256": "783dacb67846c45dc9f5a994569509a684f76431edb6ed7343e1c3ae412082d5"
         },
         {
           "source": {

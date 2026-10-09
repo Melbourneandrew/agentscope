@@ -698,6 +698,78 @@ export const codexSessionIdentity = (records) => {
   return matches[0];
 };
 
+// Called only after the official child joins. Physical JSONL positions are
+// observations, not native sequence numbers or an incremental generation.
+export const projectCodexPostJoinTranscript = ({
+  records,
+  baseline,
+  observedRecords,
+  expectedMessage,
+  sessionId,
+  turnId,
+  modelName,
+}) => {
+  if (
+    !Array.isArray(observedRecords) ||
+    observedRecords.length !== 1 ||
+    !validCodexSessionLedgerRecord(observedRecords[0]) ||
+    records?.length !== 1 ||
+    !validCodexSessionLedgerRecord(records[0]) ||
+    ["relativePath", "dev", "ino", "mode", "uid", "gid"].some(
+      (key) => records[0][key] !== observedRecords[0][key],
+    ) ||
+    !records[0].content.startsWith(observedRecords[0].content)
+  )
+    throw new Error("integration.codex.session-ledger");
+  if (
+    codexSessionIdentity(records) !== sessionId ||
+    codexTurnTerminalIdAfterBaseline(records, baseline, expectedMessage) !==
+      turnId ||
+    typeof modelName !== "string" ||
+    modelName.length < 1 ||
+    modelName.length > 256
+  )
+    throw new Error("integration.codex.session-ledger");
+  const lines = records[0].content.split("\n");
+  lines.pop(); // the existing session reader above required a final newline
+  if (lines.length > 4_096) throw new Error("integration.codex.session-ledger");
+  const positions = { session: [], context: [], terminal: [] };
+  lines.forEach((line, position) => {
+    if (line === "") return;
+    const entry = JSON.parse(line);
+    if (entry?.type === "session_meta") positions.session.push(position);
+    if (entry?.type === "turn_context") {
+      if (
+        entry.payload?.turn_id !== turnId ||
+        entry.payload?.model !== modelName
+      )
+        throw new Error("integration.codex.session-ledger");
+      positions.context.push(position);
+    }
+    if (entry?.type === "event_msg" && entry.payload?.type === "task_complete")
+      positions.terminal.push(position);
+  });
+  if (
+    positions.session.length !== 1 ||
+    positions.context.length !== 1 ||
+    positions.terminal.length !== 1 ||
+    positions.session[0] >= positions.context[0] ||
+    positions.context[0] >= positions.terminal[0]
+  )
+    throw new Error("integration.codex.session-ledger");
+  return Object.freeze({
+    nativeFormat: "codex-0.149.1-rollout-jsonl",
+    boundaryKind: "transcript-range",
+    positionKind: "line",
+    availableStartPosition: 0,
+    exclusiveEndPosition: lines.length,
+    sessionMetaPosition: positions.session[0],
+    turnContextPosition: positions.context[0],
+    taskCompletePosition: positions.terminal[0],
+    sourceGeneration: null,
+  });
+};
+
 export const terminalObservationBeforeDeadline = ({
   observed,
   deadline,

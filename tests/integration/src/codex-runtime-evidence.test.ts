@@ -37,6 +37,7 @@ import {
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
+  projectCodexPostJoinTranscript,
   codexSessionStartMediationUpperBoundMilliseconds,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
@@ -58,6 +59,123 @@ import {
   waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
+
+const postJoinFixture = () => {
+  const lines = [
+    { type: "session_meta", payload: { id: "session-1", cwd: "/private" } },
+    null,
+    {
+      type: "turn_context",
+      payload: { turn_id: "turn-1", model: "fixture-model" },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-1",
+        last_agent_message: "complete",
+      },
+    },
+  ];
+  const content = `${lines.map((line) => (line === null ? "" : JSON.stringify(line))).join("\n")}\n`;
+  const record = {
+    relativePath: ".codex/sessions/2026/09/16/rollout-test.jsonl",
+    dev: 1n,
+    ino: 2n,
+    mode: 0o100600n,
+    uid: 1000n,
+    gid: 1000n,
+    content,
+  };
+  return {
+    records: [record],
+    observedRecords: [{ ...record }],
+    baseline: [{ ...record, content: `${JSON.stringify(lines[0])}\n` }],
+    expectedMessage: "complete",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    modelName: "fixture-model",
+  };
+};
+
+describe("held post-join Codex transcript projection", () => {
+  it("keeps the existing 4096 physical-line bound and rejects unavailable turn context", () => {
+    const input = postJoinFixture();
+    input.records[0]!.content += "\n".repeat(4092);
+    expect(projectCodexPostJoinTranscript(input).exclusiveEndPosition).toBe(
+      4096,
+    );
+    input.records[0]!.content += "\n";
+    expect(() => projectCodexPostJoinTranscript(input)).toThrow(
+      "integration.codex.session-ledger",
+    );
+    const unavailable = postJoinFixture();
+    unavailable.records[0]!.content = unavailable.records[0]!.content.replace(
+      '"turn_id":"turn-1","model"',
+      '"model"',
+    );
+    unavailable.observedRecords = [{ ...unavailable.records[0]! }];
+    expect(() => projectCodexPostJoinTranscript(unavailable)).toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+  it("retains physical positions and unavailable generation, never transcript or path", () => {
+    const input = postJoinFixture();
+    const result = projectCodexPostJoinTranscript(input);
+    expect(result).toEqual({
+      nativeFormat: "codex-0.149.1-rollout-jsonl",
+      boundaryKind: "transcript-range",
+      positionKind: "line",
+      availableStartPosition: 0,
+      exclusiveEndPosition: 4,
+      sessionMetaPosition: 0,
+      turnContextPosition: 2,
+      taskCompletePosition: 3,
+      sourceGeneration: null,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(
+      /session-1|turn-1|fixture-model|private|complete"/u,
+    );
+    input.records[0]!.content += `${JSON.stringify({ type: "event_msg", payload: { type: "shutdown_complete" } })}\n`;
+    expect(projectCodexPostJoinTranscript(input).exclusiveEndPosition).toBe(5);
+  });
+  it.each([
+    "session",
+    "turn",
+    "model",
+    "inode",
+    "prefix",
+    "partial",
+    "context-missing",
+    "context-duplicate",
+    "reordered",
+  ])("refuses %s substitution or incomplete evidence after join", (kind) => {
+    const input = postJoinFixture();
+    if (kind === "session") input.sessionId = "other";
+    if (kind === "turn") input.turnId = "other";
+    if (kind === "model") input.modelName = "other";
+    if (kind === "inode") input.records[0]!.ino = 3n;
+    if (kind === "prefix")
+      input.records[0]!.content = input.records[0]!.content.replace(
+        "/private",
+        "/changed",
+      );
+    if (kind === "partial")
+      input.records[0]!.content = input.records[0]!.content.slice(0, -1);
+    if (kind.startsWith("context") || kind === "reordered") {
+      const lines = input.records[0]!.content.trimEnd().split("\n");
+      if (kind === "context-missing") lines.splice(2, 1);
+      if (kind === "context-duplicate") lines.splice(2, 0, lines[2]!);
+      if (kind === "reordered") [lines[2], lines[3]] = [lines[3]!, lines[2]!];
+      input.records[0]!.content = `${lines.join("\n")}\n`;
+      input.observedRecords = [{ ...input.records[0]! }];
+    }
+    expect(() => projectCodexPostJoinTranscript(input)).toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+});
 
 // Actual first-party grammar with only the descriptor reader substituted.
 // This is synthetic parsing evidence, not native log or filesystem evidence.

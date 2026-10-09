@@ -69,6 +69,54 @@ const complete = () => {
   };
 };
 
+const range = () => ({
+  nativeFormat: "codex-0.149.1-rollout-jsonl",
+  boundaryKind: "transcript-range",
+  positionKind: "line",
+  availableStartPosition: 0,
+  exclusiveEndPosition: 4,
+  sessionMetaPosition: 0,
+  turnContextPosition: 2,
+  taskCompletePosition: 3,
+  sourceGeneration: null,
+});
+describe("Codex optional observed transcript range", () => {
+  it("retains the bounded range at the actual result boundary and preserves old trio compatibility", () => {
+    const input = complete();
+    const observed = {
+      ...input,
+      harnessObservation: {
+        ...input.harnessObservation,
+        nativeTranscriptRange: range(),
+      },
+    };
+    expect(
+      sanitizeFixtureResult(observed, input.scenarioId).harnessObservation,
+    ).toEqual(observed.harnessObservation);
+    expect(
+      sanitizeFixtureResult(input, input.scenarioId).harnessObservation,
+    ).not.toHaveProperty("nativeTranscriptRange");
+  });
+  it.each([
+    { sourceGeneration: 1 },
+    { taskCompletePosition: 4 },
+    { exclusiveEndPosition: 4097 },
+    { turnContextPosition: 0 },
+    { raw: "private" },
+    { availableStartPosition: 1 },
+  ])("rejects %j rather than promoting fixture authority", (delta) => {
+    const input = complete();
+    const observed = {
+      ...input,
+      harnessObservation: {
+        ...input.harnessObservation,
+        nativeTranscriptRange: { ...range(), ...delta },
+      },
+    };
+    expect(() => sanitizeFixtureResult(observed, input.scenarioId)).toThrow();
+  });
+});
+
 describe("complete Codex content-free projection", () => {
   it("retains only the closed bounded projection in the same result envelope", () => {
     const input = complete();
