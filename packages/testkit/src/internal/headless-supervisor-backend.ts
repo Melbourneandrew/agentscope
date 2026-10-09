@@ -2449,22 +2449,29 @@ const snapshotPtyRequest = (
                 thirdInputIndex !== secondInputIndex + 1 ||
                 semanticWaitIndex !== thirdInputIndex + 1 ||
                 secondInputByteLength < 1 ||
-                thirdInputByteLength !== 5 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 5
-                ] !== 0x1b ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 4
-                ] !== 0x5b ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 3
-                ] !== 0x31 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 2
-                ] !== 0x33 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 1
-                ] !== 0x75) ||
+                (!(
+                  readinessKind === "challenge-marker" &&
+                  thirdInputByteLength === 1 &&
+                  safeBufferFrom(process_.stdin)[
+                    describedInputBytesAtSemanticWait - 1
+                  ] === 0x0d
+                ) &&
+                  (thirdInputByteLength !== 5 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 5
+                    ] !== 0x1b ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 4
+                    ] !== 0x5b ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 3
+                    ] !== 0x31 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 2
+                    ] !== 0x33 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 1
+                    ] !== 0x75))) ||
         describedInputBytesAtSemanticWait < 65 ||
         describedInputBytesAtSemanticWait > 165 ||
         describedInputBytes - describedInputBytesAtSemanticWait > 32 ||
