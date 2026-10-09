@@ -621,8 +621,8 @@ describe("integration capability manifest", () => {
       challengeRead,
     );
     const terminalWait = source.indexOf(
-      "  await waitForCodexTurnTerminal(traceDeadline);\n",
-      traceDeadline,
+      "  ({ turnId: codexTurnId, records: codexTerminalLedger } =\n    await waitForCodexTurnTerminal(traceDeadline));\n",
+      modelRequest,
     );
     const checkpointAcknowledgement = source.indexOf(
       "    await Promise.race([checkpointWitness, earlyCodexExit]);\n",
@@ -631,9 +631,15 @@ describe("integration capability manifest", () => {
     const checkpointWait = source.indexOf(
       "  const checkpointWitness = waitForCheckpointWitness();\n",
     );
-    const metadataBaseline = source.indexOf(
-      "  recordModelBaseline();\n",
-      checkpointAcknowledgement,
+    const terminalObserver = source.slice(
+      source.indexOf("const waitForCodexTurnTerminal ="),
+      source.indexOf("const waitForCodexStopBeforeExit ="),
+    );
+    const metadataBaseline = terminalObserver.indexOf(
+      "if (codexLedgerBaseline === undefined) recordModelBaseline(records);",
+    );
+    const terminalLedgerRead = terminalObserver.indexOf(
+      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
     );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
@@ -660,8 +666,20 @@ describe("integration capability manifest", () => {
     expect(checkpointWait).toBeGreaterThan(codexLaunch);
     expect(checkpointWait).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
-    expect(metadataBaseline).toBeGreaterThan(checkpointAcknowledgement);
-    expect(metadataBaseline).toBeLessThan(modelRequest);
+    expect(terminalWait).toBeGreaterThan(modelRequest);
+    expect(source.slice(checkpointAcknowledgement, modelRequest)).not.toContain(
+      "recordModelBaseline(",
+    );
+    expect(terminalLedgerRead).toBeGreaterThan(
+      terminalObserver.indexOf("if (bootNow() >= traceDeadline)"),
+    );
+    expect(terminalLedgerRead).toBeGreaterThan(-1);
+    expect(metadataBaseline).toBeGreaterThan(terminalLedgerRead);
+    expect(metadataBaseline).toBeLessThan(
+      terminalObserver.indexOf(
+        "const turnId = codexTurnTerminalIdAfterBaseline(",
+      ),
+    );
     expect(source).not.toContain(
       "inspectCodexSessionStartBeforeFirstModelRequestAdmission",
     );

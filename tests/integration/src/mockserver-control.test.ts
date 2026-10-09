@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { runInThisContext } from "node:vm";
 import {
   codexSessionIdentity,
+  codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
 } from "../codex-runtime-evidence.mjs";
 import { describe, expect, it, vi } from "vitest";
@@ -27,6 +28,97 @@ import {
 const runId = "0123456789abcdef";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+describe("post-prompt authenticated session baseline", () => {
+  it("does not require a rollout before prompt and binds its actual metadata after model traffic", async () => {
+    const source = readIntegration("codex-pty-scenario.mjs");
+    const baselineStart = source.indexOf("const recordModelBaseline =");
+    const baselineEnd = source.indexOf(
+      "\n// Retrieval is provisional.",
+      baselineStart,
+    );
+    const terminalStart = source.indexOf("const waitForCodexTurnTerminal =");
+    const terminalEnd = source.indexOf(
+      "const waitForCodexStopBeforeExit =",
+      terminalStart,
+    );
+    const flowStart = source.indexOf(
+      '  recordInteractivePhase("tui-checkpoint");',
+    );
+    const flowEnd = source.indexOf(
+      '  recordInteractivePhase("trace-terminal");',
+      flowStart,
+    );
+    for (const boundary of [
+      baselineStart,
+      baselineEnd,
+      terminalStart,
+      terminalEnd,
+      flowStart,
+      flowEnd,
+    ])
+      expect(boundary).toBeGreaterThan(0);
+    const meta = `${JSON.stringify({ type: "session_meta", payload: { id: "session-1" } })}\n`;
+    const message = "challenge";
+    const terminal = `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-1", last_agent_message: message } })}\n`;
+    const record = {
+      relativePath: ".codex/sessions/2026/10/07/rollout-test.jsonl",
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100600n,
+      uid: 1000n,
+      gid: 1000n,
+      content: `${meta}${terminal}`,
+    };
+    let prompted = false;
+    const reads = vi.fn(() => (prompted ? [record] : []));
+    const bindings = {
+      readCodexSessionLedgerRecords: reads,
+      homeDescriptor: 1,
+      codexSessionIdentity,
+      codexTurnTerminalIdAfterBaseline,
+      codexTurnTerminalObservedAfterBaseline,
+      expectedAssistantMessage: message,
+      traceDeadline: 100,
+      bootNow: () => 0,
+      remaining: () => 100,
+      terminalObservationBeforeDeadline: ({
+        observed,
+      }: {
+        observed: boolean;
+      }) => observed,
+      waitWithinObservationDeadline: vi.fn(),
+      recordInteractivePhase: vi.fn(),
+      readModelRequests: vi.fn(),
+      waitForModelRequestBeforeDeadline: () => {
+        prompted = true;
+        return Promise.resolve();
+      },
+    };
+    const observe = runInThisContext(
+      `(async (bindings) => { const {${Object.keys(bindings).join(",")}} = bindings;
+      let codexSessionId, codexLedgerBaseline, codexTurnId, codexTerminalLedger;
+      let armPending = true, preArmExitPhase;
+      ${source.slice(baselineStart, baselineEnd)}
+      ${source.slice(terminalStart, terminalEnd)}
+      ${source.slice(flowStart, flowEnd)}
+      return {codexSessionId, codexLedgerBaseline, codexTurnId, codexTerminalLedger}; })`,
+    ) as (input: typeof bindings) => Promise<{
+      codexSessionId: string;
+      codexLedgerBaseline: (typeof record)[];
+      codexTurnId: string;
+      codexTerminalLedger: (typeof record)[];
+    }>;
+    const observed = await observe(bindings);
+    expect(observed).toEqual({
+      codexSessionId: "session-1",
+      codexLedgerBaseline: [{ ...record, content: meta }],
+      codexTurnId: "turn-1",
+      codexTerminalLedger: [record],
+    });
+    expect(reads).toHaveBeenCalled();
+    expect(bindings.waitWithinObservationDeadline).not.toHaveBeenCalled();
+  });
+});
 describe("fresh authenticated session baseline", () => {
   it("uses only the fresh session metadata byte prefix while retaining append and identity proof", () => {
     const source = readIntegration("codex-pty-scenario.mjs");
@@ -55,7 +147,7 @@ describe("fresh authenticated session baseline", () => {
         expectedAssistantMessage: message,
       };
       const capture = runInThisContext(
-        `({readCodexSessionLedgerRecords, homeDescriptor, codexSessionIdentity, codexTurnTerminalObservedAfterBaseline, expectedAssistantMessage}) => { let codexSessionId, codexLedgerBaseline; ${source.slice(start, end)}; recordModelBaseline(); return codexLedgerBaseline; }`,
+        `({readCodexSessionLedgerRecords, homeDescriptor, codexSessionIdentity, codexTurnTerminalObservedAfterBaseline, expectedAssistantMessage}) => { let codexSessionId, codexLedgerBaseline; ${source.slice(start, end)}; recordModelBaseline(readCodexSessionLedgerRecords(homeDescriptor)); return codexLedgerBaseline; }`,
       ) as (input: typeof bindings) => ReturnType<typeof record>[];
       return capture(bindings);
     };
