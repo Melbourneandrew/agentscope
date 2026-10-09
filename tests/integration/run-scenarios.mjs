@@ -120,6 +120,7 @@ import {
   requireSubstrateCertificationReplay,
 } from "./dist/controller.js";
 import {
+  leakedChildReadinessIsValid,
   leakedChildReadinessWasObserved,
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./dist/substrate-certification.js";
@@ -2392,6 +2393,17 @@ const publishOperationFailureDiagnostic = (
         processContext
           ? { process: processFailureObservation(error, processContext) }
           : {}),
+        ...(slot === "runtime-original" && processContext?.leakedChild
+          ? {
+              leakedChild: {
+                fixtureCaptured:
+                  processContext.leakedChild.fixtureCaptured === true,
+                complete: processContext.leakedChild.complete === true,
+                readinessValid:
+                  processContext.leakedChild.readinessValid === true,
+              },
+            }
+          : {}),
       })}\n`,
     );
     if (bytes.length <= 512) writeSync(2, bytes);
@@ -2808,7 +2820,25 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
     default:
       return;
   }
-  if (!observed) throw new Error("integration.certification.predicate");
+  if (!observed) {
+    const error = new Error("integration.certification.predicate");
+    if (substrateCertificationCase === "leaked-child") {
+      try {
+        publishOperationFailureDiagnostic("runtime-original", error, plan, {
+          leakedChild: {
+            fixtureCaptured: fixtureCaptured === true,
+            complete: result?.resultStatus === "complete",
+            readinessValid: leakedChildReadinessIsValid(
+              result?.certificationReadiness,
+            ),
+          },
+        });
+      } catch {
+        // Optional projection cannot replace the original predicate refusal.
+      }
+    }
+    throw error;
+  }
   observeSubstrateCertificationPredicate(
     plan.runId,
     SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
