@@ -32,6 +32,7 @@ import {
 } from "./controller-failure-diagnostic.js";
 
 type OperationDiagnosticFunctions = {
+  mockServerProducerRefusalObservation: (output: unknown) => unknown;
   joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
   publishOperationFailureDiagnostic: (
     slot: string,
@@ -74,6 +75,57 @@ const terminalMockContainer = (containerId: string, runId: string) => ({
     FinishedAt: "2026-01-01T00:00:00Z",
   },
 });
+const diagnosticDockerFixture =
+  (
+    step: (slot: string, value?: unknown) => unknown,
+    state: {
+      now: number;
+      logs: unknown;
+      logsFail: boolean;
+      logsAdvance: number;
+      afterLogs: (() => void) | undefined;
+      signals: AbortSignal[];
+    },
+    containerId: string,
+    container: unknown,
+  ) =>
+  (
+    args: string[],
+    signal: AbortSignal,
+    options: {
+      terminal: boolean;
+      timeout?: number;
+      maxBuffer?: number;
+      mutationCapable?: boolean;
+    },
+  ) => {
+    state.signals.push(signal);
+    if (args[0] !== "cp") expect(signal.aborted).toBe(false);
+    expect(options.terminal).toBe(true);
+    if (args[0] === "logs") {
+      expect(args).toEqual(["logs", "--tail", "16", containerId]);
+      expect(options.timeout).toBe(1000 - state.now);
+      expect(options.maxBuffer).toBe(65536);
+      expect(options.mutationCapable).toBeUndefined();
+      step("join-producer-log-observation");
+      state.now += state.logsAdvance;
+      state.afterLogs?.();
+      if (state.logsFail) throw new Error("PRIVATE logs");
+      return state.logs;
+    }
+    if (args[0] === "cp")
+      return step(
+        args[1]?.endsWith("requests.json")
+          ? "join-ledger-requests"
+          : "join-ledger-complete",
+      );
+    return step(
+      args[1] === "wait" ? "join-container-wait" : "join-container-inspect",
+      {
+        stdout: args[1] === "wait" ? "0\n" : JSON.stringify([container]),
+      },
+    );
+  };
 const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   const source = readIntegration("run-scenarios.mjs");
   const start = source.indexOf("const operationFailureSlots =");
@@ -94,6 +146,12 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
     now: 100,
     failure: error as unknown,
     beforeFailure: undefined as (() => void) | undefined,
+    logs: { stdout: "", stderr: "" } as unknown,
+    logsFail: false,
+    logsAdvance: 0,
+    afterLogs: undefined as (() => void) | undefined,
+    signals: [] as AbortSignal[],
+    timeouts: [] as number[],
   };
   const step = (slot: string, value?: unknown) => {
     calls.push(slot);
@@ -106,10 +164,16 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   };
   const container = terminalMockContainer(containerId, runId);
   const functions = runInNewContext(
-    `${source.slice(start, end)}; ({ joinMockServer, publishOperationFailureDiagnostic })`,
+    `${source.slice(start, end)}; ({ joinMockServer, publishOperationFailureDiagnostic, mockServerProducerRefusalObservation })`,
     {
       Buffer,
-      AbortSignal,
+      AbortSignal: {
+        any: (signals: AbortSignal[]) => AbortSignal.any(signals),
+        timeout: (milliseconds: number) => {
+          state.timeouts.push(milliseconds);
+          return AbortSignal.timeout(milliseconds);
+        },
+      },
       types,
       completionCopySourceMissingResponseMatches,
       knownFailureCode,
@@ -144,24 +208,12 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
         };
       },
       verifyMockServerControlBoundary: () => step("join-control-boundary"),
-      dockerWithSignal: (
-        args: string[],
-        signal: AbortSignal,
-        options: { terminal: boolean },
-      ) => {
-        expect(signal.aborted).toBe(false);
-        expect(options.terminal).toBe(true);
-        if (args[0] === "cp")
-          return step(
-            args[1]?.endsWith("requests.json")
-              ? "join-ledger-requests"
-              : "join-ledger-complete",
-          );
-        return step(
-          args[1] === "wait" ? "join-container-wait" : "join-container-inspect",
-          { stdout: args[1] === "wait" ? "0\n" : JSON.stringify([container]) },
-        );
-      },
+      dockerWithSignal: diagnosticDockerFixture(
+        step,
+        state,
+        containerId,
+        container,
+      ),
       artifactsRoot: "/owned",
       resolve,
       mkdirSync: () => step("join-ledger-directory"),
@@ -214,7 +266,7 @@ describe("actual-source optional original operation diagnostics", () => {
         f.functions.joinMockServer(f.plan, new AbortController().signal),
       ).rejects.toBe(f.error);
       expect(f.calls.at(-1)).toBe(slot);
-      expect(f.output).toHaveLength(1);
+      expect(f.output).toHaveLength(slot === "join-ledger-complete" ? 2 : 1);
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
       expect(
         JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
@@ -253,6 +305,7 @@ describe("actual-source optional original operation diagnostics", () => {
       "join-control-stop",
       "join-container-wait",
       "join-container-inspect",
+      "join-producer-log-observation",
       "join-ledger-directory",
       "join-ledger-requests",
       "join-ledger-complete",
@@ -269,6 +322,7 @@ describe("actual-source optional original operation diagnostics", () => {
       f.functions.joinMockServer(f.plan, new AbortController().signal),
     ).rejects.toThrow("integration.isolation.mockserver-terminal");
     expect(f.calls.at(-1)).toBe("join-container-inspect");
+    expect(f.calls).not.toContain("join-producer-log-observation");
     expect(
       JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
     ).toEqual({
@@ -294,6 +348,164 @@ describe("actual-source optional original operation diagnostics", () => {
   );
 });
 
+const producerRefusalLine = (
+  stage = "eligibility",
+  bits = [true, false, true, false],
+) =>
+  `[agentscope-mockserver-ledger:v1 stage=${stage} terminal=${bits[0]} snapshotAvailable=${bits[1]} persistenceClosed=${bits[2]} persistenceFailed=${bits[3]}]\n`;
+describe("actual-source terminal producer refusal projection", () => {
+  it.each(["eligibility", "publication"])(
+    "projects only fixed %s fields for all primitive boolean tuples",
+    (stage) => {
+      const f = operationDiagnosticFixture();
+      for (let value = 0; value < 16; value++) {
+        const bits = [0, 1, 2, 3].map((index) => Boolean(value & (1 << index)));
+        const line = producerRefusalLine(stage, bits);
+        expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+        expect(
+          f.functions.mockServerProducerRefusalObservation({
+            stdout: "PRIVATE unrelated\n",
+            stderr: line,
+          }),
+        ).toEqual({
+          stage,
+          terminal: bits[0],
+          snapshotAvailable: bits[1],
+          persistenceClosed: bits[2],
+          persistenceFailed: bits[3],
+        });
+      }
+    },
+  );
+  it.each([
+    "absent",
+    "duplicate",
+    "foreign-stage",
+    "foreign-version",
+    "nonboolean",
+    "extra",
+    "changed-key",
+    "crlf",
+    "oversized",
+    "getter",
+    "proxy",
+  ])(
+    "leaves %s producer output unknown without invoking hostile data",
+    (kind) => {
+      const f = operationDiagnosticFixture();
+      const line = producerRefusalLine();
+      let reads = 0;
+      let stdout = "";
+      let stderr = line;
+      if (kind === "absent") stderr = "PRIVATE unrelated\n";
+      if (kind === "duplicate") stdout = line;
+      if (kind === "foreign-stage") stderr = producerRefusalLine("PRIVATE");
+      if (kind === "foreign-version") stderr = line.replace(":v1", ":v2");
+      if (kind === "nonboolean")
+        stderr = line.replace("terminal=true", "terminal=1");
+      if (kind === "extra") stderr = line.replace("]\n", " private=PRIVATE]\n");
+      if (kind === "changed-key")
+        stderr = line.replace("snapshotAvailable", "private");
+      if (kind === "crlf") stderr = line.replace("\n", "\r\n");
+      if (kind === "oversized") stdout = "PRIVATE".repeat(10_000);
+      let output: unknown = { stdout, stderr };
+      if (kind === "getter")
+        Object.defineProperty(output, "stderr", {
+          get: () => {
+            reads++;
+            throw new Error("PRIVATE getter");
+          },
+        });
+      if (kind === "proxy")
+        output = new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor: () => {
+              reads++;
+              throw new Error("PRIVATE proxy");
+            },
+          },
+        );
+      expect(
+        f.functions.mockServerProducerRefusalObservation(output),
+      ).toBeUndefined();
+      expect(reads).toBe(0);
+    },
+  );
+});
+describe("actual-source optional terminal log read", () => {
+  it("spends only the original join budget and does not renew it for a later copy", async () => {
+    const f = operationDiagnosticFixture("join-ledger-requests");
+    const original = new AbortController();
+    f.state.logsAdvance = 900;
+    // The injected boot clock reaches the original deadline; its original
+    // cancellation authority becomes aborted before the next bounded client.
+    f.state.afterLogs = () => {
+      original.abort();
+    };
+    await expect(
+      f.functions.joinMockServer(f.plan, original.signal),
+    ).rejects.toBe(f.error);
+    expect(f.state.now).toBe(1000);
+    expect(f.state.timeouts).toEqual([900]);
+    expect(f.state.signals).toHaveLength(4);
+    expect(new Set(f.state.signals).size).toBe(1);
+    expect(f.state.signals.at(-1)?.aborted).toBe(true);
+    expect(f.calls.at(-1)).toBe("join-ledger-requests");
+    expect(
+      f.calls.filter((slot) => slot === "join-producer-log-observation"),
+    ).toHaveLength(1);
+    expect(f.output).toHaveLength(1);
+    expect(f.output.join("")).not.toContain("PRIVATE");
+  });
+  it.each([false, true])(
+    "retains original copy refusal when logs fail=%s",
+    async (logsFail) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      f.state.logsFail = logsFail;
+      f.state.logs = {
+        stdout: "PRIVATE unrelated\n",
+        stderr: producerRefusalLine(),
+      };
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.calls.indexOf("join-producer-log-observation")).toBeGreaterThan(
+        f.calls.indexOf("join-container-inspect"),
+      );
+      expect(f.calls.indexOf("join-producer-log-observation")).toBeLessThan(
+        f.calls.indexOf("join-ledger-requests"),
+      );
+      expect(f.calls.at(-1)).toBe("join-ledger-complete");
+      expect(f.output).toHaveLength(2);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(Buffer.byteLength(f.output[1]!)).toBeLessThanOrEqual(256);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+      expect(JSON.parse(f.output[1]!.split("diagnostic:")[1]!)).toEqual({
+        runId: f.plan.runId,
+        stage: logsFail ? "unknown" : "eligibility",
+        terminal: logsFail ? null : true,
+        snapshotAvailable: logsFail ? null : false,
+        persistenceClosed: logsFail ? null : true,
+        persistenceFailed: logsFail ? null : false,
+      });
+    },
+  );
+  it("does not make a producer diagnostic acceptance authority or replace sink failure", async () => {
+    const f = operationDiagnosticFixture();
+    f.state.logs = { stdout: "", stderr: producerRefusalLine("publication") };
+    await f.functions.joinMockServer(f.plan, new AbortController().signal);
+    expect(f.output).toEqual([]);
+    const failed = operationDiagnosticFixture("join-ledger-complete", true);
+    await expect(
+      failed.functions.joinMockServer(
+        failed.plan,
+        new AbortController().signal,
+      ),
+    ).rejects.toBe(failed.error);
+    expect(failed.output).toEqual([]);
+  });
+});
 const copyRow = (output: string[]) =>
   JSON.parse(output[0]!.slice(output[0]!.indexOf(":") + 1)) as {
     process: Record<string, unknown>;

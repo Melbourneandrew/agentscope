@@ -557,6 +557,36 @@ describe("single upstream received-request capture and closure", () => {
   });
 });
 describe("terminal persistence and existing stop barrier", () => {
+  it("keeps the actual fixed refusal format content-free and bounded for every boolean tuple", () => {
+    const start = source.indexOf("const persistenceCompletion =");
+    const end = source.indexOf("const persistence =", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const completion = runInNewContext(
+      `${source.slice(start, end)}; persistenceCompletion`,
+    ) as string;
+    const helper = completion.slice(
+      0,
+      completion.indexOf("public void completeFinalLedger"),
+    );
+    const format = helper.match(/System\.err\.printf\("([^"\n]+)"/u)?.[1];
+    expect(format).toBe(
+      "[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b]\\n",
+    );
+    expect(helper).not.toMatch(
+      /snapshot\.|filePath|throwable|\.getMessage|\.toString/u,
+    );
+    for (const stage of ["eligibility", "publication"])
+      for (let value = 0; value < 16; value++) {
+        let index = 0;
+        const line = format!
+          .replace("%s", stage)
+          .replace(/%b/gu, () => String(Boolean(value & (1 << index++))))
+          .replace(/\\n$/u, "\n");
+        expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+        expect(line).not.toContain("%b");
+      }
+  });
   it("always closes persistence, preserves first failure, and publishes a fixed receipt only after snapshot and receipt close", () => {
     const input = [
       "    private final Writer writer;",
@@ -580,10 +610,10 @@ describe("terminal persistence and existing stop barrier", () => {
     );
     expect(patched).toContain('equals("/control/private/requests.json")');
     expect(patched).toContain(
-      'equals("/control/private/requests.json")) {\n                return;',
+      'equals("/control/private/requests.json")) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null);\n                return;',
     );
     expect(patched).toContain(
-      "if (bytes.length > 1024 * 1024) {\n                return;",
+      "if (bytes.length > 1024 * 1024) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null);\n                return;",
     );
     expect(patched.indexOf("Files.write(filePath")).toBeLessThan(
       patched.indexOf("receipt.write"),
@@ -593,6 +623,17 @@ describe("terminal persistence and existing stop barrier", () => {
     );
     expect(patched).toContain("java.nio.file.LinkOption.NOFOLLOW_LINKS");
     expect(patched).toContain("java.nio.file.StandardCopyOption.ATOMIC_MOVE");
+    expect(patched).toContain(
+      "recordedPersistenceFailed = true;\n            observeFinalLedgerRefusal(true, terminal, snapshot != null);",
+    );
+    expect(patched).toContain(
+      "catch (Throwable ignored) {\n            // Optional fixed observation cannot change persistence or completion.",
+    );
+    expect(
+      patched.match(
+        /observeFinalLedgerRefusal\((?:false|true), terminal, snapshot != null\);/gu,
+      ),
+    ).toHaveLength(3);
   });
   it("moves persistence close after log drain and accepts finality only after original lifecycle joins", () => {
     const state = patches.httpState(

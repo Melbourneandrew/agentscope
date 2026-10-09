@@ -2431,6 +2431,92 @@ const publishOperationFailureDiagnostic = (
     // Optional content-free observation cannot replace the original error.
   }
 };
+const mockServerProducerRefusalObservation = (output) => {
+  try {
+    if (typeof output !== "object" || output === null || types.isProxy(output))
+      return;
+    const values = ["stdout", "stderr"].map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(output, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) return;
+      return typeof descriptor.value === "string"
+        ? descriptor.value
+        : undefined;
+    });
+    if (
+      values.some((value) => value === undefined) ||
+      values.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) > 65536
+    )
+      return;
+    const prefix = "[agentscope-mockserver-ledger:";
+    const lines = values
+      .join("\n")
+      .split("\n")
+      .filter((line) => line.startsWith(prefix));
+    if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
+    const parts = lines[0].split(" ");
+    if (
+      parts.length !== 6 ||
+      parts[0] !== "[agentscope-mockserver-ledger:v1" ||
+      !["stage=eligibility", "stage=publication"].includes(parts[1])
+    )
+      return;
+    const names = [
+      "terminal",
+      "snapshotAvailable",
+      "persistenceClosed",
+      "persistenceFailed",
+    ];
+    const observation = { stage: parts[1].slice(6) };
+    for (let index = 0; index < names.length; index++) {
+      const name = names[index];
+      const suffix = index === names.length - 1 ? "]" : "";
+      if (
+        ![`${name}=true${suffix}`, `${name}=false${suffix}`].includes(
+          parts[index + 2],
+        )
+      )
+        return;
+      observation[name] = parts[index + 2] === `${name}=true${suffix}`;
+    }
+    return observation;
+  } catch {
+    // Unavailable diagnostic bytes never establish producer authority.
+  }
+};
+const readProducerRefusal = async (containerId, signal, deadline) => {
+  try {
+    const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+    if (remaining > 0 && !signal.aborted)
+      return mockServerProducerRefusalObservation(
+        await dockerWithSignal(["logs", "--tail", "16", containerId], signal, {
+          terminal: true,
+          maxBuffer: 65536,
+          timeout: remaining,
+        }),
+      );
+  } catch {
+    // Optional read adds bounded work, but cannot renew the original deadline.
+  }
+};
+const publishMockServerProducerRefusalDiagnostic = (plan, observation) => {
+  try {
+    const runId = plan.runId;
+    if (typeof runId !== "string" || !/^[a-f0-9]{16}$/u.test(runId)) return;
+    const bytes = Buffer.from(
+      `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify({
+        runId,
+        stage: observation?.stage ?? "unknown",
+        terminal: observation?.terminal ?? null,
+        snapshotAvailable: observation?.snapshotAvailable ?? null,
+        persistenceClosed: observation?.persistenceClosed ?? null,
+        persistenceFailed: observation?.persistenceFailed ?? null,
+      })}\n`,
+    );
+    if (bytes.length <= 256) writeSync(2, bytes);
+  } catch {
+    // Optional bounded sink cannot replace the original join failure.
+  }
+};
 /* eslint-disable complexity -- exact closed container terminal witness */
 const assertJoinedMockServerTerminal = (
   plan,
@@ -2486,6 +2572,7 @@ const joinMockServer = async (plan, signal) => {
   let deadline;
   let joinSignal;
   let containerId;
+  let refusal;
   try {
     containerId = mockServerContainerIdentities.get(plan.runId);
     deadline = mockServerJoinDeadlines.get(plan.runId);
@@ -2529,6 +2616,7 @@ const joinMockServer = async (plan, signal) => {
     );
     failureSlot = "join-terminal-witness";
     assertJoinedMockServerTerminal(plan, containerId, waited, inspected);
+    refusal = await readProducerRefusal(containerId, joinSignal, deadline);
     failureSlot = "join-ledger-directory";
     const ledgerDirectory = createFinalMockServerLedgerDirectory(plan);
     for (const name of ["requests.json", "requests.complete"]) {
@@ -2592,12 +2680,10 @@ const joinMockServer = async (plan, signal) => {
       completeClaudeCollectorFixture(plan, batches, ledger);
     }
   } catch (error) {
-    publishOperationFailureDiagnostic(failureSlot, error, plan, {
-      containerId,
-      signal,
-      joinSignal,
-      deadline,
-    });
+    const context = { containerId, signal, joinSignal, deadline };
+    publishOperationFailureDiagnostic(failureSlot, error, plan, context);
+    if (failureSlot === "join-ledger-complete")
+      publishMockServerProducerRefusalDiagnostic(plan, refusal);
     throw error;
   }
 };
