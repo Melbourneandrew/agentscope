@@ -126,7 +126,7 @@ export const parseMavenFailureObservation = (value) => {
   if (
     numbers.some(
       (number, index) =>
-        number < 0 || number > [256, 4, 12, 8, 999999, 999999, 21][index],
+        number < 0 || number > [256, 4, 12, 9, 999999, 999999, 21][index],
     )
   )
     return undefined;

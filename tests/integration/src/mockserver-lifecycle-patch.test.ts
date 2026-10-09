@@ -57,6 +57,7 @@ const patches = runInNewContext(
   | "httpState"
   | "lifeCycle"
   | "jsonBody"
+  | "jsonBodyDTO"
   | "requestHandler"
   | "actionHandler"
   | "logger",
@@ -210,10 +211,11 @@ describe("pinned upstream unmatched-response evidence transformations", () => {
     ).toThrow();
     expect(() => patches.logger(`${loggerSource}\n${loggerSource}`)).toThrow();
   });
-  it("closes new source ordinals without expanding the fixed parser beyond eight", () => {
+  it("closes source ordinals at nine while preserving the original eight", () => {
     for (const [file, ordinal] of [
       ["HttpActionHandler.java", 7],
       ["MockServerLogger.java", 8],
+      ["JsonBodyDTOSerializer.java", 9],
     ] as const) {
       expect(supplierSourceUnit(file)).toBe(ordinal);
       expect(
@@ -222,56 +224,60 @@ describe("pinned upstream unmatched-response evidence transformations", () => {
       ).toBe(ordinal);
     }
     expect(
-      parseMavenFailureObservation("identified,2,0,5,9,1,0,12"),
+      parseMavenFailureObservation("identified,2,0,5,10,1,0,12"),
     ).toBeUndefined();
   });
 });
 describe("pinned upstream final-ledger lifecycle transformations", () => {
-  it("retains exact raw bytes only on the existing recorded-request serializer path", () => {
-    const source =
-      'import java.util.Arrays;\nboolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));';
-    const patched = patches.jsonBody(source);
-    expect(patched).toBe(
-      'boolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBody.getRawBytes() != null;',
-    );
-    for (const raw of ['{"input":"one"}', '{ "input" : "one" }']) {
-      const bytes = Buffer.from(raw);
-      for (const enabled of [false, true]) {
-        for (const held of [null, bytes]) {
-          const recordsRaw = runInNewContext(
-            patched.slice(patched.indexOf(" = ") + 3, -1),
-            {
-              Boolean: { TRUE: { equals: (value: unknown) => value === true } },
-              provider: {
-                getAttribute: (name: string) =>
-                  name === "emitRawBytes" && enabled,
+  it.each(["jsonBody", "jsonBodyDTO"] as const)(
+    "retains %s raw bytes only on the recorded-request path",
+    (name) => {
+      const source = `import java.util.Arrays;\nboolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && ${name}.getRawBytes() != null\n            && !Arrays.equals(${name}.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));`;
+      const patched = patches[name](source);
+      expect(patched).toBe(
+        `boolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && ${name}.getRawBytes() != null;`,
+      );
+      for (const raw of ['{"input":"one"}', '{ "input" : "one" }']) {
+        const bytes = Buffer.from(raw);
+        for (const enabled of [false, true]) {
+          for (const held of [null, bytes]) {
+            const recordsRaw = runInNewContext(
+              patched.slice(patched.indexOf(" = ") + 3, -1),
+              {
+                Boolean: {
+                  TRUE: { equals: (value: unknown) => value === true },
+                },
+                provider: {
+                  getAttribute: (name: string) =>
+                    name === "emitRawBytes" && enabled,
+                },
+                [name]: { getRawBytes: () => held },
               },
-              jsonBody: { getRawBytes: () => held },
-            },
-          ) as boolean;
-          expect(recordsRaw).toBe(enabled && held !== null);
-          if (recordsRaw)
-            expect(Buffer.from(bytes.toString("base64"), "base64")).toEqual(
-              bytes,
-            );
+            ) as boolean;
+            expect(recordsRaw).toBe(enabled && held !== null);
+            if (recordsRaw)
+              expect(Buffer.from(bytes.toString("base64"), "base64")).toEqual(
+                bytes,
+              );
+          }
         }
       }
-    }
-    expect(() =>
-      patches.jsonBody(source.replace(" != null", " == null")),
-    ).toThrow();
-    expect(() => patches.jsonBody(`${source}\n${source}`)).toThrow();
-    expect(patched).not.toContain("import java.util.Arrays;");
-    expect(() =>
-      patches.jsonBody(source.replace("import java.util.Arrays;\n", "")),
-    ).toThrow();
-    expect(() =>
-      patches.jsonBody(`import java.util.Arrays;\n${source}`),
-    ).toThrow();
-  });
-  it("admits only the eight exact source members, never an arbitrary Java preimage", () => {
-    expect(lifecycleSourcePins).toHaveLength(8);
-    expect(new Set(lifecycleSourcePins.map(({ path }) => path)).size).toBe(8);
+      expect(() =>
+        patches[name](source.replace(" != null", " == null")),
+      ).toThrow();
+      expect(() => patches[name](`${source}\n${source}`)).toThrow();
+      expect(patched).not.toContain("import java.util.Arrays;");
+      expect(() =>
+        patches[name](source.replace("import java.util.Arrays;\n", "")),
+      ).toThrow();
+      expect(() =>
+        patches[name](`import java.util.Arrays;\n${source}`),
+      ).toThrow();
+    },
+  );
+  it("admits only the nine exact source members, never an arbitrary Java preimage", () => {
+    expect(lifecycleSourcePins).toHaveLength(9);
+    expect(new Set(lifecycleSourcePins.map(({ path }) => path)).size).toBe(9);
     for (const pin of lifecycleSourcePins) {
       expect(pin.sha256).toMatch(/^[a-f0-9]{64}$/u);
       expect(() =>

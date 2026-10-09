@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runInThisContext } from "node:vm";
+import { runInNewContext, runInThisContext } from "node:vm";
 import {
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
@@ -29,6 +29,70 @@ import {
 const runId = "0123456789abcdef";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+describe("recorded DTO exact byte projection", () => {
+  it.each([
+    '{"model":"fixture-model","input":"unique prompt"}',
+    '{ "model" : "fixture-model", "input" : "unique prompt" }',
+  ])("projects the same original DTO bytes %s", (wire) => {
+    const source = readIntegration("mockserver-material/lifecycle-patch.mjs");
+    const patches = runInNewContext(
+      `${source.slice(source.indexOf("const root ="), source.indexOf("export const patchMockServerLifecycleSource")).replaceAll("export const ", "const ")}\npatches`,
+    ) as Record<string, (value: string) => string>;
+    const input =
+      'import java.util.Arrays;\nboolean rawBytesNonDefault = Boolean.TRUE.equals(provider.getAttribute("emitRawBytes"))\n            && jsonBodyDTO.getRawBytes() != null\n            && !Arrays.equals(jsonBodyDTO.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));';
+    expect(patches.jsonBodyDTO).toBeTypeOf("function");
+    const patched = patches.jsonBodyDTO!(input);
+    const bytes = Buffer.from(wire);
+    const retainRaw = runInNewContext(
+      patched.slice(patched.indexOf(" = ") + 3, -1),
+      {
+        Boolean: { TRUE: { equals: (value: unknown) => value === true } },
+        provider: { getAttribute: () => true },
+        jsonBodyDTO: { getRawBytes: () => bytes },
+      },
+    ) as boolean;
+    expect(retainRaw).toBe(true);
+    const json: unknown = JSON.parse(wire);
+    const row = {
+      method: "POST",
+      path: "/v1/responses",
+      headers: { authorization: ["Bearer synthetic"] },
+      body: json,
+    };
+    expect(() =>
+      projectMockServerRequests(Buffer.from(JSON.stringify([row]))),
+    ).toThrow();
+    const body = {
+      type: "JSON",
+      json,
+      ...(retainRaw ? { rawBytes: bytes.toString("base64") } : {}),
+    };
+    const result = projectMockServerRequests(
+      Buffer.from(JSON.stringify([{ ...row, body }])),
+      createHash("sha256").update("unique prompt").digest("hex"),
+    );
+    expect(result[0]).toMatchObject({
+      bodyBytes: bytes.length,
+      bodySha256: createHash("sha256").update(bytes).digest("hex"),
+      promptOccurrenceCount: 1,
+      credentialHeaderCount: 1,
+    });
+    expect(JSON.stringify(result)).not.toContain("unique prompt");
+    expect(JSON.stringify(result)).not.toContain("Bearer synthetic");
+    expect(() =>
+      projectMockServerRequests(
+        Buffer.from(
+          JSON.stringify([
+            {
+              ...row,
+              body: { ...body, rawBytes: `${bytes.toString("base64")} ` },
+            },
+          ]),
+        ),
+      ),
+    ).toThrow();
+  });
+});
 describe("post-prompt authenticated session baseline", () => {
   it.each([false, true])(
     "waits for the first rollout under the original deadline (expiry=%s)",
