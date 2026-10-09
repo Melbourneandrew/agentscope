@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-c643b643f997dde06e5b6f503ec621925b534a1d3a9b47dd16a502025220b236",
+  "manifestIdentity": "sha256-b67d329b23ccec0bb5fe6e15309c98c31d5cde225d299b9f0adb136ba3387667",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -88,7 +88,7 @@
         "version": "2.1.245",
         "platform": "linux-x64",
         "platformIdentity": "sha256-9d99a75171aea000c711b34c0e5e3f28d3d537dd99d110eafbfbc2bd8e52c2bf",
-        "verifierImage": "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+        "verifierImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
         "binary": {
           "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/linux-x64/claude",
           "bytes": 391948592,
