@@ -1118,7 +1118,9 @@ describe("integration cleanup authority", () => {
     expect(observer).toContain("code: knownFailureCode(error)");
     expect(observer).toContain("catch {");
     expect(observer).not.toMatch(/error\.(?:message|stack|name|cause)/u);
-    expect(outer.slice(observerEnd)).not.toContain("writeSync(2,");
+    expect(
+      outer.slice(0, observerStart) + outer.slice(observerEnd),
+    ).not.toContain("writeSync(2,");
     expect(diagnostic).toContain(
       "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
     );
