@@ -1903,19 +1903,16 @@ describe("Codex interactive diagnostic order", () => {
     expect(scenario).not.toContain("recordInteractivePhase(classification)");
     expectCodexNativeBeforeCollectorCompletion(scenario);
     const modelRequestObservation = scenario.indexOf(
-      "await waitForModelRequestBeforeDeadline({",
+      "const modelRequests = await readTerminalModelRequests();",
     );
     const modelRequestPhase = scenario.indexOf(
-      'recordInteractivePhase("model-request")',
-      modelRequestObservation,
+      'recordInteractivePhase("verify-gate")',
     );
     const settlementPhase = scenario.indexOf(
       'recordInteractivePhase("trace-settlement")',
-      modelRequestPhase,
     );
     const traceObservation = scenario.indexOf(
       "const translated = translateCodexNativeObservations(",
-      modelRequestPhase,
     );
     const terminalLedgerRead = scenario.indexOf(
       "const records = readCodexSessionLedgerRecords(homeDescriptor);",
@@ -1933,12 +1930,14 @@ describe("Codex interactive diagnostic order", () => {
       "sessionId: codexSessionId,",
       terminalObservation,
     );
-    expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
+    expect(modelRequestObservation).toBeGreaterThan(modelRequestPhase);
+    expect(modelRequestObservation).toBeGreaterThan(terminalObservation);
+    expect(scenario).not.toContain("waitForModelRequestBeforeDeadline");
     expect(terminalDeadlinePrecheck).toBeGreaterThan(-1);
     expect(terminalLedgerRead).toBeGreaterThan(terminalDeadlinePrecheck);
     expect(terminalObservation).toBeGreaterThan(terminalLedgerRead);
     expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
-    expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
+    expect(settlementPhase).toBeLessThan(modelRequestPhase);
     expect(traceObservation).toBeGreaterThan(terminalObservation);
     expect(settlementPhase).toBeLessThan(traceObservation);
     for (let index = 0; index < expected.length; index += 1)

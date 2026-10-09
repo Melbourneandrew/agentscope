@@ -504,7 +504,6 @@ const {
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
   terminalObservationBeforeDeadline,
-  waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } = evidenceModule;
 const { correlateCodexNativeObservations } = oracleModule;
@@ -820,12 +819,18 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
     // A fresh Codex rollout is materialized by the first submitted turn,
     // not by idle readiness or the process-topology checkpoint. Bind its
     // actual byte-zero metadata only inside this existing observation path.
-    if (codexLedgerBaseline === undefined) recordModelBaseline(records);
-    const turnId = codexTurnTerminalIdAfterBaseline(
-      records,
-      codexLedgerBaseline,
-      expectedAssistantMessage,
-    );
+    // An authenticated empty observation can precede first materialization.
+    // Once bound, disappearance still goes through strict evolution checks.
+    if (codexLedgerBaseline === undefined && records.length !== 0)
+      recordModelBaseline(records);
+    const turnId =
+      codexLedgerBaseline === undefined
+        ? null
+        : codexTurnTerminalIdAfterBaseline(
+            records,
+            codexLedgerBaseline,
+            expectedAssistantMessage,
+          );
     if (
       terminalObservationBeforeDeadline({
         observed: turnId !== null,
@@ -1109,15 +1114,6 @@ try {
   recordInteractivePhase("model-gate-arm-start");
   armPending = false;
   recordInteractivePhase("model-gate-arm-complete");
-  await waitForModelRequestBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    request: readModelRequests,
-    wait: (milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  });
-  recordInteractivePhase("model-request-observed");
-  recordInteractivePhase("model-request");
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes

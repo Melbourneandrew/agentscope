@@ -614,7 +614,7 @@ describe("integration capability manifest", () => {
       '    "--dangerously-bypass-hook-trust",\n',
     );
     const modelRequest = source.indexOf(
-      "  await waitForModelRequestBeforeDeadline({\n",
+      "  const modelRequests = await readTerminalModelRequests();\n",
     );
     const traceDeadline = source.indexOf(
       "  const traceDeadline = deadline - 3_000;\n",
@@ -622,7 +622,7 @@ describe("integration capability manifest", () => {
     );
     const terminalWait = source.indexOf(
       "  ({ turnId: codexTurnId, records: codexTerminalLedger } =\n    await waitForCodexTurnTerminal(traceDeadline));\n",
-      modelRequest,
+      codexLaunch,
     );
     const checkpointAcknowledgement = source.indexOf(
       "    await Promise.race([checkpointWitness, earlyCodexExit]);\n",
@@ -636,14 +636,14 @@ describe("integration capability manifest", () => {
       source.indexOf("const waitForCodexStopBeforeExit ="),
     );
     const metadataBaseline = terminalObserver.indexOf(
-      "if (codexLedgerBaseline === undefined) recordModelBaseline(records);",
+      "recordModelBaseline(records);",
     );
     const terminalLedgerRead = terminalObserver.indexOf(
       "const records = readCodexSessionLedgerRecords(homeDescriptor);",
     );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
-      modelRequest,
+      codexLaunch,
     );
     const traceQueryAfterJoin = source.indexOf(
       "  const translated = translateCodexNativeObservations({\n",
@@ -666,8 +666,10 @@ describe("integration capability manifest", () => {
     expect(checkpointWait).toBeGreaterThan(codexLaunch);
     expect(checkpointWait).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
-    expect(terminalWait).toBeGreaterThan(modelRequest);
-    expect(source.slice(checkpointAcknowledgement, modelRequest)).not.toContain(
+    expect(terminalWait).toBeLessThan(modelRequest);
+    expect(codexJoin).toBeLessThan(modelRequest);
+    expect(source).not.toContain("waitForModelRequestBeforeDeadline");
+    expect(source.slice(checkpointAcknowledgement, terminalWait)).not.toContain(
       "recordModelBaseline(",
     );
     expect(terminalLedgerRead).toBeGreaterThan(
@@ -676,9 +678,7 @@ describe("integration capability manifest", () => {
     expect(terminalLedgerRead).toBeGreaterThan(-1);
     expect(metadataBaseline).toBeGreaterThan(terminalLedgerRead);
     expect(metadataBaseline).toBeLessThan(
-      terminalObserver.indexOf(
-        "const turnId = codexTurnTerminalIdAfterBaseline(",
-      ),
+      terminalObserver.indexOf("codexTurnTerminalIdAfterBaseline("),
     );
     expect(source).not.toContain(
       "inspectCodexSessionStartBeforeFirstModelRequestAdmission",
@@ -762,7 +762,7 @@ describe("integration capability manifest", () => {
     const traceSearchResultPhase = source.indexOf(
       '    record: () => recordInteractivePhase("trace-search-result"),\n',
     );
-    expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
+    expect(traceTerminalPhase).toBeLessThan(modelRequest);
     expect(terminalWait).toBeLessThan(traceTerminalPhase);
     expect(traceTerminalPhase).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
@@ -855,7 +855,7 @@ describe("integration capability manifest", () => {
     expect(checkpointAcknowledgement).toBeGreaterThan(codexLaunch);
     expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
     expect(metadataBaseline).toBeGreaterThan(-1);
-    expect(codexJoin).toBeGreaterThan(modelRequest);
+    expect(codexJoin).toBeLessThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
     const configureUpstream = source.indexOf(
       "  await configureModelGate(preparationCutoff, traceDeadline);\n",
