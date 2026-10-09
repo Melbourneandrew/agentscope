@@ -43,6 +43,98 @@ const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
   };
 
 const completionContainerId = "c".repeat(64);
+const ledgerReasons = [
+  "none",
+  "late-publish",
+  "load-generated",
+  "drop",
+  "consumer",
+  "start",
+  "shutdown",
+  "eviction",
+  "truncation",
+  "reset",
+  "clear",
+  "drain",
+  "correlation",
+  "row-count",
+  "serialization",
+  "control-capture",
+];
+const producerParser = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  return runInNewContext(
+    `${source.slice(source.indexOf("const mockServerProducerRefusalObservation ="), source.indexOf("const readProducerRefusal ="))}; mockServerProducerRefusalObservation`,
+    { types, Buffer },
+  ) as (output: unknown) => unknown;
+};
+describe("closed event-log refusal reason observation", () => {
+  it.each(ledgerReasons)(
+    "retains only fixed %s with all existing booleans",
+    (reason) => {
+      const parse = producerParser();
+      for (const stage of ["eligibility", "publication"])
+        for (let mask = 0; mask < 16; mask++) {
+          const fields = [
+            "terminal",
+            "snapshotAvailable",
+            "persistenceClosed",
+            "persistenceFailed",
+          ];
+          const booleans = Object.fromEntries(
+            fields.map((name, index) => [name, Boolean(mask & (1 << index))]),
+          );
+          const line = `[agentscope-mockserver-ledger:v1 stage=${stage} ${fields.map((name) => `${name}=${booleans[name]}`).join(" ")} reason=${reason}]\n`;
+          expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+          expect(parse({ stdout: "", stderr: line })).toEqual({
+            stage,
+            ...booleans,
+            reason,
+          });
+        }
+    },
+  );
+  it("refuses extensions, duplicate lines, and hostile process output", () => {
+    const parse = producerParser();
+    const line =
+      "[agentscope-mockserver-ledger:v1 stage=eligibility terminal=true snapshotAvailable=false persistenceClosed=true persistenceFailed=false reason=correlation]\n";
+    for (const stderr of [
+      line.replace("correlation", "PRIVATE"),
+      line.replace("reason=", "other="),
+      line.replace("]", " other=false]"),
+      line + line,
+      line.replace("reason=correlation", "reason=none reason=correlation"),
+      line.replace("false reason=", "false]\nreason="),
+      "PRIVATE".repeat(12000),
+    ])
+      expect(parse({ stdout: "", stderr })).toBeUndefined();
+    let reads = 0;
+    const hostile = Object.defineProperty({}, "stdout", {
+      get() {
+        reads++;
+        throw new Error("PRIVATE");
+      },
+    });
+    expect(parse(hostile)).toBeUndefined();
+    expect(
+      parse(
+        new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              reads++;
+              throw new Error("PRIVATE");
+            },
+          },
+        ),
+      ),
+    ).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+});
 const completionResponse = `Error response from daemon: Could not find the file /control/private/requests.complete in container ${completionContainerId}\n`;
 const completionContext = {
   containerId: completionContainerId,
@@ -187,7 +279,7 @@ describe("hostile completion response metadata", () => {
   });
 });
 
-const actualCompletionObservation = (sinkFails = false) => {
+const actualCompletionObservation = (sinkFails = false, producerLine = "") => {
   const source = readFileSync(
     new URL("../run-scenarios.mjs", import.meta.url),
     "utf8",
@@ -236,6 +328,7 @@ const actualCompletionObservation = (sinkFails = false) => {
       resolve: (_directory: string, name: string) =>
         `/synthetic-ledger/${name}`,
       dockerWithSignal: (args: string[]) => {
+        if (args[0] === "logs") return { stdout: "", stderr: producerLine };
         if (args[0] !== "cp") return { stdout: "" };
         copies.push(args);
         if (args[1]!.endsWith("requests.json")) {
@@ -269,11 +362,50 @@ const assertUnknownProducerRefusal = (output: string[], runId: string) => {
       snapshotAvailable: null,
       persistenceClosed: null,
       persistenceFailed: null,
+      reason: null,
     })}\n`,
   );
   expect(Buffer.byteLength(output[1]!)).toBeLessThanOrEqual(256);
 };
 
+describe("actual-source completion copy fixed refusal reason", () => {
+  it.each(ledgerReasons)(
+    "projects %s without replacing the original copy failure",
+    async (reason) => {
+      const line = `[agentscope-mockserver-ledger:v1 stage=eligibility terminal=true snapshotAvailable=false persistenceClosed=true persistenceFailed=false reason=${reason}]\n`;
+      for (const sinkFails of [false, true]) {
+        const f = actualCompletionObservation(sinkFails, line);
+        await expect(
+          f.functions.joinMockServer(
+            { runId: f.runId },
+            new AbortController().signal,
+          ),
+        ).rejects.toBe(f.error);
+        expect(f.state.retired).toBe(true);
+        expect(f.copies).toHaveLength(2);
+        if (sinkFails) expect(f.output).toEqual([]);
+        else {
+          expect(f.output).toHaveLength(2);
+          expect(
+            JSON.parse(f.output[1]!.slice(f.output[1]!.indexOf(":") + 1)),
+          ).toEqual({
+            runId: f.runId,
+            stage: "eligibility",
+            terminal: true,
+            snapshotAvailable: false,
+            persistenceClosed: true,
+            persistenceFailed: false,
+            reason,
+          });
+          expect(Buffer.byteLength(f.output[1]!)).toBeLessThanOrEqual(256);
+          expect(f.output.join("")).not.toMatch(
+            /PRIVATE|\/control\/private|cccccccc/u,
+          );
+        }
+      }
+    },
+  );
+});
 describe("actual-source completion copy observation", () => {
   it.each([false, true])(
     "preserves the identical copy error and retirement when sinkFails=%s",

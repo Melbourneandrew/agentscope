@@ -129,11 +129,13 @@ const finalLedgerCapture = `
                 .setMessageFormat("agentscope-final-control"));
         } catch (Throwable throwable) {
             finalLedgerFailure = true;
+            observeFinalLedgerFailure("control-capture");
         }
     }
 
     private RequestDefinition finalLedgerRequest(LogEntry received) {
         if (!(received.getHttpRequest() instanceof HttpRequest)) {
+            observeFinalLedgerFailure("correlation");
             throw new IllegalStateException();
         }
         HttpRequest request = (HttpRequest) received.getHttpRequest();
@@ -142,15 +144,18 @@ const finalLedgerCapture = `
         }
         String correlation = received.getCorrelationId();
         if (correlation == null || correlation.isEmpty()) {
+            observeFinalLedgerFailure("correlation");
             throw new IllegalStateException();
         }
         List<LogEntry> responses = eventLog.stream().filter(requestResponseLogPredicate)
             .filter(entry -> correlation.equals(entry.getCorrelationId())).collect(Collectors.toList());
         if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {
+            observeFinalLedgerFailure("correlation");
             throw new IllegalStateException();
         }
         Integer status = responses.get(0).getHttpResponse().getStatusCode();
         if (status == null || status < 100 || status > 599) {
+            observeFinalLedgerFailure("correlation");
             throw new IllegalStateException();
         }
         return request.clone().withBody(request.getBodyAsOriginalRawBytes())
@@ -158,19 +163,30 @@ const finalLedgerCapture = `
             .withHeader("x-agentscope-final-status", String.valueOf(status));
     }
 `;
-const eventLog = (source) => {
-  source = once(
-    source,
-    "    private Consumer<LogEntry> recordedRequestConsumer;",
-    `    private Consumer<LogEntry> recordedRequestConsumer;
+const finalLedgerFields = `    private Consumer<LogEntry> recordedRequestConsumer;
     private volatile boolean finalLedgerFailure;
     private boolean finalLedgerStopped;
     private volatile String finalRecordedRequests;
+    private final java.util.concurrent.atomic.AtomicReference<String> finalLedgerRefusalReason = new java.util.concurrent.atomic.AtomicReference<>("none");
+
+    private void observeFinalLedgerFailure(String reason) {
+        // First observed fixed source reason only; this cannot change ledger eligibility.
+        finalLedgerRefusalReason.compareAndSet("none", reason);
+    }
+
+    public String finalLedgerRefusalReason() {
+        return finalLedgerRefusalReason.get();
+    }
 
     public String finalRecordedRequests() {
         return finalLedgerFailure ? null : finalRecordedRequests;
     }
-${finalLedgerCapture}`,
+${finalLedgerCapture}`;
+const eventLog = (source) => {
+  source = once(
+    source,
+    "    private Consumer<LogEntry> recordedRequestConsumer;",
+    finalLedgerFields,
   );
   source = once(
     source,
@@ -178,6 +194,7 @@ ${finalLedgerCapture}`,
     `    public synchronized void add(LogEntry logEntry) {
         if (finalLedgerStopped) {
             finalLedgerFailure = true;
+            observeFinalLedgerFailure("late-publish");
             return;
         }`,
   );
@@ -190,94 +207,110 @@ ${finalLedgerCapture}`,
         synchronized (this) {
             finalLedgerStopped = true;
         }
+        String finalLedgerStep = "shutdown";
         try {`,
   );
   source = once(
     source,
     "        if (isLoadGenerated(logEntry)) {",
-    "        if (isLoadGenerated(logEntry)) {\n            finalLedgerFailure = true;",
+    '        if (isLoadGenerated(logEntry)) {\n            finalLedgerFailure = true;\n            observeFinalLedgerFailure("load-generated");',
   );
-  for (const before of [
-    "                droppedLogEvents.incrementAndGet();",
-    '                logger.error("exception handling log entry in log ring buffer, for log entry: " + logEntry, ex);',
-    '                logger.error("exception starting log ring buffer", ex);',
-    '                logger.error("exception during shutdown of log ring buffer", ex);',
+  for (const [before, reason] of [
+    ["                droppedLogEvents.incrementAndGet();", "drop"],
+    [
+      '                logger.error("exception handling log entry in log ring buffer, for log entry: " + logEntry, ex);',
+      "consumer",
+    ],
+    [
+      '                logger.error("exception starting log ring buffer", ex);',
+      "start",
+    ],
+    [
+      '                logger.error("exception during shutdown of log ring buffer", ex);',
+      "shutdown",
+    ],
   ])
     source = once(
       source,
       before,
-      "            finalLedgerFailure = true;\n" + before,
+      `            finalLedgerFailure = true;\n            observeFinalLedgerFailure("${reason}");\n` +
+        before,
     );
   source = once(
     source,
     "        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {",
-    "        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {\n            finalLedgerFailure = true;",
+    '        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {\n            finalLedgerFailure = true;\n            observeFinalLedgerFailure("eviction");',
   );
-  for (const before of [
-    "            if (body != null && body.length > maxLoggedBodyBytes) {",
-  ]) {
-    const count = source.split(before).length - 1;
-    if (count !== 2) fail();
-    source = source
-      .split(before)
-      .join(before + "\n                finalLedgerFailure = true;");
-  }
+  const truncation =
+    "            if (body != null && body.length > maxLoggedBodyBytes) {";
+  if (source.split(truncation).length - 1 !== 2) fail();
+  source = source
+    .split(truncation)
+    .join(
+      truncation +
+        '\n                finalLedgerFailure = true;\n                observeFinalLedgerFailure("truncation");',
+    );
   source = once(
     source,
     "            eventLog.clear();\n            disruptor.shutdown(2, SECONDS);",
     `            // The existing bounded shutdown drains and joins the sole consumer.
             // Snapshot ALL received requests, including unmatched traffic, before clear.
+            finalLedgerStep = "drain";
             disruptor.shutdown(2, SECONDS);
+            finalLedgerStep = "correlation";
             if (!finalLedgerFailure && droppedLogEvents.get() == 0 && eventLog.getEvictedCount() == 0) {
                 List<RequestDefinition> requests = eventLog.stream()
                     .filter(entry -> entry.getType() == RECEIVED_REQUEST)
                     .map(this::finalLedgerRequest).collect(Collectors.toList());
                 if (requests.size() > 16) {
                     finalLedgerFailure = true;
+                    observeFinalLedgerFailure("row-count");
                 } else {
+                    finalLedgerStep = "serialization";
                     finalRecordedRequests = requestDefinitionSerializer.serializeRecordedRequests(false, requests);
                 }
             }
+            finalLedgerStep = "clear";
             eventLog.clear();`,
   );
   source = once(
     source,
     "            if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {",
-    "            finalLedgerFailure = true;\n            if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {",
+    "            finalLedgerFailure = true;\n            observeFinalLedgerFailure(finalLedgerStep);\n            if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {",
   );
   source = once(
     source,
     "    public void reset() {",
-    "    public void reset() {\n        finalLedgerFailure = true;",
+    '    public void reset() {\n        finalLedgerFailure = true;\n        observeFinalLedgerFailure("reset");',
   );
   return once(
     source,
     "    public void clear(RequestDefinition requestDefinition) {",
-    "    public void clear(RequestDefinition requestDefinition) {\n        finalLedgerFailure = true;",
+    '    public void clear(RequestDefinition requestDefinition) {\n        finalLedgerFailure = true;\n        observeFinalLedgerFailure("clear");',
   );
 };
 const persistenceCompletion = `
-    private void observeFinalLedgerRefusal(boolean publication, boolean terminal, boolean snapshotAvailable) {
+    private void observeFinalLedgerRefusal(boolean publication, boolean terminal, boolean snapshotAvailable, String reason) {
         try {
-            System.err.printf("[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b]\\n",
+            System.err.printf("[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b reason=%s]\\n",
                 publication ? "publication" : "eligibility", terminal, snapshotAvailable,
-                recordedPersistenceClosed, recordedPersistenceFailed);
+                recordedPersistenceClosed, recordedPersistenceFailed, reason);
         } catch (Throwable ignored) {
             // Optional fixed observation cannot change persistence or completion.
         }
     }
 
-    public void completeFinalLedger(String snapshot, boolean terminal) {
+    public void completeFinalLedger(String snapshot, boolean terminal, String reason) {
         writeOrderLock.lock();
         try {
             if (!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null
                 || filePath == null || !filePath.toString().equals("/control/private/requests.json")) {
-                observeFinalLedgerRefusal(false, terminal, snapshot != null);
+                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);
                 return;
             }
             byte[] bytes = (snapshot + "\\n").getBytes(UTF_8);
             if (bytes.length > 1024 * 1024) {
-                observeFinalLedgerRefusal(false, terminal, snapshot != null);
+                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);
                 return;
             }
             Path complete = filePath.resolveSibling("requests.complete");
@@ -294,7 +327,7 @@ const persistenceCompletion = `
             Files.move(temporary, complete, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
         } catch (Throwable throwable) {
             recordedPersistenceFailed = true;
-            observeFinalLedgerRefusal(true, terminal, snapshot != null);
+            observeFinalLedgerRefusal(true, terminal, snapshot != null, reason);
         } finally {
             writeOrderLock.unlock();
         }
@@ -384,7 +417,8 @@ const httpState = (source) => {
     public void completeRecordedLedger(boolean terminal) {
         if (recordedRequestsFileSystemPersistence != null) {
             recordedRequestsFileSystemPersistence.completeFinalLedger(
-                getMockServerLog().finalRecordedRequests(), terminal && !finalControlCaptureFailed);
+                getMockServerLog().finalRecordedRequests(), terminal && !finalControlCaptureFailed,
+                getMockServerLog().finalLedgerRefusalReason());
         }
     }
 
