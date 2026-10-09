@@ -827,10 +827,15 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
           "integration.fixture.codex-model-gate-arm-health-pending"
         ? await failedCodexSessionStartHint(home)
         : undefined;
-    if (codexGateResearchHints.includes(gateHint))
-      process.stdout.write(
-        `integration.runner.untrusted-gate-hint:${gateHint}\n`,
-      );
+    if (codexGateResearchHints.includes(gateHint)) {
+      try {
+        process.stdout.write(
+          `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+        );
+      } catch {
+        // Optional research cannot replace the original fixture failure.
+      }
+    }
     const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)
       process.stdout.write(

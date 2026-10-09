@@ -21,7 +21,12 @@ import {
 // @ts-expect-error no declaration file is published for this private module
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
 
-const { codexFailureExitPair, selectedRuntimeFiles } = privateAuthority as {
+const {
+  codexFailureExitPair,
+  selectedRuntimeFiles,
+  extractUntrustedCodexGateHint,
+} = privateAuthority as {
+  extractUntrustedCodexGateHint: (output: unknown) => string | undefined;
   selectedRuntimeFiles: readonly string[];
   codexFailureExitPair: (
     fixture: unknown,
@@ -33,6 +38,30 @@ const { codexFailureExitPair, selectedRuntimeFiles } = privateAuthority as {
 const integrationRoot = resolve(import.meta.dirname, "..");
 const readIntegration = (name: string): string =>
   readFileSync(resolve(integrationRoot, name), "utf8");
+
+describe("bounded final model-control research hints", () => {
+  it.each([
+    "model-budget",
+    "model-http-status",
+    "model-projection",
+    "model-control-order",
+    "model-control-count",
+    "model-ledger",
+  ])("retains only the fixed %s hint through the existing line", (hint) => {
+    const line = `integration.runner.untrusted-gate-hint:${hint}\n`;
+    expect(extractUntrustedCodexGateHint(line)).toBe(hint);
+    expect(extractUntrustedCodexGateHint(`${line}${line}`)).toBeUndefined();
+    expect(
+      extractUntrustedCodexGateHint(`${line.trim()}-foreign\n`),
+    ).toBeUndefined();
+    expect(
+      extractUntrustedCodexGateHint(`${line.trim()} private\n`),
+    ).toBeUndefined();
+    expect(
+      extractUntrustedCodexGateHint("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
+  });
+});
 
 describe("Codex final native capture lifecycle placement", () => {
   it("rereads held native records only after the joined child and under the original cutoff", () => {
