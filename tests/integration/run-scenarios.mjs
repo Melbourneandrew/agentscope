@@ -1888,6 +1888,11 @@ const joinCollectorObservations = async (
   observe("snapshot");
   const batches = decodeCollectorSnapshot(output, plan);
   observe("terminal-wait");
+  await dockerWithSignal(
+    ["container", "kill", "--signal", "SIGTERM", containerId],
+    joinSignal,
+    { terminal: true, mutationCapable: true },
+  );
   const waited = await dockerWithSignal(
     ["container", "wait", containerId],
     joinSignal,

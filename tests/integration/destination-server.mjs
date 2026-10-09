@@ -23,6 +23,7 @@ let aggregateOtlpBytes = 0;
 let otlpRequestCount = 0;
 let ingressOpen = true;
 let collectorFailed = false;
+let collectorSnapshotSent = false;
 const maximumRequestBytesValue = process.env.AGENTSCOPE_MAXIMUM_REQUEST_BYTES;
 if (
   !/^\d+$/u.test(maximumRequestBytesValue ?? "") ||
@@ -183,7 +184,7 @@ const closeCollector = async (request, response) => {
       : otlpBatches.map((body) => body.toString("base64")),
     aggregateBytes: aggregateOtlpBytes,
   });
-  server.close();
+  collectorSnapshotSent = true;
 };
 
 const retrieval = async (request, response, path) => {
@@ -321,6 +322,14 @@ try {
 } catch {
   throw new Error("integration.destination.tls");
 }
+if (secureCollector)
+  process.once("SIGTERM", () => {
+    // Only the host that has joined its reader may request ordinary shutdown.
+    // A signal before sealed snapshot publication must not look successful.
+    if (!collectorSnapshotSent || ingressOpen || collectorFailed)
+      process.exitCode = 1;
+    server.close();
+  });
 server.listen(port, () =>
   console.log(`Agentscope ${mode} fixture service listening on ${port}`),
 );
