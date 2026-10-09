@@ -1,4 +1,12 @@
 import { HeadlessSupervisorError } from "../headless-supervisor.js";
+import { types } from "node:util";
+
+export type PtySemanticFailure = Readonly<{
+  finalSemanticState: "active" | "ready";
+  inputJoined: boolean;
+  readinessObserved: boolean;
+  allInputBytesWritten: boolean;
+}>;
 
 export type PtyReconciliationStage =
   | "authority"
@@ -26,6 +34,7 @@ export type PtyReconciliationStage =
 type KernelFailure = Readonly<{
   code: string;
   stage: PtyReconciliationStage | undefined;
+  semanticFailure?: PtySemanticFailure;
 }>;
 
 // The existing private error registry is shared by both transports. Neither
@@ -37,6 +46,48 @@ const freeze = Object.freeze;
 const get = WeakMap.prototype.get;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const set = WeakMap.prototype.set;
+const isProxy = types.isProxy;
+const ownKeys = Reflect.ownKeys;
+const descriptor = Object.getOwnPropertyDescriptor;
+const map = Array.prototype.map;
+const some = Array.prototype.some;
+const semanticSnapshot = (value: unknown): PtySemanticFailure | undefined => {
+  if (value === null || typeof value !== "object" || isProxy(value))
+    return undefined;
+  const keys = [
+    "finalSemanticState",
+    "inputJoined",
+    "readinessObserved",
+    "allInputBytesWritten",
+  ];
+  if (ownKeys(value).length !== keys.length) return undefined;
+  const fields = apply(map, keys, [
+    (key: string) => descriptor(value, key),
+  ]) as (PropertyDescriptor | undefined)[];
+  if (
+    apply(some, fields, [
+      (field: PropertyDescriptor | undefined) =>
+        field === undefined || !("value" in field),
+    ])
+  )
+    return undefined;
+  const [state, joined, ready, written] = apply(map, fields, [
+    (field: PropertyDescriptor) => field.value as unknown,
+  ]) as unknown[];
+  if (
+    (state !== "active" && state !== "ready") ||
+    typeof joined !== "boolean" ||
+    typeof ready !== "boolean" ||
+    typeof written !== "boolean"
+  )
+    return undefined;
+  return freeze({
+    finalSemanticState: state,
+    inputJoined: joined,
+    readinessObserved: ready,
+    allInputBytesWritten: written,
+  });
+};
 const stages = new Set<PtyReconciliationStage>([
   "authority",
   "observer",
@@ -87,6 +138,7 @@ const failure = (error: unknown): KernelFailure | undefined =>
 export const kernelError = (
   code: string,
   stage?: PtyReconciliationStage,
+  semanticFailure?: PtySemanticFailure,
 ): HeadlessSupervisorError => {
   const error = new HeadlessSupervisorError(code);
   const admittedStage =
@@ -99,12 +151,27 @@ export const kernelError = (
         apply(has, identityStages, [stage])))
       ? stage
       : undefined;
-  apply(set, failures, [error, freeze({ code, stage: admittedStage })]);
+  const semantic =
+    code === "testkit.pty.transport.semantic-incomplete"
+      ? semanticSnapshot(semanticFailure)
+      : undefined;
+  apply(set, failures, [
+    error,
+    freeze({
+      code,
+      stage: admittedStage,
+      ...(semantic === undefined ? {} : { semanticFailure: semantic }),
+    }),
+  ]);
   return error;
 };
 
-export const fail = (code: string, stage?: PtyReconciliationStage): never => {
-  throw kernelError(code, stage);
+export const fail = (
+  code: string,
+  stage?: PtyReconciliationStage,
+  semanticFailure?: PtySemanticFailure,
+): never => {
+  throw kernelError(code, stage, semanticFailure);
 };
 
 export const failObserverRead = (stage?: PtyReconciliationStage): never =>
@@ -118,6 +185,9 @@ export const trustedErrorCode = (error: unknown): string | undefined =>
 export const readPtyReconciliationStage = (
   error: unknown,
 ): PtyReconciliationStage | undefined => failure(error)?.stage;
+export const readPtySemanticFailure = (
+  error: unknown,
+): PtySemanticFailure | undefined => failure(error)?.semanticFailure;
 
 // Fixed syscall research only. Even disappearance remains an observer failure;
 // this classification never changes the existing ENOENT-only absence rule.

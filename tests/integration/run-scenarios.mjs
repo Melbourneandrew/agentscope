@@ -93,6 +93,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
+  readInteractiveChildFailureObservation,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyExecutionReserveMilliseconds,
@@ -3022,10 +3023,16 @@ const recordInteractiveExecutionFailure = (
     retainedDiagnostic,
     plan.scenarioId,
   );
+  const observed = readInteractiveChildFailureObservation(output);
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
     predicate,
+    scenarioId: plan.scenarioId,
+    ...(observed?.predicate === predicate &&
+    observed.semanticFailure !== undefined
+      ? { semanticFailure: observed.semanticFailure }
+      : {}),
   });
   return predicate;
 };

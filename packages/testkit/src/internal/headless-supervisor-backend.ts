@@ -40,6 +40,7 @@ import {
   failObserverRead,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
+  readPtySemanticFailure,
   trustedErrorCode,
 } from "./kernel-errors.js";
 import {
@@ -3586,6 +3587,17 @@ const armSelectedPty = (
           exit.code === 0
             ? "testkit.pty.transport.semantic-incomplete"
             : "testkit.pty.transport.semantic-nonzero",
+          undefined,
+          exit.code === 0 &&
+            (finalSnapshot.semanticState === "active" ||
+              finalSnapshot.semanticState === "ready")
+            ? {
+                finalSemanticState: finalSnapshot.semanticState,
+                inputJoined,
+                readinessObserved,
+                allInputBytesWritten: inputOffset === input.length,
+              }
+            : undefined,
         );
     }
     const outcome =
@@ -4419,6 +4431,7 @@ export const executeSelectedPtyProcessWithCapability = async (
       return fail(
         trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
         readPtyReconciliationStage(error),
+        readPtySemanticFailure(error),
       );
     }
     assertPtyReceiptBinding(receipt, stableRequest);

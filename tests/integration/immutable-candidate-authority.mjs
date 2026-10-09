@@ -9,6 +9,7 @@ import {
   readSync,
 } from "node:fs";
 import { join } from "node:path";
+import { types } from "node:util";
 import {
   decodeAdapterReportedFailureMarker,
   validCodexResearchDiagnostic,
@@ -1090,20 +1091,121 @@ export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   ];
 };
 
-export const extractInteractiveChildDiagnostic = (output) => {
+const diagnosticData = (value, keys) => {
+  if (
+    types.isProxy(value) ||
+    !plainRecord(value) ||
+    Reflect.ownKeys(value).length !== keys.length
+  )
+    return undefined;
+  const fields = Object.getOwnPropertyDescriptors(value);
+  if (
+    keys.some(
+      (key) =>
+        !Object.hasOwn(fields, key) || !Object.hasOwn(fields[key], "value"),
+    )
+  )
+    return undefined;
+  return Object.fromEntries(keys.map((key) => [key, fields[key].value]));
+};
+const ptySemanticFacts = (value) => {
+  const fields = diagnosticData(value, [
+    "finalSemanticState",
+    "inputJoined",
+    "readinessObserved",
+    "allInputBytesWritten",
+  ]);
+  return fields &&
+    (fields.finalSemanticState === "active" ||
+      fields.finalSemanticState === "ready") &&
+    typeof fields.inputJoined === "boolean" &&
+    typeof fields.readinessObserved === "boolean" &&
+    typeof fields.allInputBytesWritten === "boolean"
+    ? Object.freeze(fields)
+    : undefined;
+};
+export const formatInteractiveChildDiagnostic = (predicate, input) => {
+  const code = ptyExecutionFailurePredicates.includes(predicate)
+    ? predicate
+    : "integration.runner.fixture-failed";
+  const semantic =
+    code === "testkit.pty.transport.semantic-incomplete"
+      ? ptySemanticFacts(input)
+      : undefined;
+  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? "" : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}\n`;
+};
+export const readInteractiveChildFailureObservation = (output) => {
   if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
     return undefined;
-  const matches = [
-    ...output.matchAll(
-      /^integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})$/gmu,
-    ),
-  ];
-  if (matches.length !== 1) return undefined;
-  const diagnostic = matches[0]?.[1];
-  return diagnostic !== undefined &&
-    ptyExecutionFailurePredicates.includes(diagnostic)
-    ? diagnostic
-    : undefined;
+  const prefix = "integration.runner.interactive-diagnostic:";
+  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1 || Buffer.byteLength(lines[0]) + 1 > 256)
+    return undefined;
+  const match = lines[0]
+    .slice(prefix.length)
+    .match(
+      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01]))?$/u,
+    );
+  if (
+    !match ||
+    !ptyExecutionFailurePredicates.includes(match[1]) ||
+    (match[2] !== undefined &&
+      match[1] !== "testkit.pty.transport.semantic-incomplete")
+  )
+    return undefined;
+  return Object.freeze({
+    predicate: match[1],
+    ...(match[2] === undefined
+      ? {}
+      : {
+          semanticFailure: Object.freeze({
+            finalSemanticState: match[2],
+            inputJoined: match[3] === "1",
+            readinessObserved: match[4] === "1",
+            allInputBytesWritten: match[5] === "1",
+          }),
+        }),
+  });
+};
+export const extractInteractiveChildDiagnostic = (output) =>
+  readInteractiveChildFailureObservation(output)?.predicate;
+export const validInstalledPtyFailure = (input) => {
+  if (input === null) return true;
+  const old = diagnosticData(input, ["phase", "predicate", "receiptVersion"]);
+  const value =
+    old ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "semanticFailure",
+    ]) ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+    ]);
+  if (
+    !value ||
+    value.receiptVersion !== 1 ||
+    !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
+    !installedPtyFailurePredicates[value.phase].includes(value.predicate)
+  )
+    return false;
+  if (old) return true;
+  if (
+    value.phase !== "pty-execution" ||
+    (value.scenarioId !== "codex-tui-trace-smoke" &&
+      value.scenarioId !== "claude-interactive-trace-smoke")
+  )
+    return false;
+  return (
+    !Object.hasOwn(value, "semanticFailure") ||
+    (value.predicate === "testkit.pty.transport.semantic-incomplete" &&
+      ptySemanticFacts(value.semanticFailure) !== undefined)
+  );
 };
 
 export const decodeInteractivePtyReceipt = (output) => {
