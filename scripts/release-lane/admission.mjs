@@ -327,6 +327,44 @@ export function bindIntegrationArtifacts(
   });
 }
 
+function nativeTranscriptRange(value, family) {
+  const codex = family === "codex";
+  const positions = codex
+    ? ["sessionMetaPosition", "turnContextPosition", "taskCompletePosition"]
+    : ["toolUsePosition", "toolResultPosition", "finalAssistantPosition"];
+  const maximum = codex ? 4096 : 128;
+  keys(value, [
+    "nativeFormat",
+    "boundaryKind",
+    "positionKind",
+    "availableStartPosition",
+    "exclusiveEndPosition",
+    "sourceGeneration",
+    ...positions,
+  ]);
+  if (
+    value.nativeFormat !==
+      (codex ? "codex-0.149.1-rollout-jsonl" : "claude-code-2.1.245-jsonl") ||
+    value.boundaryKind !== "transcript-range" ||
+    value.positionKind !== "line" ||
+    value.availableStartPosition !== 0 ||
+    value.sourceGeneration !== null ||
+    !Number.isInteger(value.exclusiveEndPosition) ||
+    value.exclusiveEndPosition < 1 ||
+    value.exclusiveEndPosition > maximum ||
+    positions.some(
+      (key) =>
+        !Number.isInteger(value[key]) ||
+        value[key] < 0 ||
+        value[key] >= maximum,
+    ) ||
+    value[positions[0]] >= value[positions[1]] ||
+    value[positions[1]] >= value[positions[2]] ||
+    value[positions[2]] >= value.exclusiveEndPosition
+  )
+    reject();
+}
+
 function codexObservation(observation) {
   keys(observation, [
     "observationVersion",
@@ -345,7 +383,12 @@ function codexObservation(observation) {
     "doctorErrors",
     "uninstallDisposition",
     "sessionStartCommandDurationMilliseconds",
+    ...(Object.hasOwn(observation, "nativeTranscriptRange")
+      ? ["nativeTranscriptRange"]
+      : []),
   ]);
+  if (Object.hasOwn(observation, "nativeTranscriptRange"))
+    nativeTranscriptRange(observation.nativeTranscriptRange, "codex");
   if (
     observation.observationVersion !== 1 ||
     observation.kind !== "codex-tui-trace" ||
@@ -417,7 +460,12 @@ function claudeObservation(value) {
     "uninstallDisposition",
     "hookObservations",
     ...(Object.hasOwn(value, "nativeModelName") ? ["nativeModelName"] : []),
+    ...(Object.hasOwn(value, "nativeTranscriptRange")
+      ? ["nativeTranscriptRange"]
+      : []),
   ]);
+  if (Object.hasOwn(value, "nativeTranscriptRange"))
+    nativeTranscriptRange(value.nativeTranscriptRange, "claude-code");
   if (
     value.observationVersion !== 1 ||
     value.kind !== "claude-code-trace" ||
