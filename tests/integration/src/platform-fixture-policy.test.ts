@@ -55,7 +55,7 @@ describe("ordinary upstream observations remain provisional", () => {
     expect(controlSource).toContain(
       'fetch("http://mockserver:1080/mockserver/ready",',
     );
-    expect(controlSource).toContain("16 - 4 - 4 - modelRequestCount");
+    expect(controlSource).toContain("16 - 5 - 5 - modelRequestCount");
     expect(source).not.toContain("ACTIVEXPECTATIONS");
     expect(source).not.toContain("type=REQUESTS");
     const start = source.indexOf("const runModels = async () => {");
