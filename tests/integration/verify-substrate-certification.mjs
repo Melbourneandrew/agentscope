@@ -145,7 +145,8 @@ const validBuilderCleanup = (value, authority, runId) =>
   ["builder-create", "builder-bootstrap", "image-build"].includes(
     value.operationKind,
   ) &&
-  value.outcome === "retired-failure" &&
+  // A settled failed build remains failure evidence, not retirement or success.
+  ["retired-failure", "failed-settled"].includes(value.outcome) &&
   exactKeys(value.identityDigests, [
     "builder",
     "daemon",

@@ -1274,6 +1274,32 @@ describe("integration workflow policy", () => {
       };
       writeEvidence(builderCleanup);
       expect(verify()).toBe(0);
+      // rejectSettledBuild records this distinct disposition after reconciliation;
+      // the captured process is the first failure, not a successful build result.
+      const settledFailure = { ...builderCleanup, outcome: "failed-settled" };
+      writeEvidence(settledFailure);
+      expect(verify()).toBe(0);
+      expect(verify("negative", "wrong-argv")).not.toBe(0);
+      for (const outcome of ["success", "retired-success", "unknown"]) {
+        writeEvidence({ ...settledFailure, outcome });
+        expect(verify()).not.toBe(0);
+      }
+      for (const substitution of [
+        { expectedResourceCount: 3 },
+        { responseTruncated: true },
+        { responseBytes: 16_777_217 },
+        { expectedResourceDigest: `sha256:${"a".repeat(64)}` },
+        {
+          identityDigests: {
+            ...settledFailure.identityDigests,
+            runGeneration: `sha256:${"f".repeat(64)}`,
+          },
+        },
+        { process: { ...settledFailure.process, outputBytes: 16_777_217 } },
+      ]) {
+        writeEvidence({ ...settledFailure, ...substitution });
+        expect(verify()).not.toBe(0);
+      }
       writeEvidence({
         ...builderCleanup,
         identityDigests: {
