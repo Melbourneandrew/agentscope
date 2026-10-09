@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(
@@ -31,13 +32,32 @@ const signedApi = (context: Record<string, unknown>) =>
         "const runSignedManifestVerification =",
         "const prepared =",
       ),
-      "({ prepareSignedManifestHarnessMaterial });",
+      "({ prepareSignedManifestHarnessMaterial, runMaterialVerification });",
     ].join("\n"),
     context,
   ) as {
     prepareSignedManifestHarnessMaterial: (input: unknown) => Promise<unknown>;
+    runMaterialVerification: (input: unknown) => Promise<unknown>;
   };
-const fixture = (selected: string, cleanupFails = false) => {
+const verificationInput = (
+  material: unknown,
+  onPhase: (phase: string) => void,
+) => ({
+  client: {},
+  deadline: 30_100,
+  material,
+  operation: "gpg-verify",
+  onPhase,
+  policy: {},
+  root: "/synthetic",
+  runId: "0123456789abcdef",
+  signal: { aborted: false },
+});
+const fixture = (
+  selected: string,
+  cleanupFails = false,
+  buildError?: Error,
+) => {
   let now = 100;
   const calls: { name: string; deadline?: number | undefined }[] = [];
   const privateError = Object.defineProperty(
@@ -72,6 +92,7 @@ const fixture = (selected: string, cleanupFails = false) => {
   if (selected === "integrity") material.platformPackage.integrity = "changed";
   const api = signedApi({
     Buffer,
+    types,
     createHash,
     resolve,
     performance: { now: () => now },
@@ -110,6 +131,7 @@ const fixture = (selected: string, cleanupFails = false) => {
       _client: unknown,
       input: { maximumMilliseconds: number },
     ) => {
+      if (buildError !== undefined) throw buildError;
       step("verify-build", now + input.maximumMilliseconds);
       return Promise.resolve("synthetic-image");
     },
@@ -132,6 +154,8 @@ const fixture = (selected: string, cleanupFails = false) => {
   });
   return {
     calls,
+    verify: (onPhase: (phase: string) => void) =>
+      api.runMaterialVerification(verificationInput(material, onPhase)),
     run: () =>
       api.prepareSignedManifestHarnessMaterial({
         dockerClient: {},
@@ -145,6 +169,89 @@ const fixture = (selected: string, cleanupFails = false) => {
   };
 };
 
+describe("actual signed-material build refusal", () => {
+  it.each([
+    ["integration.images.build.input", "input"],
+    [
+      "integration.images.build.context-file-size-harness-material-harness",
+      "context",
+    ],
+    ["integration.images.build.authority", "authority"],
+    ["integration.images.build.preflight.unknown", "preflight"],
+    ["integration.images.build.builder-create.resource-conflict", "create"],
+    [
+      "integration.images.build.builder-bootstrap.bootstrap-failed",
+      "bootstrap",
+    ],
+    ["integration.images.build.image-build.build-failed", "image-build"],
+    ["integration.images.containment", "containment"],
+    ["integration.images.timeout", "timeout"],
+  ])(
+    "retains fixed build classification %s without replacing the original",
+    async (message, phase) => {
+      const original = new Error(message);
+      const input = fixture("none", false, original);
+      const observed: string[] = [];
+      await expect(input.verify((value) => observed.push(value))).rejects.toBe(
+        original,
+      );
+      expect(observed).toEqual([
+        "verify-context",
+        "verify-build",
+        `verify-build-${phase}`,
+      ]);
+      await expect(input.run()).rejects.toMatchObject({
+        message: "integration.harness-material.failed",
+        cause: {
+          message: `integration.harness-material.verify-build-${phase}`,
+        },
+      });
+      expect(input.calls.some(({ name }) => name === "verify-retire")).toBe(
+        false,
+      );
+    },
+  );
+  it.each(["getter", "proxy", "unknown"] as const)(
+    "keeps hostile or unknown build error %s uninspected",
+    async (kind) => {
+      let traps = 0;
+      const trap = () => {
+        traps += 1;
+        throw new Error("PRIVATE_TRAP");
+      };
+      const native = new Error(
+        "integration.images.build.unknown-operation.build-failed",
+      );
+      const error =
+        kind === "proxy"
+          ? new Proxy(native, {
+              get: trap,
+              getOwnPropertyDescriptor: trap,
+              getPrototypeOf: trap,
+            })
+          : kind === "getter"
+            ? Object.defineProperty(native, "message", { get: trap })
+            : native;
+      const input = fixture("none", false, error);
+      const observed: string[] = [];
+      await expect(input.verify((value) => observed.push(value))).rejects.toBe(
+        error,
+      );
+      const failure = await input.run().catch((value: unknown) => value);
+      expect(failure).toMatchObject({
+        message: "integration.harness-material.failed",
+        cause: { message: "integration.harness-material.verify-build" },
+      });
+      expect(observed).toEqual([
+        "verify-context",
+        "verify-build",
+        "verify-build",
+      ]);
+      expect(traps).toBe(0);
+      expect(String(failure)).not.toContain("PRIVATE");
+    },
+  );
+});
 describe("actual signed-material phase refusal", () => {
   it.each([
     "preflight",
