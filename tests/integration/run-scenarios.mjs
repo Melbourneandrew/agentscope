@@ -3028,10 +3028,15 @@ const recordInteractiveExecutionFailure = (
     receiptVersion: 1,
     phase: "pty-execution",
     predicate,
-    scenarioId: plan.scenarioId,
-    ...(observed?.predicate === predicate &&
-    observed.semanticFailure !== undefined
-      ? { semanticFailure: observed.semanticFailure }
+    ...(plan.scenarioId === "codex-tui-trace-smoke" ||
+    plan.scenarioId === "claude-interactive-trace-smoke"
+      ? {
+          scenarioId: plan.scenarioId,
+          ...(observed?.predicate === predicate &&
+          observed.semanticFailure !== undefined
+            ? { semanticFailure: observed.semanticFailure }
+            : {}),
+        }
       : {}),
   });
   return predicate;

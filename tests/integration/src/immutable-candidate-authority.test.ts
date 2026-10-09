@@ -231,55 +231,74 @@ describe("content-free installed PTY diagnostic validator", () => {
   });
 });
 describe("actual held-plan parent PTY failure projection", () => {
-  it("binds the existing parent record to its held plan, never child metadata", () => {
-    const original = {
-      receiptVersion: 1,
-      phase: "pty-execution",
-      predicate: semanticPredicate,
-    };
-    const source = readIntegration("run-scenarios.mjs");
-    const start = source.indexOf("const recordInteractiveExecutionFailure ="),
-      end = source.indexOf("const retainCodexResearchDiagnostic =", start);
-    const failures = new Map();
-    const record = runInNewContext(
-      `${source.slice(start, end)}; recordInteractiveExecutionFailure`,
-      {
-        installedPtyFailures: failures,
-        readInteractiveChildFailureObservation,
-        selectInteractiveExecutionFailurePredicate: () => semanticPredicate,
-        contentFreeChildFailureCode: () => semanticPredicate,
-      },
-    );
-    const plan = {
-      runId: "a".repeat(16),
-      executionMode: "interactive",
-      scenarioId: "codex-tui-trace-smoke",
-    };
-    const originalError = new Error("PRIVATE");
-    expect(
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "binds the existing parent record to held %s plan, never child metadata",
+    (scenarioId) => {
+      const original = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate: semanticPredicate,
+      };
+      const source = readIntegration("run-scenarios.mjs");
+      const start = source.indexOf("const recordInteractiveExecutionFailure ="),
+        end = source.indexOf("const retainCodexResearchDiagnostic =", start);
+      const failures = new Map();
+      const record = runInNewContext(
+        `${source.slice(start, end)}; recordInteractiveExecutionFailure`,
+        {
+          installedPtyFailures: failures,
+          readInteractiveChildFailureObservation,
+          selectInteractiveExecutionFailurePredicate: () => semanticPredicate,
+          contentFreeChildFailureCode: () => semanticPredicate,
+        },
+      );
+      const plan = {
+        runId: "a".repeat(16),
+        executionMode: "interactive",
+        scenarioId,
+      };
+      const originalError = new Error("PRIVATE");
+      expect(
+        record(
+          plan,
+          originalError,
+          formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
+          undefined,
+        ),
+      ).toBe(semanticPredicate);
+      expect(failures.get(plan.runId)).toEqual({
+        ...original,
+        scenarioId: plan.scenarioId,
+        semanticFailure: semanticFacts,
+      });
+      const generic = { ...plan, scenarioId: "fixture-process-smoke" };
+      expect(
+        record(
+          generic,
+          originalError,
+          formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
+          undefined,
+        ),
+      ).toBe(semanticPredicate);
+      expect(failures.get(generic.runId)).toEqual(original);
+      // The persisted consumer reads ordinary JSON, not the VM's foreign realm.
+      expect(
+        validInstalledPtyFailure(
+          JSON.parse(JSON.stringify(failures.get(generic.runId))),
+        ),
+      ).toBe(true);
       record(
         plan,
         originalError,
-        formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
+        `${formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts).trim()};claude-interactive-trace-smoke\n`,
         undefined,
-      ),
-    ).toBe(semanticPredicate);
-    expect(failures.get(plan.runId)).toEqual({
-      ...original,
-      scenarioId: plan.scenarioId,
-      semanticFailure: semanticFacts,
-    });
-    record(
-      plan,
-      originalError,
-      `${formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts).trim()};claude-interactive-trace-smoke\n`,
-      undefined,
-    );
-    expect(failures.get(plan.runId)).toEqual({
-      ...original,
-      scenarioId: plan.scenarioId,
-    });
-  });
+      );
+      expect(failures.get(plan.runId)).toEqual({
+        ...original,
+        scenarioId: plan.scenarioId,
+      });
+    },
+  );
 });
 describe("actual runner caught-failure diagnostic routing", () => {
   it("uses the existing private reader on the same caught error and preserves the predicate", () => {
