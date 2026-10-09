@@ -72,8 +72,6 @@ const postTraceFailureDiagnostic = (error) => {
       codexUninstallFailureDiagnostic(error?.message) ??
       codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep)
     );
-  if (interactiveFailurePhase === "verify-trace-get")
-    return `integration.fixture.codex-verify-trace-get-${classifyCodexTraceGetFailure(error?.message)}`;
   return undefined;
 };
 process.setUncaughtExceptionCaptureCallback((error) => {
@@ -105,11 +103,6 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     if (diagnosticCode !== undefined) exitCode = diagnosticCode;
   }
   try {
-    const traceFailure = [
-      "trace-search",
-      "hook-command-completed-before-budget-boundary",
-      "hook-command-completed-near-budget-boundary",
-    ].includes(interactiveFailurePhase);
     const diagnostic =
       preCheckpointFailureDiagnostic ??
       ownedDiagnostic ??
@@ -117,15 +110,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
-        : traceFailure
-          ? `integration.fixture.codex-trace-await-${classifyCodexTraceFailureHint(
-              {
-                errorMessage: error?.message,
-                hookCompleted: traceWaitHookCompleted,
-                reporterSettled: traceWaitReporterSettled,
-              },
-            )}`
-          : `integration.fixture.codex-${interactiveFailurePhase}`);
+        : `integration.fixture.codex-${interactiveFailurePhase}`);
     if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
@@ -359,22 +344,10 @@ const run = (executable, arguments_, options = {}) => {
       if (timer !== undefined) clearTimeout(timer);
       try {
         remaining();
-        const traceUnavailable =
-          options.acceptTraceSearchUnavailable === true &&
-          codexTraceSearchUnavailable({ code, signal, stderr, stdout });
-        const traceTimedOut =
-          options.acceptTraceSearchUnavailable === true &&
-          codexTraceSearchTimedOut({
-            code,
-            deadlineExpired,
-            signal,
-            stderr,
-            stdout,
-          });
         if (
-          (!traceUnavailable &&
-            !traceTimedOut &&
-            (deadlineExpired || code !== 0 || signal !== null)) ||
+          deadlineExpired ||
+          code !== 0 ||
+          signal !== null ||
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
         ) {
@@ -397,7 +370,7 @@ const run = (executable, arguments_, options = {}) => {
             adapterReportedFailure = selected.adapterReportedFailure;
           return reject(new Error(selected.message));
         }
-        resolve({ stderr, stdout, traceTimedOut, traceUnavailable });
+        resolve({ stderr, stdout });
       } catch (error) {
         reject(error);
       }
@@ -475,12 +448,7 @@ const homeDescriptor = openSync(
     constants.O_NOFOLLOW |
     constants.O_NONBLOCK,
 );
-let localSqliteLifecycleDescriptor;
-let operationalStateHealthDescriptor;
-let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
-let traceWaitHookCompleted = false;
-let traceWaitReporterSettled = false;
 const recordInteractivePhase = (phase) => {
   advanceInteractivePhase(phase);
   writeFileSync(
@@ -513,15 +481,6 @@ const recordPreCheckpointFailure = (kind) => {
     { flag: "wx", mode: 0o600 },
   );
 };
-const codexStopHookCommandFailure = (outcome) => {
-  let phase;
-  if (outcome === "timeout") phase = "hook-command-timeout";
-  else if (outcome === "spawn_error") phase = "hook-command-spawn-error";
-  else if (outcome === "stdin_error") phase = "hook-command-stdin-error";
-  else if (outcome === "wait_error") phase = "hook-command-wait-error";
-  else throw new Error("integration.codex.hook-command-outcome");
-  return { error: `integration.codex.hook-command-${outcome}`, phase };
-};
 advanceInteractivePhase("bootstrap-modules");
 const [configurationModule, evidenceModule, oracleModule, adapterModule] =
   await Promise.all([
@@ -535,35 +494,20 @@ const {
   boundedRequestLedger,
   classifyCodexShutdownAtJoinDeadline,
   codexStopHookReadyForExit,
-  classifyLocalSqliteOutcomeAfterBaseline,
-  classifyMissingOperationalStateByHookDuration,
-  classifyCodexSettledTraceObservation,
-  classifyCodexTraceFailureHint,
-  classifyCodexTraceGetFailure,
-  codexTraceSearchAttemptDeadlines,
-  codexTraceSearchUnavailable,
-  codexTraceSearchTimedOut,
   inspectCodexRootHookLifecycle,
-  inspectCodexStopHookCommand,
-  classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
-  localSqliteReporterSettled,
-  localSqliteAcceptanceBaseline,
-  openLocalSqliteLifecycle,
-  openOperationalStateHealth,
   inspectDiagnosticBeforeDeadline,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
   terminalObservationBeforeDeadline,
-  traceSummaryBeforeDeadline,
   waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } = evidenceModule;
-const { correlateCodexPlatformObservations } = oracleModule;
-const { translateCodexPlatformObservations } = adapterModule;
+const { correlateCodexNativeObservations } = oracleModule;
+const { translateCodexNativeObservations } = adapterModule;
 
 advanceInteractivePhase("bootstrap-artifact");
 const artifactStatus = lstatSync(artifactPath);
@@ -577,7 +521,16 @@ const cli = async (arguments_, command, options) => {
   const { stdout } = await run(
     agentscope,
     [...arguments_, "--output", "json"],
-    { ...options, candidatePrincipal: true },
+    {
+      ...options,
+      env: {
+        ...process.env,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
+      },
+      candidatePrincipal: true,
+    },
   );
   const monotonicDeadline = options?.monotonicDeadline;
   if (
@@ -859,99 +812,6 @@ const projectUninstall = (records) => {
     targetCount: 3,
   };
 };
-const projectTraceGraph = (graph, traceId) => {
-  if (!Array.isArray(graph?.resourceSpans) || graph.resourceSpans.length < 1)
-    throw new Error("integration.codex.trace-get");
-  const spans = graph.resourceSpans.flatMap((resource) =>
-    Array.isArray(resource?.scopeSpans)
-      ? resource.scopeSpans.flatMap((scope) =>
-          Array.isArray(scope?.spans) ? scope.spans : [],
-        )
-      : [],
-  );
-  const root = spans.find(({ name }) => name === "codex.turn");
-  const model = spans.find(({ name }) => name === "codex.response");
-  const stringAttribute = (span, key) => {
-    const matches = Array.isArray(span?.attributes)
-      ? span.attributes.filter((attribute) => attribute?.key === key)
-      : [];
-    return matches.length === 1 &&
-      typeof matches[0]?.value?.stringValue === "string"
-      ? matches[0].value.stringValue
-      : null;
-  };
-  if (
-    spans.length !== 2 ||
-    root?.traceId !== traceId ||
-    model?.traceId !== traceId ||
-    typeof root.spanId !== "string" ||
-    root.spanId.length !== 16 ||
-    model?.parentSpanId !== root.spanId ||
-    (root.parentSpanId !== undefined && root.parentSpanId !== "")
-  )
-    throw new Error("integration.codex.trace-get");
-  return {
-    resourceSpanCount: graph.resourceSpans.length,
-    spanNames: [root.name, model.name],
-    parentLinked: true,
-    sessionId: stringAttribute(root, "session.id"),
-    modelName: stringAttribute(model, "llm.model_name"),
-  };
-};
-const readTraceSummary = async ({
-  attemptDeadline,
-  childDeadline,
-  observationDeadline,
-}) => {
-  if (codexSessionId === undefined)
-    throw new Error("integration.codex.session-ledger");
-  const { stdout, traceTimedOut, traceUnavailable } = await run(
-    agentscope,
-    [
-      "traces",
-      "search",
-      "--destination",
-      "local",
-      "--harness",
-      "codex",
-      "--limit",
-      "50",
-      "--output",
-      "json",
-    ],
-    {
-      acceptTraceSearchUnavailable: true,
-      monotonicDeadline: childDeadline,
-    },
-  );
-  if (traceTimedOut) {
-    if (
-      !terminalObservationBeforeDeadline({
-        observed: true,
-        deadline: observationDeadline,
-        now: bootNow,
-      })
-    )
-      throw new Error("integration.codex.trace-deadline");
-    return null;
-  }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: attemptDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  if (traceUnavailable) return null;
-  const records = parseMachine(stdout, "agentscope traces search");
-  return classifyTraceSearchRecordsBeforeDeadline({
-    records,
-    deadline: attemptDeadline,
-    now: bootNow,
-    record: recordInteractivePhase,
-  });
-};
 const waitForCodexTurnTerminal = async (traceDeadline) => {
   if (codexLedgerBaseline === undefined)
     throw new Error("integration.codex.session-ledger");
@@ -1001,161 +861,40 @@ const waitForCodexStopBeforeExit = async (traceDeadline) => {
     remaining();
   }
 };
-const waitForTraceObservation = (traceDeadline) =>
-  waitWithinObservationDeadline({
-    deadline: traceDeadline,
-    maximumWaitMilliseconds: 20,
-    now: bootNow,
-    wait: (milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  });
-const recordCompletedHookDuration = (observation) => {
-  if (observation === undefined) return;
-  recordInteractivePhase(
-    observation.durationMilliseconds >= 4_900
-      ? "hook-command-completed-near-budget-boundary"
-      : "hook-command-completed-before-budget-boundary",
-  );
-};
-const waitForTraceObservationOrRecord = async (deadline, observation) => {
-  try {
-    await waitForTraceObservation(deadline);
-  } catch (error) {
-    recordCompletedHookDuration(observation);
-    throw error;
-  }
-};
-const waitForTraceSummary = async (traceDeadline) => {
-  if (bootNow() >= traceDeadline)
-    throw new Error("integration.codex.trace-deadline");
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-search"),
-  });
-  let summary;
-  let lastCompletedHookCommand;
-  while (summary === undefined) {
-    const hookCommandObservation = inspectDiagnosticBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      inspect: () =>
-        inspectCodexStopHookCommand({
-          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
-          directoryPath: codexDiagnosticLogDirectory,
-        }),
-    });
-    if (hookCommandObservation?.outcome === "completed")
-      lastCompletedHookCommand = hookCommandObservation;
-    traceWaitHookCompleted = hookCommandObservation?.outcome === "completed";
-    if (
-      hookCommandObservation !== undefined &&
-      hookCommandObservation.outcome !== "completed"
-    ) {
-      const failure = codexStopHookCommandFailure(
-        hookCommandObservation.outcome,
-      );
-      recordTerminalObservationBeforeDeadline({
-        deadline: traceDeadline,
-        now: bootNow,
-        record: () => recordInteractivePhase(failure.phase),
-      });
-      throw new Error(failure.error);
-    }
-    const reporterSettled = localSqliteReporterSettled(
-      localSqliteLifecycleDescriptor,
-    );
-    traceWaitReporterSettled = traceWaitHookCompleted && reporterSettled;
-    if (hookCommandObservation?.outcome !== "completed" || !reporterSettled) {
-      await waitForTraceObservationOrRecord(
-        traceDeadline,
-        lastCompletedHookCommand,
-      );
-      continue;
-    }
-    const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({
-      now: bootNow(),
-      observationDeadline: traceDeadline,
-    });
-    const observationClosed = traceSearchDeadlines === null;
-    const candidate = traceSummaryBeforeDeadline({
-      summary:
-        traceSearchDeadlines === null
-          ? null
-          : await readTraceSummary(traceSearchDeadlines),
-      deadline: traceDeadline,
-      now: bootNow,
-    });
-    const terminalCut = classifyCodexSettledTraceObservation({
-      hookCompleted: true,
-      observationClosed,
-      reporterSettled: true,
-      tracePresent: candidate !== null,
-    });
-    if (terminalCut === "accepted") {
-      summary = candidate;
-      break;
-    }
-    if (terminalCut === "missing") {
-      const operationalPhase = classifyLocalSqliteOutcomeAfterBaseline(
-        operationalStateHealthDescriptor,
-        operationalStateBaseline,
-      );
-      if (operationalPhase === "pending") {
-        await waitForTraceObservationOrRecord(
-          traceDeadline,
-          lastCompletedHookCommand,
-        );
-        continue;
-      }
-      const phase =
-        operationalPhase === "no-operational-state"
-          ? classifyMissingOperationalStateByHookDuration(
-              hookCommandObservation.durationMilliseconds,
-            )
-          : operationalPhase;
-      recordTerminalObservationBeforeDeadline({
-        deadline: traceDeadline,
-        now: bootNow,
-        record: () => recordInteractivePhase(phase),
-      });
-      throw new Error(`integration.codex.${phase}`);
-    }
-    await waitWithinObservationDeadline({
-      deadline: traceDeadline,
-      maximumWaitMilliseconds: 100,
-      now: bootNow,
-      wait: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    });
-    remaining();
-  }
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-reporter-settled"),
-  });
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-search-result"),
-  });
-  return summary;
-};
-
 let completed = false;
 let codexLedgerBaseline;
 let codexSessionId;
+let codexTurnId;
 try {
   recordInteractivePhase("init");
   await cli(["init", "--yes"], "agentscope init");
   recordInteractivePhase("destination");
   await cli(
-    ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
+    [
+      "destination",
+      "configure",
+      "langfuse",
+      "--name",
+      "collector",
+      "--yes",
+      "--settings",
+      JSON.stringify({ endpoint: "https://collector:4318" }),
+      "--credential-env",
+      "public-key=AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "secret-key=AGENTSCOPE_LANGFUSE_SECRET_KEY",
+    ],
     "agentscope destination configure",
+    {
+      env: {
+        ...process.env,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
+      },
+    },
   );
   recordInteractivePhase("routing");
-  await cli(["routing", "set", "local"], "agentscope routing set");
+  await cli(["routing", "set", "collector"], "agentscope routing set");
   recordInteractivePhase("install");
   await cli(["install", "codex", "--yes"], "agentscope install");
   const codexHomeStatus = lstatSync(codexHome);
@@ -1192,11 +931,6 @@ try {
     (launcherStatus.mode & 0o7777) !== 0o700
   )
     throw new Error("integration.codex.hook-configuration");
-  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  operationalStateHealthDescriptor = openOperationalStateHealth(homeDescriptor);
-  operationalStateBaseline = localSqliteAcceptanceBaseline(
-    operationalStateHealthDescriptor,
-  );
   const { stdout: installedStatusOutput } = await run(
     agentscope,
     ["harness", "status", "codex", "--output", "json"],
@@ -1324,6 +1058,9 @@ try {
         TERM: "xterm-256color",
         XDG_CONFIG_HOME: "/harness-home",
         AGENTSCOPE_HOME: agentscopeHome,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
         CODEX_HOME: codexHome,
         // The pinned Codex source emits the command authority span from this
         // exact module target. Select it directly: accepting a broader crate
@@ -1383,7 +1120,7 @@ try {
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
-  await waitForCodexTurnTerminal(traceDeadline);
+  ({ turnId: codexTurnId } = await waitForCodexTurnTerminal(traceDeadline));
   recordInteractivePhase("trace-terminal");
   // The rollout can record a completed turn while Codex is still executing
   // its Stop hook. Releasing /exit at that point can race the TUI composer.
@@ -1443,7 +1180,6 @@ try {
   });
   const sessionStartCommandDurationMilliseconds =
     rootHookLifecycle.sessionStartDurationMilliseconds;
-  const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1454,30 +1190,6 @@ try {
     throw new Error("integration.codex.hook-configuration");
   recordInteractivePhase("verify-gate");
   const modelRequests = await readTerminalModelRequests();
-  recordInteractivePhase("verify-trace-get");
-  const traceId = summary?.locator?.traceId;
-  if (summary?.harness !== "codex" || typeof traceId !== "string")
-    throw new Error("integration.codex.trace-get-locator-input");
-  const getRecords = await cli(
-    [
-      "traces",
-      "get",
-      "--destination",
-      "local",
-      "--trace-ref",
-      JSON.stringify(summary.locator),
-    ],
-    "agentscope traces get",
-    { monotonicDeadline: traceDeadline, traceGetDiagnostic: true },
-  );
-  if (getRecords.length !== 1)
-    throw new Error("integration.codex.trace-get-record-count");
-  if (getRecords[0]?.locator?.traceId !== traceId)
-    throw new Error("integration.codex.trace-get-locator-result");
-  recordInteractivePhase("verify-correlation");
-  const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
-  if (codexSessionId === undefined || traceGraph.sessionId !== codexSessionId)
-    throw new Error("integration.codex.trace-correlation");
   recordInteractivePhase("verify-doctor");
   const doctor = projectDoctor(
     await cli(["doctor"], "agentscope doctor", {
@@ -1503,22 +1215,16 @@ try {
     1,
   );
   recordInteractivePhase("verify-projection");
-  const translated = translateCodexPlatformObservations({
+  const translated = translateCodexNativeObservations({
     scenarioId,
     prompt,
     promptSha256,
     mediation: { sessionStartCommandDurationMilliseconds },
     modelRequests,
-    search: {
-      completion: "complete",
-      harness: summary.harness,
-      spanCount: summary.spanCount,
-      traceId,
-    },
-    retrieval: {
-      completion: "complete",
-      ...traceGraph,
-      traceId,
+    native: {
+      sessionId: codexSessionId,
+      turnId: codexTurnId,
+      modelName: "fixture-model",
     },
     doctor: { completion: "complete", ...doctor },
     uninstall: {
@@ -1528,7 +1234,7 @@ try {
       uninstalledStatus,
     },
   });
-  const evidence = correlateCodexPlatformObservations(translated, {
+  const evidence = correlateCodexNativeObservations(translated, {
     artifactFileName: basename(artifactPath),
     expectedPromptSha256: promptSha256,
     scenarioId,
@@ -1549,12 +1255,8 @@ try {
   });
   completed = true;
 } finally {
-  if (localSqliteLifecycleDescriptor !== undefined)
-    closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)
     closeSync(codexDiagnosticLogDirectoryDescriptor);
-  if (operationalStateHealthDescriptor !== undefined)
-    closeSync(operationalStateHealthDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {

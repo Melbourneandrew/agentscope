@@ -1,7 +1,55 @@
+import { types } from "node:util";
+
 import { z } from "zod";
 
 import { deepFreeze } from "./canonical.js";
 import type { CapabilitySelector } from "./manifest.js";
+
+// This checks the selected reporter's compact JSON byte contract, not a
+// universal OTLP/JSON grammar. No partition or tolerant Protocol reader may
+// erase bytes or unknown string values before this privacy check.
+export const readSelectedWriterOtlpBatch = (
+  bytes: Buffer,
+  canaries: readonly string[],
+): unknown => {
+  const refuse = () => new Error("integration.operations.otlp-input");
+  if (
+    types.isProxy(bytes) ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.byteLength === 0 ||
+    bytes.byteLength > 1024 * 1024 ||
+    canaries.length === 0 ||
+    canaries.length > 64 ||
+    canaries.some(
+      (value) =>
+        typeof value !== "string" || value.length === 0 || value.length > 1024,
+    )
+  )
+    throw refuse();
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (canaries.some((canary) => text.includes(canary))) throw refuse();
+    const value: unknown = JSON.parse(text);
+    if (JSON.stringify(value) !== text) throw refuse();
+    const pending: unknown[] = [value];
+    let count = 0;
+    while (pending.length) {
+      if (++count > 100000) throw refuse();
+      const entry = pending.pop();
+      if (typeof entry === "string") {
+        if (canaries.some((canary) => entry.includes(canary))) throw refuse();
+      } else if (entry !== null && typeof entry === "object") {
+        Object.entries(entry).forEach(([key, child]) => {
+          if (canaries.some((canary) => key.includes(canary))) throw refuse();
+          pending.push(child);
+        });
+      }
+    }
+    return value;
+  } catch {
+    throw refuse();
+  }
+};
 
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
 const requestPath = z.string().regex(/^\/[a-zA-Z0-9._~:/-]{0,255}$/u);
@@ -55,14 +103,41 @@ const certificationReadiness = z.union([
     challengeSha256: z.string().regex(/^sha256:[a-f\d]{64}$/u),
   }),
 ]);
-const harnessObservation = z.strictObject({
+const nativeContext = {
+  nativeSessionId: z.string().min(1).max(256),
+  nativeTurnId: z.string().min(1).max(256),
+  nativeModelName: z.string().min(1).max(256),
+};
+const harnessObservation = z
+  .strictObject({
+    observationVersion: z.literal(1),
+    kind: z.literal("codex-tui-trace"),
+    modelRequestBodySha256: z.string().regex(/^[a-f\d]{64}$/u),
+    traceId: z.string().regex(/^[a-f\d]{32}$/u),
+    canonicalGraphDigest: z.string().regex(/^[a-f\d]{64}$/u),
+    spanIds: z.tuple([
+      z.string().regex(/^[a-f\d]{16}$/u),
+      z.string().regex(/^[a-f\d]{16}$/u),
+    ]),
+    contextDisposition: z.literal("unversioned-workspace-redacted"),
+    ...nativeContext,
+    resourceSpanCount: z.literal(1),
+    spanNames: z.tuple([z.literal("codex.turn"), z.literal("codex.response")]),
+    parentLinked: z.literal(true),
+    doctorErrors: z.literal(0),
+    uninstallDisposition: z.literal("committed"),
+    sessionStartCommandDurationMilliseconds: z
+      .number()
+      .finite()
+      .min(0)
+      .nullable(),
+  })
+  .refine((observation) => observation.spanIds[0] !== observation.spanIds[1]);
+const nativeObservation = z.strictObject({
   observationVersion: z.literal(1),
-  kind: z.literal("codex-tui-trace"),
+  kind: z.literal("codex-tui-native"),
+  ...nativeContext,
   modelRequestBodySha256: z.string().regex(/^[a-f\d]{64}$/u),
-  traceId: z.string().regex(/^[a-f\d]{32}$/u),
-  resourceSpanCount: z.number().int().min(1).max(256),
-  spanNames: z.tuple([z.literal("codex.turn"), z.literal("codex.response")]),
-  parentLinked: z.literal(true),
   doctorErrors: z.literal(0),
   uninstallDisposition: z.literal("committed"),
   sessionStartCommandDurationMilliseconds: z
@@ -80,7 +155,9 @@ const fixtureResult = z
     lifecycle,
     certificationReadiness,
     eventKinds: z.array(id).max(32),
-    harnessObservation: harnessObservation.optional(),
+    harnessObservation: z
+      .discriminatedUnion("kind", [harnessObservation, nativeObservation])
+      .optional(),
     modelLedger: z.strictObject({
       ledgerVersion: z.literal(1),
       scenarioId: id,
@@ -93,6 +170,23 @@ const fixtureResult = z
       retrieval: z.array(destinationEntry).max(32),
     }),
   })
+  .refine(
+    (value) =>
+      value.harnessObservation?.kind !== "codex-tui-trace" ||
+      value.resultStatus === "complete",
+  )
+  .refine(
+    (value) =>
+      value.harnessObservation?.kind !== "codex-tui-native" ||
+      (value.resultStatus === "partial" &&
+        JSON.stringify(value.lifecycle) ===
+          JSON.stringify(["install", "configure", "hook", "execute"]) &&
+        JSON.stringify(value.eventKinds) ===
+          JSON.stringify(["hook", "model"]) &&
+        value.modelLedger.entries.length > 0 &&
+        value.destinationLedger.ingestion.length === 0 &&
+        value.destinationLedger.retrieval.length === 0),
+  )
   .refine(
     (value) =>
       (value.resultStatus === "partial" &&

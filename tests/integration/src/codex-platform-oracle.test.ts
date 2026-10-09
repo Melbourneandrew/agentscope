@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- checksum-bound runtime modules intentionally expose no TypeScript API */
 
 // @ts-expect-error checksum-bound runtime module intentionally has no TS API
-import { correlateCodexPlatformObservations } from "../codex-platform-oracle.mjs";
+import * as oracle from "../codex-platform-oracle.mjs";
 // @ts-expect-error checksum-bound runtime module intentionally has no TS API
-import { translateCodexPlatformObservations } from "../fixtures/codex-platform-adapter.mjs";
+import * as adapter from "../fixtures/codex-platform-adapter.mjs";
+const { correlateCodexNativeObservations, correlateCodexPlatformObservations } =
+  oracle;
+const { translateCodexNativeObservations, translateCodexPlatformObservations } =
+  adapter;
 
 const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
@@ -57,6 +61,77 @@ const raw = () => ({
   },
 });
 type RawObservation = ReturnType<typeof raw>;
+const nativeRaw = () => {
+  const { search: _search, retrieval: _retrieval, ...observations } = raw();
+  void _search;
+  void _retrieval;
+  return {
+    ...observations,
+    native: {
+      sessionId: "session-1",
+      turnId: "turn-1",
+      modelName: "fixture-model",
+    },
+  };
+};
+const correlateNative = (value = nativeRaw()) =>
+  correlateCodexNativeObservations(translateCodexNativeObservations(value), {
+    artifactFileName: "agentscope-cli-0.1.0.tgz",
+    expectedPromptSha256: promptSha256,
+    scenarioId: "codex-tui-trace-smoke",
+  });
+
+describe("independently held native completion awaiting outer OTLP join", () => {
+  it("cannot assert destination delivery or CLI retrieval", () => {
+    expect(correlateNative()).toMatchObject({
+      resultStatus: "partial",
+      lifecycle: ["install", "configure", "hook", "execute"],
+      eventKinds: ["hook", "model"],
+      harnessObservation: {
+        kind: "codex-tui-native",
+        nativeSessionId: "session-1",
+        nativeTurnId: "turn-1",
+        nativeModelName: "fixture-model",
+        doctorErrors: 0,
+        uninstallDisposition: "committed",
+      },
+      destinationLedger: { ingestion: [], retrieval: [] },
+    });
+  });
+  it.each(["sessionId", "turnId", "modelName"] as const)(
+    "refuses absent native %s before outer correlation",
+    (field) => {
+      const value = nativeRaw();
+      value.native[field] = "";
+      expect(() => correlateNative(value)).toThrow(
+        "integration.codex.adapter-observation",
+      );
+    },
+  );
+  it("does not manufacture trace identity from native completion", () => {
+    const value = nativeRaw();
+    value.native.modelName = "other";
+    expect(translateCodexNativeObservations(value).native.modelName).toBe(
+      "other",
+    );
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-native",
+    );
+    expect(correlateNative().harnessObservation).not.toHaveProperty("traceId");
+  });
+  it("preserves actual model and retirement failures", () => {
+    const value = nativeRaw();
+    value.modelRequests[0]!.credentialHeaderCount = 1;
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-model-request",
+    );
+    value.modelRequests[0]!.credentialHeaderCount = 0;
+    value.uninstall.uninstall.disposition = "rolled-back";
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-lifecycle",
+    );
+  });
+});
 const correlate = (value = raw()) =>
   correlateCodexPlatformObservations(
     translateCodexPlatformObservations(value),

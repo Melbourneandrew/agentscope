@@ -124,7 +124,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(4);
+    expect(scenario?.runtimeArtifacts).toHaveLength(5);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -287,7 +287,8 @@ describe("integration capability manifest", () => {
     for (const literal of [
       "AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,",
       "...(options.candidatePrincipal === true ? { uid: 1000, gid: 1000 } : {}),",
-      "{ ...options, candidatePrincipal: true },",
+      "...options,\n      env: {\n        ...process.env,",
+      'NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",\n      },\n      candidatePrincipal: true,',
       '["harness", "status", "codex", "--output", "json"],\n    { candidatePrincipal: true },',
       "fchownSync(codexDiagnosticLogDirectoryDescriptor, 1000, 1000);",
       "fchownSync(configurationDescriptor, 1000, 1000);",
@@ -385,7 +386,7 @@ describe("integration capability manifest", () => {
       modelRequest,
     );
     const traceQueryAfterJoin = source.indexOf(
-      "  const summary = await waitForTraceSummary(traceDeadline);\n",
+      "  const translated = translateCodexNativeObservations({\n",
       terminalWait,
     );
     expect(codexLaunch).toBeGreaterThan(-1);
@@ -438,8 +439,6 @@ describe("integration capability manifest", () => {
       "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    postTraceFailureDiagnostic(error);",
       'if (interactiveFailurePhase === "verify-projection")',
       'if (interactiveFailurePhase === "verify-uninstall")',
-      'if (interactiveFailurePhase === "verify-trace-get")',
-      "classifyCodexTraceGetFailure(error?.message)",
       "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
       ": `integration.fixture.codex-${interactiveFailurePhase}`);",
       "`${diagnostic}\\n`",
@@ -450,6 +449,12 @@ describe("integration capability manifest", () => {
       '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
     ])
       expect(source).toContain(literal);
+    expect(source).not.toContain(
+      'if (interactiveFailurePhase === "verify-trace-get")',
+    );
+    expect(source).not.toContain(
+      "classifyCodexTraceGetFailure(error?.message)",
+    );
     const rootLogDirectory = source.indexOf(
       "const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\\n${createCodexInternalProviderConfiguration(",
     );
@@ -490,118 +495,37 @@ describe("integration capability manifest", () => {
     expect(traceTerminalPhase).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
-    expect(traceSearchPhase).toBeGreaterThan(-1);
-    expect(traceSearchResultPhase).toBeGreaterThan(-1);
+    expect(traceSearchPhase).toBe(-1);
+    expect(traceSearchResultPhase).toBe(-1);
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))",
     );
     expect(source).not.toContain("runDirectHookProbe");
     expect(source).not.toContain("options.input");
     expect(source).not.toContain("readHookOperationalHealth");
-    const terminalObservation = source.indexOf(
-      "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
-    );
     for (const literal of [
       "localSqliteAcceptanceBaseline",
       "classifyLocalSqliteOutcomeAfterBaseline",
       "openOperationalStateHealth",
+      "const waitForTraceSummary =",
+      'parseMachine(stdout, "agentscope traces search")',
     ])
-      expect(source).toContain(literal);
-    const traceSummaryWait = source.slice(
-      source.indexOf("const waitForTraceSummary ="),
-      source.indexOf("let completed = false;"),
+      expect(source).not.toContain(literal);
+    expect(source).toContain(
+      "const evidence = correlateCodexNativeObservations(",
     );
-    const preQueryDeadline = traceSummaryWait.indexOf(
-      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+    const outer = readFileSync(
+      resolve(integrationRoot, "run-scenarios.mjs"),
+      "utf8",
     );
-    const traceSearchPhaseInWait = traceSummaryWait.indexOf(
-      '    record: () => recordInteractivePhase("trace-search"),\n',
-      preQueryDeadline,
+    expect(outer).toMatch(/observeSelectedWriterOtlp\(\s*batches\[0\],/u);
+    expect(outer).toContain(
+      "canonicalGraphDigest: observed.transport.graphSha256",
     );
-    const boundedQuery = traceSummaryWait.indexOf(
-      "          : await readTraceSummary(traceSearchDeadlines),\n",
-      traceSearchPhaseInWait,
-    );
-    const lifecycleSettlement = traceSummaryWait.indexOf(
-      "    const reporterSettled = localSqliteReporterSettled(\n" +
-        "      localSqliteLifecycleDescriptor,\n" +
-        "    );\n",
-      traceSearchPhaseInWait,
-    );
-    const terminalObservationCut = traceSummaryWait.indexOf(
-      "    const observationClosed = traceSearchDeadlines === null;\n",
-      lifecycleSettlement,
-    );
-    const boundedBackoff = traceSummaryWait.indexOf(
-      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
-      lifecycleSettlement,
-    );
-    const reporterSettledPhase = source.indexOf(
-      '    record: () => recordInteractivePhase("trace-reporter-settled"),\n',
-      source.indexOf("const waitForTraceSummary ="),
-    );
-    const postReporterResultPhase = source.indexOf(
-      '    record: () => recordInteractivePhase("trace-search-result"),\n',
-      reporterSettledPhase,
-    );
-    const traceSummaryFunction = source.slice(
-      source.indexOf("const readTraceSummary ="),
-      source.indexOf("const waitForCodexTurnTerminal ="),
-    );
-    const joinedSearch = traceSummaryFunction.indexOf(
-      "  const { stdout, traceTimedOut, traceUnavailable } = await run(\n",
-    );
-    const exactHarnessFilter = traceSummaryFunction.indexOf(
-      '      "--harness",\n      "codex",\n',
-      joinedSearch,
-    );
-    const guardedRawResult = traceSummaryFunction.indexOf(
-      "    !terminalObservationBeforeDeadline({\n",
-      joinedSearch,
-    );
-    const resultParsing = traceSummaryFunction.indexOf(
-      '  const records = parseMachine(stdout, "agentscope traces search");\n',
-      guardedRawResult,
-    );
-    const guardedClassification = traceSummaryFunction.indexOf(
-      "  return classifyTraceSearchRecordsBeforeDeadline({\n",
-      resultParsing,
-    );
-    expect(terminalObservation).toBeGreaterThan(-1);
-    expect(preQueryDeadline).toBeGreaterThan(-1);
-    expect(traceSearchPhaseInWait).toBeGreaterThan(preQueryDeadline);
-    expect(lifecycleSettlement).toBeGreaterThan(traceSearchPhaseInWait);
-    expect(terminalObservationCut).toBeGreaterThan(lifecycleSettlement);
-    expect(boundedQuery).toBeGreaterThan(lifecycleSettlement);
-    expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
-    expect(reporterSettledPhase).toBeGreaterThan(lifecycleSettlement);
-    expect(postReporterResultPhase).toBeGreaterThan(reporterSettledPhase);
-    expect(traceSearchResultPhase).toBe(postReporterResultPhase);
-    expect(joinedSearch).toBeGreaterThan(-1);
-    expect(exactHarnessFilter).toBeGreaterThan(joinedSearch);
-    expect(guardedRawResult).toBeGreaterThan(exactHarnessFilter);
-    expect(guardedRawResult).toBeGreaterThan(joinedSearch);
-    expect(resultParsing).toBeGreaterThan(guardedRawResult);
-    expect(guardedClassification).toBeGreaterThan(resultParsing);
-    expect(traceSummaryFunction).toContain("  if (traceTimedOut) {\n");
-    expect(traceSummaryFunction).toContain(
-      "        deadline: observationDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "      monotonicDeadline: childDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "      deadline: attemptDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "  if (traceUnavailable) return null;\n",
-    );
-    expect(traceSummaryFunction).not.toContain(
-      'recordInteractivePhase("trace-search-',
-    );
+    expect(outer).not.toContain("canonicalGraph: observed.graph");
     const terminalCompletion = source.indexOf(
       "`\\u001b]2;${terminalCompletionMarker}\\u001b\\\\`",
-      terminalObservation,
+      terminalWait,
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);

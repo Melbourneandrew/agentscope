@@ -14,6 +14,7 @@ const invalid = (): never => {
 export const compileHarnessAdmissionSeed = (
   input: Readonly<{
     candidateDigest: string;
+    componentFixture: unknown;
     destinationCombinationIdentity: string;
     evidence: HarnessEvidence;
     manifestIdentity: string;
@@ -30,6 +31,26 @@ export const compileHarnessAdmissionSeed = (
     admission === undefined ||
     material.platformIdentity !== input.platformIdentity ||
     input.scenario.harnessEvidenceId !== input.evidence.evidenceId
+  )
+    return invalid();
+  let fixture;
+  try {
+    fixture = parseHarnessSanitizedFixture(input.componentFixture);
+  } catch {
+    return invalid();
+  }
+  const provenance = fixture.governance.provenance;
+  if (
+    provenance.captureKind !== "disposable-hermetic" ||
+    provenance.artifactAuthority.status !== "authenticated" ||
+    provenance.artifactAuthority.digest !== input.materialIdentity ||
+    fixture.harnessId !== input.evidence.harnessId ||
+    fixture.harnessVersion !== input.evidence.representativeVersion ||
+    fixture.governance.representative.representativeVersion !==
+      input.evidence.representativeVersion ||
+    fixture.governance.representative.scenarioId !==
+      input.scenario.scenarioId ||
+    fixture.governance.representative.evidenceSlot !== admission.evidenceSlot
   )
     return invalid();
   if (material.kind === "npm") {
@@ -127,3 +148,4 @@ export const compileHarnessAdmissionCompletion = (
     remainingOwnedResources: 0,
   });
 };
+import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";

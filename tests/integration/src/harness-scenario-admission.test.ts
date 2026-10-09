@@ -7,7 +7,45 @@ import {
 } from "./harness-scenario-admission.js";
 
 const digest = (character: string): string => `sha256-${character.repeat(64)}`;
+// Deliberate grammar-only unit input, never actual-capture admission evidence.
+const componentFixture = (version = "1.2.3") => {
+  const base = parseHarnessSanitizedFixture(
+    JSON.parse(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+        ),
+        "utf8",
+      ),
+    ),
+  );
+  return {
+    ...base,
+    harnessVersion: version,
+    governance: {
+      ...base.governance,
+      provenance: {
+        captureKind: "disposable-hermetic",
+        sourceReference: "https://vendor.example/capture",
+        captureRecipe: "unit-capture",
+        artifactAuthority: { status: "authenticated", digest: digest("8") },
+      },
+      license: {
+        redistribution: "reviewed-for-repository",
+        reviewedLicenseId: "Apache-2.0",
+        sourceReference: "https://vendor.example/license",
+      },
+      representative: {
+        scenarioId: "codex-headless",
+        representativeVersion: version,
+        evidenceSlot: "codex-headless-v1",
+      },
+    },
+  };
+};
 const fixture = () => ({
+  componentFixture: componentFixture(),
   candidateDigest: digest("a"),
   destinationCombinationIdentity: digest("b"),
   evidence: {
@@ -104,6 +142,59 @@ const fixture = () => ({
 
 // eslint-disable-next-line max-lines-per-function -- complete bridge matrix
 describe("real harness scenario admission bridge", () => {
+  it("refuses missing, synthetic, foreign and unbound component fixtures", () => {
+    const input = fixture();
+    const genuine = componentFixture();
+    const synthetic: unknown = JSON.parse(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+        ),
+        "utf8",
+      ),
+    );
+    for (const value of [
+      undefined,
+      {},
+      synthetic,
+      { ...genuine, harnessId: "claude-code" },
+      { ...genuine, harnessVersion: "9.9.9" },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            scenarioId: "other",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            evidenceSlot: "other",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          provenance: {
+            ...genuine.governance.provenance,
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    ])
+      expect(() =>
+        compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+      ).toThrow("integration.harness-scenario-admission.invalid");
+  });
   it("binds material, component, catalog, platform, and scenario identities", () => {
     const input = fixture();
     const seed = compileHarnessAdmissionSeed(input);
@@ -149,6 +240,7 @@ describe("real harness scenario admission bridge", () => {
     const input = fixture();
     const signed = {
       ...input,
+      componentFixture: componentFixture("2.1.89"),
       evidence: {
         ...input.evidence,
         representativeVersion: "2.1.89",
@@ -232,3 +324,6 @@ describe("real harness scenario admission bridge", () => {
       );
   });
 });
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";

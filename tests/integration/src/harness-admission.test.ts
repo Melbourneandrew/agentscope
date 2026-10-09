@@ -253,6 +253,38 @@ describe("trusted real-harness admission", () => {
       "integration.harness-admission.invalid",
     );
   });
+
+  it("does not promote caller-asserted genuine capture labels or a forged terminal", () => {
+    const context = fixture();
+    const asserted = {
+      authorityVersion: 1,
+      authorityKind: "authenticated-harness-material",
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: digest("d") },
+      reviewed: true,
+      seed: seed(),
+    } as const;
+    expect(() => context.kernel.begin(context.token, asserted)).toThrow(
+      "integration.harness-admission.invalid",
+    );
+    const admission = begin(context);
+    const assertedTerminal = {
+      authorityVersion: 1,
+      authorityKind: "authenticated-harness-terminal",
+      material: admission.material,
+      completion: completion(),
+    } as const;
+    expect(() => {
+      context.kernel.complete(
+        context.token,
+        admission.authority,
+        assertedTerminal,
+      );
+    }).toThrow("integration.harness-admission.invalid");
+    expect(() =>
+      context.kernel.compile(context.token, [admission.authority]),
+    ).toThrow("integration.harness-admission.invalid");
+  });
 });
 
 describe("trusted real-harness admission substitutions", () => {

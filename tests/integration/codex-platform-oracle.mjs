@@ -118,3 +118,87 @@ export const correlateCodexPlatformObservations = (
     },
   });
 };
+// Native completion is only partial. Destination delivery is independently
+// joined by the authenticated outer collector, never asserted by the candidate.
+export const correlateCodexNativeObservations = (
+  observation,
+  { artifactFileName, expectedPromptSha256, scenarioId },
+) => {
+  assert(observation.scenarioId === scenarioId, "scenario");
+  assert(
+    expectedPromptSha256 ===
+      "28e80ac9dd2867aa0163739ec137f67504a75b3465a840bd422e5eba6c724c35",
+    "stimulus",
+  );
+  const request = observation.modelRequests[0];
+  assert(
+    observation.promptSha256 === expectedPromptSha256 &&
+      observation.modelRequests.length === 1 &&
+      request.method === "POST" &&
+      request.path === "/v1/responses" &&
+      request.modelSha256 ===
+        "e6954ed9cce48114b2875996c433c4ada96795c4f7b5401b3ed7578086bbe242" &&
+      request.promptOccurrenceCount === 1 &&
+      request.credentialHeaderCount === 0,
+    "model-request",
+  );
+  assert(
+    observation.native.sessionId.length > 0 &&
+      observation.native.turnId.length > 0 &&
+      observation.native.modelName === "fixture-model",
+    "native",
+  );
+  assert(
+    observation.doctor.completion === "complete" &&
+      observation.doctor.errors === 0 &&
+      observation.uninstall.completion === "complete" &&
+      observation.uninstall.installedStatus.installation === "unchanged" &&
+      observation.uninstall.installedStatus.configurationPresentCount === 1 &&
+      observation.uninstall.uninstall.changedTargetCount === 3 &&
+      observation.uninstall.uninstall.targetCount === 3 &&
+      observation.uninstall.uninstall.disposition === "committed" &&
+      observation.uninstall.uninstalledStatus.installation === "ready" &&
+      observation.uninstall.uninstalledStatus.configurationPresentCount === 1,
+    "lifecycle",
+  );
+  return Object.freeze({
+    evidenceVersion: 1,
+    resultStatus: "partial",
+    scenarioId,
+    artifactFileName,
+    lifecycle: ["install", "configure", "hook", "execute"],
+    certificationReadiness: null,
+    eventKinds: ["hook", "model"],
+    harnessObservation: {
+      observationVersion: 1,
+      kind: "codex-tui-native",
+      nativeSessionId: observation.native.sessionId,
+      nativeTurnId: observation.native.turnId,
+      nativeModelName: observation.native.modelName,
+      modelRequestBodySha256: request.bodySha256,
+      doctorErrors: observation.doctor.errors,
+      uninstallDisposition: observation.uninstall.uninstall.disposition,
+      sessionStartCommandDurationMilliseconds:
+        observation.mediation.sessionStartCommandDurationMilliseconds,
+    },
+    modelLedger: {
+      ledgerVersion: 1,
+      scenarioId,
+      entries: [
+        {
+          routeId: "codex-tui-responses",
+          provider: "openai",
+          method: request.method,
+          path: request.path,
+          bodyBytes: request.bodyBytes,
+        },
+      ],
+    },
+    destinationLedger: {
+      ledgerVersion: 1,
+      scenarioId,
+      ingestion: [],
+      retrieval: [],
+    },
+  });
+};

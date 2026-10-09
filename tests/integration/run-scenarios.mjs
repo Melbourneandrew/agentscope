@@ -13,12 +13,16 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
+import { deriveIdentityBundle } from "@agentscope/protocol";
+import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";
+import { observeSelectedWriterOtlp } from "./dist/selected-otlp-observation.js";
 
 import {
   compileIsolationEvidence,
@@ -66,6 +70,7 @@ import {
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
+import { collectorCa } from "./collector-ca.mjs";
 import { codexResearchDependencies } from "./codex-pty-research.mjs";
 import { createCodexFailureResearchRecord } from "./codex-trace-child-diagnostics.mjs";
 import { prepareMockServerService } from "./mockserver-material/prepare-supplier.mjs";
@@ -123,6 +128,12 @@ const substrateCertificationCase = requireSubstrateCertificationCase();
 const substrateCertificationReplay = requireSubstrateCertificationReplay();
 const canonicalImagePlatform = `${IMAGE_PREPARATION_EXECUTION_POLICY.platform.os}/${IMAGE_PREPARATION_EXECUTION_POLICY.platform.architecture}`;
 
+// PUBLICLY KNOWN NON-AUTHORITATIVE TEST FIXTURE, not a secret or authority.
+// Never copy these literals into candidate/runtime material or retained output.
+const collectorTlsCertificate =
+  "-----BEGIN CERTIFICATE-----\nMIIDWTCCAkGgAwIBAgIJALhPtwb/YwcyMA0GCSqGSIb3DQEBCwUAMC8xLTArBgNV\nBAMMJEFnZW50c2NvcGUgTk9OLUFVVEhPUklUQVRJVkUgVEVTVCBDQTAeFw0yNjEw\nMDgyMjUxMzdaFw00NjEwMDMyMjUxMzdaMBQxEjAQBgNVBAMMCWNvbGxlY3RvcjCC\nASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAOI9QoaxF6zrv+z08vhCl4Wm\nBZ6FRhU6ueRm0wxs0VMMnkfoL48Xoaxsr2Imnw0g0YkHwuXbCwjcfV9KnMrXShE/\nf/FQpx+4NQiT65qGwY8tFI+RRdzL60LVCXo8g6Qn3Csz7lGxSsXY+Lqk4pkHMBE0\njv2NBbHTyj1fM62E4duDVucBqMMEZB4Woti7LB7z85ms7WmqMtXcqSNEVWp+IKkQ\nk+52HM/zzsBiPAs0I1QzUDGcZGHrQFmGxmasZDQJ6U2GFhG92BiR8PBzY6MieE2x\nz+b8APe1XXQmo+1Mn4C/gBwFz5yQdyKuXn2yn11QECqY65hkVATkpw2+rV/ihUMC\nAwEAAaOBkjCBjzAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIFoDATBgNVHSUE\nDDAKBggrBgEFBQcDATAaBgNVHREEEzARggljb2xsZWN0b3KHBH8AAAEwHQYDVR0O\nBBYEFCdZewpLX6ENldAi/+zeXIhxN6fnMB8GA1UdIwQYMBaAFBaQOqAoApslxCmZ\n8ZmT8eHoLTM+MA0GCSqGSIb3DQEBCwUAA4IBAQBO063j/ZT4jn6E5qlgspURADjY\nT0Gu1W+frEMcsP9MOcOmIt15bqDyoTDA6jJrtyDx7t7PIUI0+hPziWgdOTwG9QvJ\nMcURlJ7+eHqkC871vM8Y1FphRknWYoatDOacqlfG7uHRBeob77UnirJRqcjr3AUF\n9RXWYelaTP9/diuftwB8c7bPJlLFesZKEEjRZOix2YMAPRzFEkx2b2hPTL+5Dd5r\nu5+TcaRywxJi0eK12OxTnkOoqEk7ap2fY+qAjS+hnLabRqJt+O9jK2lHK12i67qV\njGcoL7rCQqywLR8fTrxiJr992WzELbGLCTyfJUPU9AKaTFi4lbYuDAfYBmTS\n-----END CERTIFICATE-----\n";
+const collectorTlsKey =
+  "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDiPUKGsRes67/s\n9PL4QpeFpgWehUYVOrnkZtMMbNFTDJ5H6C+PF6GsbK9iJp8NINGJB8Ll2wsI3H1f\nSpzK10oRP3/xUKcfuDUIk+uahsGPLRSPkUXcy+tC1Ql6PIOkJ9wrM+5RsUrF2Pi6\npOKZBzARNI79jQWx08o9XzOthOHbg1bnAajDBGQeFqLYuywe8/OZrO1pqjLV3Kkj\nRFVqfiCpEJPudhzP887AYjwLNCNUM1AxnGRh60BZhsZmrGQ0CelNhhYRvdgYkfDw\nc2OjInhNsc/m/AD3tV10JqPtTJ+Av4AcBc+ckHcirl59sp9dUBAqmOuYZFQE5KcN\nvq1f4oVDAgMBAAECggEAcStxrszBaheXryGstLEi+JDe+Lf0IcR5np4s7mc0opWK\nS7ACslKA5i6L4M4u+7Mx/ZjrTm2u7GTXNiatne3puA0KpBzTLNPJe5v63BaSlltX\nkKV7zAIZkhndHs9Mjn397YKRsT29iJCLg1ndm+zzh3fCG2VCtvyZiu+neyIglNwC\naBSywTix9penTf9LKagrZyYDax9/qr2XGFeG2fElvi3ybvDyJy9zzh/v8HyfZv1G\n3vhPvuKqJ9ywWmqx6e8O46Coss3FF4tZUBMjCBfsPFRXnMSKhuOOhNAkGvjMV2RO\nVnDilLK1HGuTw4Ma/X8oaTGUuyJ6fCLD7m3M4jxIsQKBgQD4EWyrJxNCuV+pCYCU\nA07x/oG85Dvi9gn/6APeYw2BA44Sunqm82eYHNfJ7VVn3Y2GK/D+U3fNQ6QN8Dv3\nsEN1q0TfUBxS8TzbBKJWBbR6JE8TI72gkui+0oobDOhP2g1WXbY3td433rpc+T6V\n2aO1eamFmpInQGYBElX6iBsiiQKBgQDpeSecwXPVtQJVLzgmExtXnnP4265eyZjA\nWK3F1USBcmUda+YmK5+8XrcGw5ovt8zLuvnJcGkmNddJXz8Lo96/JAjos9oyuF01\nQUwi+ncubTmhsjIRPzbbXcEqvzJk39QsTIR7qNbrWYgZy237OCTov5Wyp2fh/Aej\ny0bgLmTmawKBgQCWJ03kp2lUKQrLMbI/ZWVCu2/iWzAYqB7TZKf603AYGIPFuFSH\ne6vH+iVv15WrogKJJU3hU7qfZ4ME4NYbjfi3X+z3UvFiDx1r4Pk2IovkpteqWSbt\n7B6vapcn2n8/3lfWYDDstcwFe27I2iFU6QDb1wGSmkY/Ng7INUYPuJTcKQKBgQCh\nGg6xZfOuFVbkvM57x1dooFfZ8oxhr64Nm6NdDYpV4D/Ri3CmChgQ/TJCIpq0LpnM\nQtq1mzGTQjep02VHfO3o6s6S8/euY/U9GC+XO0kd6hSIdNODfyE1QX5XJtN5M9HO\nN4Z7ZcfXYlI9qlfbr6QYTorXWhieoTAMX+oqKxlIvQKBgBwGaB6Pb5VPsD0VufCy\n4dstz6JGo5+TenHxqW6fTTAXoWMxHb4eAAOjPicmz1ONHJwpL2WHlpqQ0XlPSICl\nvM52c7YcOeXm2KkugEcpg6y3Z6IrChLtjy4yzQG+PB4ymHCGR+tJHSmaURr+UVB8\njySh/x0sD0+Wfhi8e3/kCH1r\n-----END PRIVATE KEY-----\n";
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -473,6 +484,12 @@ const stageBuildContext = (plan) => {
       closeSync(descriptor);
     }
   }
+  if (gateCapableMockServer)
+    writeExactRegularFile(
+      resolve(context, "collector-ca.pem"),
+      Buffer.from(collectorCa, "utf8"),
+      0o444,
+    );
   stageEsmPackageBoundary(context);
   cpSync(
     candidateDirectory,
@@ -547,6 +564,7 @@ const stageBuildContext = (plan) => {
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
+            "COPY --chmod=0444 collector-ca.pem ./collector-ca.pem",
           ]
         : []),
       "COPY runtime ./runtime",
@@ -1583,46 +1601,67 @@ const startDestinationSidecar = async (plan, signal, mode) => {
   if (mode !== "ingestion" && mode !== "retrieval")
     throw new Error("integration.isolation.context");
   const kind = mode === "ingestion" ? "collector" : "retrieval";
-  await dockerWithSignal(
-    [
-      "create",
-      "--platform",
-      canonicalImagePlatform,
-      "--name",
-      plan[`${kind}Name`],
-      ...labelArguments(plan),
-      "--network",
-      plan.networkName,
-      "--network-alias",
-      kind,
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      ...sidecarResourceArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
-      "--user",
-      "1000:1000",
-      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
-      plan.imageTag,
-      "node",
-      "/opt/agentscope/destination-server.mjs",
-      mode,
-    ],
-    signal,
-    { mutationCapable: true },
-  );
-  await assertContainer(
+  const secureCollector =
+    mode === "ingestion" && plan.scenarioId === "codex-tui-trace-smoke";
+  try {
+    await dockerWithSignal(
+      [
+        "create",
+        "--platform",
+        canonicalImagePlatform,
+        "--name",
+        plan[`${kind}Name`],
+        ...labelArguments(plan),
+        "--network",
+        plan.networkName,
+        "--network-alias",
+        kind,
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        ...sidecarResourceArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
+        "--user",
+        "1000:1000",
+        ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
+        "--env",
+        `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+        "--env",
+        `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
+        ...(secureCollector
+          ? [
+              "--env",
+              `AGENTSCOPE_COLLECTOR_TLS_CERT=${collectorTlsCertificate}`,
+              "--env",
+              `AGENTSCOPE_COLLECTOR_TLS_KEY=${collectorTlsKey}`,
+            ]
+          : []),
+        plan.imageTag,
+        "node",
+        "/opt/agentscope/destination-server.mjs",
+        mode,
+      ],
+      signal,
+      { mutationCapable: true },
+    );
+  } catch (error) {
+    // Native exec errors can carry argv: collapse only this test-key boundary.
+    // dockerWithSignal already preserves uncertain mutation/retirement state.
+    if (secureCollector)
+      // eslint-disable-next-line preserve-caught-error -- native argv contains the public test leaf key; no raw cause crosses diagnostics
+      throw new Error("integration.isolation.collector-create");
+    throw error;
+  }
+  const containerId = await assertContainer(
     plan,
     plan[`${kind}Name`],
     ISOLATION_EXECUTOR_LIMITS.containers[kind],
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
+  if (secureCollector)
+    scenarioContainerIdentities.set(plan.collectorName, containerId);
   await dockerWithSignal(["start", plan[`${kind}Name`]], signal, {
     mutationCapable: true,
   });
@@ -1631,6 +1670,120 @@ const startCollector = (plan, signal) =>
   startDestinationSidecar(plan, signal, "ingestion");
 const startRetrieval = (plan, signal) =>
   startDestinationSidecar(plan, signal, "retrieval");
+const decodeCollectorSnapshot = (output, plan) => {
+  const refuse = () => new Error("integration.isolation.collector-terminal");
+  let observation;
+  try {
+    observation = JSON.parse(output.stdout);
+  } catch {
+    throw refuse();
+  }
+  if (
+    observation?.observationVersion !== 2 ||
+    JSON.stringify(Object.keys(observation).sort()) !==
+      JSON.stringify([
+        "aggregateBytes",
+        "batches",
+        "observationVersion",
+        "scenarioId",
+      ]) ||
+    observation.scenarioId !== plan.scenarioId ||
+    !Array.isArray(observation.batches) ||
+    observation.batches.length === 0 ||
+    observation.batches.length > 8 ||
+    !Number.isSafeInteger(observation.aggregateBytes) ||
+    observation.aggregateBytes <= 0 ||
+    observation.aggregateBytes > 8 * 1024 * 1024
+  )
+    throw refuse();
+  const batches = observation.batches.map((value) => {
+    if (typeof value !== "string" || value.length > 1398104) throw refuse();
+    const bytes = Buffer.from(value, "base64");
+    if (bytes.toString("base64") !== value || bytes.length > 1024 * 1024)
+      throw refuse();
+    return bytes;
+  });
+  if (
+    batches.reduce((bytes, batch) => bytes + batch.length, 0) !==
+    observation.aggregateBytes
+  )
+    throw refuse();
+  return batches;
+};
+const joinCollectorObservations = async (plan, signal, deadline) => {
+  const refuse = () => new Error("integration.isolation.collector-terminal");
+  const containerId = scenarioContainerIdentities.get(plan.collectorName);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) throw refuse();
+  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+  if (remaining <= 0) throw refuse();
+  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+  const current = await assertContainer(
+    plan,
+    plan.collectorName,
+    ISOLATION_EXECUTOR_LIMITS.containers.collector,
+    joinSignal,
+    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
+  );
+  if (current !== containerId) throw refuse();
+  let output;
+  try {
+    output = await dockerWithSignal(
+      [
+        "exec",
+        containerId,
+        "/usr/local/bin/node",
+        "--input-type=module",
+        "-e",
+        'import {get} from "node:https"; import {readFileSync} from "node:fs"; const request=get("https://127.0.0.1:4318/observations",{ca:readFileSync("/opt/agentscope/collector-ca.pem"),agent:false},response=>{let bytes=0;const chunks=[];response.on("data",chunk=>{bytes+=chunk.length;if(bytes>12*1024*1024)request.destroy();else chunks.push(chunk);});response.once("end",()=>{if(response.statusCode!==200)process.exitCode=1;else process.stdout.write(Buffer.concat(chunks));});response.once("error",()=>{process.exitCode=1;});});request.once("error",()=>{process.exitCode=1;});',
+      ],
+      joinSignal,
+      { terminal: true, maxBuffer: 12 * 1024 * 1024 },
+    );
+  } catch {
+    // Native exec errors can contain original received bytes; never propagate
+    // output or cause through the controller's diagnostic error boundary.
+    throw refuse();
+  }
+  const batches = decodeCollectorSnapshot(output, plan);
+  const waited = await dockerWithSignal(
+    ["container", "wait", containerId],
+    joinSignal,
+    { terminal: true },
+  );
+  const inspected = JSON.parse(
+    (
+      await dockerWithSignal(
+        ["container", "inspect", containerId],
+        joinSignal,
+        {
+          terminal: true,
+        },
+      )
+    ).stdout,
+  );
+  const terminal =
+    Array.isArray(inspected) && inspected.length === 1
+      ? inspected[0]
+      : undefined;
+  if (
+    waited.stdout !== "0\n" ||
+    terminal?.Id !== containerId ||
+    terminal.Name !== `/${plan.collectorName}` ||
+    terminal.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId ||
+    terminal.State?.Status !== "exited" ||
+    terminal.State.Running !== false ||
+    terminal.State.OOMKilled !== false ||
+    terminal.State.Paused !== false ||
+    terminal.State.Restarting !== false ||
+    terminal.State.Dead !== false ||
+    terminal.State.ExitCode !== 0 ||
+    terminal.State.Pid !== 0 ||
+    terminal.State.Error !== ""
+  )
+    throw refuse();
+  return batches;
+};
 const mockServerNetworkObservation = (server, network) => {
   const own = (value, key) =>
     value !== null && typeof value === "object" && !types.isProxy(value)
@@ -1790,6 +1943,158 @@ const startMockServer = async (plan, signal) => {
   mockServerControls.get(plan.runId).host = network.IPAddress;
   mockServerContainerIdentities.set(plan.runId, containerId);
 };
+const codexCollectorExpectation = (plan, native) => {
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === plan.scenarioId,
+  );
+  const selected = manifest.evidence.find(
+    (entry) => entry.evidenceId === scenario?.harnessEvidenceId,
+  );
+  if (
+    selected?.harnessId !== "codex" ||
+    selected.representativeVersion !== "0.149.1"
+  )
+    throw new Error("integration.isolation.collector-native");
+  const turnIdentity = `codex:${native.nativeTurnId}`;
+  const identity = deriveIdentityBundle({
+    harnessRegistryId: "codex",
+    operationIdScope: "session-global",
+    session: { kind: "boundary-scoped" },
+    boundary: {
+      kind: "hook-invocation",
+      id: turnIdentity,
+      generation: 0,
+      positionKind: "sequence",
+      exclusiveEndPosition: 1,
+    },
+    operations: [
+      {
+        logicalKey: "codex-turn",
+        locator: { kind: "native-operation", nativeId: turnIdentity },
+      },
+      {
+        logicalKey: "codex-llm",
+        parentLogicalKey: "codex-turn",
+        locator: {
+          kind: "native-operation",
+          nativeId: `${turnIdentity}:llm`,
+        },
+      },
+    ],
+  });
+  return {
+    harness: { name: "codex", version: selected.representativeVersion },
+    sessionId: native.nativeSessionId,
+    modelName: native.nativeModelName,
+    identity: {
+      traceId: identity.traceId,
+      spanIds: [identity.spans["codex-turn"], identity.spans["codex-llm"]],
+    },
+    unavailableContext: [
+      ...[
+        "agentscope.git.worktree",
+        "agentscope.git.repository_root",
+        "vcs.ref.head.name",
+        "vcs.ref.head.revision",
+        "vcs.ref.type",
+      ].map((field) => ({
+        field,
+        source: "git",
+        state: "unavailable",
+        reason: "resolution-failed",
+      })),
+      {
+        field: "agentscope.workspace.directory",
+        source: "hook-payload",
+        state: "redacted",
+        reason: "policy-redacted",
+      },
+    ],
+  };
+};
+const completeCodexCollectorFixture = (plan, batches) => {
+  const fixture = fixtureResults.get(plan.runId);
+  const native = fixture?.harnessObservation;
+  if (
+    fixture?.resultStatus !== "partial" ||
+    native?.kind !== "codex-tui-native"
+  )
+    throw new Error("integration.isolation.collector-native");
+  // This selected turn emits one complete canonical unit. Extra batches are
+  // not silently discarded or promoted to a proof of unrelated sessions.
+  if (batches.length !== 1)
+    throw new Error("integration.isolation.collector-native");
+  const expected = codexCollectorExpectation(plan, native);
+  const observed = observeSelectedWriterOtlp(
+    batches[0],
+    ["DUMMY_PUBLIC_KEY", "DUMMY_SECRET_KEY", "/worktree"],
+    expected,
+  );
+  const spans = observed.graph.resourceSpans[0].scopeSpans[0].spans;
+  const root = spans.find((span) => span.parentSpanId === undefined);
+  const model = spans.find((span) => span.parentSpanId === root?.spanId);
+  if (
+    spans.length !== 2 ||
+    root?.name !== "codex.turn" ||
+    model?.name !== "codex.response" ||
+    root.spanId !== expected.identity.spanIds[0] ||
+    model.spanId !== expected.identity.spanIds[1]
+  )
+    throw new Error("integration.isolation.collector-native");
+  fixtureResults.set(
+    plan.runId,
+    sanitizeFixtureResult(
+      {
+        ...fixture,
+        resultStatus: "complete",
+        lifecycle: [
+          "install",
+          "configure",
+          "hook",
+          "execute",
+          "export",
+          "retrieve",
+          "uninstall",
+        ],
+        eventKinds: ["hook", "model", "destination"],
+        harnessObservation: {
+          observationVersion: 1,
+          kind: "codex-tui-trace",
+          canonicalGraphDigest: observed.transport.graphSha256,
+          spanIds: [root.spanId, model.spanId],
+          contextDisposition: "unversioned-workspace-redacted",
+          nativeSessionId: native.nativeSessionId,
+          nativeTurnId: native.nativeTurnId,
+          nativeModelName: native.nativeModelName,
+          modelRequestBodySha256: native.modelRequestBodySha256,
+          traceId: expected.identity.traceId,
+          resourceSpanCount: observed.graph.resourceSpans.length,
+          spanNames: [root.name, model.name],
+          parentLinked: model.parentSpanId === root.spanId,
+          doctorErrors: native.doctorErrors,
+          uninstallDisposition: native.uninstallDisposition,
+          sessionStartCommandDurationMilliseconds:
+            native.sessionStartCommandDurationMilliseconds,
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: [
+            {
+              operation: "otlp",
+              method: "POST",
+              path: "/api/public/otel/v1/traces",
+              bodyBytes: batches[0].byteLength,
+              outcome: "accepted",
+            },
+          ],
+          retrieval: [],
+        },
+      },
+      plan.scenarioId,
+    ),
+  );
+};
 // eslint-disable-next-line complexity -- exact closed container terminal witness
 const joinMockServer = async (plan, signal) => {
   const containerId = mockServerContainerIdentities.get(plan.runId);
@@ -1893,6 +2198,10 @@ const joinMockServer = async (plan, signal) => {
       runId: plan.runId,
     },
   );
+  if (plan.scenarioId === "codex-tui-trace-smoke") {
+    const batches = await joinCollectorObservations(plan, joinSignal, deadline);
+    completeCodexCollectorFixture(plan, batches);
+  }
 };
 const createScenarioContainer = async (
   plan,
@@ -2790,6 +3099,47 @@ const plans = scenarios.map((scenario) =>
 );
 registerIntegrationRunIds(plans.map(({ runId }) => runId));
 const admissionByRunId = new Map();
+const readAdmissionComponentFixture = (evidence) => {
+  let descriptor;
+  try {
+    const artifact = evidence.admission.component.fixture;
+    const path = resolve(workspaceRoot, artifact.path);
+    if (!path.startsWith(`${workspaceRoot}/`))
+      throw new Error("integration.harness-scenario-admission.invalid");
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const status = fstatSync(descriptor);
+    if (!status.isFile() || status.size < 1 || status.size > 16_777_216)
+      throw new Error("integration.harness-scenario-admission.invalid");
+    const buffer = Buffer.alloc(status.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(
+        descriptor,
+        buffer,
+        length,
+        buffer.length - length,
+        null,
+      );
+      if (read === 0) break;
+      length += read;
+    }
+    const bytes = buffer.subarray(0, length);
+    if (
+      bytes.length !== status.size ||
+      createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+    )
+      throw new Error("integration.harness-scenario-admission.invalid");
+    return parseHarnessSanitizedFixture(JSON.parse(bytes.toString("utf8")));
+  } catch {
+    // Filesystem/native parser errors must not disclose fixture content or paths.
+    throw new Error("integration.harness-scenario-admission.invalid");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
 const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
@@ -2849,6 +3199,7 @@ try {
       materialIdentity: materialAuthority.materialIdentity,
       seed: {
         candidateDigest: candidate.bundleIdentity,
+        componentFixture: readAdmissionComponentFixture(evidence),
         destinationCombinationIdentity: admissionDigest({
           destinations: [...scenario.destinations].sort(),
           modelRoutes: [...scenario.modelRoutes].sort(),

@@ -1,12 +1,121 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
 import {
   compileLocalSelection,
   mapWithConcurrency,
   planArtifactRetention,
+  readSelectedWriterOtlpBatch,
   sanitizeFixtureResult,
   type ArtifactDirectoryEntry,
 } from "./operations.js";
+
+describe("selected compact JSON writer privacy boundary", () => {
+  const canaries = ["PRIVATE_CANARY"];
+  const read = (text: string) =>
+    readSelectedWriterOtlpBatch(Buffer.from(text), canaries);
+  it("retains unknown values for accounting before any canonical projection", () => {
+    expect(read('{"resourceSpans":[],"unknown":{"value":"ordinary"}}')).toEqual(
+      {
+        resourceSpans: [],
+        unknown: { value: "ordinary" },
+      },
+    );
+  });
+  it.each([
+    '{"resourceSpans":[],"unknown":"PRIVATE_CANARY"}',
+    '{"resourceSpans":[],"unknown":"\\u0050RIVATE_CANARY"}',
+    '{"resourceSpans":[],"\\u0050RIVATE_CANARY":false}',
+    '{"unknown":"\\u0050RIVATE_CANARY","unknown":"ordinary"}',
+    '{ "resourceSpans": [] }',
+    '{"resourceSpans":[],"resourceSpans":[]}',
+    '{"value":1e0}',
+    "{malformed}",
+  ])("refuses raw/escaped canaries or non-selected serialization", (text) => {
+    expect(() => read(text)).toThrow("integration.operations.otlp-input");
+  });
+  it("refuses malformed UTF8, empty/oversized bodies and missing canaries", () => {
+    for (const bytes of [
+      Buffer.from([0xc0, 0xaf]),
+      Buffer.alloc(0),
+      Buffer.alloc(1024 * 1024 + 1),
+    ]) {
+      expect(() => readSelectedWriterOtlpBatch(bytes, canaries)).toThrow(
+        "integration.operations.otlp-input",
+      );
+    }
+    expect(() => readSelectedWriterOtlpBatch(Buffer.from("{}"), [])).toThrow(
+      "integration.operations.otlp-input",
+    );
+  });
+});
+
+describe("outer collector create failure privacy", () => {
+  it.each(["codex-tui-trace-smoke", "fixture-process-smoke"])(
+    "collapses argv-bearing errors only for selected TLS collector %s",
+    async (scenarioId) => {
+      const source = readFileSync(
+        new URL("../run-scenarios.mjs", import.meta.url),
+        "utf8",
+      );
+      const start = source.indexOf("const startDestinationSidecar =");
+      const end = source.indexOf("const startCollector =", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const original = Object.assign(Error("PRIVATE_TEST_KEY"), {
+        stdout: "PRIVATE_TEST_KEY",
+        stderr: "PRIVATE_TEST_KEY",
+      });
+      const calls: string[][] = [];
+      const run = runInNewContext(
+        `${source.slice(start, end)}; startDestinationSidecar`,
+        {
+          collectorTlsCertificate: "PUBLIC_CERTIFICATE",
+          collectorTlsKey: "PRIVATE_TEST_KEY",
+          canonicalImagePlatform: "linux/amd64",
+          labelArguments: () => [],
+          sidecarResourceArguments: () => [],
+          tmpfsArguments: () => [],
+          ISOLATION_EXECUTOR_LIMITS: {
+            containers: {},
+            requests: { destinationServerMaximumBytes: 1024 * 1024 },
+          },
+          dockerWithSignal: (args: string[]) => {
+            calls.push(args);
+            return Promise.reject(original);
+          },
+        },
+      ) as (plan: unknown, signal: unknown, mode: string) => Promise<void>;
+      const result = await run(
+        {
+          scenarioId,
+          collectorName: "selected",
+          networkName: "network",
+          imageTag: "image",
+        },
+        {},
+        "ingestion",
+      ).catch((error: unknown) => error);
+      if (scenarioId === "codex-tui-trace-smoke") {
+        expect(result).toMatchObject({
+          message: "integration.isolation.collector-create",
+        });
+        expect(Object.getOwnPropertyNames(result)).not.toContain("cause");
+        expect(Object.getOwnPropertyNames(result)).not.toContain("stdout");
+        expect(Object.getOwnPropertyNames(result)).not.toContain("stderr");
+        expect(calls[0]).toContain(
+          "AGENTSCOPE_COLLECTOR_TLS_KEY=PRIVATE_TEST_KEY",
+        );
+      } else {
+        expect(result).toBe(original);
+        expect(calls[0]).not.toContain(
+          "AGENTSCOPE_COLLECTOR_TLS_KEY=PRIVATE_TEST_KEY",
+        );
+      }
+    },
+  );
+});
 
 const fixtureResult = () => ({
   evidenceVersion: 1,
@@ -144,51 +253,84 @@ describe("integration retained artifacts", () => {
 });
 
 describe("integration Codex retained evidence", () => {
-  it("retains the bounded Codex session-start command duration", () => {
-    const codex = {
+  it("retains native-only evidence without inventing destination completion", () => {
+    const native = {
       ...fixtureResult(),
+      resultStatus: "partial",
+      lifecycle: ["install", "configure", "hook", "execute"],
+      eventKinds: ["hook", "model"],
+      destinationLedger: {
+        ledgerVersion: 1,
+        scenarioId: "fixture-process-smoke",
+        ingestion: [],
+        retrieval: [],
+      },
       harnessObservation: {
         observationVersion: 1,
-        kind: "codex-tui-trace",
+        kind: "codex-tui-native",
+        nativeSessionId: "actual-session",
+        nativeTurnId: "actual-turn",
+        nativeModelName: "fixture-model",
         modelRequestBodySha256: "a".repeat(64),
-        traceId: "b".repeat(32),
-        resourceSpanCount: 2,
-        spanNames: ["codex.turn", "codex.response"],
-        parentLinked: true,
         doctorErrors: 0,
         uninstallDisposition: "committed",
         sessionStartCommandDurationMilliseconds: 125,
       },
     };
-    expect(sanitizeFixtureResult(codex, "fixture-process-smoke")).toEqual(
-      codex,
+    expect(sanitizeFixtureResult(native, "fixture-process-smoke")).toEqual(
+      native,
     );
-    for (const duration of [null, 1_001, 60_001]) {
-      const observed = {
-        ...codex,
+    for (const changed of [
+      { resultStatus: "complete" },
+      { lifecycle: ["install", "configure", "hook", "execute", "ingest"] },
+      { eventKinds: ["hook", "model", "ingestion"] },
+      { destinationLedger: fixtureResult().destinationLedger },
+      {
         harnessObservation: {
-          ...codex.harnessObservation,
-          sessionStartCommandDurationMilliseconds: duration,
+          ...native.harnessObservation,
+          traceId: "b".repeat(32),
         },
-      };
-      expect(sanitizeFixtureResult(observed, "fixture-process-smoke")).toEqual(
-        observed,
-      );
-    }
-    for (const duration of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      },
+      {
+        harnessObservation: { ...native.harnessObservation, nativeTurnId: "" },
+      },
+      {
+        harnessObservation: {
+          ...native.harnessObservation,
+          parentLinked: true,
+        },
+      },
+      {
+        harnessObservation: {
+          ...native.harnessObservation,
+          canonicalGraph: {},
+        },
+      },
+      {
+        harnessObservation: {
+          ...native.harnessObservation,
+          canonicalGraphDigest: "a".repeat(64),
+        },
+      },
+      {
+        harnessObservation: {
+          ...native.harnessObservation,
+          spanIds: ["b".repeat(16), "c".repeat(16)],
+        },
+      },
+      {
+        harnessObservation: {
+          ...native.harnessObservation,
+          contextDisposition: "unversioned-workspace-redacted",
+        },
+      },
+    ])
       expect(() =>
         sanitizeFixtureResult(
-          {
-            ...codex,
-            harnessObservation: {
-              ...codex.harnessObservation,
-              sessionStartCommandDurationMilliseconds: duration,
-            },
-          },
+          { ...native, ...changed },
           "fixture-process-smoke",
         ),
       ).toThrow("integration.operations.fixture-result");
-    }
   });
 });
 
