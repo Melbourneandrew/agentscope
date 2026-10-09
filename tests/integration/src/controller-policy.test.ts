@@ -1773,6 +1773,49 @@ describe("integration controller supervision", () => {
 // The workflow policy inventory is kept in one closed review surface.
 // eslint-disable-next-line max-lines-per-function
 describe("integration workflow policy", () => {
+  it("aligns only the initial positive job envelope with the existing controller budget", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const job = (name: string) => {
+      const start = workflow.indexOf(`  ${name}:\n`);
+      expect(start).toBeGreaterThan(0);
+      return workflow
+        .slice(start + `  ${name}:\n`.length)
+        .split(/^ {2}[a-z][a-z-]+:\n/mu)[0]!;
+    };
+    for (const name of [
+      "prepare-candidate",
+      "hermetic-platform",
+      "controlled-negative",
+      "mockserver-supplier-research",
+    ]) {
+      const body = job(name);
+      const budget = name === "hermetic-platform" ? 1_680_000 : 1_200_000;
+      expect(body).toContain("timeout-minutes: 30");
+      expect(
+        body.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
+      ).toHaveLength(1);
+      expect(body).toContain(`($1 * 1000) + ${budget} }' /proc/uptime`);
+    }
+    const positive = job("hermetic-platform");
+    expect(positive).toContain(
+      "    steps:\n      - name: Establish job-scoped integration deadline\n",
+    );
+    const established = positive.indexOf("+ 1680000");
+    for (const stage of [
+      "actions/checkout@",
+      "Install immutable workspace dependencies",
+      "Build workspace fixture code",
+      "Run the private integration lifecycle",
+    ])
+      expect(positive.indexOf(stage)).toBeGreaterThan(established);
+    expect(positive).toContain('selector: "0/1"');
+    expect(positive).toContain("replay: [1, 2, 3]");
+    expect(positive).toContain('AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"');
+  });
+
   // eslint-disable-next-line max-lines-per-function -- one closed workflow and staged-runtime inventory
   it("routes candidate, clean replay, and controlled rejection through one command", () => {
     const workflow = readFileSync(
