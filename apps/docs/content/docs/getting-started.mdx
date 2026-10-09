@@ -8,7 +8,11 @@ description: Publication status and the safe Agentscope setup sequence.
 Agentscope 0.1.0 is not published yet. Do not install an artifact from an
 untrusted source or treat source-checkout behavior as a support claim. The
 release will name each supported Codex and Claude Code version, mode, platform,
-and credential context only after actual-binary OTLP admission.
+and credential context only after actual-binary OTLP admission. After
+publication, open the exact version on
+[GitHub Releases](https://github.com/Melbourneandrew/agentscope/releases); its
+release notes and attached support manifest are the user-facing support
+authority.
 
 The Claude Code 2.1.245 candidate profile under validation covers
 `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not expose
@@ -34,9 +38,9 @@ agentscope --version
 Do not use bare `agentscope-cli` or `npx agentscope-cli`: npm `latest` remains an
 inert ownership bootstrap until a later stable release.
 
-Use only a platform combination listed in the release support manifest. If your
-combination is absent, stop before configuring credentials or installing a
-harness.
+Use only a platform combination listed by the exact version's GitHub Release
+and attached support manifest. If your combination is absent, stop before
+configuring credentials or installing a harness.
 
 ## Safe setup sequence
 
@@ -68,8 +72,9 @@ If installation reports an overlap, review it before using the separate
 Non-secret configuration lives under `~/.agentscope`. Credentials use the
 admitted platform backend or an explicit CI environment reference; Agentscope
 does not store credential values in configuration or print them.
-`AGENTSCOPE_HOME` is an explicit override for portable installations, tests, and
-CI isolation.
+Ordinary installed commands and hooks ignore ambient `AGENTSCOPE_HOME`. It is
+reserved for repository-owned CI, portable, and test launchers that explicitly
+authorize the override, not as a user-facing relocation setting.
 
 Routing is always explicit. Agentscope never chooses the first configured
 destination as a default.

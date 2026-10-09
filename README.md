@@ -22,8 +22,9 @@ sends them only to destinations you explicitly configure and select.
 
 Agentscope 0.1.0 is not published yet. Codex and Claude Code are the target
 harnesses for the first alpha, but neither is supported until its exact
-version, mode, platform, credential context, and OTLP path appear in the final
-release support manifest.
+version, mode, platform, credential context, and OTLP path appear in the exact
+version's [GitHub Release](https://github.com/Melbourneandrew/agentscope/releases)
+and attached support manifest.
 
 The Claude Code 2.1.245 candidate profile under validation covers
 `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not claim a
@@ -75,8 +76,10 @@ Agentscope-owned state.
 
 Non-secret configuration lives under `~/.agentscope`. Credential values use a
 governed credential backend or an explicit CI environment reference; they are
-not stored in configuration or printed. `AGENTSCOPE_HOME` is an explicit
-override for portable installations, tests, and CI isolation.
+not stored in configuration or printed. Ordinary installed commands and hooks
+ignore ambient `AGENTSCOPE_HOME`. It is reserved for repository-owned CI,
+portable, and test launchers that explicitly authorize the override, not as a
+user-facing relocation setting.
 
 ## Development
 
