@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-2133360a263a3af7e94c849171c761a48b2bcfd2a2dcc3f04a50573da3cdd4b8",
+  "manifestIdentity": "sha256-bebaf5f03c5cfb1b7ab42f4f59785b92a505e2ca2db56abb88fe5adc4d4ea1ca",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -154,18 +154,18 @@
       "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": ["codex-tui-responses"],
       "tags": ["codex", "interactive", "pr"],
-      "destinations": ["local-sqlite"],
+      "destinations": ["langfuse"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "f7790de4c3611c9383799bab0182e1f97617a48a7a0d2b337d26853007ff8b00"
+        "sha256": "f0f55569d74869f45b961ec0c1c214a1751b4fc9595d550ea6ce5768078ec3ac"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "3fdb27119aa983bed66af2bb34f8c9292378725bf1229591c053dc3497bb6de1"
+        "sha256": "e64fc33a578dbc1c0aad80f28fe981ae2ee506712c218881c61faadba858a7a6"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "2f568115694d946ed69805db3d8d610ef7bb6b28ecb0b9fb5931f1ce30b741a6"
+        "sha256": "bd2cfc375817fc7ddae9555432f7ba0c212eb5d6355296fefa5d6771bab1127f"
       },
       "runtimeArtifacts": [
         {
@@ -174,7 +174,7 @@
             "path": "codex-candidate-dropper.mjs"
           },
           "destination": "codex-candidate-dropper.mjs",
-          "sha256": "e9356e7b92527233af5456c50839b64d1dd18a5161e56387603533f60b300a13"
+          "sha256": "a641f580b3cce6016a88856e5882c4c0ec527d9fc790f03c56f073e716f31e0a"
         },
         {
           "source": {
@@ -199,6 +199,14 @@
           },
           "destination": "codex-configuration.js",
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "collector-ca.mjs"
+          },
+          "destination": "collector-ca.mjs",
+          "sha256": "840b00ae1203b84d834652b22b203b4cc90e8bc35d54b2686aa7b237f30516c5"
         }
       ],
       "terminalInputBase64": "G1syMDB+UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLhtbMjAxfhtbMTN1G1syMDB+L2V4aXQbWzIwMX4bWzEzdQ==",

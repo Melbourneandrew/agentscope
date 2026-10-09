@@ -19,21 +19,24 @@ import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
 
-const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
-  const reporterSettlement = scenario.indexOf(
-    "const reporterSettled = localSqliteReporterSettled(",
+const expectCodexNativeBeforeCollectorCompletion = (scenario: string): void => {
+  const terminal = scenario.indexOf(
+    "await waitForCodexTurnTerminal(traceDeadline)",
   );
-  const settlementGate = scenario.indexOf(
-    'hookCommandObservation?.outcome !== "completed" ||',
-    reporterSettlement,
+  const hook = scenario.indexOf(
+    "await waitForCodexStopBeforeExit(traceDeadline)",
+    terminal,
   );
-  const traceSearchAdmission = scenario.indexOf(
-    "const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({",
-    settlementGate,
+  const native = scenario.indexOf(
+    "const translated = translateCodexNativeObservations(",
+    hook,
   );
-  expect(reporterSettlement).toBeGreaterThan(-1);
-  expect(settlementGate).toBeGreaterThan(reporterSettlement);
-  expect(traceSearchAdmission).toBeGreaterThan(settlementGate);
+  expect(terminal).toBeGreaterThan(-1);
+  expect(hook).toBeGreaterThan(terminal);
+  expect(native).toBeGreaterThan(hook);
+  expect(scenario).not.toMatch(
+    /localSqlite|openOperationalStateHealth|waitForTraceSummary|--destination",\\s*"local"/u,
+  );
 };
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -317,19 +320,13 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("!Number.isSafeInteger(preparationCutoff) ||");
   });
 
-  it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
+  it("keeps native terminal diagnosis distinct from outer canonical OTLP delivery", () => {
     const scenario = readIntegration("codex-pty-scenario.mjs");
     const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const authority = readIntegration("immutable-candidate-authority.mjs");
     const runner = readIntegration("runner.mjs");
     const outer = readIntegration("run-scenarios.mjs");
-    for (const phase of [
-      "trace-terminal",
-      "trace-settlement",
-      "trace-reporter-settled",
-      "trace-search",
-      "trace-search-result",
-    ]) {
+    for (const phase of ["trace-terminal", "trace-settlement"]) {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
@@ -365,16 +362,11 @@ describe("integration cleanup authority", () => {
     }
     expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
     expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
-    expect(scenario.indexOf("inspectDiagnosticBeforeDeadline({")).toBeLessThan(
-      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
+    expectCodexNativeBeforeCollectorCompletion(scenario);
+    expect(outer).toContain("observeSelectedWriterOtlp(");
+    expect(outer).toContain(
+      "await joinCollectorObservations(plan, joinSignal, deadline)",
     );
-    expect(
-      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
-    ).toBeLessThan(
-      scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
-    );
-    expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
-    expect(scenario).toContain("classifyCodexTraceFailureHint(");
     expect(scenario).toContain("classifyCodexCollectedChildFailure(");
     const search = diagnostic.indexOf(
       "codexTraceSearchChildFailureCategory(observation)",
@@ -387,7 +379,6 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       "const failureObservation = {\n            code,\n            deadlineExpired,\n            signal,\n            stderrBytes: stderr.length,\n            stdoutBytes: stdout.length,\n            maximumBytes: maximumOutput,\n            stderr,\n            stdout,\n          };",
     );
-    expect(scenario).toContain("errorMessage: error?.message,");
     for (const phase of [
       "trace-await-hook",
       "trace-await-reporter",
@@ -426,10 +417,8 @@ describe("integration cleanup authority", () => {
     expect(researchCapture).toBeLessThan(
       outer.indexOf("recordInteractiveExecutionFailure(", researchCapture),
     );
-    expect(scenario).toContain(
-      "const terminalCut = classifyCodexSettledTraceObservation({",
-    );
-    expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
+    expect(scenario).not.toContain("classifyCodexSettledTraceObservation");
+    expect(scenario).toContain("sessionId: codexSessionId,");
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
@@ -696,13 +685,14 @@ describe("Codex interactive diagnostic order", () => {
     );
     expect(64 + expected.length - 1).toBeLessThan(139);
     for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
-      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
+      if (!["verify-trace-get", "verify-correlation"].includes(phase))
+        expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
     }
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
     expect(scenario).not.toContain("recordInteractivePhase(classification)");
-    expectCodexSettlementBeforeTraceSearch(scenario);
+    expectCodexNativeBeforeCollectorCompletion(scenario);
     const modelRequestObservation = scenario.indexOf(
       "await waitForModelRequestBeforeDeadline({",
     );
@@ -715,7 +705,7 @@ describe("Codex interactive diagnostic order", () => {
       modelRequestPhase,
     );
     const traceObservation = scenario.indexOf(
-      "await waitForTraceSummary(traceDeadline)",
+      "const translated = translateCodexNativeObservations(",
       modelRequestPhase,
     );
     const terminalLedgerRead = scenario.indexOf(
@@ -731,7 +721,7 @@ describe("Codex interactive diagnostic order", () => {
       terminalLedgerRead,
     );
     const sessionCorrelation = scenario.indexOf(
-      "traceGraph.sessionId !== codexSessionId",
+      "sessionId: codexSessionId,",
       terminalObservation,
     );
     expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);

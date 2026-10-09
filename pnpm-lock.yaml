@@ -384,6 +384,15 @@ importers:
 
   tests/integration:
     dependencies:
+      "@agentscope/destination-langfuse":
+        specifier: workspace:*
+        version: link:../../packages/destinations/langfuse
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../packages/protocol
       "@agentscope/testkit":
         specifier: workspace:*
         version: link:../../packages/testkit
