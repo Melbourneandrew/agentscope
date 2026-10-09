@@ -1502,6 +1502,11 @@ const buildMockServerImage = async (plan, signal) => {
     throw new Error("integration.isolation.image-digest");
   return imageId.replace("sha256:", "sha256-");
 };
+const mockServerRetirementSignal = (deadline) => {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining <= 0) throw new Error("integration.images.deadline");
+  return AbortSignal.timeout(remaining);
+};
 const requireSettledMockServerClients = () => {
   if (
     [...mockServerBuiltImages.values()].some(({ client }) =>
@@ -3515,9 +3520,7 @@ try {
       const deadline =
         performance.now() +
         remainingIntegrationOperationMilliseconds(30_000, true);
-      const signal = AbortSignal.timeout(
-        Math.max(1, deadline - performance.now()),
-      );
+      const signal = mockServerRetirementSignal(deadline);
       for (const plan of plans)
         await retireMockServerImage(plan, signal, deadline);
     }
