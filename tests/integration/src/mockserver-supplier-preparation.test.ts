@@ -189,10 +189,25 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         "java-entry",
       ]);
       expect(entrypoint[2]).toMatch(
-        /; exec \/opt\/java\/bin\/java -Dmockserver\.startupWarmup=false -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
+        /; exec \/opt\/java\/bin\/java -Dmockserver\.startupWarmup=false -Dmockserver\.attemptToProxyIfNoMatchingExpectation=false -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
       );
       expect(entrypoint[2]!.replace(/printf '[^']*' >&2; /gu, "")).toBe(
-        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -jar /opt/mockserver.jar -serverPort 1080",
+        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -Dmockserver.attemptToProxyIfNoMatchingExpectation=false -jar /opt/mockserver.jar -serverPort 1080",
+      );
+      const arguments_ = entrypoint[2]!
+        .slice(entrypoint[2]!.lastIndexOf("; exec ") + 7)
+        .split(" ");
+      const proxyProperty =
+        "-Dmockserver.attemptToProxyIfNoMatchingExpectation=false";
+      expect(
+        arguments_.filter((value) =>
+          value.startsWith(
+            "-Dmockserver.attemptToProxyIfNoMatchingExpectation=",
+          ),
+        ),
+      ).toEqual([proxyProperty]);
+      expect(arguments_.indexOf(proxyProperty)).toBeLessThan(
+        arguments_.indexOf("-jar"),
       );
       expect(readFileSync(resolve(context, "control-private.pem"))).toEqual(
         service.privateKey,
