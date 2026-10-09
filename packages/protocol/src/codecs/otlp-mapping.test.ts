@@ -1,5 +1,11 @@
-import { create } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
+import {
+  readExternalOtlpJson,
+  readExternalOtlpProtobuf,
+  safeParseCanonicalTraceGraph,
+} from "../index.js";
+import canonicalFixture from "../testing/fixtures/sanitized-canonical-trace.json" with { type: "json" };
 
 import {
   AnyValueSchema,
@@ -39,6 +45,74 @@ const protoValue = (
     "stringValue" | "boolValue" | "intValue" | "doubleValue" | "bytesValue",
   value: string | boolean | bigint | number | Uint8Array,
 ) => create(AnyValueSchema, { value: { case: caseName, value } } as never);
+
+const rootLastIdentityGraph = (equalTimes: boolean): CanonicalTraceGraph => {
+  const graph = structuredClone(canonicalFixture) as CanonicalTraceGraph;
+  const spans = graph.resourceSpans[0]!.scopeSpans[0]!.spans;
+  const root = spans[0]!;
+  root.spanId = "ffffffffffffffff";
+  for (const descendant of spans.slice(1)) {
+    descendant.parentSpanId = root.spanId;
+    if (equalTimes) descendant.startTimeUnixNano = root.startTimeUnixNano;
+  }
+  return graph;
+};
+
+describe("public OTLP reader canonical root ordering", () => {
+  it.each([
+    [true, "json"],
+    [true, "protobuf"],
+    [false, "json"],
+    [false, "protobuf"],
+  ] as const)(
+    "keeps a strict-valid root first with equal descendant times=%s via %s",
+    (equalTimes, format) => {
+      const graph = rootLastIdentityGraph(equalTimes);
+      expect(safeParseCanonicalTraceGraph(graph).success).toBe(true);
+      const request = otlpRequestForGraphForTesting(graph);
+      request.resourceSpans[0]!.scopeSpans[0]!.spans.reverse();
+      const result =
+        format === "json"
+          ? readExternalOtlpJson(JSON.stringify(graph))
+          : readExternalOtlpProtobuf(
+              toBinary(ExportTraceServiceRequestSchema, request),
+            );
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("synthetic-reader-result");
+      expect(result.batch.units).toHaveLength(1);
+      const unit = result.batch.units[0]!;
+      expect(unit.status).toBe("canonical");
+      if (unit.status !== "canonical") throw new Error("synthetic-reader-unit");
+      expect(unit.graph.resourceSpans[0]!.scopeSpans[0]!.spans).toEqual(
+        graph.resourceSpans[0]!.scopeSpans[0]!.spans,
+      );
+    },
+  );
+
+  it.each(["multiple-roots", "cycle"])("still rejects %s", (kind) => {
+    const graph = rootLastIdentityGraph(true);
+    const spans = graph.resourceSpans[0]!.scopeSpans[0]!.spans;
+    if (kind === "multiple-roots") delete spans[1]!.parentSpanId;
+    else {
+      spans[1]!.parentSpanId = spans[2]!.spanId;
+      spans[2]!.parentSpanId = spans[1]!.spanId;
+    }
+    expect(safeParseCanonicalTraceGraph(graph).success).toBe(false);
+    const request = otlpRequestForGraphForTesting(graph);
+    for (const result of [
+      readExternalOtlpJson(JSON.stringify(graph)),
+      readExternalOtlpProtobuf(
+        toBinary(ExportTraceServiceRequestSchema, request),
+      ),
+    ]) {
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("synthetic-reader-result");
+      expect(result.batch.units).toEqual([
+        { status: "rejected", reason: "invalid" },
+      ]);
+    }
+  });
+});
 
 describe("OTLP producer natural-value mapping", () => {
   it("maps every canonical AnyValue branch without widening", () => {
@@ -216,10 +290,11 @@ describe("OTLP producer default mapping", () => {
 });
 
 describe("OTLP receiver normalization", () => {
-  it("sorts spans by numeric start time and then exact span identity", () => {
+  it("sorts descendants by numeric start time and then exact span identity", () => {
     const span = (startTimeUnixNano: string, spanId: string) => ({
       traceId: "11".repeat(16),
       spanId,
+      parentSpanId: "ffffffffffffffff",
       name: "operation",
       kind: 1,
       startTimeUnixNano,
