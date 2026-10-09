@@ -548,6 +548,7 @@ export class BoundedTerminalEmulator {
   #savedCursorPositionTrusted = true;
   #state: ParserState = "ground";
   #control = "";
+  #controlStartedAfterSubmission = false;
   #outputBytes = 0;
   #malformedControlCount = 0;
   #malformedControlReason: PtyMalformedControlReason | null = null;
@@ -838,6 +839,10 @@ export class BoundedTerminalEmulator {
 
   /** Package-private: arm only after the selected turn-submission input. */
   public armPostSubmissionIdleObservation(): void {
+    if (this.#readinessMatcher.kind === "challenge-marker") {
+      this.#postSubmissionIdleObservationArmed = true;
+      return;
+    }
     if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
     this.#postSubmissionIdleObservationArmed = true;
     this.#postSubmissionIdleFrameEligible = false;
@@ -1172,6 +1177,8 @@ export class BoundedTerminalEmulator {
   #consume(character: string): void {
     if (this.#state === "ground") {
       if (character === "\u001b") {
+        this.#controlStartedAfterSubmission =
+          this.#readinessObserved && this.#postSubmissionIdleObservationArmed;
         this.#resetChallengeRequiredTextOutputTail();
         this.#state = "escape";
         return;
@@ -1673,6 +1680,21 @@ export class BoundedTerminalEmulator {
       this.#enqueueTerminalResponse("\u001b]11;rgb:0000/0000/0000\u001b\\");
     } else if (selector === "0" || selector === "2") {
       this.#titleSha256 = hash(title);
+      if (
+        this.#readinessMatcher.kind === "challenge-marker" &&
+        containsText(title, completedMarker)
+      ) {
+        if (
+          selector !== "2" ||
+          !this.#readinessObserved ||
+          !this.#postSubmissionIdleObservationArmed ||
+          !this.#controlStartedAfterSubmission ||
+          this.#completionObserved ||
+          title !== `${completedMarker}:${this.#readinessMatcher.challenge}`
+        )
+          this.#recordUnsupportedControl("osc");
+        else this.#completionObserved = true;
+      }
       // The selected Codex fixture publishes its challenge-bound completion
       // as a title update so it cannot overwrite the already-proved live
       // composer. This is only semantic completion, never input readiness.
