@@ -20,6 +20,11 @@ import {
   compileVerifiedSignedManifestHarnessMaterial,
 } from "../../tests/integration/src/harness-material.ts";
 import { sanitizeFixtureResult } from "../../tests/integration/src/operations.ts";
+import {
+  compileIsolationEvidence,
+  createIsolationPlan,
+  executeIsolationPlan,
+} from "../../tests/integration/src/isolation.ts";
 
 const entrySource = readFileSync(
   new URL("../record-release-stage.mjs", import.meta.url),
@@ -899,7 +904,7 @@ test("preserves additional matched Claude requests instead of filtering to a two
   f.support = codexSupportFixture(f, "claude-code");
   expect(() => bindClaude(f)).toThrow();
 });
-test("retains only the privately prepared record in evidence and the same completion preimage", async () => {
+function evidenceRecorderFixture() {
   const source = readFileSync(
     new URL("../../tests/integration/run-scenarios.mjs", import.meta.url),
     "utf8",
@@ -917,6 +922,7 @@ test("retains only the privately prepared record in evidence and the same comple
     scenario: {},
   };
   const writes = new Map();
+  const admissionCalls = [];
   let completion;
   const result = {
     resultStatus: "complete",
@@ -935,7 +941,7 @@ test("retains only the privately prepared record in evidence and the same comple
     builtImageDigest: `sha256-${"a".repeat(64)}`,
     executionMode: "interactive",
     ptyTerminalReceipt: { requestFingerprint: `sha256-${"b".repeat(64)}` },
-    cleanup: {},
+    cleanup: { outcome: "complete" },
   };
   const context = {
     compileIsolationEvidence: (value) => value,
@@ -950,11 +956,18 @@ test("retains only the privately prepared record in evidence and the same comple
     preparedDockerClient: {},
     fixtureResults: new Map([[evidence.runId, result]]),
     admissionMaterialRecords: new WeakMap(),
-    compileHarnessAdmissionSeed: (value) => value,
-    beginRealHarnessAdmission: () => ({}),
+    compileHarnessAdmissionSeed: (value) => {
+      admissionCalls.push("seed");
+      return value;
+    },
+    beginRealHarnessAdmission: () => {
+      admissionCalls.push("begin");
+      return {};
+    },
     admissionTerminalRecords: new WeakMap(),
-    completeRealHarnessAdmission: () => {},
+    completeRealHarnessAdmission: () => admissionCalls.push("complete"),
     compileHarnessAdmissionCompletion: (value) => {
+      admissionCalls.push("completion");
       completion = value;
       return value;
     },
@@ -963,18 +976,198 @@ test("retains only the privately prepared record in evidence and the same comple
     `${source.slice(start, end)}; recordEvidence`,
     context,
   );
+  return {
+    settle,
+    evidence,
+    writes,
+    admission,
+    record,
+    result,
+    context,
+    admissionCalls,
+    completion: () => completion,
+  };
+}
+test("retains only the privately prepared record in evidence and the same completion preimage", async () => {
+  const { settle, evidence, writes, record, result, completion } =
+    evidenceRecorderFixture();
   await settle(evidence);
   expect(
     writes.get("/owned/runs/0123456789abcdef/evidence.json")
       .preparedHarnessMaterial,
   ).toEqual(record);
-  expect(completion?.observation.execution.preparedHarnessMaterial).toBe(
+  expect(completion()?.observation.execution.preparedHarnessMaterial).toBe(
     record,
   );
-  expect(completion?.observation.execution.preparedHarnessMaterial).not.toBe(
+  expect(completion()?.observation.execution.preparedHarnessMaterial).not.toBe(
     result.preparedHarnessMaterial,
   );
 });
+test.each([
+  ["failed", "complete"],
+  ["interrupted", "complete"],
+  ["passed", "failed"],
+  ["passed", "verification-failed"],
+])(
+  "records %s/%s without minting admission for missing, partial or complete fixtures",
+  async (outcome, cleanup) => {
+    for (const status of [undefined, "partial", "complete"]) {
+      const f = evidenceRecorderFixture();
+      Object.assign(f.evidence, { outcome, cleanup: { outcome: cleanup } });
+      if (status === undefined) f.context.fixtureResults.clear();
+      else f.result.resultStatus = status;
+      await f.settle(f.evidence);
+      expect(
+        f.writes.get("/owned/runs/0123456789abcdef/evidence.json"),
+      ).toMatchObject({
+        outcome,
+        cleanup: { outcome: cleanup },
+        preparedHarnessMaterial: f.record,
+      });
+      expect(f.context.scenarioOutcomes.get(f.evidence.runId)).toBe(outcome);
+      expect(f.admissionCalls).toEqual([]);
+      expect(f.completion()).toBeUndefined();
+      expect(f.admission.authority).toBeUndefined();
+      expect(f.admission.material).toBeUndefined();
+      if (status !== undefined) {
+        expect(
+          f.writes.get("/owned/runs/0123456789abcdef/fixture-lifecycle.json")
+            .resultStatus,
+        ).toBe(status);
+        expect(
+          f.writes.get("/owned/runs/0123456789abcdef/model-ledger.json"),
+        ).toEqual(f.result.modelLedger);
+        expect(
+          f.writes.get("/owned/runs/0123456789abcdef/destination-ledger.json"),
+        ).toEqual(f.result.destinationLedger);
+      }
+    }
+  },
+);
+test("clean passed rows still reject missing/partial fixtures and duplicate authority", async () => {
+  for (const status of [undefined, "partial"]) {
+    const f = evidenceRecorderFixture();
+    if (status === undefined) f.context.fixtureResults.clear();
+    else f.result.resultStatus = status;
+    await expect(f.settle(f.evidence)).rejects.toThrow(
+      "integration.isolation.fixture-result",
+    );
+    expect(f.admissionCalls).toEqual([]);
+  }
+  const f = evidenceRecorderFixture();
+  f.admission.authority = {};
+  await expect(f.settle(f.evidence)).rejects.toThrow(
+    "integration.harness-scenario-admission.invalid",
+  );
+  expect(f.admissionCalls).toEqual([]);
+});
+
+function failedIsolationRecorder(cleanupFails, interrupted) {
+  const f = evidenceRecorderFixture();
+  const proof = (fill) => ({
+    image: `node@sha256:${fill.repeat(64)}`,
+    platform: { os: "linux", architecture: "amd64" },
+    manifestDigest: `sha256:${fill.repeat(64)}`,
+    configDigest: `sha256:${fill.repeat(64)}`,
+  });
+  const base = proof("a"),
+    mock = proof("b"),
+    manifestIdentity = `sha256-${"c".repeat(64)}`;
+  const scenario = {
+    scenarioId: "codex-tui",
+    executionMode: "headless",
+    image: base.image,
+    mockServerImage: mock.image,
+  };
+  const plan = createIsolationPlan({
+    scenario,
+    manifestIdentity,
+    candidate: fixture().evidence,
+    runToken: f.evidence.runId,
+    baseImageIdentity: base,
+    mockServerImageIdentity: mock,
+    selection: {
+      selectionVersion: 2,
+      manifestIdentity,
+      mode: "scenario",
+      selector: { scenarioId: scenario.scenarioId },
+      scenarioIds: [scenario.scenarioId],
+    },
+    maximumParallelScenarios: 1,
+    scenarioTimeoutMilliseconds: 300000,
+  });
+  f.context.compileIsolationEvidence = compileIsolationEvidence;
+  f.context.preparedIdentityFor = (image) =>
+    image === base.image ? base : mock;
+  f.context.fixtureResults.clear();
+  const originalCause = Error("synthetic original cause");
+  const original = Error("integration.mockserver.control", {
+    cause: originalCause,
+  });
+  const signal = new AbortController();
+  if (interrupted) signal.abort();
+  const noop = async () => {};
+  const driver = {
+    inspectExecutionPolicy: async () => {
+      throw original;
+    },
+    removeContainer: async (name) => {
+      if (cleanupFails && name === plan.scenarioName)
+        throw Error("synthetic cleanup refusal");
+    },
+    removeNetwork: noop,
+    removeControlVolume: noop,
+    removeImage: noop,
+    removeContext: noop,
+    inspectCleanup: async () => ({
+      containers: 0,
+      networks: 0,
+      images: 0,
+      volumes: 0,
+      buildContexts: 0,
+      activeRunMarkers: 0,
+    }),
+    recordEvidence: f.settle,
+  };
+  return { f, plan, driver, original, originalCause, signal: signal.signal };
+}
+test.each([
+  [false, false],
+  [true, false],
+  [false, true],
+])(
+  "actual isolation preserves work/cleanup/interruption after recording (%s/%s)",
+  async (cleanupFails, interrupted) => {
+    const { f, plan, driver, original, originalCause, signal } =
+      failedIsolationRecorder(cleanupFails, interrupted);
+    let observed;
+    try {
+      await executeIsolationPlan(plan, driver, signal);
+    } catch (error) {
+      observed = error;
+    }
+    if (cleanupFails) {
+      expect(observed.message).toBe(
+        "integration.isolation.cleanup-scenario-container",
+      );
+      expect(observed.cause).toBe(original);
+      expect(observed.cause.cause).toBe(originalCause);
+    } else if (interrupted)
+      expect(observed.message).toBe("integration.isolation.interrupted");
+    else {
+      expect(observed).toBe(original);
+      expect(observed.cause).toBe(originalCause);
+    }
+    expect(f.admissionCalls).toEqual([]);
+    expect(f.admission.authority).toBeUndefined();
+    expect(f.context.scenarioOutcomes.get(plan.runId)).toBe(
+      interrupted ? "interrupted" : "failed",
+    );
+    expect(
+      f.writes.get(`/owned/runs/${plan.runId}/evidence.json`).outcome,
+    ).toBe(interrupted ? "interrupted" : "failed");
+  },
+);
 function compiledNpmFixture(family) {
   const archive = Buffer.from("inert compiler archive");
   const controllerBytes = Buffer.from("held material controller source");

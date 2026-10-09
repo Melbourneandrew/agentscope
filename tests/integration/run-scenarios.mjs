@@ -2837,8 +2837,11 @@ const recordEvidence = async (evidence) => {
       { flag: "wx", mode: 0o600 },
     );
   const result = fixtureResults.get(verifiedEvidence.runId);
-  if (
+  const successful =
     verifiedEvidence.outcome === "passed" &&
+    verifiedEvidence.cleanup.outcome === "complete";
+  if (
+    successful &&
     (result === undefined || result.resultStatus !== "complete")
   )
     throw new Error("integration.isolation.fixture-result");
@@ -2875,7 +2878,7 @@ const recordEvidence = async (evidence) => {
     if (result.certificationReadiness === null)
       fixtureResults.delete(verifiedEvidence.runId);
   }
-  if (admission !== undefined) {
+  if (admission !== undefined && successful) {
     if (
       result === undefined ||
       result.resultStatus !== "complete" ||
