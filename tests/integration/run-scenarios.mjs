@@ -354,6 +354,40 @@ const stageEsmPackageBoundary = (context) => {
   writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644);
 };
 
+const scenarioContextRefusals = new Map();
+const contextRefusalSlots = new Set([
+  "scenario-missing",
+  "evidence-missing",
+  "material-association",
+  "source-not-regular",
+  "source-identity",
+  "source-digest",
+  "package-association",
+]);
+const refuseScenarioContext = (plan, slot) => {
+  if (
+    !scenarioContextRefusals.has(plan.runId) &&
+    /^[a-f0-9]{16}$/u.test(plan.runId) &&
+    /^[a-z0-9][a-z0-9-]{0,127}$/u.test(plan.scenarioId) &&
+    contextRefusalSlots.has(slot)
+  )
+    scenarioContextRefusals.set(
+      plan.runId,
+      Object.freeze({ runId: plan.runId, scenarioId: plan.scenarioId, slot }),
+    );
+  throw new Error("integration.isolation.context");
+};
+const publishScenarioContextRefusals = () => {
+  for (const record of scenarioContextRefusals.values()) {
+    try {
+      const output = `integration.isolation.context-diagnostic:${JSON.stringify(record)}\n`;
+      if (Buffer.byteLength(output) <= 512) process.stderr.write(output);
+    } catch {
+      // Optional untrusted observation cannot replace the original failure.
+    }
+  }
+};
+
 // The exact staged inventory and Dockerfile are reviewed as one authority.
 // eslint-disable-next-line max-lines-per-function -- exact staged scenario authority
 const stageBuildContext = (plan) => {
@@ -365,9 +399,9 @@ const stageBuildContext = (plan) => {
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
-  if (scenario === undefined) throw new Error("integration.isolation.context");
+  if (scenario === undefined) refuseScenarioContext(plan, "scenario-missing");
   const evidence = evidenceById.get(scenario.harnessEvidenceId);
-  if (evidence === undefined) throw new Error("integration.isolation.context");
+  if (evidence === undefined) refuseScenarioContext(plan, "evidence-missing");
   const gateCapableMockServer =
     scenario.scenarioId === "codex-tui-trace-smoke" &&
     scenario.modelRoutes.length === 1 &&
@@ -379,7 +413,7 @@ const stageBuildContext = (plan) => {
     (evidence.material.kind !== "certification-fixture") !==
     (harnessMaterial !== undefined)
   )
-    throw new Error("integration.isolation.context");
+    refuseScenarioContext(plan, "material-association");
   const sources = [
     ...[
       "runner.mjs",
@@ -454,7 +488,7 @@ const stageBuildContext = (plan) => {
   for (const [destination, source, expectedDigest] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
-      throw new Error("integration.isolation.context");
+      refuseScenarioContext(plan, "source-not-regular");
     const target = resolve(context, destination);
     mkdirSync(dirname(target), { recursive: true });
     const descriptor = openSync(
@@ -470,11 +504,14 @@ const stageBuildContext = (plan) => {
         before.dev !== after.dev ||
         before.ino !== after.ino ||
         before.size !== after.size ||
-        before.size !== bytes.byteLength ||
-        (expectedDigest !== undefined &&
-          createHash("sha256").update(bytes).digest("hex") !== expectedDigest)
+        before.size !== bytes.byteLength
       )
-        throw new Error("integration.isolation.context");
+        refuseScenarioContext(plan, "source-identity");
+      if (
+        expectedDigest !== undefined &&
+        createHash("sha256").update(bytes).digest("hex") !== expectedDigest
+      )
+        refuseScenarioContext(plan, "source-digest");
       writeFileSync(target, bytes, {
         flag: "wx",
         mode: before.mode & 0o777,
@@ -512,7 +549,7 @@ const stageBuildContext = (plan) => {
                     entry.version === version,
                 );
                 if (packageAuthority === undefined)
-                  throw new Error("integration.isolation.context");
+                  refuseScenarioContext(plan, "package-association");
                 return [
                   installName,
                   `file:/opt/agentscope/harness-material/${packageAuthority.fileName}`,
@@ -3274,6 +3311,7 @@ try {
   }
   terminalEvidence = evidence;
 } catch (error) {
+  publishScenarioContextRefusals();
   if (
     [...mockServerBuiltImages.values()].some(({ client }) =>
       preparedDockerClientRequiresOuterHostRetirement(client),
