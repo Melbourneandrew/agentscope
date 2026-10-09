@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES } from "./substrate-certification.js";
 import {
   readImagePreparationDiagnostic,
   type ImagePreparationDiagnostic,
@@ -95,6 +96,7 @@ const materialPhaseCodes = [
   "publish",
 ].map((phase) => `integration.harness-material.${phase}`);
 const knownFailureCodes = new Set([
+  ...Object.values(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES),
   "integration.controller.deadline",
   "integration.controller.unsettled-operation",
   "integration.controller.failure-evidence",
