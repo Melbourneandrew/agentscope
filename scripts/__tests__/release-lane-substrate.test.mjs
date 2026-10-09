@@ -17,6 +17,7 @@ import { afterEach, test } from "vitest";
 import { parse, stringify } from "yaml";
 
 import {
+  assembleCandidateAssets,
   resolveContainedArtifactPath,
   inspectCandidateTarball,
   verifyInertProbeTarball,
@@ -199,6 +200,161 @@ function verify(fixture, manifest = fixture.manifest, expected = {}) {
       expectedProtectedTag: expected.protectedTag ?? "v0.1.0",
     });
 }
+
+const assemblyRoles = () =>
+  Object.fromEntries(
+    [
+      "checksum-manifest.json",
+      "support-admission.json",
+      "sbom.json",
+      "attestations.json",
+      "evidence-index.json",
+    ].map((name) => [
+      name,
+      Buffer.from(JSON.stringify({ syntheticAssemblyTest: name })),
+    ]),
+  );
+
+test("pure assembly preserves exact tested bytes and the existing eight-asset chain", () => {
+  const fixture = createCandidateFixture();
+  const tarball = readFileSync(fixture.tarballPath);
+  const roleBytes = assemblyRoles();
+  const original = Buffer.from(tarball);
+  const result = assembleCandidateAssets({
+    tarball,
+    sourceRevision,
+    roleBytes,
+  });
+  assert.deepEqual(
+    result.assets.map(({ name }) => name),
+    [
+      "agentscope-cli-0.1.0.tgz",
+      "candidate-manifest.json",
+      "certification-record.json",
+      ...Object.keys(roleBytes),
+    ],
+  );
+  for (const asset of result.assets)
+    assert.equal(asset.digest, sha256(asset.bytes));
+  assert.deepEqual(result.assets[0].bytes, original);
+  assert.deepEqual(readFileSync(fixture.tarballPath), original);
+  assert.equal(
+    result.manifest.tarball.integrity,
+    fixture.manifest.tarball.integrity,
+  );
+  assert.equal(
+    result.manifest.tarball.inventoryDigest,
+    fixture.manifest.tarball.inventoryDigest,
+  );
+  assert.equal(result.manifestDigest, sha256(canonicalJson(result.manifest)));
+  assert.equal(
+    result.manifest.certification.recordDigest,
+    sha256(canonicalJson(result.certificationRecord)),
+  );
+  assert.equal(
+    result.certificationRecord.supportAdmissionDigest,
+    sha256(
+      canonicalJson(JSON.parse(roleBytes["support-admission.json"].toString())),
+    ),
+  );
+  assert.equal(
+    result.certificationRecord.evidenceIndexDigest,
+    sha256(
+      canonicalJson(JSON.parse(roleBytes["evidence-index.json"].toString())),
+    ),
+  );
+  assert.equal(
+    verifyCandidateArtifact({
+      manifest: result.manifest,
+      certificationRecord: result.certificationRecord,
+      tarballPath: fixture.tarballPath,
+      expectedManifestDigest: result.manifestDigest,
+      expectedSourceRevision: sourceRevision,
+      expectedProtectedTag: "v0.1.0",
+    }).sha256,
+    result.manifest.tarball.sha256,
+  );
+  tarball.fill(0);
+  roleBytes["sbom.json"].fill(0);
+  assert.deepEqual(result.assets[0].bytes, original);
+  assert.equal(
+    JSON.parse(result.assets.find(({ name }) => name === "sbom.json").bytes)
+      .syntheticAssemblyTest,
+    "sbom.json",
+  );
+});
+
+test("assembly requires every supplied real role rather than manufacturing evidence", () => {
+  const fixture = createCandidateFixture();
+  const tarball = readFileSync(fixture.tarballPath);
+  const assemble = (roleBytes) =>
+    assembleCandidateAssets({ tarball, sourceRevision, roleBytes });
+  for (const name of Object.keys(assemblyRoles())) {
+    const missing = assemblyRoles();
+    delete missing[name];
+    assert.throws(() => assemble(missing), /retained roles keys drifted/);
+    for (const bytes of [
+      Buffer.alloc(0),
+      Buffer.alloc(2_097_153),
+      "{}",
+      Buffer.from([0xff]),
+      Buffer.from("not-json"),
+    ]) {
+      assert.throws(() => assemble({ ...assemblyRoles(), [name]: bytes }));
+    }
+  }
+  assert.throws(
+    () => assemble({ ...assemblyRoles(), "extra.json": Buffer.from("{}") }),
+    /keys drifted/,
+  );
+  assert.throws(
+    () =>
+      assembleCandidateAssets({
+        tarball,
+        sourceRevision: "invalid",
+        roleBytes: assemblyRoles(),
+      }),
+    /source revision/,
+  );
+});
+
+test("assembly rejects a nonproduct tarball and binds every supplied byte substitution", () => {
+  for (const overrides of [
+    { omitBin: true },
+    { packageManifest: { name: "other", version: "0.1.0" } },
+  ]) {
+    const fixture = createCandidateFixture(overrides);
+    assert.throws(() =>
+      assembleCandidateAssets({
+        tarball: readFileSync(fixture.tarballPath),
+        sourceRevision,
+        roleBytes: assemblyRoles(),
+      }),
+    );
+  }
+  const fixture = createCandidateFixture();
+  const tarball = readFileSync(fixture.tarballPath);
+  const first = assembleCandidateAssets({
+    tarball,
+    sourceRevision,
+    roleBytes: assemblyRoles(),
+  });
+  const changed = assemblyRoles();
+  changed["support-admission.json"] = Buffer.from(
+    '{"syntheticAssemblyTest":"different"}',
+  );
+  const second = assembleCandidateAssets({
+    tarball,
+    sourceRevision,
+    roleBytes: changed,
+  });
+  assert.notEqual(first.manifestDigest, second.manifestDigest);
+  assert.notEqual(
+    first.certificationRecord.supportAdmissionDigest,
+    second.certificationRecord.supportAdmissionDigest,
+  );
+  assert.deepEqual(first.assets[0].bytes, second.assets[0].bytes);
+});
 
 test("verifies one exact certified agentscope-cli tarball without rebuilding", () => {
   const fixture = createCandidateFixture();
