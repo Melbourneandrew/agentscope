@@ -217,6 +217,42 @@ export const projectMockServerRequests = (bytes, promptSha256) => {
   );
 };
 /** Independent terminal service observation, never the candidate's pass claim. */
+const assertClaudeFinalModelLedger = (
+  ledger,
+  fixture,
+  routeFixture,
+  scenario,
+) => {
+  const native = fixture?.harnessObservation;
+  const hashes = native?.modelRequestBodySha256;
+  const routes = routeFixture.routes.filter(
+    (route) => route.routeId === "anthropic-messages",
+  );
+  if (
+    scenario.modelRoutes.length !== 1 ||
+    scenario.modelRoutes[0] !== "anthropic-messages" ||
+    routes.length !== 1 ||
+    routes[0].method !== "POST" ||
+    routes[0].path !== "/v1/messages" ||
+    native?.kind !== "claude-code-native" ||
+    !Array.isArray(hashes) ||
+    hashes.length !== 2 ||
+    [0, 1].some(
+      (index) =>
+        typeof hashes[index] !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(hashes[index]),
+    ) ||
+    ledger.length !== 2 ||
+    ledger.some(
+      (entry, index) =>
+        entry.method !== routes[0].method ||
+        entry.path !== routes[0].path ||
+        entry.bodySha256 !== hashes[index],
+    )
+  )
+    failure();
+};
+
 export const assertMockServerFinalLedger = (
   ledger,
   fixture,
@@ -274,6 +310,10 @@ export const assertMockServerFinalLedger = (
         fixture?.harnessObservation?.modelRequestBodySha256
     )
       failure();
+    return;
+  }
+  if (scenario.scenarioId === "claude-interactive-trace-smoke") {
+    assertClaudeFinalModelLedger(ledger, fixture, routeFixture, scenario);
     return;
   }
   const expected = scenario.modelRoutes.map((routeId) => {
