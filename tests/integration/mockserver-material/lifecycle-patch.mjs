@@ -133,7 +133,7 @@ const finalLedgerCapture = `
         }
     }
 
-    private RequestDefinition finalLedgerRequest(LogEntry received) {
+    private RequestDefinition finalLedgerRequest(LogEntry received, int ordinal) {
         if (!(received.getHttpRequest() instanceof HttpRequest)) {
             observeFinalLedgerFailure("request-type");
             throw new IllegalStateException();
@@ -150,7 +150,7 @@ const finalLedgerCapture = `
         List<LogEntry> responses = eventLog.stream().filter(requestResponseLogPredicate)
             .filter(entry -> correlation.equals(entry.getCorrelationId())).collect(Collectors.toList());
         if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {
-            observeFinalLedgerFailure(responses.size() == 0 ? "response-missing"
+            observeFinalLedgerFailure(responses.size() == 0 ? ordinal >= 1 && ordinal <= 16 ? "response-missing-" + ordinal : "response-missing"
                 : responses.size() != 1 ? "response-duplicate" : "response-null");
             throw new IllegalStateException();
         }
@@ -260,9 +260,10 @@ const eventLog = (source) => {
             disruptor.shutdown(2, SECONDS);
             finalLedgerStep = "correlation";
             if (!finalLedgerFailure && droppedLogEvents.get() == 0 && eventLog.getEvictedCount() == 0) {
+                int[] receivedOrdinal = {0};
                 List<RequestDefinition> requests = eventLog.stream()
                     .filter(entry -> entry.getType() == RECEIVED_REQUEST)
-                    .map(this::finalLedgerRequest).collect(Collectors.toList());
+                    .map(entry -> finalLedgerRequest(entry, receivedOrdinal[0] < 16 ? ++receivedOrdinal[0] : 17)).collect(Collectors.toList());
                 if (requests.size() > 16) {
                     finalLedgerFailure = true;
                     observeFinalLedgerFailure("row-count");
