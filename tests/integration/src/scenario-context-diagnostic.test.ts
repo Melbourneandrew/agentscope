@@ -26,6 +26,10 @@ const fixture = (slot: Slot) => {
   const end = source.indexOf("const prepareMockServerControl =", start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
+  const predicateStart = source.indexOf("const isGateCapableMockServer =");
+  const predicateEnd = source.indexOf("const confinementArguments =");
+  expect(predicateStart).toBeGreaterThan(0);
+  expect(predicateEnd).toBeGreaterThan(predicateStart);
   const bytes = Buffer.from("PRIVATE_CANARY source bytes");
   const hash = createHash("sha256").update(bytes).digest("hex");
   const plan = { runId: "0123456789abcdef", scenarioId: "fixed-scenario" };
@@ -65,7 +69,7 @@ const fixture = (slot: Slot) => {
     materials.set("fixed-evidence", {});
   }
   const functions = runInNewContext(
-    `${source.slice(start, end)}; ({ stageBuildContext, publishScenarioContextRefusals })`,
+    `${source.slice(predicateStart, predicateEnd)}\n${source.slice(start, end)}; ({ stageBuildContext, publishScenarioContextRefusals })`,
     {
       Buffer,
       createHash,
