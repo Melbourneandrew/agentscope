@@ -57,6 +57,7 @@ const {
   claudeCodeReadStimulus,
   claudeCodeInteractiveInput,
   claudeCodeReadResponses,
+  claudeCodeReadExpectations,
   prepareClaudeCodeReadStimulus,
   runClaudeCodeInteractiveTurn,
   runClaudeCodeLifecycleCommand,
@@ -79,6 +80,15 @@ const {
     toolResponse: string;
     finalResponse: string;
   }>;
+  claudeCodeReadExpectations: (model: string) => readonly {
+    httpRequest: {
+      method: string;
+      path: string;
+      body: { type: string; jsonSchema: string };
+    };
+    httpResponse: { body: string };
+    times: { remainingTimes: number; unlimited: boolean };
+  }[];
   prepareClaudeCodeReadStimulus: () => string;
   runClaudeCodeInteractiveTurn: (
     endpoint: string,
@@ -131,7 +141,7 @@ describe("Claude fixed interactive stimulus (source preparation only)", () => {
       "message_delta",
       "message_stop",
     ]);
-    expect(first[0].message).toEqual({
+    expect(first[0]!.message).toEqual({
       id: "msg_agentscope_claude_tool_1",
       type: "message",
       role: "assistant",
@@ -141,13 +151,13 @@ describe("Claude fixed interactive stimulus (source preparation only)", () => {
       stop_sequence: null,
       usage: { input_tokens: 1, output_tokens: 0 },
     });
-    expect(first[1].content_block).toEqual({
+    expect(first[1]!.content_block).toEqual({
       type: "tool_use",
       id: responses.toolUseId,
       name: "Read",
       input: {},
     });
-    expect(first[2].delta).toEqual({
+    expect(first[2]!.delta).toEqual({
       type: "input_json_delta",
       partial_json: JSON.stringify({ file_path: claudeCodeReadStimulus.path }),
     });
@@ -159,10 +169,10 @@ describe("Claude fixed interactive stimulus (source preparation only)", () => {
       },
       usage: { output_tokens: 1 },
     });
-    expect(second[0].message.id).toBe("msg_agentscope_claude_final_1");
-    expect(second[1].content_block).toEqual({ type: "text", text: "" });
-    expect(second[2].delta).toEqual({ type: "text_delta", text: "DONE" });
-    expect(second[4].delta).toEqual({
+    expect(second[0]!.message.id).toBe("msg_agentscope_claude_final_1");
+    expect(second[1]!.content_block).toEqual({ type: "text", text: "" });
+    expect(second[2]!.delta).toEqual({ type: "text_delta", text: "DONE" });
+    expect(second[4]!.delta).toEqual({
       stop_reason: "end_turn",
       stop_sequence: null,
     });
@@ -227,6 +237,65 @@ describe("Claude nonsecret fixture descriptor (mocked filesystem only)", () => {
 });
 
 describe("Claude ordinary packed CLI sequence (source preparation only)", () => {
+  it("guards final SSE with the ordered native Read request tuple, not request count", () => {
+    const rows = claudeCodeReadExpectations("synthetic-model");
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.every(
+        (row) =>
+          row.httpRequest.method === "POST" &&
+          row.httpRequest.path === "/v1/messages",
+      ),
+    ).toBe(true);
+    expect(
+      rows.every((row) => row.httpRequest.body.type === "JSON_SCHEMA"),
+    ).toBe(true);
+    const schema: unknown = JSON.parse(rows[1]!.httpRequest.body.jsonSchema);
+    expect(schema).toMatchObject({
+      properties: {
+        messages: {
+          minItems: 3,
+          maxItems: 3,
+          additionalItems: false,
+          items: [
+            { properties: { role: { const: "user" } } },
+            {
+              properties: {
+                role: { const: "assistant" },
+                content: {
+                  contains: {
+                    properties: {
+                      id: { const: "toolu_agentscope_claude_read_1" },
+                      name: { const: "Read" },
+                    },
+                  },
+                },
+              },
+            },
+            {
+              properties: {
+                role: { const: "user" },
+                content: {
+                  contains: {
+                    properties: {
+                      tool_use_id: { const: "toolu_agentscope_claude_read_1" },
+                      is_error: { const: false },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(rows[1]!.httpResponse.body).toContain("end_turn");
+    expect(
+      rows.every(
+        (row) => row.times.remainingTimes === 1 && !row.times.unlimited,
+      ),
+    ).toBe(true);
+  });
   it("uses the real remote destination and CI reference commands, not Local", () => {
     const settings = { endpoint: "https://collector.agentscope.internal" };
     const commands = claudeCodeLifecycleCommands(settings);
@@ -241,8 +310,8 @@ describe("Claude ordinary packed CLI sequence (source preparation only)", () => 
       "--settings",
       JSON.stringify(settings),
       "--credential-env",
-      "public-key=AGENTSCOPE_TEST_PUBLIC_KEY",
-      "secret-key=AGENTSCOPE_TEST_SECRET_KEY",
+      "public-key=AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "secret-key=AGENTSCOPE_LANGFUSE_SECRET_KEY",
     ]);
     expect(commands[2]).toEqual(["routing", "set", "trace"]);
     expect(commands[3]).toEqual(["install", "claude-code", "--yes"]);
@@ -296,12 +365,14 @@ describe("Claude ordinary command deadline (mocked child, no native evidence)", 
       maxBuffer: 1024 * 1024,
     });
     expect(Object.keys(call.options.env as object).sort()).toEqual([
-      "AGENTSCOPE_TEST_PUBLIC_KEY",
-      "AGENTSCOPE_TEST_SECRET_KEY",
+      "AGENTSCOPE_HOME",
+      "AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "AGENTSCOPE_LANGFUSE_SECRET_KEY",
       "CI",
       "CLAUDE_CONFIG_DIR",
       "HOME",
       "LANG",
+      "NODE_EXTRA_CA_CERTS",
       "PATH",
       "TERM",
       "XDG_CONFIG_HOME",

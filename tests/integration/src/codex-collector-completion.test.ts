@@ -4,9 +4,186 @@ import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { deriveIdentityBundle } from "@agentscope/protocol";
 import { expect, it } from "vitest";
+import { sanitizeFixtureResult } from "./operations.js";
 
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+
+const claudeJoinGraphs = (nativeToolUseId: string) => {
+  const attribute = (key: string, text: string) => ({
+    key,
+    value: { stringValue: text },
+  });
+  return Array.from({ length: 4 }, (_bytes, index) => {
+    const traceId = String(index + 1).repeat(32);
+    const root = {
+      name: index === 0 ? "claude.SessionStart" : "claude.hook-invocation",
+      traceId,
+      spanId: "a".repeat(16),
+      attributes: [attribute("openinference.span.kind", "AGENT")],
+    };
+    const child = {
+      name: index === 3 ? "claude.Stop" : "Read",
+      traceId,
+      spanId: "b".repeat(16),
+      parentSpanId: root.spanId,
+      attributes: [
+        attribute("openinference.span.kind", index === 3 ? "LLM" : "TOOL"),
+        attribute("tool.id", nativeToolUseId),
+        attribute("input.mime_type", "application/json"),
+        ...(index === 2
+          ? [attribute("output.mime_type", "application/json")]
+          : []),
+      ],
+    };
+    return {
+      graph: {
+        resourceSpans: [
+          { scopeSpans: [{ spans: index === 0 ? [root] : [root, child] }] },
+        ],
+      },
+      transport: { graphSha256: String(index + 1).repeat(64) },
+    };
+  });
+};
+
+const claudeJoinFixture = () => {
+  const scenarioId = "claude-interactive-trace-smoke";
+  const native = {
+    observationVersion: 1,
+    kind: "claude-code-native",
+    nativeSessionId: "01234567-89ab-cdef-0123-456789abcdef",
+    nativeToolUseId: "toolu_agentscope_claude_read_1",
+    modelRequestBodySha256: ["a".repeat(64), "b".repeat(64)],
+    doctorErrors: 0,
+    uninstallDisposition: "committed",
+  };
+  const result = {
+    evidenceVersion: 1,
+    resultStatus: "partial",
+    scenarioId,
+    artifactFileName: "agentscope-cli.tgz",
+    certificationReadiness: null,
+    lifecycle: ["install", "configure", "hook", "execute"],
+    eventKinds: ["hook", "model"],
+    harnessObservation: native,
+    modelLedger: {
+      ledgerVersion: 1,
+      scenarioId,
+      entries: Array.from({ length: 2 }, () => ({
+        routeId: "anthropic-messages",
+        provider: "anthropic",
+        method: "POST",
+        path: "/v1/messages",
+        bodyBytes: 20,
+      })),
+    },
+    destinationLedger: {
+      ledgerVersion: 1,
+      scenarioId,
+      ingestion: [],
+      retrieval: [],
+    },
+  };
+  const batches = [0, 1, 2, 3].map((index) => Buffer.from(String(index)));
+  const ledger = native.modelRequestBodySha256.map((bodySha256) => ({
+    role: "data-plane",
+    method: "POST",
+    path: "/v1/messages",
+    bodySha256,
+  }));
+  const graphs = claudeJoinGraphs(native.nativeToolUseId);
+  const fixtures = new Map<string, unknown>([["owned-run", result]]);
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const claudeCollectorExpectation =");
+  const end = source.indexOf(
+    "// eslint-disable-next-line complexity -- exact closed container terminal witness",
+    start,
+  );
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const complete = runInNewContext(
+    `${source.slice(start, end)}; completeClaudeCollectorFixture`,
+    {
+      fixtureResults: fixtures,
+      manifest: {
+        scenarios: [{ scenarioId, harnessEvidenceId: "claude-fixed" }],
+      },
+      evidenceById: new Map([
+        ["claude-fixed", { representativeVersion: "2.1.245" }],
+      ]),
+      sanitizeFixtureResult,
+      observeSelectedWriterOtlp: (
+        bytes: Buffer,
+        canaries: string[],
+        expected: {
+          sessionId: string;
+          modelName?: string;
+          unavailableContext: unknown[];
+        },
+      ) => {
+        expect(canaries).toEqual([
+          "DUMMY_PUBLIC_KEY",
+          "DUMMY_SECRET_KEY",
+          "/worktree",
+        ]);
+        expect(expected.sessionId).toBe(native.nativeSessionId);
+        expect(expected.modelName).toBeUndefined();
+        expect(expected.unavailableContext).toHaveLength(6);
+        return graphs[Number(bytes.toString())];
+      },
+    },
+  ) as (
+    plan: { runId: string; scenarioId: string },
+    batches: Buffer[],
+    ledger: unknown[],
+  ) => void;
+  return {
+    complete: () => {
+      complete({ runId: "owned-run", scenarioId }, batches, ledger);
+    },
+    fixtures,
+    result,
+    graphs,
+    batches,
+    ledger,
+  };
+};
+
+it("joins actual-source Claude four-hook projection without retaining ephemeral graphs", () => {
+  const input = claudeJoinFixture();
+  input.complete();
+  const completed = input.fixtures.get("owned-run") as {
+    resultStatus: string;
+    harnessObservation: {
+      hookObservations: Array<{ eventName: string; spanIds: string[] }>;
+    };
+  };
+  expect(completed.resultStatus).toBe("complete");
+  expect(
+    completed.harnessObservation.hookObservations.map((row) => row.eventName),
+  ).toEqual(["SessionStart", "PreToolUse", "PostToolUse", "Stop"]);
+  expect(
+    completed.harnessObservation.hookObservations.map(
+      (row) => row.spanIds.length,
+    ),
+  ).toEqual([1, 2, 2, 2]);
+  expect(JSON.stringify(completed)).not.toContain('canonicalGraph"');
+  expect(JSON.stringify(completed)).not.toContain("resourceSpans");
+});
+it("refuses missing batches, unmatched primary hashes and a replayed PreToolUse at PostToolUse", () => {
+  const missing = claudeJoinFixture();
+  missing.batches.pop();
+  expect(missing.complete).toThrow("integration.isolation.collector-native");
+  expect(missing.fixtures.get("owned-run")).toBe(missing.result);
+  const digest = claudeJoinFixture();
+  digest.ledger[1]!.bodySha256 = "f".repeat(64);
+  expect(digest.complete).toThrow("integration.isolation.collector-native");
+  const replay = claudeJoinFixture();
+  replay.graphs[2] = replay.graphs[1]!;
+  expect(replay.complete).toThrow("integration.isolation.collector-native");
+  expect(replay.fixtures.get("owned-run")).toBe(replay.result);
+});
 
 const graphForIdentity = (identity: {
   traceId: string;

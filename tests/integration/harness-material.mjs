@@ -236,7 +236,10 @@ const runMaterialVerification = async ({
       "com.agentscope.integration": "true",
       "com.agentscope.integration.run": runId,
     },
-    maximumBuildContextBytes: maximumAuditBytes,
+    maximumBuildContextBytes:
+      material.platformPackage === undefined
+        ? maximumAuditBytes
+        : material.platformPackage.bytes + maximumAuditBytes,
     maximumMilliseconds: remaining(buildDeadline),
     retirementRequired: true,
     signal,
@@ -393,6 +396,8 @@ const runSignedManifestVerification = async ({
   mkdirSync(context, { mode: 0o700 });
   for (const name of ["key", "manifest", "signature"])
     writeExclusive(resolve(context, name), objects[name]);
+  if (material.platformPackage !== undefined)
+    writeExclusive(resolve(context, "platform.tgz"), objects.platformPackage);
   const verifier = await runMaterialVerification({
     client: dockerClient,
     deadline,
@@ -403,6 +408,12 @@ const runSignedManifestVerification = async ({
       signatureHashAlgorithm: material.signingKey.signatureHashAlgorithm,
       signerFingerprint: material.signingKey.signerFingerprint,
       uid: material.signingKey.uid,
+      ...(material.platformPackage === undefined
+        ? {}
+        : {
+            platformPackage: material.platformPackage,
+            maximumMilliseconds: remaining(deadline),
+          }),
     },
     root,
     runId,
@@ -419,6 +430,39 @@ const runSignedManifestVerification = async ({
       name: "gpg",
     },
   };
+};
+
+const signedMaterialDescriptors = (material) => {
+  const descriptors = {
+    key: material.signingKey,
+    manifest: material.manifest,
+    signature: material.signature,
+    ...(material.platformPackage === undefined
+      ? {}
+      : {
+          platformPackage: {
+            ...material.platformPackage,
+            url: material.platformPackage.tarballUrl,
+          },
+        }),
+  };
+  const totalBytes = Object.values(descriptors).reduce(
+    (total, descriptor) => total + descriptor.bytes,
+    0,
+  );
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes < 1 ||
+    totalBytes > maximumAggregateArchiveBytes ||
+    !Number.isSafeInteger(material.binary.bytes) ||
+    material.binary.bytes < 1 ||
+    material.binary.bytes > 384 * 1024 * 1024 ||
+    (material.platformPackage !== undefined &&
+      material.platformPackage.bytes + maximumAuditBytes >
+        maximumAggregateArchiveBytes)
+  )
+    fail();
+  return descriptors;
 };
 
 const prepareSignedManifestHarnessMaterial = async (input) => {
@@ -448,25 +492,16 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
     owned = exactDirectory(root);
     if (owned.dev !== parent.dev || !root.startsWith(`${parent.path}/`)) fail();
     const deadline = performance.now() + maximumMilliseconds;
-    const descriptors = {
-      binary: material.binary,
-      key: material.signingKey,
-      manifest: material.manifest,
-      signature: material.signature,
-    };
-    const totalBytes = Object.values(descriptors).reduce(
-      (total, descriptor) => total + descriptor.bytes,
-      0,
-    );
-    if (
-      !Number.isSafeInteger(totalBytes) ||
-      totalBytes < 1 ||
-      totalBytes > maximumAggregateArchiveBytes
-    )
-      fail();
+    const descriptors = signedMaterialDescriptors(material);
     const objects = {};
     for (const [name, descriptor] of Object.entries(descriptors))
       objects[name] = await download(descriptor, signal, deadline);
+    if (
+      material.platformPackage !== undefined &&
+      `sha512-${createHash("sha512").update(objects.platformPackage).digest("base64")}` !==
+        material.platformPackage.integrity
+    )
+      fail();
     const verification = await runSignedManifestVerification({
       deadline,
       dockerClient,
@@ -476,6 +511,9 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       runId,
       signal,
     });
+    // The existing verifier has retired before expanded executable ingress.
+    if (objects.platformPackage !== undefined) objects.platformPackage.fill(0);
+    objects.binary = await download(material.binary, signal, deadline);
     const authority = compileVerifiedSignedManifestHarnessMaterial({
       binary: objects.binary,
       evidenceId,

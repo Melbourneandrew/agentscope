@@ -8,14 +8,35 @@ import {
   writeFileSync,
 } from "node:fs";
 import { promisify } from "node:util";
+import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
+import {
+  openMockServerControl,
+  projectMockServerRequests,
+  snapshotMockServerTraffic,
+} from "./mockserver-control.mjs";
+import {
+  inspectClaudeCodeModelRequests,
+  claudeModelLedger,
+  correlateClaudeModelControl,
+  observeClaudeCodeNativeTurn,
+} from "./claude-code-platform-oracle.mjs";
+import {
+  claudeCodeLifecycleCommands,
+  cliEnvironment,
+  monotonicNow,
+  prepareClaudeCodePackedCli,
+  retireClaudeCodePackedCli,
+  readClaudeCodeReadinessChallenge,
+  runClaudeCodeLifecycleCommand,
+} from "./claude-code-lifecycle.mjs";
 
 const execute = promisify(execFile);
-const cli = "/opt/agentscope/installed/node_modules/.bin/agentscope";
 export const claudeCodeReadStimulus = Object.freeze({
   path: "/worktree/agentscope-claude-tool-stimulus.txt",
   contents: "agentscope-claude-tool-stimulus-v1\n",
   prompt:
-    "Use the Read tool to read /worktree/agentscope-claude-tool-stimulus.txt, then reply with the single word DONE.",
+    "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.",
 });
 
 // Input segments for the existing selected PTY owner. Enter/CR and /exit are
@@ -118,79 +139,85 @@ export const claudeCodeReadResponses = (model) => {
     ),
   });
 };
-const monotonicNow = () => {
-  const source = readFileSync("/proc/uptime", "utf8");
-  if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
-    throw new Error("integration.claude-code.clock");
-  const value = Number(source.split(/\s/u, 1)[0]) * 1000;
-  if (!Number.isFinite(value) || value < 0)
-    throw new Error("integration.claude-code.clock");
-  return value;
-};
-const cliEnvironment = Object.freeze({
-  HOME: "/home/agentscope",
-  XDG_CONFIG_HOME: "/harness-home",
-  CLAUDE_CONFIG_DIR: "/harness-home",
-  PATH: "/usr/local/bin:/usr/bin:/bin",
-  LANG: "C.UTF-8",
-  TERM: "xterm-256color",
-  CI: "true",
-  AGENTSCOPE_TEST_PUBLIC_KEY: "DUMMY_INTERNAL_PUBLIC_KEY",
-  AGENTSCOPE_TEST_SECRET_KEY: "DUMMY_INTERNAL_SECRET_KEY",
-});
-
-// These are ordinary packed-CLI commands within the existing selected PTY
-// scenario boundary, not another execution kernel or a support receipt.
-export const claudeCodeLifecycleCommands = (destinationSettings) => {
-  const settings = JSON.stringify(destinationSettings);
-  if (settings === undefined || Buffer.byteLength(settings) > 65_536)
-    throw new Error("integration.claude-code.destination-settings");
-  return Object.freeze(
-    [
-      ["init", "--yes"],
-      [
-        "destination",
-        "configure",
-        "langfuse",
-        "--name",
-        "trace",
-        "--yes",
-        "--settings",
-        settings,
-        "--credential-env",
-        "public-key=AGENTSCOPE_TEST_PUBLIC_KEY",
-        "secret-key=AGENTSCOPE_TEST_SECRET_KEY",
-      ],
-      ["routing", "set", "trace"],
-      ["install", "claude-code", "--yes"],
-      ["harness", "status", "claude-code"],
-      ["doctor"],
-      ["uninstall", "claude-code", "--yes"],
-      ["harness", "status", "claude-code"],
-    ].map((arguments_) => Object.freeze(arguments_)),
-  );
-};
-
-// The original outer deadline is supplied by the selected wrapper. The caller
-// must not replace it with a new duration after any command or vendor turn.
-export const runClaudeCodeLifecycleCommand = async (arguments_, deadline) => {
-  const remaining = Math.floor(deadline - monotonicNow());
-  if (!Number.isFinite(remaining) || remaining <= 0)
-    throw new Error("integration.claude-code.deadline");
-  const result = await execute(cli, [...arguments_, "--output", "json"], {
-    cwd: "/worktree",
-    env: cliEnvironment,
-    uid: 1000,
-    gid: 1000,
-    timeout: remaining,
-    maxBuffer: 1024 * 1024,
-    encoding: "utf8",
+// Upstream matcher grammar, not another request decoder. The terminal owner
+// still independently checks the actual full ledger before declaring a turn.
+export const claudeCodeReadExpectations = (model) => {
+  const responses = claudeCodeReadResponses(model);
+  const content = (role, block) => ({
+    type: "object",
+    required: ["role", "content"],
+    properties: {
+      role: { const: role },
+      content: { type: "array", minItems: 1, contains: block },
+    },
   });
-  if (monotonicNow() >= deadline)
-    throw new Error("integration.claude-code.deadline");
-  return result.stdout;
+  const tool = content("assistant", {
+    type: "object",
+    required: ["type", "id", "name", "input"],
+    properties: {
+      type: { const: "tool_use" },
+      id: { const: responses.toolUseId },
+      name: { const: "Read" },
+      input: {
+        type: "object",
+        required: ["file_path"],
+        properties: { file_path: { const: claudeCodeReadStimulus.path } },
+      },
+    },
+  });
+  const result = content("user", {
+    type: "object",
+    required: ["type", "tool_use_id"],
+    properties: {
+      type: { const: "tool_result" },
+      tool_use_id: { const: responses.toolUseId },
+      is_error: { const: false },
+    },
+  });
+  const initial = content("user", {
+    type: "object",
+    required: ["type", "text"],
+    properties: {
+      type: { const: "text" },
+      text: { const: claudeCodeReadStimulus.prompt },
+    },
+  });
+  const expectation = (messages, response) => ({
+    httpRequest: {
+      method: "POST",
+      path: "/v1/messages",
+      body: {
+        type: "JSON_SCHEMA",
+        jsonSchema: JSON.stringify({
+          $schema: "http://json-schema.org/draft-07/schema#",
+          type: "object",
+          required: ["messages", "stream"],
+          properties: {
+            stream: { const: true },
+            messages: {
+              type: "array",
+              minItems: messages.length,
+              maxItems: messages.length,
+              items: messages,
+              additionalItems: false,
+            },
+          },
+        }),
+      },
+    },
+    httpResponse: {
+      statusCode: 200,
+      headers: { "Content-Type": [responses.contentType] },
+      body: response,
+    },
+    times: { remainingTimes: 1, unlimited: false },
+  });
+  return Object.freeze([
+    expectation([initial], responses.toolResponse),
+    expectation([initial, tool, result], responses.finalResponse),
+  ]);
 };
-
+export { claudeCodeLifecycleCommands, runClaudeCodeLifecycleCommand };
 // run-scenarios already binds the family adapter to this exact staging name.
 // The child inherits the selected wrapper's PTY. Its process set, input,
 // deadline, cancellation and final drain remain owned by that one kernel.
@@ -199,20 +226,26 @@ export const runClaudeCodeInteractiveTurn = async (modelEndpoint, deadline) => {
     throw new Error("integration.claude-code.deadline");
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
     throw new Error("integration.claude-code.pty");
-  const { claudeCodeInteractiveInvocation } = await import(
-    new URL("./scenario-adapter.mjs", import.meta.url).href
-  );
+  const { claudeCodeInteractiveInvocation } =
+    await import("./scenario-adapter.mjs");
   const invocation = claudeCodeInteractiveInvocation(modelEndpoint);
   if (monotonicNow() >= deadline)
     throw new Error("integration.claude-code.deadline");
   await new Promise((resolve, reject) => {
-    const child = spawn(invocation.executable, invocation.arguments, {
-      cwd: "/worktree",
-      env: invocation.environment,
-      uid: 1000,
-      gid: 1000,
-      stdio: "inherit",
-    });
+    const child = spawn(
+      "/usr/local/bin/node",
+      ["/opt/agentscope/codex-candidate-dropper.mjs"],
+      {
+        cwd: "/worktree",
+        env: {
+          ...invocation.environment,
+          AGENTSCOPE_CANDIDATE_HARNESS: "claude-code",
+          AGENTSCOPE_CANDIDATE_RUN_ID:
+            process.env.AGENTSCOPE_INTEGRATION_RUN_ID,
+        },
+        stdio: "inherit",
+      },
+    );
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (code !== 0 || signal !== null)
@@ -224,8 +257,170 @@ export const runClaudeCodeInteractiveTurn = async (modelEndpoint, deadline) => {
     throw new Error("integration.claude-code.deadline");
 };
 
-// Messages streaming/auxiliary request expectations, readiness/checkpoint
-// publication, receiver graph correlation and terminal completion are not yet
-// composed. A vendor exit alone is never successful trace acceptance.
-// This module deliberately emits no complete result, readiness marker, or
-// admission artifact from its partial source-only CLI orchestration.
+const publishClaudeMarker = (marker) =>
+  new Promise((resolve, reject) => {
+    process.stdout.write(marker, (error) =>
+      error === null || error === undefined ? resolve() : reject(error),
+    );
+  });
+const waitForClaudeModelPair = async (control, turn, deadline) => {
+  // A child ending before the observed provider handshake cannot be promoted
+  // to completion. Keep its rejection handled while awaiting bounded controls.
+  const earlyExit = turn.then(() => {
+    throw new Error("integration.claude-code.early-exit");
+  });
+  earlyExit.catch(() => {});
+  let pair, rows;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const response = await Promise.race([control.requests(), earlyExit]);
+    if (response.status !== 200)
+      throw new Error("integration.claude-code.model-control");
+    pair = inspectClaudeCodeModelRequests(
+      response.bytes,
+      claudeCodeReadStimulus,
+    );
+    rows = projectMockServerRequests(response.bytes);
+    if (pair !== undefined) break;
+    const remaining = deadline - monotonicNow();
+    if (remaining <= 0 || attempt === 4)
+      throw new Error("integration.claude-code.model-pair");
+    await Promise.race([
+      // Divide the original remaining budget across the finite control-row
+      // allowance; do not accidentally create a new five-second turn cutoff.
+      new Promise((resolve) =>
+        setTimeout(resolve, Math.floor(remaining / (5 - attempt))),
+      ),
+      earlyExit,
+    ]);
+  }
+  return { pair, rows };
+};
+
+// This is the existing selected PTY scenario process, not a second driver.
+// It emits only native partial evidence; the outer authenticated collector
+// must independently join four real OTLP graphs before completing it.
+export const runClaudeCodeScenario = async () => {
+  const deadline = Number(process.env.AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS);
+  const scenarioId = process.env.AGENTSCOPE_SCENARIO_ID;
+  const runId = process.env.AGENTSCOPE_INTEGRATION_RUN_ID;
+  if (
+    !Number.isFinite(deadline) ||
+    deadline <= monotonicNow() ||
+    scenarioId !== "claude-interactive-trace-smoke" ||
+    !/^[a-f0-9]{16}$/u.test(runId ?? "") ||
+    process.env.AGENTSCOPE_WORKTREE !== "/worktree" ||
+    process.env.HARNESS_HOME !== "/harness-home" ||
+    process.env.AGENTSCOPE_LEDGER !== "/ledger" ||
+    process.argv.length !== 4 ||
+    process.argv[2] !== "--artifact"
+  )
+    throw new Error("integration.claude-code.environment");
+  const challenge = await readClaudeCodeReadinessChallenge(
+    deadline,
+    monotonicNow,
+  );
+  const { commands, settings } = await prepareClaudeCodePackedCli(deadline);
+  prepareClaudeCodeReadStimulus();
+  if (process.env.AGENTSCOPE_MODEL_SERVER_URL !== "http://mockserver:1080")
+    throw new Error("integration.claude-code.model-control");
+  const control = openMockServerControl({
+    runId,
+    host: "mockserver",
+    deadline,
+    now: monotonicNow,
+  });
+  if (
+    (await control.configure(claudeCodeReadExpectations("fixture-model")))
+      .status !== 201
+  )
+    throw new Error("integration.claude-code.model-control");
+  const candidate = await execute(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import {probeMockServerCandidate,readMockServerBootClock as now} from '/opt/agentscope/mockserver-control.mjs'; console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(runId)},host:'mockserver',deadline:${deadline},now})));`,
+    ],
+    {
+      cwd: "/worktree",
+      env: cliEnvironment,
+      uid: 1000,
+      gid: 1000,
+      timeout: Math.max(1, Math.floor(deadline - monotonicNow())),
+      maxBuffer: 65536,
+    },
+  );
+  const denials = snapshotMockServerTraffic(
+    JSON.parse(candidate.stdout),
+    runId,
+  );
+  await publishClaudeMarker(`AGENTSCOPE_PTY_READY:${challenge}\r\n`);
+  const turn = runClaudeCodeInteractiveTurn(
+    process.env.AGENTSCOPE_MODEL_SERVER_URL,
+    deadline,
+  );
+  const { pair, rows } = await waitForClaudeModelPair(control, turn, deadline);
+  await publishClaudeMarker(
+    `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`,
+  );
+  await turn;
+  const native = observeClaudeCodeNativeTurn(claudeCodeReadStimulus);
+  await retireClaudeCodePackedCli(commands, settings, deadline);
+  const traffic = correlateClaudeModelControl(
+    rows,
+    control.snapshot().entries,
+    denials.entries,
+  );
+  if (monotonicNow() >= deadline)
+    throw new Error("integration.claude-code.deadline");
+  const evidence = {
+    evidenceVersion: 1,
+    resultStatus: "partial",
+    scenarioId,
+    artifactFileName: basename(process.argv[3]),
+    certificationReadiness: null,
+    lifecycle: ["install", "configure", "hook", "execute"],
+    eventKinds: ["hook", "model"],
+    harnessObservation: {
+      observationVersion: 1,
+      kind: "claude-code-native",
+      ...native,
+      ...pair,
+      doctorErrors: 0,
+      uninstallDisposition: "committed",
+    },
+    modelLedger: claudeModelLedger(
+      rows,
+      JSON.parse(
+        readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
+      ),
+      scenarioId,
+    ),
+    destinationLedger: {
+      ledgerVersion: 1,
+      scenarioId,
+      ingestion: [],
+      retrieval: [],
+    },
+    mockServerTraffic: snapshotMockServerTraffic(
+      { runId, entries: traffic },
+      runId,
+    ),
+  };
+  writeFileSync(
+    "/ledger/fixture-result.json",
+    `${JSON.stringify({ evidenceVersion: 1, scenarioId, encodedEvidence: Buffer.from(JSON.stringify(evidence)).toString("base64url") })}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+};
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+)
+  try {
+    await runClaudeCodeScenario();
+  } catch {
+    // Never forward child output, native bodies or credential-bearing errors.
+    process.stderr.write("integration.claude-code.scenario\n");
+    process.exitCode = 1;
+  }

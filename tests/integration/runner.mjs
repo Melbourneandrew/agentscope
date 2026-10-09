@@ -204,7 +204,9 @@ const compileNativeReadiness = (scenario, challenge) => {
     return Object.freeze({ kind: "challenge-process-topology", challenge });
   if (
     readiness?.kind === "challenge-marker" &&
-    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    (scenario.harnessEvidenceId === "codex-0-149-1" ||
+      (scenario.harnessEvidenceId === "claude-code-2-1-245" &&
+        scenario.scenarioId === "claude-interactive-trace-smoke")) &&
     JSON.stringify(Object.keys(readiness).sort()) ===
       JSON.stringify(["kind"]) &&
     typeof challenge === "string" &&

@@ -54,6 +54,9 @@ export type VerifiedSignedManifestHarnessMaterial = Readonly<{
     sha256: string;
     version: string;
   }>;
+  platformPackage?: NonNullable<
+    SignedManifestHarnessMaterial["platformPackage"]
+  >;
   manifestSha256: string;
   signatureSha256: string;
   signatureHashAlgorithm: "sha256" | "sha384" | "sha512";
@@ -489,6 +492,21 @@ export const compileVerifiedNpmHarnessMaterial = (
   });
 };
 
+const requirePlatformPackageMember = (
+  material: SignedManifestHarnessMaterial,
+  binary: Uint8Array,
+) => {
+  const descriptor = material.platformPackage;
+  if (
+    descriptor !== undefined &&
+    (descriptor.memberName !== "package/claude" ||
+      descriptor.memberBytes !== binary.byteLength ||
+      descriptor.memberSha256 !== sha256Bytes(binary) ||
+      descriptor.version !== material.version)
+  )
+    return invalid();
+};
+
 export const compileVerifiedSignedManifestHarnessMaterial = (
   input: Readonly<{
     binary: Uint8Array;
@@ -548,6 +566,8 @@ export const compileVerifiedSignedManifestHarnessMaterial = (
     input.verification.verifier.name !== "gpg"
   )
     return invalid();
+  const platformPackage = input.material.platformPackage;
+  requirePlatformPackageMember(input.material, input.binary);
   let manifest: Readonly<Record<string, unknown>>;
   try {
     manifest = record(parseStrictJson(input.manifestBytes));
@@ -570,6 +590,7 @@ export const compileVerifiedSignedManifestHarnessMaterial = (
     evidenceId: input.evidenceId,
     kind: "signed-release-manifest" as const,
     binary,
+    ...(platformPackage === undefined ? {} : { platformPackage }),
     platformIdentity: input.material.platformIdentity,
     manifestSha256: input.material.manifest.sha256,
     signatureSha256: input.material.signature.sha256,

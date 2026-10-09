@@ -1,7 +1,11 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-bebaf5f03c5cfb1b7ab42f4f59785b92a505e2ca2db56abb88fe5adc4d4ea1ca",
-  "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
+  "manifestIdentity": "sha256-ac98c43ee11bc34dbec7a32d29edb701ceae0c01b5063bdb6e724b6ff5b1c3da",
+  "requiredRepresentativeIds": [
+    "fixture-process-v1",
+    "codex-0-149-1",
+    "claude-code-2-1-245"
+  ],
   "evidence": [
     {
       "evidenceId": "codex-0-149-1",
@@ -67,6 +71,60 @@
       },
       "material": {
         "kind": "certification-fixture"
+      }
+    },
+    {
+      "evidenceId": "claude-code-2-1-245",
+      "harnessId": "claude-code",
+      "harnessPackage": "@agentscope/harness-claude-code",
+      "representativeVersion": "2.1.245",
+      "descriptorArtifact": {
+        "path": "fixtures/claude-code-harness-evidence.json",
+        "sha256": "a773433cf57151c5e4d6499a9dfad2dfc34237e0be125a76763ad4936c1a6b46"
+      },
+      "material": {
+        "kind": "signed-release-manifest",
+        "distributionId": "claude-code",
+        "version": "2.1.245",
+        "platform": "linux-x64",
+        "platformIdentity": "sha256-9d99a75171aea000c711b34c0e5e3f28d3d537dd99d110eafbfbc2bd8e52c2bf",
+        "verifierImage": "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
+        "binary": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/linux-x64/claude",
+          "bytes": 391948592,
+          "sha256": "16ad2b94deaf7b29abed966d981c9991a47af0420f5be8ed4a3f83bea9f678bc",
+          "executableName": "claude"
+        },
+        "manifest": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/manifest.json",
+          "bytes": 1872,
+          "sha256": "642d03ec5e076bed814e2e4a6ba1a731c02ea18cf43108b115280ea558ba4988"
+        },
+        "signature": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/manifest.json.sig",
+          "bytes": 833,
+          "sha256": "91abc594fe328361b5d1646f91d785d0b8e0dcd861ebdcf07548a377ffebb442"
+        },
+        "signingKey": {
+          "url": "https://downloads.claude.ai/keys/claude-code.asc",
+          "bytes": 1688,
+          "sha256": "bd70a5e4a268002704024ceba7f8446024114e94f3f0bdd11c23a9e592be81c6",
+          "fingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+          "signerFingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+          "signatureHashAlgorithm": "sha512",
+          "uid": "Anthropic Claude Code Release Signing <security@anthropic.com>"
+        },
+        "platformPackage": {
+          "packageName": "@anthropic-ai/claude-code-linux-x64",
+          "version": "2.1.245",
+          "tarballUrl": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.245.tgz",
+          "bytes": 121422431,
+          "sha256": "310c8bb769c6699458807d25c389dd74bb10c335f17ae1fb7ced73d41fa268a7",
+          "integrity": "sha512-SRO5w2f9iHKZmREp389kPKxWAr6qEODxggdhhS7zF16OMwaUHjV5Yu7Oq8jSMD57gQiBjOfvFp/SJg3CdfHCtA==",
+          "memberName": "package/claude",
+          "memberBytes": 391948592,
+          "memberSha256": "16ad2b94deaf7b29abed966d981c9991a47af0420f5be8ed4a3f83bea9f678bc"
+        }
       }
     }
   ],
@@ -174,7 +232,7 @@
             "path": "codex-candidate-dropper.mjs"
           },
           "destination": "codex-candidate-dropper.mjs",
-          "sha256": "a641f580b3cce6016a88856e5882c4c0ec527d9fc790f03c56f073e716f31e0a"
+          "sha256": "9a6893c67b8d439e486fa5f57a8b5f62e76caeba6f5a2b419e4bd826983a7c56"
         },
         {
           "source": {
@@ -223,6 +281,64 @@
       },
       "resourceClass": "medium",
       "shardWeight": 220
+    },
+    {
+      "scenarioId": "claude-interactive-trace-smoke",
+      "harnessEvidenceId": "claude-code-2-1-245",
+      "executionMode": "interactive",
+      "outputContract": "semantic-pty",
+      "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+      "modelRoutes": ["anthropic-messages"],
+      "tags": ["claude-code", "interactive", "pr"],
+      "destinations": ["langfuse"],
+      "fixtureAdapter": {
+        "path": "dist/claude-code-platform-adapter.mjs",
+        "sha256": "d9afa27d93e10d151b4c77c81244a63f612a61770324fc5a3654a69579394d09"
+      },
+      "scenarioOracle": {
+        "path": "claude-code-platform-oracle.mjs",
+        "sha256": "c154068ccdbac78b6d3768b481e6b076ee6953ba82878d6e5929f3aef2291227"
+      },
+      "scenarioProcess": {
+        "path": "claude-code-scenario.mjs",
+        "sha256": "35be5a2a82573a7a618646da0b3de2674d415183f8416b472ecf8bb780039df7"
+      },
+      "runtimeArtifacts": [
+        {
+          "source": {
+            "kind": "integration",
+            "path": "codex-candidate-dropper.mjs"
+          },
+          "destination": "codex-candidate-dropper.mjs",
+          "sha256": "9a6893c67b8d439e486fa5f57a8b5f62e76caeba6f5a2b419e4bd826983a7c56"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "claude-code-lifecycle.mjs"
+          },
+          "destination": "claude-code-lifecycle.mjs",
+          "sha256": "ea9623e4f1f99721afe8a1cea003a6714b2a7973142cc4a21415853e2fe02a55"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "collector-ca.mjs"
+          },
+          "destination": "collector-ca.mjs",
+          "sha256": "840b00ae1203b84d834652b22b203b4cc90e8bc35d54b2686aa7b237f30516c5"
+        }
+      ],
+      "terminalInputBase64": "UmVhZCAvd29ya3RyZWUvYWdlbnRzY29wZS1jbGF1ZGUtdG9vbC1zdGltdWx1cy50eHQgd2l0aCBSZWFkLCB0aGVuIHJlcGx5IERPTkUuDS9leGl0DQ==",
+      "postCompletionInputByteLength": 6,
+      "postCompletionControl": "none",
+      "waitForSemanticCompletionBeforeTerminalAction": true,
+      "nativeReadiness": {
+        "kind": "challenge-marker"
+      },
+      "resourceClass": "medium",
+      "shardWeight": 240
     }
   ]
 }

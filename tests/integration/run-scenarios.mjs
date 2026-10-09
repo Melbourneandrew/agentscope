@@ -311,13 +311,23 @@ const tmpfsArguments = (limits, ownership = true) =>
     "--tmpfs",
     `${path}:rw,${scenarioTmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
+const isNativeTraceScenario = (plan) =>
+  ["codex-tui-trace-smoke", "claude-interactive-trace-smoke"].includes(
+    plan.scenarioId,
+  );
+const isGateCapableMockServer = (scenario) =>
+  scenario.modelRoutes.length === 1 &&
+  ((scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes[0] === "codex-tui-responses") ||
+    (scenario.scenarioId === "claude-interactive-trace-smoke" &&
+      scenario.modelRoutes[0] === "anthropic-messages"));
 const confinementArguments = (plan) => [
   "--network",
   plan.networkName,
   "--read-only",
   "--cap-drop",
   "ALL",
-  ...(plan.scenarioId === "codex-tui-trace-smoke"
+  ...(isNativeTraceScenario(plan)
     ? [
         "--cap-add",
         "CHOWN",
@@ -338,7 +348,7 @@ const confinementArguments = (plan) => [
   "--memory",
   String(ISOLATION_EXECUTOR_LIMITS.containers.scenario.memoryBytes),
   "--user",
-  plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000",
+  isNativeTraceScenario(plan) ? "0:0" : "1000:1000",
   ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.scenario),
 ];
 const sidecarResourceArguments = (limits) => [
@@ -402,10 +412,7 @@ const stageBuildContext = (plan) => {
   if (scenario === undefined) refuseScenarioContext(plan, "scenario-missing");
   const evidence = evidenceById.get(scenario.harnessEvidenceId);
   if (evidence === undefined) refuseScenarioContext(plan, "evidence-missing");
-  const gateCapableMockServer =
-    scenario.scenarioId === "codex-tui-trace-smoke" &&
-    scenario.modelRoutes.length === 1 &&
-    scenario.modelRoutes[0] === "codex-tui-responses";
+  const gateCapableMockServer = isGateCapableMockServer(scenario);
   const harnessMaterial = preparedHarnessMaterials.get(
     scenario.harnessEvidenceId,
   );
@@ -604,6 +611,12 @@ const stageBuildContext = (plan) => {
           ]
         : []),
       "COPY runtime ./runtime",
+      ...(scenario.scenarioId === "claude-interactive-trace-smoke"
+        ? [
+            "COPY runtime/claude-code-lifecycle.mjs ./claude-code-lifecycle.mjs",
+            "COPY scenario-oracle.mjs ./claude-code-platform-oracle.mjs",
+          ]
+        : []),
       "COPY fixtures ./fixtures",
       "COPY dist ./dist",
       "COPY testkit ./testkit",
@@ -628,10 +641,7 @@ const prepareMockServerControl = (plan) => {
     (entry) => entry.scenarioId === plan.scenarioId,
   );
   if (scenario === undefined) throw new Error("integration.isolation.context");
-  const gateCapableMockServer =
-    scenario.scenarioId === "codex-tui-trace-smoke" &&
-    scenario.modelRoutes.length === 1 &&
-    scenario.modelRoutes[0] === "codex-tui-responses";
+  const gateCapableMockServer = isGateCapableMockServer(scenario);
   const material = createMockServerControlMaterial(plan.runId);
   const expectations = Buffer.from(
     `${JSON.stringify(
@@ -708,7 +718,7 @@ const assertContainer = async (
   const candidateUserMatches =
     immutableCandidate === undefined ||
     container?.Config?.User ===
-      (plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000");
+      (isNativeTraceScenario(plan) ? "0:0" : "1000:1000");
   const candidateEnvironmentMatches =
     immutableCandidate === undefined ||
     environment.includes(
@@ -721,7 +731,7 @@ const assertContainer = async (
     immutableCandidate === undefined ||
     JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
       JSON.stringify(
-        plan.scenarioId === "codex-tui-trace-smoke"
+        isNativeTraceScenario(plan)
           ? [
               "CAP_CHOWN",
               "CAP_DAC_OVERRIDE",
@@ -1637,8 +1647,7 @@ const startDestinationSidecar = async (plan, signal, mode) => {
   if (mode !== "ingestion" && mode !== "retrieval")
     throw new Error("integration.isolation.context");
   const kind = mode === "ingestion" ? "collector" : "retrieval";
-  const secureCollector =
-    mode === "ingestion" && plan.scenarioId === "codex-tui-trace-smoke";
+  const secureCollector = mode === "ingestion" && isNativeTraceScenario(plan);
   try {
     await dockerWithSignal(
       [
@@ -2131,6 +2140,146 @@ const completeCodexCollectorFixture = (plan, batches) => {
     ),
   );
 };
+const claudeCollectorExpectation = (plan, native) => ({
+  harness: {
+    name: "claude-code",
+    version: evidenceById.get(
+      manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId)
+        ?.harnessEvidenceId,
+    )?.representativeVersion,
+  },
+  sessionId: native.nativeSessionId,
+  // The public Claude mapper does not emit a model for these hook graphs.
+  // An optional actual native transcript model remains independent evidence.
+  unavailableContext: [
+    ...[
+      "agentscope.git.worktree",
+      "agentscope.git.repository_root",
+      "vcs.ref.head.name",
+      "vcs.ref.head.revision",
+      "vcs.ref.type",
+    ].map((field) => ({
+      field,
+      source: "git",
+      state: "unavailable",
+      reason: "resolution-failed",
+    })),
+    {
+      field: "agentscope.workspace.directory",
+      source: "hook-payload",
+      state: "redacted",
+      reason: "policy-redacted",
+    },
+  ],
+});
+const completeClaudeCollectorFixture = (plan, batches, ledger) => {
+  const fixture = fixtureResults.get(plan.runId);
+  const native = fixture?.harnessObservation;
+  const primary = ledger.filter(
+    (row) =>
+      row.role === "data-plane" &&
+      row.method === "POST" &&
+      row.path === "/v1/messages",
+  );
+  if (
+    fixture?.resultStatus !== "partial" ||
+    native?.kind !== "claude-code-native" ||
+    batches.length !== 4 ||
+    primary.length !== 2 ||
+    primary.some(
+      (row, index) => row.bodySha256 !== native.modelRequestBodySha256[index],
+    )
+  )
+    throw new Error("integration.isolation.collector-native");
+  const hookObservations = batches.map((bytes, index) => {
+    const observed = observeSelectedWriterOtlp(
+      bytes,
+      ["DUMMY_PUBLIC_KEY", "DUMMY_SECRET_KEY", "/worktree"],
+      claudeCollectorExpectation(plan, native),
+    );
+    const spans = observed.graph.resourceSpans[0].scopeSpans[0].spans;
+    const root = spans.find((span) => span.parentSpanId === undefined);
+    const child = spans.find((span) => span.parentSpanId === root?.spanId);
+    const fields = (span) =>
+      new Map(
+        (span?.attributes ?? []).map(({ key, value }) => [
+          key,
+          value.stringValue,
+        ]),
+      );
+    const eventName = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"][
+      index
+    ];
+    if (
+      fields(root).get("openinference.span.kind") !== "AGENT" ||
+      (index === 0
+        ? spans.length !== 1 || root?.name !== "claude.SessionStart"
+        : spans.length !== 2 ||
+          root?.name !== "claude.hook-invocation" ||
+          child?.parentSpanId !== root.spanId ||
+          child.traceId !== root.traceId ||
+          fields(child).get("openinference.span.kind") !==
+            (index === 3 ? "LLM" : "TOOL") ||
+          child.name !== (index === 3 ? "claude.Stop" : "Read") ||
+          (index !== 3 &&
+            (fields(child).get("tool.id") !== native.nativeToolUseId ||
+              fields(child).get("input.mime_type") !== "application/json")) ||
+          (index === 1 &&
+            fields(child).get("output.mime_type") !== undefined) ||
+          (index === 2 &&
+            fields(child).get("output.mime_type") !== "application/json"))
+    )
+      throw new Error("integration.isolation.collector-native");
+    // Graphs are ephemeral. Only reviewed content-free identities/digests and
+    // categorical checks leave this oracle through the existing result shape.
+    return {
+      eventName,
+      traceId: root.traceId,
+      spanIds: index === 0 ? [root.spanId] : [root.spanId, child.spanId],
+      canonicalGraphDigest: observed.transport.graphSha256,
+      contextDisposition: "unversioned-workspace-redacted",
+    };
+  });
+  if (new Set(hookObservations.map((row) => row.traceId)).size !== 4)
+    throw new Error("integration.isolation.collector-native");
+  fixtureResults.set(
+    plan.runId,
+    sanitizeFixtureResult(
+      {
+        ...fixture,
+        resultStatus: "complete",
+        lifecycle: [
+          "install",
+          "configure",
+          "hook",
+          "execute",
+          "export",
+          "retrieve",
+          "uninstall",
+        ],
+        eventKinds: ["hook", "model", "destination"],
+        harnessObservation: {
+          ...native,
+          kind: "claude-code-trace",
+          hookObservations,
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: batches.map((bytes) => ({
+            operation: "otlp",
+            method: "POST",
+            path: "/api/public/otel/v1/traces",
+            bodyBytes: bytes.byteLength,
+            outcome: "accepted",
+          })),
+          retrieval: [],
+        },
+      },
+      plan.scenarioId,
+    ),
+  );
+};
 // eslint-disable-next-line complexity -- exact closed container terminal witness
 const joinMockServer = async (plan, signal) => {
   const containerId = mockServerContainerIdentities.get(plan.runId);
@@ -2237,6 +2386,10 @@ const joinMockServer = async (plan, signal) => {
   if (plan.scenarioId === "codex-tui-trace-smoke") {
     const batches = await joinCollectorObservations(plan, joinSignal, deadline);
     completeCodexCollectorFixture(plan, batches);
+  }
+  if (plan.scenarioId === "claude-interactive-trace-smoke") {
+    const batches = await joinCollectorObservations(plan, joinSignal, deadline);
+    completeClaudeCollectorFixture(plan, batches, ledger);
   }
 };
 const createScenarioContainer = async (

@@ -19,8 +19,12 @@ export const claudeCodeInteractiveInvocation = (modelEndpoint) =>
     ]),
     environment: Object.freeze({
       ...createClaudeCodeExecutionEnvironment(modelEndpoint),
+      AGENTSCOPE_HOME: "/agentscope-home",
+      AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+      AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
       HOME: "/home/agentscope",
       CLAUDE_CONFIG_DIR: "/harness-home",
+      NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
       PATH: "/usr/local/bin:/usr/bin:/bin",
       LANG: "C.UTF-8",
       TERM: "xterm-256color",

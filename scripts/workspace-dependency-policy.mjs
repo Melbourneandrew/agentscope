@@ -56,6 +56,7 @@ const expectedInternalDependencies = new Map([
     "@agentscope/integration",
     [
       "@agentscope/destination-langfuse",
+      "@agentscope/harness-claude-code",
       "@agentscope/harnesses-core",
       "@agentscope/protocol",
       "@agentscope/testkit",

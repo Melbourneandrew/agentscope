@@ -390,6 +390,9 @@ importers:
       "@agentscope/destination-langfuse":
         specifier: workspace:*
         version: link:../../packages/destinations/langfuse
+      "@agentscope/harness-claude-code":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/claude-code
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../../packages/harnesses/core
@@ -406,6 +409,9 @@ importers:
       "@types/node":
         specifier: ^22.15.0
         version: 22.20.1
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
