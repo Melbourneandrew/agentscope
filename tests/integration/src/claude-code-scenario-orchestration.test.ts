@@ -47,6 +47,9 @@ describe("Claude selected PTY input", () => {
       expect(() => compile(foreign, "a".repeat(64))).toThrow();
     expect(() => compile(scenario, "a".repeat(63))).toThrow();
   });
+});
+
+describe("Claude selected material and completion ordering", () => {
   it("binds the normal Langfuse scenario to signed and npm-member material without support admission", () => {
     const manifest = JSON.parse(
       readFileSync(
@@ -75,7 +78,20 @@ describe("Claude selected PTY input", () => {
     expect(evidence.material.platformPackage.memberSha256).toBe(
       evidence.material.binary.sha256,
     );
-    expect(evidence.admission).toBeUndefined();
+    // Component catalog linkage is not an actual successful runtime observation.
+    expect(evidence.admission).toMatchObject({
+      evidenceSlot: "claude-code-2-1-245-component",
+      distributionReference: "signed-manifest:claude-code@2.1.245#linux-x64",
+      eligibleRange: {
+        minimumInclusive: "2.1.245",
+        maximumExclusive: "2.1.246",
+      },
+      component: {
+        fixture: {
+          path: "packages/harnesses/claude-code/fixtures/native/claude-code-lifecycle-v1.json",
+        },
+      },
+    });
     expect(scenario.destinations).toEqual(["langfuse"]);
     expect(scenario.modelRoutes).toEqual(["anthropic-messages"]);
     expect(
