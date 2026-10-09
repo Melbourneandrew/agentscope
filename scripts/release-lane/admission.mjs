@@ -631,8 +631,11 @@ function bindPreparedMaterial(input, row, entry, record) {
   if (
     verifier.name !== (signed ? "gpg" : "npm") ||
     verifier.image !== descriptor.verifierImage ||
+    typeof verifier.imageManifestDigest !== "string" ||
     !/^sha256:[a-f\d]{64}$/u.test(verifier.imageManifestDigest) ||
+    typeof verifier.imageConfigDigest !== "string" ||
     !/^sha256:[a-f\d]{64}$/u.test(verifier.imageConfigDigest) ||
+    typeof verifier.imageId !== "string" ||
     !/^sha256-[a-f\d]{64}$/u.test(verifier.imageId) ||
     verifier.controllerSha256 !==
       integrationDigestBytes(input.controllerBytes).slice(7)
@@ -713,6 +716,7 @@ function bindPreparedNpmMaterial(record, descriptor) {
       archive.bytes !== pin.bytes ||
       archive.integrity !== pin.integrity ||
       archive.shasum !== pin.shasum ||
+      typeof archive.sha256 !== "string" ||
       !/^[a-f\d]{64}$/u.test(archive.sha256) ||
       archive.fileName !== `${archive.sha256}.tgz` ||
       archive.attestationBundleDigest !==

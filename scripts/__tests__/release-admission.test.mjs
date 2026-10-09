@@ -1215,6 +1215,30 @@ test("completion binds every retained verifier fact before source admission", ()
   expect(() => bindCodex(f)).toThrow();
 });
 test.each([
+  ["imageManifestDigest", (record) => record.verifier, "imageManifestDigest"],
+  ["imageConfigDigest", (record) => record.verifier, "imageConfigDigest"],
+  ["imageId", (record) => record.verifier, "imageId"],
+  ["archive sha256", (record) => record.packages[0], "sha256"],
+])(
+  "rehashed compiler record refuses array-coerced %s",
+  (_name, select, field) => {
+    expect(() =>
+      twoFamilySourceFixture(({ fixtures }) => {
+        const f = fixtures[0];
+        const record = JSON.parse(
+          JSON.stringify(f.evidence.preparedHarnessMaterial),
+        );
+        const selected = select(record);
+        selected[field] = [selected[field]];
+        const preimage = { ...record };
+        delete preimage.materialIdentity;
+        record.materialIdentity = digest(preimage);
+        f.evidence.preparedHarnessMaterial = record;
+      }),
+    ).toThrow();
+  },
+);
+test.each([
   (f) => {
     delete f.evidence.preparedHarnessMaterial;
   },
