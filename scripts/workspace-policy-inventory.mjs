@@ -12,6 +12,7 @@ export const purePolicyFiles = Object.freeze([
   "acceptance-evidence.test.mjs",
   "cli-hook-artifact-budget.test.mjs",
   "documentation-policy.test.mjs",
+  "integration-dependency-policy.test.mjs",
   "native-ci-policy.test.mjs",
   "nx-cache-diagnostics.test.mjs",
   "packed-cli-retrieval-diagnostics.test.mjs",
