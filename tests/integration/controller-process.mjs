@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { executeIntegrationController } from "./dist/controller.js";
 import {
   formatControllerFailureDiagnostic,
@@ -11,8 +12,8 @@ try {
 } catch (error) {
   publishControllerFailureObservation(readControllerFailureDiagnostic(error));
   try {
-    process.stderr.once("error", () => undefined);
-    process.stderr.write(formatControllerFailureDiagnostic(error));
+    const bytes = Buffer.from(formatControllerFailureDiagnostic(error));
+    if (bytes.length <= 4096) writeSync(2, bytes);
   } catch {
     /* Optional diagnostics never replace failure status. */
   }
