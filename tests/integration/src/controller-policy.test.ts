@@ -20,6 +20,404 @@ import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
 import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
 import { sanitizeFixtureResult } from "./operations.js";
+import { knownFailureCode } from "./controller-failure-diagnostic.js";
+
+type OperationDiagnosticFunctions = {
+  joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+  publishOperationFailureDiagnostic: (
+    slot: string,
+    error: unknown,
+    plan?: object,
+  ) => void;
+};
+const terminalMockContainer = (containerId: string, runId: string) => ({
+  Id: containerId,
+  Name: "/owned",
+  Config: {
+    Labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": runId,
+    },
+  },
+  State: {
+    Status: "exited",
+    Running: false,
+    Paused: false,
+    Restarting: false,
+    OOMKilled: false,
+    Dead: false,
+    Pid: 0,
+    ExitCode: 0,
+    Error: "",
+    FinishedAt: "2026-01-01T00:00:00Z",
+  },
+});
+const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const operationFailureSlots =");
+  const end = source.indexOf("const createScenarioContainer =", start);
+  const runId = "a".repeat(16);
+  const containerId = "b".repeat(64);
+  const plan = {
+    runId,
+    scenarioId: "codex-tui-trace-smoke",
+    mockServerName: "owned",
+  };
+  const error = new Error("integration.mockserver.control");
+  const calls: string[] = [];
+  const output: string[] = [];
+  const state = { uncertain: false, observerFails: false };
+  const step = (slot: string, value?: unknown) => {
+    calls.push(slot);
+    if (slot === failAt) {
+      state.uncertain = true;
+      throw error;
+    }
+    return value;
+  };
+  const container = terminalMockContainer(containerId, runId);
+  const functions = runInNewContext(
+    `${source.slice(start, end)}; ({ joinMockServer, publishOperationFailureDiagnostic })`,
+    {
+      Buffer,
+      AbortSignal,
+      knownFailureCode,
+      preparedDockerClient: {},
+      preparedDockerClientRequiresOuterHostRetirement: () => {
+        if (state.observerFails) throw new Error("PRIVATE observer");
+        return state.uncertain;
+      },
+      writeSync: (_fd: number, bytes: Buffer) => {
+        if (sinkFails) throw new Error("PRIVATE sink");
+        output.push(bytes.toString("utf8"));
+      },
+      mockServerContainerIdentities: new Map([[runId, containerId]]),
+      mockServerJoinDeadlines: new Map([[runId, 1000]]),
+      linuxBootMonotonicMilliseconds: () => step("join-deadline", 100),
+      assertControlVolumeCurrent: (_plan: object, signal: AbortSignal) => {
+        expect(signal.aborted).toBe(false);
+        step("join-control-volume");
+      },
+      mockServerControls: new Map([
+        [runId, { host: "mockserver", material: {} }],
+      ]),
+      openMockServerControl: (input: { deadline: number }) => {
+        expect(input.deadline).toBe(1000);
+        step("join-control-open");
+        return {
+          stop: () => step("join-control-stop", { status: 200 }),
+          snapshot: () => ({ entries: [] }),
+        };
+      },
+      verifyMockServerControlBoundary: () => step("join-control-boundary"),
+      dockerWithSignal: (
+        args: string[],
+        signal: AbortSignal,
+        options: { terminal: boolean },
+      ) => {
+        expect(signal.aborted).toBe(false);
+        expect(options.terminal).toBe(true);
+        if (args[0] === "cp")
+          return step(
+            args[1]?.endsWith("requests.json")
+              ? "join-ledger-requests"
+              : "join-ledger-complete",
+          );
+        return step(
+          args[1] === "wait" ? "join-container-wait" : "join-container-inspect",
+          { stdout: args[1] === "wait" ? "0\n" : JSON.stringify([container]) },
+        );
+      },
+      artifactsRoot: "/owned",
+      resolve,
+      mkdirSync: () => step("join-ledger-directory"),
+      readMockServerFinalLedger: (input: { deadline: number }) => {
+        expect(input.deadline).toBe(1000);
+        return step("join-ledger-read", []);
+      },
+      projectMockServerRequests: (value: unknown) => value,
+      assertMockServerFinalLedger: () => step("join-ledger-assert"),
+      fixtureResults: new Map(),
+      modelRoutes: {},
+      fixtureTrafficObservations: new Map(),
+      manifest: { scenarios: [plan] },
+      joinCollectorObservations: (
+        _plan: object,
+        _signal: AbortSignal,
+        deadline: number,
+      ) => {
+        expect(deadline).toBe(1000);
+        return step("join-collector-read", []);
+      },
+      completeCodexCollectorFixture: () => step("join-collector-project"),
+      completeClaudeCollectorFixture: () => step("join-collector-project"),
+    },
+  ) as OperationDiagnosticFunctions;
+  return { source, functions, plan, error, calls, output, state, container };
+};
+
+describe("actual-source optional original operation diagnostics", () => {
+  it.each([
+    "join-deadline",
+    "join-control-volume",
+    "join-control-open",
+    "join-control-boundary",
+    "join-control-stop",
+    "join-container-wait",
+    "join-container-inspect",
+    "join-ledger-directory",
+    "join-ledger-requests",
+    "join-ledger-complete",
+    "join-ledger-read",
+    "join-ledger-assert",
+    "join-collector-read",
+    "join-collector-project",
+  ])(
+    "retains exact %s failure before cleanup without changing its identity or deadline",
+    async (slot) => {
+      const f = operationDiagnosticFixture(slot);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.calls.at(-1)).toBe(slot);
+      expect(f.output).toHaveLength(1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(
+        JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+      ).toEqual({
+        slot,
+        runId: f.plan.runId,
+        code: "integration.mockserver.control",
+        clientRetirementRequired: true,
+      });
+    },
+  );
+  it("leaves a completed join silent and preserves actual boundary order", async () => {
+    const f = operationDiagnosticFixture();
+    await f.functions.joinMockServer(f.plan, new AbortController().signal);
+    expect(f.output).toEqual([]);
+    expect(f.calls).toEqual([
+      "join-deadline",
+      "join-control-volume",
+      "join-control-open",
+      "join-control-boundary",
+      "join-control-stop",
+      "join-container-wait",
+      "join-container-inspect",
+      "join-ledger-directory",
+      "join-ledger-requests",
+      "join-ledger-complete",
+      "join-ledger-read",
+      "join-ledger-assert",
+      "join-collector-read",
+      "join-collector-project",
+    ]);
+  });
+  it("preserves the exact terminal witness rejection and its join slot", async () => {
+    const f = operationDiagnosticFixture();
+    f.container.State.ExitCode = 1;
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toThrow("integration.isolation.mockserver-terminal");
+    expect(f.calls.at(-1)).toBe("join-container-inspect");
+    expect(
+      JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+    ).toEqual({
+      slot: "join-terminal-witness",
+      runId: f.plan.runId,
+      code: "integration.isolation.mockserver-terminal",
+      clientRetirementRequired: false,
+    });
+  });
+  it.each(["sink", "observer"])(
+    "preserves original join error when optional %s fails",
+    async (failure) => {
+      const f = operationDiagnosticFixture(
+        "join-control-stop",
+        failure === "sink",
+      );
+      f.state.observerFails = failure === "observer";
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.output).toEqual([]);
+    },
+  );
+});
+
+describe("optional direct original and cleanup diagnostic separation", () => {
+  it("separates direct original and final cleanup codes without reading a nested cause", () => {
+    const f = operationDiagnosticFixture();
+    f.functions.publishOperationFailureDiagnostic(
+      "runtime-original",
+      new Error("integration.certification.leaked-child"),
+    );
+    f.state.uncertain = true;
+    f.functions.publishOperationFailureDiagnostic(
+      "cleanup-images",
+      new Error("PRIVATE", { cause: f.error }),
+    );
+    expect(
+      f.output.map(
+        (text) => JSON.parse(text.slice(text.indexOf(":") + 1)) as unknown,
+      ),
+    ).toEqual([
+      {
+        slot: "runtime-original",
+        runId: null,
+        code: "integration.certification.leaked-child",
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-images",
+        runId: null,
+        code: "unknown",
+        clientRetirementRequired: true,
+      },
+    ]);
+    f.functions.publishOperationFailureDiagnostic("PRIVATE slot", f.error);
+    f.functions.publishOperationFailureDiagnostic("runtime-original", f.error, {
+      runId: "PRIVATE",
+    });
+    for (const runId of [[], {}, 1, { toJSON: () => "PRIVATE" }])
+      f.functions.publishOperationFailureDiagnostic(
+        "runtime-original",
+        f.error,
+        {
+          runId,
+        },
+      );
+    expect(f.output).toHaveLength(2);
+    expect(f.output.join("")).not.toContain("PRIVATE");
+  });
+});
+
+describe("actual-source candidate failure diagnostics", () => {
+  it.each(["client", "prepared", "context", "build"])(
+    "observes the original build-candidate %s rejection before cleanup wrapping",
+    async (phase) => {
+      const f = operationDiagnosticFixture();
+      const original = new Error("integration.isolation.context");
+      const start = f.source.indexOf("const buildImage =");
+      const end = f.source.indexOf("const prepareMockServerImage =", start);
+      const buildImage = runInNewContext(
+        `${f.source.slice(start, end)}; buildImage`,
+        {
+          requireSettledMockServerClients: () => {
+            if (phase === "client") throw original;
+          },
+          preparedImageFor: () => {
+            if (phase === "prepared") throw original;
+          },
+          stageBuildContext: () => {
+            if (phase === "context") throw original;
+            return {
+              context: "/owned",
+              requiresHarnessBuildContextBound: false,
+            };
+          },
+          buildPreparedDockerImage: () => Promise.reject(original),
+          preparedDockerClient: {},
+          scenarioTimeoutMilliseconds: 300_000,
+          IMAGE_PREPARATION_LIMITS: {
+            maximumPreparationMilliseconds: 300_000,
+            defaultMaximumBuildContextBytes: 1024,
+          },
+          publishOperationFailureDiagnostic:
+            f.functions.publishOperationFailureDiagnostic,
+        },
+      ) as (plan: object, signal: AbortSignal) => Promise<unknown>;
+      await expect(
+        buildImage(f.plan, new AbortController().signal),
+      ).rejects.toBe(original);
+      expect(
+        JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+      ).toEqual({
+        slot: (
+          {
+            client: "candidate-client",
+            prepared: "candidate-prepared-image",
+            context: "candidate-context-staging",
+            build: "candidate-image-build",
+          } as Record<string, string>
+        )[phase],
+        runId: f.plan.runId,
+        code: "integration.isolation.context",
+        clientRetirementRequired: false,
+      });
+    },
+  );
+});
+
+describe("actual-source original versus final cleanup precedence", () => {
+  it("executes the actual outer catch and final cleanup slots without replacing either first error", async () => {
+    const f = operationDiagnosticFixture();
+    const original = new Error(
+      "integration.certification.mixed-artifact-digest",
+    );
+    const cleanup = new Error("integration.images.deadline");
+    const material = new Error("integration.harness-material.failed");
+    const start = f.source.indexOf(
+      '} catch (error) {\n  publishOperationFailureDiagnostic("runtime-original"',
+    );
+    const end = f.source.indexOf(
+      "if (primaryError !== undefined) throw primaryError;",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    const result = (await runInNewContext(
+      `(async () => { let primaryError; let retirementRequired = false; try { throw original; ${f.source.slice(start, end)} return { primaryError, retirementRequired }; })()`,
+      {
+        original,
+        publishOperationFailureDiagnostic:
+          f.functions.publishOperationFailureDiagnostic,
+        publishScenarioContextRefusals: () => undefined,
+        mockServerBuiltImages: new Map(),
+        preparedDockerClient: {},
+        preparedDockerClientRequiresOuterHostRetirement: () => false,
+        plans: [],
+        substrateCertificationCase: undefined,
+        process: { removeListener: () => undefined },
+        abort: () => undefined,
+        requireSettledMockServerClients: () => {
+          throw cleanup;
+        },
+        preparedHarnessMaterials: new Map([["owned", {}]]),
+        retirePreparedHarnessMaterial: () => {
+          throw material;
+        },
+        requireIntegrationFailureEvidence: () => undefined,
+        publishControllerFailureManifest: () => undefined,
+      },
+    )) as { primaryError: unknown; retirementRequired: boolean };
+    expect(result.primaryError).toBe(original);
+    expect(result.retirementRequired).toBe(true);
+    expect(
+      f.output.map(
+        (text) => JSON.parse(text.slice(text.indexOf(":") + 1)) as unknown,
+      ),
+    ).toEqual([
+      {
+        slot: "runtime-original",
+        runId: null,
+        code: original.message,
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-images",
+        runId: null,
+        code: cleanup.message,
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-materials",
+        runId: null,
+        code: material.message,
+        clientRetirementRequired: false,
+      },
+    ]);
+  });
+});
 import { snapshotMockServerTraffic } from "../mockserver-control.mjs";
 
 const mixedArtifactPartialOutput = () => {
@@ -669,8 +1067,8 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
     expectCodexNativeBeforeCollectorCompletion(scenario);
     expect(outer).toContain("observeSelectedWriterOtlp(");
-    expect(outer).toContain(
-      "await joinCollectorObservations(plan, joinSignal, deadline)",
+    expect(outer).toMatch(
+      /await joinCollectorObservations\(\s*plan,\s*joinSignal,\s*deadline,?\s*\)/u,
     );
     expect(scenario).toContain("classifyCodexCollectedChildFailure(");
     const search = diagnostic.indexOf(
@@ -708,7 +1106,19 @@ describe("integration cleanup authority", () => {
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
     expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
-    expect(outer).not.toContain("writeSync(2,");
+    const observerStart = outer.indexOf(
+      "const publishOperationFailureDiagnostic =",
+    );
+    const observerEnd = outer.indexOf(
+      "/* eslint-disable complexity",
+      observerStart,
+    );
+    const observer = outer.slice(observerStart, observerEnd);
+    expect(observer).toContain("if (bytes.length <= 512) writeSync(2, bytes);");
+    expect(observer).toContain("code: knownFailureCode(error)");
+    expect(observer).toContain("catch {");
+    expect(observer).not.toMatch(/error\.(?:message|stack|name|cause)/u);
+    expect(outer.slice(observerEnd)).not.toContain("writeSync(2,");
     expect(diagnostic).toContain(
       "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
     );

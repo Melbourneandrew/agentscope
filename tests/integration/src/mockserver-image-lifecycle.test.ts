@@ -148,6 +148,7 @@ const lifecycleFixture = () => {
     `${source.slice(start, end)}; ({ prepareMockServerImage, buildImage, retireMockServerImage, requireSettledMockServerClients })`,
     {
       preparedDockerClient: globalClient,
+      publishOperationFailureDiagnostic: () => undefined,
       preparedImageEvidence: {},
       preparedImageFor: () => undefined,
       capability: {
@@ -266,6 +267,7 @@ describe("final prepared image retirement timer", () => {
         `${source.slice(helperStart, helperEnd)}; (async () => { let primaryError = primary; let retirementRequired = false; ${source.slice(start, end)}; return { primaryError, cleanupError, retirementRequired }; })()`,
         {
           primary,
+          publishOperationFailureDiagnostic: () => undefined,
           plans: ["first", "second"],
           mockServerBuiltImages: new Map([["first", {}]]),
           requireSettledMockServerClients: () => undefined,
@@ -454,6 +456,7 @@ describe("preactivation image settlement", () => {
       `${f.source.slice(helperStart, helperEnd)}; (async () => { let primaryError = failure; let retirementRequired = false; ${f.source.slice(start, end)}; return {primaryError, cleanupError, retirementRequired}; })()`,
       {
         failure: f.failure,
+        publishOperationFailureDiagnostic: () => undefined,
         plans: f.plans,
         mockServerBuiltImages: f.images,
         requireSettledMockServerClients:

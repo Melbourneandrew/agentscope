@@ -10,6 +10,7 @@ import {
 } from "../image-preparation/preparation.mjs";
 import {
   formatControllerFailureDiagnostic,
+  knownFailureCode,
   readControllerFailureDiagnostic,
 } from "./controller-failure-diagnostic.js";
 import {
@@ -121,6 +122,65 @@ const controllerCodes = (primaryCause: unknown, cleanupCause?: unknown) => {
   });
   return readControllerFailureDiagnostic(failure).firstCodes;
 };
+describe("direct source-derived operation failure codes", () => {
+  it.each([
+    "integration.mockserver.control",
+    "integration.isolation.base-image",
+    "integration.images.build.input",
+    "integration.images.build.base",
+    "integration.images.build.artifact",
+    "integration.images.build.context-header",
+    "integration.images.build.context-path",
+    "integration.images.build.context-file-type",
+    "integration.images.build.context-file-identity",
+    "integration.images.build.context-aggregate-size",
+    "integration.images.build.context-file-length",
+    "integration.images.build.context-file-race",
+    "integration.images.build.context-directory",
+    "integration.images.build.context-symlink",
+    "integration.images.build.context-special",
+    "integration.images.build.context-policy",
+    "integration.images.build.context-root",
+    "integration.images.build.context-size",
+    "integration.images.build.context-entries",
+    "integration.images.build.context-unknown",
+    "integration.images.build.context-file-size-harness-material-default",
+    "integration.images.build.context-file-size-harness-material-harness",
+    "integration.images.build.context-file-size-candidate-default",
+    "integration.images.build.context-file-size-candidate-harness",
+    "integration.images.build.context-file-size-testkit-default",
+    "integration.images.build.context-file-size-testkit-harness",
+    "integration.images.build.context-file-size-runtime-default",
+    "integration.images.build.context-file-size-runtime-harness",
+    "integration.images.build.context-file-size-controller-default",
+    "integration.images.build.context-file-size-controller-harness",
+    "integration.operations.fixture-result",
+    "integration.certification.predicate",
+  ])("retains only direct native data code %s", (code) => {
+    expect(knownFailureCode(new Error(code))).toBe(code);
+    expect(knownFailureCode(new Error(`${code}.PRIVATE`))).toBe("unknown");
+    expect(
+      knownFailureCode(new Error("PRIVATE", { cause: new Error(code) })),
+    ).toBe("unknown");
+    let reads = 0;
+    const accessor = new Error(code);
+    Object.defineProperty(accessor, "message", {
+      get: () => {
+        reads++;
+        return code;
+      },
+    });
+    const proxy = new Proxy(new Error(code), {
+      get: () => {
+        reads++;
+        return code;
+      },
+    });
+    for (const value of [accessor, proxy, { message: code }])
+      expect(knownFailureCode(value)).toBe("unknown");
+    expect(reads).toBe(0);
+  });
+});
 describe("closed certification failure codes", () => {
   it.each(Object.values(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES))(
     "projects only the existing exact certification code %s",
