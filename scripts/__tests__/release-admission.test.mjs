@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import {
   bindPreparedCliEvidence,
   bindCodexScenarioEvidence,
+  bindClaudeScenarioEvidence,
+  bindScenarioEvidence,
   bindIntegrationArtifacts,
   parseAdmissionDocument,
   projectOperatorControlsReport,
@@ -218,7 +220,7 @@ function codexEvidenceFixture(prepared) {
   };
   return evidence;
 }
-function codexSupportFixture(f) {
+function codexSupportFixture(f, family = "codex") {
   const { prepared, evidence, lifecycle, model, destination, observation } = f;
   const { runId, scenarioId, ptyTerminalReceipt: receipt } = evidence;
   const seed = {
@@ -228,7 +230,7 @@ function codexSupportFixture(f) {
     manifestIdentity: evidence.manifestIdentity,
     scenarioId,
     execution: { mode: "interactive", outputContract: "semantic-pty" },
-    harness: { registryIdentity: "@agentscope/harness-codex" },
+    harness: { registryIdentity: `@agentscope/harness-${family}` },
     preparedImage: { scenarioImageDigest: evidence.builtImageDigest },
   };
   const execution = Object.fromEntries(
@@ -273,7 +275,7 @@ function codexSupportFixture(f) {
     disposition: "real-scenario-evidence-awaiting-release-gate",
     entries: [
       {
-        harnessType: "@agentscope/harness-codex",
+        harnessType: `@agentscope/harness-${family}`,
         binding,
         realScenarioDigest: digest(binding),
       },
@@ -306,6 +308,338 @@ const bindCodex = (f) =>
     encode(f.support),
     codexFiles(f),
   );
+// Synthetic preimages exercise the serializer contract, not actual capture.
+function claudeFixture() {
+  const f = codexFixture();
+  f.evidence.runId = "2".repeat(16);
+  f.evidence.scenarioId =
+    f.lifecycle.scenarioId =
+    f.model.scenarioId =
+    f.destination.scenarioId =
+      "claude-code-interactive";
+  f.evidence.ptyTerminalReceipt.runId = f.evidence.runId;
+  f.evidence.ptyTerminalReceipt.scenarioId = f.evidence.scenarioId;
+  f.model.entries = [1, 2].map(() => ({
+    routeId: "anthropic-messages",
+    provider: "anthropic",
+    method: "POST",
+    path: "/v1/messages",
+    bodyBytes: 10,
+  }));
+  f.destination.ingestion = Array.from({ length: 4 }, () => ({
+    ...f.destination.ingestion[0],
+  }));
+  f.observation = {
+    observationVersion: 1,
+    kind: "claude-code-trace",
+    nativeSessionId: "12345678-1234-1234-1234-123456789abc",
+    nativeToolUseId: "toolu_agentscope_claude_read_1",
+    modelRequestBodySha256: ["a".repeat(64), "b".repeat(64)],
+    doctorErrors: 0,
+    uninstallDisposition: "committed",
+    hookObservations: ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map(
+      (eventName, index) => ({
+        eventName,
+        traceId: String(index + 1).repeat(32),
+        canonicalGraphDigest: "c".repeat(64),
+        contextDisposition: "unversioned-workspace-redacted",
+        spanIds:
+          index === 0 ? ["a".repeat(16)] : ["a".repeat(16), "b".repeat(16)],
+      }),
+    ),
+  };
+  f.support = codexSupportFixture(f, "claude-code");
+  return f;
+}
+const bindClaude = (f) =>
+  bindClaudeScenarioEvidence(
+    encode(f.prepared),
+    encode(f.support),
+    codexFiles(f),
+  );
+test("binds all four actual-shape Claude projections without granting synthetic admission", () => {
+  const f = claudeFixture();
+  expect(bindClaude(f).family).toBe("claude-code");
+  expect(() =>
+    requireActualSemanticAdmission([bindCodex(codexFixture()), bindClaude(f)]),
+  ).toThrow("actual-otlp-evidence-missing");
+});
+test.each([
+  (f) => {
+    f.observation.kind = "claude-code-native";
+  },
+  (f) => {
+    f.observation.nativeSessionId = "invalid";
+  },
+  (f) => {
+    f.observation.nativeSessionId = [f.observation.nativeSessionId];
+  },
+  (f) => {
+    f.observation.nativeToolUseId = "other";
+  },
+  (f) => {
+    f.observation.modelRequestBodySha256.pop();
+  },
+  (f) => {
+    f.observation.hookObservations.reverse();
+  },
+  (f) => {
+    f.observation.hookObservations[1].traceId =
+      f.observation.hookObservations[0].traceId;
+  },
+  (f) => {
+    f.observation.hookObservations[1].spanIds[1] =
+      f.observation.hookObservations[1].spanIds[0];
+  },
+  (f) => {
+    f.observation.hookObservations[0].canonicalGraph = {};
+  },
+  (f) => {
+    f.model.entries.pop();
+  },
+  (f) => {
+    f.destination.ingestion.pop();
+  },
+  (f) => {
+    f.lifecycle.resultStatus = "partial";
+  },
+  (f) => {
+    f.evidence.ptyTerminalReceipt.processJoined = false;
+  },
+])(
+  "Claude digest recomputation cannot excuse contradictory projection %#",
+  (change) => {
+    const f = claudeFixture();
+    change(f);
+    f.support = codexSupportFixture(f, "claude-code");
+    expect(() => bindClaude(f)).toThrow();
+  },
+);
+test("Claude changed body/hash/context preimages fail without private completion", () => {
+  const f = claudeFixture();
+  f.observation.modelRequestBodySha256.reverse();
+  expect(() => bindClaude(f)).toThrow();
+  expect(() =>
+    bindScenarioEvidence(
+      encode(f.prepared),
+      encode(f.support),
+      codexFiles(f),
+      "fixture-process",
+    ),
+  ).toThrow();
+});
+test("preserves additional matched Claude requests instead of filtering to a two-row proof", () => {
+  const f = claudeFixture();
+  f.model.entries.push({ ...f.model.entries[0] });
+  f.support = codexSupportFixture(f, "claude-code");
+  expect(bindClaude(f).family).toBe("claude-code");
+  f.model.entries[2].routeId = "unrecognized-profile";
+  f.support = codexSupportFixture(f, "claude-code");
+  expect(() => bindClaude(f)).toThrow();
+});
+function sourceMaterialFixture(f, family) {
+  const material = {
+    kind: "npm",
+    platformIdentity: `sha256-${"9".repeat(64)}`,
+  };
+  const admission = {
+    evidenceSlot: `${family}-component`,
+    eligibleRange: { minimumInclusive: "1.0.0", maximumExclusive: "2.0.0" },
+    distributionReference: `npm:@vendor/${family}@1.0.0`,
+  };
+  const fixture = {
+    fixtureVersion: 1,
+    harnessId: family,
+    harnessVersion: "1.0.0",
+    governance: {
+      provenance: {
+        captureKind: "disposable-hermetic",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: digest(material),
+        },
+      },
+      representative: {
+        scenarioId: f.evidence.scenarioId,
+        representativeVersion: "1.0.0",
+        evidenceSlot: admission.evidenceSlot,
+      },
+    },
+  };
+  const bytes = {
+    fixtureBytes: encode(fixture),
+    adapterBytes: Buffer.from("synthetic adapter bytes"),
+    mappingBytes: Buffer.from("synthetic mapping bytes"),
+  };
+  const component = {
+    componentEvidenceDigest: `component-sha256-${"8".repeat(64)}`,
+  };
+  for (const [role, key] of [
+    ["fixture", "fixtureBytes"],
+    ["adapterArtifact", "adapterBytes"],
+    ["mappingArtifact", "mappingBytes"],
+  ])
+    component[role] = { path: role, sha256: sha256(bytes[key]).slice(7) };
+  admission.component = component;
+  return {
+    bytes,
+    row: {
+      evidenceId: family,
+      harnessId: family,
+      harnessPackage: `@agentscope/harness-${family}`,
+      representativeVersion: "1.0.0",
+      material,
+      admission,
+    },
+    scenario: {
+      scenarioId: f.evidence.scenarioId,
+      harnessEvidenceId: family,
+      executionMode: "interactive",
+      outputContract: "semantic-pty",
+      destinations: ["otlp-ledger"],
+      modelRoutes: [family],
+      tags: ["pr"],
+    },
+  };
+}
+function bindSourceFixture(f, family, source, catalog) {
+  f.evidence.manifestIdentity = catalog.manifestIdentity;
+  f.support = codexSupportFixture(f, family);
+  const entry = f.support.entries[0],
+    seed = entry.binding.seed;
+  const row = source.row;
+  seed.admissionVersion = 1;
+  entry.binding.controller.authorityIdentity =
+    f.controllerAuthority ?? `sha256:${"4".repeat(64)}`;
+  seed.platformIdentity = row.material.platformIdentity;
+  seed.destinationCombinationIdentity = digest({
+    destinations: source.scenario.destinations,
+    modelRoutes: source.scenario.modelRoutes,
+  });
+  seed.harness = {
+    registryIdentity: row.harnessPackage,
+    exactVersion: row.representativeVersion,
+    distributionReference: row.admission.distributionReference,
+    artifactDigest: digest(row.material),
+    evidenceSlot: row.admission.evidenceSlot,
+    eligibleRange: row.admission.eligibleRange,
+  };
+  seed.harness.artifactAuthorityDigest = digest(
+    Object.fromEntries(
+      [
+        "registryIdentity",
+        "exactVersion",
+        "distributionReference",
+        "artifactDigest",
+      ].map((key) => [key, seed.harness[key]]),
+    ),
+  );
+  seed.catalogRowIdentity = digest({
+    productIdentity: "agentscope-cli",
+    harness: {
+      registryIdentity: row.harnessPackage,
+      evidenceSlot: row.admission.evidenceSlot,
+      exactVersion: row.representativeVersion,
+    },
+    execution: seed.execution,
+    platformIdentity: seed.platformIdentity,
+    destinationCombinationIdentity: seed.destinationCombinationIdentity,
+  });
+  seed.component = {
+    fixtureDigest: digestBytes(source.bytes.fixtureBytes),
+    adapterArtifactDigest: digestBytes(source.bytes.adapterBytes),
+    mappingArtifactDigest: digestBytes(source.bytes.mappingBytes),
+    componentEvidenceDigest: row.admission.component.componentEvidenceDigest,
+  };
+  Object.assign(entry, {
+    catalogRowIdentity: seed.catalogRowIdentity,
+    testedVersion: row.representativeVersion,
+    evidenceSlot: row.admission.evidenceSlot,
+    contractSuiteDigest: digest(seed.component),
+    realScenarioDigest: digest(entry.binding),
+  });
+  const preimage = Object.fromEntries(
+    Object.entries(f.support).filter(([key]) => key !== "manifestIdentity"),
+  );
+  f.support.manifestIdentity = digest(preimage);
+  return bindScenarioEvidence(
+    encode(f.prepared),
+    encode(f.support),
+    codexFiles(f),
+    family,
+    { catalogBytes: encode(catalog), ...source.bytes },
+  );
+}
+const digestBytes = (bytes) => sha256(bytes).replace("sha256:", "sha256-");
+function twoFamilySourceFixture(change = () => {}) {
+  const fixtures = [codexFixture(), claudeFixture()];
+  const families = ["codex", "claude-code"];
+  const sources = fixtures.map((f, index) =>
+    sourceMaterialFixture(f, families[index]),
+  );
+  const material = {
+    manifestVersion: 1,
+    requiredRepresentativeIds: families,
+    evidence: sources.map((source) => source.row),
+    scenarios: sources.map((source) => source.scenario),
+  };
+  const catalog = { ...material, manifestIdentity: digest(material) };
+  change({ fixtures, sources, catalog });
+  catalog.manifestIdentity = digest({
+    manifestVersion: catalog.manifestVersion,
+    requiredRepresentativeIds: [...catalog.requiredRepresentativeIds].sort(),
+    evidence: [...catalog.evidence].sort((a, b) =>
+      a.evidenceId.localeCompare(b.evidenceId),
+    ),
+    scenarios: catalog.scenarios
+      .map((scenario) => ({
+        ...scenario,
+        modelRoutes: [...scenario.modelRoutes].sort(),
+        tags: [...scenario.tags].sort(),
+        destinations: [...scenario.destinations].sort(),
+      }))
+      .sort((a, b) => a.scenarioId.localeCompare(b.scenarioId)),
+  });
+  return fixtures.map((f, index) =>
+    bindSourceFixture(f, families[index], sources[index], catalog),
+  );
+}
+test("synthetic authenticated-shape coverage requires both component-bound families; it is not actual admission evidence", () => {
+  const values = twoFamilySourceFixture();
+  expect(requireActualSemanticAdmission(values)).toHaveLength(2);
+  for (const wrong of [
+    [values[0]],
+    [values[0], values[0]],
+    values.map((value) => ({ ...value })),
+    { state: "certified" },
+  ])
+    expect(() => requireActualSemanticAdmission(wrong)).toThrow();
+});
+test.each([
+  ({ sources }) => {
+    sources[0].bytes.fixtureBytes = encode({ fixtureVersion: 1 });
+  },
+  ({ sources }) => {
+    sources[1].row.material.kind = "certification-fixture";
+  },
+  ({ sources }) => {
+    sources[1].bytes.adapterBytes = Buffer.from("changed");
+  },
+  ({ sources }) => {
+    sources[1].row.admission.component.componentEvidenceDigest =
+      "not-component-evidence";
+  },
+  ({ fixtures }) => {
+    fixtures[1].prepared.candidateRevision = "b".repeat(40);
+  },
+  ({ fixtures }) => {
+    fixtures[1].controllerAuthority = `sha256:${"5".repeat(64)}`;
+  },
+])("source/component/substituted candidate cannot authorize %#", (change) => {
+  expect(() =>
+    requireActualSemanticAdmission(twoFamilySourceFixture(change)),
+  ).toThrow();
+});
 test("synthetic existing Codex preimages bind without granting alpha admission", () => {
   const f = codexFixture();
   expect(bindCodex(f)).toMatchObject({
