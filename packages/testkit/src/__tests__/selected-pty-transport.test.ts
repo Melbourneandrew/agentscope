@@ -22,6 +22,7 @@ const sha256 = (value: string): string =>
 
 const actualImmutablePrincipalProfile = (
   scenarioId: string,
+  poisonIncludes = false,
 ): "ordinary" | "codex-controller" => {
   const source = readFileSync(
     new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
@@ -36,7 +37,7 @@ const actualImmutablePrincipalProfile = (
   expect(start).toBeGreaterThan(authorityStart);
   expect(end).toBeGreaterThan(start);
   const profile: unknown = runInNewContext(
-    `${source.slice(start, end)}; profile`,
+    `${poisonIncludes ? "Array.prototype.includes = () => true;" : ""}${source.slice(start, end)}; profile`,
     {
       record: { scenarioId },
     },
@@ -1085,6 +1086,19 @@ describe("selected PTY transport", () => {
         groups: [0, 1000],
       }),
     ).toThrow("testkit.pty.immutable-candidate");
+  });
+
+  it("keeps exact profile selection independent of ambient array includes", () => {
+    for (const scenarioId of [
+      "codex-tui-trace-smoke",
+      "claude-interactive-trace-smoke",
+    ])
+      expect(actualImmutablePrincipalProfile(scenarioId, true)).toBe(
+        "codex-controller",
+      );
+    expect(actualImmutablePrincipalProfile("fixture-process-smoke", true)).toBe(
+      "ordinary",
+    );
   });
 
   it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
