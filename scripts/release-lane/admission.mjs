@@ -513,10 +513,45 @@ function bindSourceMaterial(input, entry) {
   bindSourceComponent(input, evidence[0], entry);
   bindSourceCatalog(rows[0], evidence[0], entry);
 }
+function bindComponentMetadata(fixture, row) {
+  const provenance = fixture.governance?.provenance;
+  const authority = provenance?.artifactAuthority;
+  const representative = fixture.governance?.representative;
+  const identity = /^[a-z][a-z0-9-]{0,63}$/u;
+  if (!authority || !representative) reject();
+  keys(representative, ["scenarioId", "representativeVersion", "evidenceSlot"]);
+  if (
+    fixture.fixtureVersion !== 1 ||
+    fixture.harnessId !== row.harnessId ||
+    fixture.harnessVersion !== row.representativeVersion ||
+    representative.representativeVersion !== row.representativeVersion ||
+    typeof representative.scenarioId !== "string" ||
+    !identity.test(representative.scenarioId) ||
+    typeof representative.evidenceSlot !== "string" ||
+    !identity.test(representative.evidenceSlot)
+  )
+    reject();
+  if (provenance.captureKind === "synthetic") {
+    keys(authority, ["status", "reason"]);
+    if (
+      authority.status !== "unresolved" ||
+      authority.reason !== "independent-integrity-unavailable"
+    )
+      reject();
+  } else if (provenance.captureKind === "disposable-hermetic") {
+    keys(authority, ["status", "digest"]);
+    if (
+      authority.status !== "authenticated" ||
+      typeof authority.digest !== "string" ||
+      !/^sha256-[a-f\d]{64}$/u.test(authority.digest)
+    )
+      reject();
+  } else reject();
+}
 function bindSourceAuthority(fixture, row, entry) {
   const seed = entry.binding.seed;
   const component = row.admission?.component;
-  const authority = fixture.governance?.provenance?.artifactAuthority;
+  bindComponentMetadata(fixture, row);
   if (
     !component ||
     !["npm", "signed-release-manifest"].includes(row.material?.kind) ||
@@ -531,18 +566,7 @@ function bindSourceAuthority(fixture, row, entry) {
     row.representativeVersion !== entry.testedVersion ||
     row.admission.evidenceSlot !== entry.evidenceSlot ||
     row.material.platformIdentity !== seed.platformIdentity ||
-    fixture.fixtureVersion !== 1 ||
-    fixture.harnessId !== row.harnessId ||
-    fixture.harnessVersion !== row.representativeVersion ||
-    fixture.governance?.provenance?.captureKind !== "disposable-hermetic" ||
-    authority?.status !== "authenticated" ||
-    authority.digest !== seed.harness.artifactDigest ||
-    authority.digest !== integrationDigest(row.material) ||
-    !equal(fixture.governance?.representative, {
-      scenarioId: seed.scenarioId,
-      representativeVersion: row.representativeVersion,
-      evidenceSlot: row.admission.evidenceSlot,
-    })
+    seed.harness.artifactDigest !== integrationDigest(row.material)
   )
     reject();
 }
@@ -967,7 +991,7 @@ export function bindScenarioEvidence(
   return result;
 }
 
-// Only bindings made from the checked-out genuine component bytes qualify.
+// Bindings retain checked-out component regression bytes as source attribution.
 // The entry authenticates the immutable producing run; JSON labels alone do not.
 export function requireActualSemanticAdmission(values) {
   const missing = () => {

@@ -778,16 +778,16 @@ function sourceMaterialFixture(f, family) {
     harnessVersion: "1.0.0",
     governance: {
       provenance: {
-        captureKind: "disposable-hermetic",
+        captureKind: "synthetic",
         artifactAuthority: {
-          status: "authenticated",
-          digest: digest(material),
+          status: "unresolved",
+          reason: "independent-integrity-unavailable",
         },
       },
       representative: {
-        scenarioId: f.evidence.scenarioId,
+        scenarioId: `${family}-component-case`,
         representativeVersion: "1.0.0",
-        evidenceSlot: admission.evidenceSlot,
+        evidenceSlot: `${family}-unit-case`,
       },
     },
   };
@@ -845,7 +845,7 @@ function bindSourceFixture(f, family, source, catalog) {
     registryIdentity: row.harnessPackage,
     exactVersion: row.representativeVersion,
     distributionReference: row.admission.distributionReference,
-    artifactDigest: digest(row.material),
+    artifactDigest: source.substitutedMaterialDigest ?? digest(row.material),
     evidenceSlot: row.admission.evidenceSlot,
     eligibleRange: row.admission.eligibleRange,
   };
@@ -929,7 +929,7 @@ function twoFamilySourceFixture(change = () => {}) {
     bindSourceFixture(f, families[index], sources[index], catalog),
   );
 }
-test("synthetic authenticated-shape coverage requires both component-bound families; it is not actual admission evidence", () => {
+test("synthetic component and runtime-shape coverage requires both bound families; it is not actual admission evidence", () => {
   const values = twoFamilySourceFixture();
   expect(requireActualSemanticAdmission(values)).toHaveLength(2);
   for (const wrong of [
@@ -939,6 +939,80 @@ test("synthetic authenticated-shape coverage requires both component-bound famil
     { state: "certified" },
   ])
     expect(() => requireActualSemanticAdmission(wrong)).toThrow();
+});
+test("authenticated component metadata does not supply runtime material authority", () => {
+  const values = twoFamilySourceFixture(({ sources }) => {
+    for (const source of sources) {
+      const fixture = JSON.parse(source.bytes.fixtureBytes);
+      fixture.governance.provenance = {
+        captureKind: "disposable-hermetic",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"f".repeat(64)}`,
+        },
+      };
+      source.bytes.fixtureBytes = encode(fixture);
+      source.row.admission.component.fixture.sha256 = sha256(
+        source.bytes.fixtureBytes,
+      ).slice(7);
+    }
+  });
+  expect(requireActualSemanticAdmission(values)).toHaveLength(2);
+});
+test("matching component claims cannot rescue substituted runtime material and rehashed support", () => {
+  expect(() =>
+    twoFamilySourceFixture(({ sources }) => {
+      const source = sources[0];
+      source.substitutedMaterialDigest = `sha256-${"f".repeat(64)}`;
+      const fixture = JSON.parse(source.bytes.fixtureBytes);
+      fixture.governance.provenance = {
+        captureKind: "disposable-hermetic",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: source.substitutedMaterialDigest,
+        },
+      };
+      source.bytes.fixtureBytes = encode(fixture);
+      source.row.admission.component.fixture.sha256 = sha256(
+        source.bytes.fixtureBytes,
+      ).slice(7);
+    }),
+  ).toThrow();
+});
+test.each([
+  {
+    captureKind: "synthetic",
+    artifactAuthority: {
+      status: "authenticated",
+      digest: `sha256-${"f".repeat(64)}`,
+    },
+  },
+  {
+    captureKind: "synthetic",
+    artifactAuthority: { status: "unresolved", reason: "other" },
+  },
+  {
+    captureKind: "disposable-hermetic",
+    artifactAuthority: {
+      status: "unresolved",
+      reason: "independent-integrity-unavailable",
+    },
+  },
+  {
+    captureKind: "disposable-hermetic",
+    artifactAuthority: { status: "authenticated", digest: "bad" },
+  },
+])("malformed component provenance cannot authorize %#", (provenance) => {
+  expect(() =>
+    twoFamilySourceFixture(({ sources }) => {
+      const fixture = JSON.parse(sources[0].bytes.fixtureBytes);
+      fixture.governance.provenance = provenance;
+      sources[0].bytes.fixtureBytes = encode(fixture);
+      sources[0].row.admission.component.fixture.sha256 = sha256(
+        sources[0].bytes.fixtureBytes,
+      ).slice(7);
+    }),
+  ).toThrow();
 });
 test.each([
   ({ sources }) => {
