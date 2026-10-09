@@ -96,10 +96,7 @@ const claudeJoinFixture = () => {
   const fixtures = new Map<string, unknown>([["owned-run", result]]);
   const source = readIntegration("run-scenarios.mjs");
   const start = source.indexOf("const claudeCollectorExpectation =");
-  const end = source.indexOf(
-    "// eslint-disable-next-line complexity -- exact closed container terminal witness",
-    start,
-  );
+  const end = source.indexOf("const operationFailureSlots =", start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   const complete = runInNewContext(
@@ -289,10 +286,7 @@ it("parses only the same bounded descriptor bytes bound to the reviewed fixture 
 it("binds outer completion to held native identity and the same observed graph", () => {
   const source = readIntegration("run-scenarios.mjs");
   const start = source.indexOf("const codexCollectorExpectation =");
-  const end = source.indexOf(
-    "// eslint-disable-next-line complexity -- exact closed container terminal witness",
-    start,
-  );
+  const end = source.indexOf("const operationFailureSlots =", start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   const native = {

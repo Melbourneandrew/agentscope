@@ -23,7 +23,7 @@ const load = (cleanupStart: number, preparationMilliseconds = 0) => {
   let now = 1_000;
   const functions = runInNewContext(
     `${source.slice(candidateStart, candidateEnd)}};
-     ${source.slice(joinStart, joinEnd)}};
+     ${source.slice(joinStart, joinEnd)}} catch (error) { throw error; }};
      ({ runScenario, joinMockServer });`,
     {
       performance: { now: () => now },

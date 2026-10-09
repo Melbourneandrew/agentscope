@@ -220,7 +220,7 @@ describe("actual-source first per-run context refusal diagnostics", () => {
   });
   it("publishes only from the existing outer catch, not privileged or admission paths", () => {
     expect(source).toContain(
-      "} catch (error) {\n  publishScenarioContextRefusals();\n  if (",
+      '} catch (error) {\n  publishOperationFailureDiagnostic("runtime-original", error);\n  publishScenarioContextRefusals();\n  if (',
     );
     expect(source.match(/publishScenarioContextRefusals\(\);/gu)).toHaveLength(
       1,
