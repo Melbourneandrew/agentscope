@@ -18,6 +18,18 @@ import {
   settleAbortableOperation,
 } from "./controller.js";
 import type { IntegrationStageDependencies } from "./controller.js";
+// @ts-expect-error private transport diagnostic has no public declaration
+import * as requestDiagnosticModule from "../image-preparation/boundary.mjs";
+const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
+  requestDiagnosticModule as {
+    readImageRequestDiagnostic: (error: unknown) => unknown;
+    recordImageRequestDiagnostic: <ErrorType>(
+      error: ErrorType,
+      phase: string,
+      outcome: string,
+      status?: number,
+    ) => ErrorType;
+  };
 
 const storage = {
   cleanupFails: false,
@@ -99,6 +111,266 @@ const syntheticPull = async (trigger: string, reconciliationFails = false) => {
   return { failure, engineCall, inspectLocalImage };
 };
 
+const controllerCodes = (primaryCause: unknown, cleanupCause?: unknown) => {
+  const failure = new IntegrationControllerFailure({
+    primaryCause,
+    cleanupCause,
+    retirementRequired: false,
+    stage: "runScenarios",
+  });
+  return readControllerFailureDiagnostic(failure).firstCodes;
+};
+describe("closed first controller failure codes", () => {
+  it.each([
+    "integration.harness-scenario-admission.invalid",
+    "integration.harness-admission.invalid",
+  ])("retains only the fixed direct admission code %s", (primary) => {
+    expect(
+      controllerCodes(
+        new Error(primary, {
+          cause: new Error("integration.images.transport"),
+        }),
+      ),
+    ).toEqual({
+      primary,
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(controllerCodes(new Error(`${primary}.PRIVATE`))).toBeUndefined();
+  });
+  it.each([
+    "preflight",
+    "validate-package",
+    "download-tarball",
+    "download-attestation",
+    "compile-audit",
+    "verify",
+    "verify-context",
+    "verify-build",
+    "verify-retire",
+    "compile-authority",
+    "publish",
+  ])(
+    "retains one actual material envelope phase %s without inspecting deeper causes",
+    (phase) => {
+      const cause = new Error(`integration.harness-material.${phase}`, {
+        cause: new Error("PRIVATE_DEEP_CAUSE"),
+      });
+      const primary = new Error("integration.harness-material.failed", {
+        cause,
+      });
+      expect(
+        controllerCodes(
+          primary,
+          new Error("integration.isolation.cleanup-inventory"),
+        ),
+      ).toEqual({
+        primary: "integration.harness-material.failed",
+        causal: `integration.harness-material.${phase}`,
+        cleanup: "integration.isolation.cleanup-inventory",
+      });
+    },
+  );
+  it("retains one known controller envelope and first cleanup code", () => {
+    const primary = new Error("integration.controller.unsettled-operation", {
+      cause: new Error("integration.isolation.mockserver-terminal"),
+    });
+    expect(
+      controllerCodes(
+        primary,
+        new Error("integration.isolation.cleanup-network-remove"),
+      ),
+    ).toEqual({
+      primary: "integration.controller.unsettled-operation",
+      causal: "integration.isolation.mockserver-terminal",
+      cleanup: "integration.isolation.cleanup-network-remove",
+    });
+  });
+  it("does not unwrap an arbitrary envelope or walk past a known envelope", () => {
+    const known = new Error("integration.images.transport");
+    expect(
+      controllerCodes(new Error("PRIVATE", { cause: known })),
+    ).toBeUndefined();
+    expect(
+      controllerCodes(
+        new Error("integration.harness-material.failed", {
+          cause: new Error("PRIVATE", { cause: known }),
+        }),
+      ),
+    ).toEqual({
+      primary: "integration.harness-material.failed",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(
+      controllerCodes(
+        new Error("integration.isolation.context", { cause: known }),
+      ),
+    ).toEqual({
+      primary: "integration.isolation.context",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+  });
+});
+describe("closed controller code hostile inputs", () => {
+  it("rejects nonallowlisted suffixes, plain values, accessors and proxies without traps", () => {
+    let traps = 0;
+    const getter = () => {
+      traps++;
+      throw new Error("PRIVATE");
+    };
+    const messageAccessor = Object.defineProperty(new Error(), "message", {
+      get: getter,
+    });
+    const proxy = new Proxy(new Error("integration.images.transport"), {
+      get: getter,
+      getOwnPropertyDescriptor: getter,
+    });
+    for (const value of [
+      messageAccessor,
+      proxy,
+      { message: "integration.images.transport" },
+      new Error(
+        "integration.harness-material.download-attestation-root-upstream",
+      ),
+      new Error("integration.isolation.context" + "PRIVATE".repeat(100)),
+    ])
+      expect(controllerCodes(value)).toBeUndefined();
+    const primary = Object.defineProperty(
+      new Error("integration.harness-material.failed"),
+      "cause",
+      { get: getter },
+    );
+    expect(controllerCodes(primary)).toEqual({
+      primary: "integration.harness-material.failed",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(traps).toBe(0);
+  });
+});
+
+describe("content-free image preparation request hints", () => {
+  it("keeps an observed pull request failure uncertain even after successful reconciliation", async () => {
+    const primary = recordImageRequestDiagnostic(
+      new Error("integration.images.transport"),
+      "image-pull",
+      "request-error",
+    );
+    const inspectLocalImage = vi.fn(() => Promise.resolve());
+    const pull = createPullOperation({
+      engineCall: () => Promise.reject(primary),
+      inspectLocalImage,
+      platformText: () => "linux/amd64",
+    });
+    const failure = await pull(pullInput).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      message: "integration.images.daemon-uncertain",
+    });
+    expect(inspectLocalImage).toHaveBeenCalledOnce();
+    expect(readImagePreparationDiagnostic(failure)).toEqual({
+      primary: "pull-outcome-unknown",
+      cleanup: "none",
+      trigger: "transport",
+      reconciliation: "completed",
+      request: { phase: "image-pull", outcome: "request-error" },
+    });
+    expect(imagePreparationFailureRequiresOuterHostRetirement(failure)).toBe(
+      true,
+    );
+  });
+  it.each([false, true])(
+    "retains the first observed request hint through preparation cleanup failure=%s and the controller envelope",
+    async (cleanupFails) => {
+      storage.cleanupFails = cleanupFails;
+      const primary = new Error("integration.images.transport");
+      recordImageRequestDiagnostic(
+        primary,
+        "registry-auth",
+        "unexpected-status",
+        503,
+      );
+      recordImageRequestDiagnostic(
+        primary,
+        "daemon-info",
+        "request-error",
+        401,
+      );
+      let failure: unknown;
+      try {
+        await prepareImageOperation(
+          { admitPreparedSet: () => undefined },
+          {
+            ...storageDependencies,
+            engineTransport: () => undefined,
+            prepareImageSet: () => Promise.reject(primary),
+          },
+          [image],
+          {
+            socketIdentityForTesting: {
+              path: "/synthetic.sock",
+              device: "1",
+              inode: "2",
+              mode: "3",
+              owner: "4",
+            },
+          },
+        );
+      } catch (error) {
+        failure = error;
+      }
+      if (cleanupFails)
+        expect(failure).toMatchObject({
+          message: "integration.images.cleanup",
+        });
+      else expect(failure).toBe(primary);
+      expect(storage.cleanups).toBe(1);
+      const expected = {
+        phase: "registry-auth",
+        outcome: "unexpected-status",
+        status: 503,
+      };
+      expect(readImagePreparationDiagnostic(failure)?.request).toEqual(
+        expected,
+      );
+      const wrapped = new IntegrationControllerFailure({
+        primaryCause: new Error("integration.images.transport", {
+          cause: failure,
+        }),
+        retirementRequired: true,
+        stage: "prepareImages",
+      });
+      expect(
+        readControllerFailureDiagnostic(wrapped).imagePreparation?.request,
+      ).toEqual(expected);
+    },
+  );
+  it("keeps invalid phases/outcomes and absent status unknown without property inspection", () => {
+    const failure = Object.defineProperty(new Error("PRIVATE"), "code", {
+      get: () => {
+        throw new Error("must-not-read");
+      },
+    });
+    expect(
+      recordImageRequestDiagnostic(
+        failure,
+        "https://PRIVATE",
+        "request-error",
+        503,
+      ),
+    ).toBe(failure);
+    recordImageRequestDiagnostic(failure, "daemon-info", "PRIVATE", 503);
+    expect(readImageRequestDiagnostic(failure)).toBeUndefined();
+    recordImageRequestDiagnostic(failure, "daemon-info", "request-error", 0);
+    expect(readImageRequestDiagnostic(failure)).toEqual({
+      phase: "daemon-info",
+      outcome: "request-error",
+    });
+    expect(readImagePreparationDiagnostic(failure)).toBeUndefined();
+    expect(formatControllerFailureDiagnostic(failure)).not.toContain("PRIVATE");
+  });
+});
 describe("content-free image preparation diagnostics", () => {
   it.each([
     "transport",

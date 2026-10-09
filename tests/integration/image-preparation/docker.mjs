@@ -22,6 +22,7 @@ import {
   normalizePlatform,
   preparationPolicy,
   requestWith,
+  recordImageRequestDiagnostic,
   resolveBuildxExecutable,
   runOwnedImageCommandForTesting,
   sameDaemon,
@@ -69,29 +70,42 @@ export const createDockerOperations = (state) => {
   };
   const engineCall = async (
     { policy, signal, transport },
-    { body, expected, headers, method, path, maximumBytes },
+    { body, expected, headers, method, path, maximumBytes, requestPhase },
   ) => {
     const response = await requestWith(transport, {
       deadline: policy.workDeadline,
       headers: Object.freeze({ Accept: "application/json", ...headers }),
       method,
       path,
+      requestPhase,
       signal,
       maximumBytes: maximumBytes ?? maximumResponseBytes,
       ...(body === undefined ? {} : { body }),
     });
     if (!expected.includes(response.statusCode))
       throw recordUnexpectedEngineStatus(
-        fixedError("integration.images.daemon"),
+        recordImageRequestDiagnostic(
+          fixedError("integration.images.daemon"),
+          requestPhase,
+          "unexpected-status",
+          response.statusCode,
+        ),
       );
     return response;
   };
-  const inspectDaemon = async (transport, socket, policy, signal) => {
+  const inspectDaemon = async (
+    transport,
+    socket,
+    policy,
+    signal,
+    final = false,
+  ) => {
     const context = { policy, signal, transport };
     const versionResponse = await engineCall(context, {
       expected: [200],
       method: "GET",
       path: "/version",
+      requestPhase: final ? "daemon-final-version" : "daemon-version",
     });
     const version = jsonRecord(
       versionResponse.body,
@@ -103,6 +117,7 @@ export const createDockerOperations = (state) => {
       expected: [200],
       method: "GET",
       path: `/v${version.ApiVersion}/info`,
+      requestPhase: final ? "daemon-final-info" : "daemon-info",
     });
     return daemonIdentity(socket, version, infoResponse.body);
   };
@@ -120,6 +135,7 @@ export const createDockerOperations = (state) => {
         expected: missingAllowed ? [200, 404] : [200],
         method: "GET",
         path: `/v${daemon.apiVersion}/images/${encodeURIComponent(image)}/json`,
+        requestPhase: "local-image-inspect",
       },
     );
     return response.statusCode === 404
@@ -195,7 +211,13 @@ export const createDockerOperations = (state) => {
       preparedImages.push(preparedImage);
     }
     assertSocketCurrentFor(engine, socket);
-    const finalDaemon = await inspectDaemon(engine, socket, policy, signal);
+    const finalDaemon = await inspectDaemon(
+      engine,
+      socket,
+      policy,
+      signal,
+      true,
+    );
     if (!sameDaemon(initialDaemon, finalDaemon))
       throw fixedError("integration.images.daemon");
     return Object.freeze({

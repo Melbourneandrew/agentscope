@@ -27,6 +27,7 @@ type FailureDiagnostic = Readonly<{
     | "pull-outcome-unknown"
     | "preparation-failed";
   imagePreparation: ImagePreparationDiagnostic | null;
+  firstCodes?: Readonly<{ primary: string; causal: string; cleanup: string }>;
   cleanup: "none" | "failed" | "not-attempted";
 }>;
 
@@ -48,6 +49,96 @@ const objectKey = (value: unknown): value is object =>
 const ownErrorValue = (error: unknown, name: string): unknown => {
   if (!types.isNativeError(error) || types.isProxy(error)) return undefined;
   return Object.getOwnPropertyDescriptor(error, name)?.value as unknown;
+};
+
+const cleanupCodes = [
+  "scenario-container",
+  "collector-container",
+  "retrieval-container",
+  "mock-server-container",
+  "network",
+  "network-remove",
+  "control-volume",
+  "scenario-image",
+  "mock-server-image",
+  "context",
+  "inventory",
+  "remaining",
+].map((operation) => `integration.isolation.cleanup-${operation}`);
+const materialPhaseCodes = [
+  "preflight",
+  "validate-package",
+  "download-tarball",
+  "download-attestation",
+  "compile-audit",
+  "verify",
+  "verify-context",
+  "verify-build",
+  "verify-retire",
+  "compile-authority",
+  "publish",
+].map((phase) => `integration.harness-material.${phase}`);
+const knownFailureCodes = new Set([
+  "integration.controller.deadline",
+  "integration.controller.unsettled-operation",
+  "integration.controller.failure-evidence",
+  "integration.isolation.context",
+  "integration.isolation.immutable-candidate",
+  "integration.isolation.image-digest",
+  "integration.isolation.network",
+  "integration.isolation.control-volume",
+  "integration.isolation.collector-create",
+  "integration.isolation.collector-terminal",
+  "integration.isolation.collector-native",
+  "integration.isolation.mockserver-image",
+  "integration.isolation.mockserver-network",
+  "integration.isolation.mockserver-terminal",
+  "integration.isolation.child-failure",
+  "integration.isolation.fixture-result",
+  "integration.isolation.headless-authority",
+  "integration.isolation.headless-receipt",
+  "integration.isolation.pty-receipt",
+  "integration.isolation.scenario-failed",
+  "integration.isolation.interrupted",
+  "integration.harness-material.failed",
+  "integration.harness-scenario-admission.invalid",
+  "integration.harness-admission.invalid",
+  "integration.images.transport",
+  "integration.images.timeout",
+  "integration.images.deadline",
+  "integration.images.daemon",
+  "integration.images.daemon-uncertain",
+  "integration.images.interrupted-uncertain",
+  "integration.images.command",
+  "integration.images.containment",
+  "integration.images.docker-client",
+  "integration.images.cleanup",
+  ...cleanupCodes,
+  ...materialPhaseCodes,
+]);
+const causalEnvelopes = new Set([
+  "integration.controller.unsettled-operation",
+  "integration.harness-material.failed",
+  "integration.isolation.child-failure",
+  ...cleanupCodes,
+]);
+const knownFailureCode = (error: unknown): string => {
+  const value = ownErrorValue(error, "message");
+  return typeof value === "string" &&
+    value.length <= 96 &&
+    knownFailureCodes.has(value)
+    ? value
+    : "unknown";
+};
+const firstFailureCodes = (primaryCause: unknown, cleanupCause: unknown) => {
+  const primary = knownFailureCode(primaryCause);
+  const causal = causalEnvelopes.has(primary)
+    ? knownFailureCode(ownErrorValue(primaryCause, "cause"))
+    : "unknown";
+  const cleanup = knownFailureCode(cleanupCause);
+  return primary === "unknown" && causal === "unknown" && cleanup === "unknown"
+    ? undefined
+    : Object.freeze({ primary, causal, cleanup });
 };
 
 const imageDiagnostic = (
@@ -84,6 +175,7 @@ export const recordControllerFailureDiagnostic = (
   }>,
 ): void => {
   const imagePreparation = imageDiagnostic(input.primaryCause);
+  const firstCodes = firstFailureCodes(input.primaryCause, input.cleanupCause);
   const genericUnsettled =
     objectKey(input.primaryCause) &&
     unsettledOperations.has(input.primaryCause);
@@ -107,6 +199,7 @@ export const recordControllerFailureDiagnostic = (
               : "unknown"
             : "preparation-failed",
       imagePreparation: imagePreparation ?? null,
+      ...(firstCodes === undefined ? {} : { firstCodes }),
       cleanup:
         input.cleanupAttempted === false
           ? "not-attempted"
