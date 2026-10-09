@@ -406,6 +406,240 @@ function codexObservation(observation) {
     reject();
 }
 
+function claudeObservation(value) {
+  keys(value, [
+    "observationVersion",
+    "kind",
+    "nativeSessionId",
+    "nativeToolUseId",
+    "modelRequestBodySha256",
+    "doctorErrors",
+    "uninstallDisposition",
+    "hookObservations",
+    ...(Object.hasOwn(value, "nativeModelName") ? ["nativeModelName"] : []),
+  ]);
+  if (
+    value.observationVersion !== 1 ||
+    value.kind !== "claude-code-trace" ||
+    typeof value.nativeSessionId !== "string" ||
+    !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/u.test(
+      value.nativeSessionId,
+    ) ||
+    value.nativeToolUseId !== "toolu_agentscope_claude_read_1" ||
+    (Object.hasOwn(value, "nativeModelName") &&
+      (typeof value.nativeModelName !== "string" ||
+        value.nativeModelName.length < 1 ||
+        value.nativeModelName.length > 256)) ||
+    !Array.isArray(value.modelRequestBodySha256) ||
+    value.modelRequestBodySha256.length !== 2 ||
+    value.modelRequestBodySha256.some(
+      (part) => typeof part !== "string" || !/^[a-f\d]{64}$/u.test(part),
+    ) ||
+    value.doctorErrors !== 0 ||
+    value.uninstallDisposition !== "committed" ||
+    !Array.isArray(value.hookObservations) ||
+    value.hookObservations.length !== 4
+  )
+    reject();
+  claudeHooks(value.hookObservations);
+}
+function claudeHooks(hooks) {
+  for (const [index, row] of hooks.entries()) {
+    keys(row, [
+      "eventName",
+      "traceId",
+      "canonicalGraphDigest",
+      "contextDisposition",
+      "spanIds",
+    ]);
+    if (
+      row.eventName !==
+        ["SessionStart", "PreToolUse", "PostToolUse", "Stop"][index] ||
+      typeof row.traceId !== "string" ||
+      !/^[a-f\d]{32}$/u.test(row.traceId) ||
+      typeof row.canonicalGraphDigest !== "string" ||
+      !/^[a-f\d]{64}$/u.test(row.canonicalGraphDigest) ||
+      row.contextDisposition !== "unversioned-workspace-redacted" ||
+      !Array.isArray(row.spanIds) ||
+      row.spanIds.length !== (index === 0 ? 1 : 2) ||
+      row.spanIds.some(
+        (id) => typeof id !== "string" || !/^[a-f\d]{16}$/u.test(id),
+      ) ||
+      new Set(row.spanIds).size !== row.spanIds.length
+    )
+      reject();
+  }
+  if (new Set(hooks.map((row) => row.traceId)).size !== 4) reject();
+}
+
+function bindSourceMaterial(input, entry) {
+  if (
+    types.isProxy(input) ||
+    !input ||
+    typeof input !== "object" ||
+    Object.getOwnPropertySymbols(input).length !== 0
+  )
+    reject();
+  keys(input, ["catalogBytes", "fixtureBytes", "adapterBytes", "mappingBytes"]);
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (
+    Object.values(descriptors).some((value) => !Object.hasOwn(value, "value"))
+  )
+    reject();
+  const catalog = parseAdmissionDocument(input.catalogBytes);
+  keys(catalog, [
+    "manifestVersion",
+    "manifestIdentity",
+    "requiredRepresentativeIds",
+    "evidence",
+    "scenarios",
+  ]);
+  const fixture = parseAdmissionDocument(input.fixtureBytes);
+  const seed = entry.binding.seed;
+  const rows = catalog.scenarios?.filter(
+    (row) => row.scenarioId === seed.scenarioId,
+  );
+  const evidence = catalog.evidence?.filter(
+    (row) => row.evidenceId === rows?.[0]?.harnessEvidenceId,
+  );
+  if (
+    rows?.length !== 1 ||
+    evidence?.length !== 1 ||
+    catalog.manifestIdentity !== seed.manifestIdentity ||
+    catalog.manifestIdentity !== catalogIdentity(catalog)
+  )
+    reject();
+  bindSourceAuthority(fixture, evidence[0], entry);
+  bindSourceComponent(input, evidence[0], entry);
+  bindSourceCatalog(rows[0], evidence[0], entry);
+}
+function bindSourceAuthority(fixture, row, entry) {
+  const seed = entry.binding.seed;
+  const component = row.admission?.component;
+  const authority = fixture.governance?.provenance?.artifactAuthority;
+  if (
+    !component ||
+    !["npm", "signed-release-manifest"].includes(row.material?.kind) ||
+    seed.admissionVersion !== 1 ||
+    typeof entry.binding.controller.authorityIdentity !== "string" ||
+    !/^sha256:[a-f\d]{64}$/u.test(entry.binding.controller.authorityIdentity) ||
+    typeof component.componentEvidenceDigest !== "string" ||
+    !/^component-sha256-[a-f\d]{64}$/u.test(
+      component.componentEvidenceDigest,
+    ) ||
+    row.harnessPackage !== entry.harnessType ||
+    row.representativeVersion !== entry.testedVersion ||
+    row.admission.evidenceSlot !== entry.evidenceSlot ||
+    row.material.platformIdentity !== seed.platformIdentity ||
+    fixture.fixtureVersion !== 1 ||
+    fixture.harnessId !== row.harnessId ||
+    fixture.harnessVersion !== row.representativeVersion ||
+    fixture.governance?.provenance?.captureKind !== "disposable-hermetic" ||
+    authority?.status !== "authenticated" ||
+    authority.digest !== seed.harness.artifactDigest ||
+    authority.digest !== integrationDigest(row.material) ||
+    !equal(fixture.governance?.representative, {
+      scenarioId: seed.scenarioId,
+      representativeVersion: row.representativeVersion,
+      evidenceSlot: row.admission.evidenceSlot,
+    })
+  )
+    reject();
+}
+function bindSourceComponent(input, row, entry) {
+  const seed = entry.binding.seed;
+  const component = row.admission.component;
+  const expected = {
+    fixtureDigest: integrationDigestBytes(input.fixtureBytes),
+    adapterArtifactDigest: integrationDigestBytes(input.adapterBytes),
+    mappingArtifactDigest: integrationDigestBytes(input.mappingBytes),
+    componentEvidenceDigest: component.componentEvidenceDigest,
+  };
+  if (
+    ["fixture", "adapterArtifact", "mappingArtifact"].some(
+      (key, index) =>
+        `sha256-${component[key]?.sha256}` !== Object.values(expected)[index],
+    ) ||
+    !equal(seed.component, expected) ||
+    entry.contractSuiteDigest !== integrationDigest(expected) ||
+    entry.catalogRowIdentity !== seed.catalogRowIdentity ||
+    seed.harness.exactVersion !== row.representativeVersion ||
+    seed.harness.distributionReference !== row.admission.distributionReference
+  )
+    reject();
+}
+function bindSourceCatalog(scenario, row, entry) {
+  const seed = entry.binding.seed;
+  const harnessArtifact = {
+    registryIdentity: row.harnessPackage,
+    exactVersion: row.representativeVersion,
+    distributionReference: row.admission.distributionReference,
+    artifactDigest: seed.harness.artifactDigest,
+  };
+  const catalogRow = {
+    productIdentity: "agentscope-cli",
+    harness: {
+      registryIdentity: row.harnessPackage,
+      evidenceSlot: row.admission.evidenceSlot,
+      exactVersion: row.representativeVersion,
+    },
+    execution: seed.execution,
+    platformIdentity: seed.platformIdentity,
+    destinationCombinationIdentity: seed.destinationCombinationIdentity,
+  };
+  if (
+    seed.harness.artifactAuthorityDigest !==
+      integrationDigest(harnessArtifact) ||
+    seed.catalogRowIdentity !== integrationDigest(catalogRow) ||
+    !equal(seed.harness.eligibleRange, row.admission.eligibleRange) ||
+    seed.execution.mode !== scenario.executionMode ||
+    seed.execution.outputContract !== scenario.outputContract ||
+    seed.destinationCombinationIdentity !==
+      integrationDigest({
+        destinations: [...scenario.destinations].sort(),
+        modelRoutes: [...scenario.modelRoutes].sort(),
+      })
+  )
+    reject();
+}
+// Same finite preimage as Integration's capabilityManifestIdentity; no new
+// catalog authority or schema parser is minted by recomputing this checksum.
+function catalogIdentity(catalog) {
+  const sorted = (values) => {
+    if (
+      !Array.isArray(values) ||
+      values.some((value) => typeof value !== "string")
+    )
+      reject();
+    return [...values].sort((left, right) => left.localeCompare(right));
+  };
+  return integrationDigest({
+    manifestVersion: catalog.manifestVersion,
+    requiredRepresentativeIds: sorted(catalog.requiredRepresentativeIds),
+    evidence: [...catalog.evidence].sort((left, right) =>
+      left.evidenceId.localeCompare(right.evidenceId),
+    ),
+    scenarios: catalog.scenarios
+      .map((row) => ({
+        ...row,
+        modelRoutes: sorted(row.modelRoutes),
+        tags: sorted(row.tags),
+        destinations: sorted(row.destinations),
+      }))
+      .sort((left, right) => left.scenarioId.localeCompare(right.scenarioId)),
+  });
+}
+const integrationDigestBytes = (bytes) => {
+  if (
+    types.isProxy(bytes) ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < 1 ||
+    bytes.length > 1_048_576
+  )
+    reject();
+  return `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
+};
+
 function cleanCodexTerminal(evidence) {
   const receipt = evidence.ptyTerminalReceipt;
   keys(evidence.cleanup, ["outcome", "removalFailureCount", "remaining"]);
@@ -497,7 +731,12 @@ function codexLifecycle(evidence, lifecycle) {
   )
     reject();
 }
-function codexLedgers(modelLedger, destinationLedger, scenarioId) {
+function codexLedgers(
+  modelLedger,
+  destinationLedger,
+  scenarioId,
+  family = "codex",
+) {
   keys(modelLedger, ["ledgerVersion", "scenarioId", "entries"]);
   keys(destinationLedger, [
     "ledgerVersion",
@@ -509,44 +748,57 @@ function codexLedgers(modelLedger, destinationLedger, scenarioId) {
     modelLedger.ledgerVersion !== 1 ||
     modelLedger.scenarioId !== scenarioId ||
     !Array.isArray(modelLedger.entries) ||
-    modelLedger.entries.length < 1 ||
+    modelLedger.entries.length < (family === "claude-code" ? 2 : 1) ||
     modelLedger.entries.length > 32 ||
     destinationLedger.ledgerVersion !== 1 ||
     destinationLedger.scenarioId !== scenarioId ||
     !Array.isArray(destinationLedger.ingestion) ||
-    destinationLedger.ingestion.length !== 1 ||
-    !equal(destinationLedger.retrieval, []) ||
-    destinationLedger.ingestion[0].operation !== "otlp" ||
-    destinationLedger.ingestion[0].method !== "POST" ||
-    destinationLedger.ingestion[0].path !== "/api/public/otel/v1/traces" ||
-    destinationLedger.ingestion[0].outcome !== "accepted" ||
-    !Number.isSafeInteger(destinationLedger.ingestion[0].bodyBytes) ||
-    destinationLedger.ingestion[0].bodyBytes < 1 ||
-    destinationLedger.ingestion[0].bodyBytes > 1_048_576
+    destinationLedger.ingestion.length !== (family === "claude-code" ? 4 : 1) ||
+    !equal(destinationLedger.retrieval, [])
   )
     reject();
-  keys(destinationLedger.ingestion[0], [
-    "operation",
-    "method",
-    "path",
-    "bodyBytes",
-    "outcome",
-  ]);
-  for (const model of modelLedger.entries) {
+  for (const row of destinationLedger.ingestion) {
+    keys(row, ["operation", "method", "path", "bodyBytes", "outcome"]);
+    if (
+      row.operation !== "otlp" ||
+      row.method !== "POST" ||
+      row.path !== "/api/public/otel/v1/traces" ||
+      row.outcome !== "accepted" ||
+      !Number.isSafeInteger(row.bodyBytes) ||
+      row.bodyBytes < 1 ||
+      row.bodyBytes > 1_048_576
+    )
+      reject();
+  }
+  modelRows(modelLedger.entries, family);
+}
+function modelRows(entries, family) {
+  let primary = 0;
+  for (const model of entries) {
     keys(model, ["routeId", "provider", "method", "path", "bodyBytes"]);
     if (
-      model.routeId !== "codex-tui-responses" ||
-      model.provider !== "openai" ||
+      (family === "codex"
+        ? model.routeId !== "codex-tui-responses" ||
+          model.provider !== "openai" ||
+          model.path !== "/v1/responses"
+        : model.routeId !== "anthropic-messages" ||
+          model.provider !== "anthropic" ||
+          model.path !== "/v1/messages") ||
       model.method !== "POST" ||
-      model.path !== "/v1/responses" ||
       !Number.isSafeInteger(model.bodyBytes) ||
       model.bodyBytes < 1 ||
       model.bodyBytes > 1_048_576
     )
       reject();
+    if (model.routeId === "anthropic-messages") primary++;
   }
+  if (family === "claude-code" && primary < 2) reject();
 }
 function codexCompletion(entry, evidence, native, receipt, prepared) {
+  const family =
+    native.harnessObservation.kind === "claude-code-trace"
+      ? "claude-code"
+      : "codex";
   const { seed, controller, completion } = entry.binding;
   const execution = Object.fromEntries(
     [
@@ -567,7 +819,7 @@ function codexCompletion(entry, evidence, native, receipt, prepared) {
     seed.scenarioId !== evidence.scenarioId ||
     seed.execution?.mode !== "interactive" ||
     seed.execution.outputContract !== "semantic-pty" ||
-    seed.harness?.registryIdentity !== "@agentscope/harness-codex" ||
+    seed.harness?.registryIdentity !== `@agentscope/harness-${family}` ||
     seed.preparedImage?.scenarioImageDigest !== evidence.builtImageDigest ||
     controller?.hostKind !== "github-hosted" ||
     controller.workspaceRevision !== prepared.candidateRevision ||
@@ -586,7 +838,7 @@ function codexCompletion(entry, evidence, native, receipt, prepared) {
   return completion;
 }
 // A transient map of owned file-byte snapshots, never a persisted evidence DTO.
-function codexDocuments(files) {
+function codexDocuments(files, family = "codex") {
   if (types.isProxy(files) || !files || typeof files !== "object") reject();
   if (Object.getOwnPropertySymbols(files).length !== 0) reject();
   keys(files, [
@@ -607,8 +859,9 @@ function codexDocuments(files) {
     destinationLedger = read("destination-ledger.json"),
     harnessObservation = read("harness-observation.json");
   codexLifecycle(evidence, lifecycle);
-  codexLedgers(modelLedger, destinationLedger, evidence.scenarioId);
-  codexObservation(harnessObservation);
+  codexLedgers(modelLedger, destinationLedger, evidence.scenarioId, family);
+  if (family === "codex") codexObservation(harnessObservation);
+  else claudeObservation(harnessObservation);
   return {
     evidence,
     native: {
@@ -622,10 +875,35 @@ function codexDocuments(files) {
 // Reconstruct ONLY existing completion preimages from owned snapshots. This
 // binds the bounded Codex projection, not a new support certificate or graph.
 export function bindCodexScenarioEvidence(preparedBytes, supportBytes, files) {
+  return bindScenarioEvidence(preparedBytes, supportBytes, files, "codex");
+}
+export function bindClaudeScenarioEvidence(
+  preparedBytes,
+  supportBytes,
+  files,
+  material,
+) {
+  return bindScenarioEvidence(
+    preparedBytes,
+    supportBytes,
+    files,
+    "claude-code",
+    material,
+  );
+}
+const admitted = new WeakSet();
+export function bindScenarioEvidence(
+  preparedBytes,
+  supportBytes,
+  files,
+  family,
+  material,
+) {
+  if (!["codex", "claude-code"].includes(family)) reject();
   const prepared = parseAdmissionDocument(preparedBytes);
   preparedEvidence(prepared);
-  const { bundleIdentity, ...material } = prepared;
-  if (integrationDigest(material) !== bundleIdentity) reject();
+  const { bundleIdentity, ...preparedMaterial } = prepared;
+  if (integrationDigest(preparedMaterial) !== bundleIdentity) reject();
   const support = parseAdmissionDocument(supportBytes);
   keys(support, [
     "manifestVersion",
@@ -647,7 +925,7 @@ export function bindCodexScenarioEvidence(preparedBytes, supportBytes, files) {
       })
   )
     reject();
-  const { evidence, native } = codexDocuments(files);
+  const { evidence, native } = codexDocuments(files, family);
   if (
     !/^[a-f0-9]{16}$/u.test(evidence.runId) ||
     evidence.candidateBundleIdentity !== bundleIdentity ||
@@ -657,7 +935,7 @@ export function bindCodexScenarioEvidence(preparedBytes, supportBytes, files) {
   const receipt = cleanCodexTerminal(evidence);
   const entries = support.entries.filter(
     (entry) =>
-      entry.harnessType === "@agentscope/harness-codex" &&
+      entry.harnessType === `@agentscope/harness-${family}` &&
       entry.binding?.seed?.runId === evidence.runId,
   );
   if (entries.length !== 1) reject();
@@ -668,16 +946,58 @@ export function bindCodexScenarioEvidence(preparedBytes, supportBytes, files) {
     receipt,
     prepared,
   );
-  return Object.freeze({
+  const result = Object.freeze({
     runId: evidence.runId,
     scenarioId: evidence.scenarioId,
     candidateBundleIdentity: bundleIdentity,
     observationPlaneDigest: completion.observationPlaneDigest,
+    family,
+    candidateRevision: prepared.candidateRevision,
+    manifestIdentity: evidence.manifestIdentity,
+    platformIdentity: entries[0].binding.seed.platformIdentity,
+    destinationCombinationIdentity:
+      entries[0].binding.seed.destinationCombinationIdentity,
+    controllerAuthorityIdentity:
+      entries[0].binding.controller.authorityIdentity,
   });
+  if (material !== undefined) {
+    bindSourceMaterial(material, entries[0]);
+    admitted.add(result);
+  }
+  return result;
 }
 
-// No actual Claude producer or genuine private completion is admitted yet.
-// Bounded Codex binding, job success and byte digests cannot supply those facts.
-export function requireActualSemanticAdmission() {
-  throw new Error("release.admission.actual-otlp-evidence-missing");
+// Only bindings made from the checked-out genuine component bytes qualify.
+// The entry authenticates the immutable producing run; JSON labels alone do not.
+export function requireActualSemanticAdmission(values) {
+  const missing = () => {
+    throw new Error("release.admission.actual-otlp-evidence-missing");
+  };
+  if (types.isProxy(values) || !Array.isArray(values)) missing();
+  const descriptors = Object.getOwnPropertyDescriptors(values);
+  if (
+    Reflect.ownKeys(descriptors).length !== 3 ||
+    descriptors.length?.value !== 2 ||
+    !Object.hasOwn(descriptors[0] ?? {}, "value") ||
+    !Object.hasOwn(descriptors[1] ?? {}, "value")
+  )
+    missing();
+  values = [descriptors[0].value, descriptors[1].value];
+  if (
+    values.some((value) => types.isProxy(value) || !admitted.has(value)) ||
+    !equal(values.map((value) => value.family).sort(), [
+      "claude-code",
+      "codex",
+    ]) ||
+    [
+      "candidateRevision",
+      "candidateBundleIdentity",
+      "manifestIdentity",
+      "platformIdentity",
+      "controllerAuthorityIdentity",
+    ].some((key) => values[0][key] !== values[1][key]) ||
+    values[0].runId === values[1].runId
+  )
+    missing();
+  return Object.freeze([...values]);
 }

@@ -40,7 +40,7 @@ import {
   requireActualSemanticAdmission,
   parseAdmissionDocument,
   bindIntegrationArtifacts,
-  bindCodexScenarioEvidence,
+  bindScenarioEvidence,
 } from "./release-lane/admission.mjs";
 import { validateStageResult } from "./release-lane/stage-result.mjs";
 import {
@@ -184,7 +184,7 @@ function admissionInventory(root, allowed, prefix = "", count = { value: 0 }) {
   }
   return files.sort();
 }
-function verifyAdmission() {
+function readAdmissionCandidate() {
   const root = "artifacts/semantic-candidate";
   const pointer = parseAdmissionDocument(
     readBounded(`${root}/current-candidate.json`, 16_384),
@@ -210,6 +210,13 @@ function verifyAdmission() {
     "current-candidate.json",
     `candidates/${pointer.bundleIdentity}/evidence.json`,
   ];
+  // Standard release role bytes are beside the prepared runtime inventory,
+  // never runtime rows or a different candidate bundle preimage.
+  for (const name of ["sbom", "attestations"]) {
+    const path = `cli-release-materials/${name}.json`;
+    readBounded(`${root}/${path}`, 2_097_152);
+    expected.push(path);
+  }
   let total = 0;
   for (const file of [prepared.lockfile, ...prepared.artifacts]) {
     if (
@@ -234,6 +241,10 @@ function verifyAdmission() {
     ) !== canonicalJson(expected.sort())
   )
     fail();
+  return preparedBytes;
+}
+function verifyAdmission() {
+  const preparedBytes = readAdmissionCandidate();
   const semanticRoot = "artifacts/semantic-scenarios";
   const files = admissionInventory(
     semanticRoot,
@@ -250,8 +261,18 @@ function verifyAdmission() {
   );
   const support = parseAdmissionDocument(supportBytes);
   if (!Array.isArray(support.entries) || support.entries.length > 32) fail();
+  const catalogBytes = readBounded(
+    "tests/integration/capability-manifest.json",
+    1_048_576,
+  );
+  const catalog = parseAdmissionDocument(catalogBytes);
+  const accepted = [];
   for (const entry of support.entries) {
-    if (entry.harnessType !== "@agentscope/harness-codex") continue;
+    const family = {
+      "@agentscope/harness-codex": "codex",
+      "@agentscope/harness-claude-code": "claude-code",
+    }[entry.harnessType];
+    if (!family) fail();
     const runId = entry.binding?.seed?.runId;
     if (!/^[a-f0-9]{16}$/u.test(runId)) fail();
     const read = (name) => {
@@ -259,21 +280,53 @@ function verifyAdmission() {
       if (!files.includes(path)) fail();
       return readBounded(`${semanticRoot}/${path}`, 1_048_576);
     };
-    bindCodexScenarioEvidence(
-      preparedBytes,
-      supportBytes,
-      Object.fromEntries(
-        [
-          "evidence",
-          "fixture-lifecycle",
-          "model-ledger",
-          "destination-ledger",
-          "harness-observation",
-        ].map((name) => [`${name}.json`, read(name)]),
+    const scenarios = catalog.scenarios?.filter(
+      (row) => row.scenarioId === entry.binding?.seed?.scenarioId,
+    );
+    const evidence = catalog.evidence?.filter(
+      (row) => row.evidenceId === scenarios?.[0]?.harnessEvidenceId,
+    );
+    if (
+      scenarios?.length !== 1 ||
+      evidence?.length !== 1 ||
+      !evidence[0].admission
+    )
+      fail();
+    const component = evidence[0].admission.component;
+    const componentBytes = (role) => {
+      const path = component?.[role]?.path;
+      if (
+        typeof path !== "string" ||
+        !/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_.-]+$/u.test(path) ||
+        path.split("/").some((part) => part === "." || part === "..")
+      )
+        fail();
+      return readBounded(path, 1_048_576);
+    };
+    accepted.push(
+      bindScenarioEvidence(
+        preparedBytes,
+        supportBytes,
+        Object.fromEntries(
+          [
+            "evidence",
+            "fixture-lifecycle",
+            "model-ledger",
+            "destination-ledger",
+            "harness-observation",
+          ].map((name) => [`${name}.json`, read(name)]),
+        ),
+        family,
+        {
+          catalogBytes,
+          fixtureBytes: componentBytes("fixture"),
+          adapterBytes: componentBytes("adapterArtifact"),
+          mappingBytes: componentBytes("mappingArtifact"),
+        },
       ),
     );
   }
-  requireActualSemanticAdmission();
+  return requireActualSemanticAdmission(accepted);
 }
 if (process.argv.length === 3 && process.argv[2] === "--prepare-admission") {
   await prepareAdmission();

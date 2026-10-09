@@ -232,6 +232,16 @@ test("missing actual semantic evidence stops before protected store mutation", (
     entry.indexOf("await prepareDraft("),
   );
   expect(entry).not.toContain("inspectReleaseControls");
+  expect(entry).toContain("return requireActualSemanticAdmission(accepted)");
+  expect(entry).toContain("bindScenarioEvidence(");
+  expect(entry).toMatch(/"@agentscope\/harness-claude-code":\s*"claude-code"/u);
+  expect(entry).toMatch(
+    /readBounded\(\s*"tests\/integration\/capability-manifest.json"/u,
+  );
+  expect(entry).toContain('fixtureBytes: componentBytes("fixture")');
+  expect(entry).toContain('adapterBytes: componentBytes("adapterArtifact")');
+  expect(entry).toContain('mappingBytes: componentBytes("mappingArtifact")');
+  expect(entry).not.toContain("requireActualSemanticAdmission(event.inputs");
   expect(
     entry.indexOf('process.argv[2] === "--verify-admission"'),
   ).toBeLessThan(entry.indexOf("createGitHubReleaseStore({"));
