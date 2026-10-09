@@ -406,6 +406,11 @@ const httpState = (source) => {
 const lifeCycle = (source) => {
   source = once(
     source,
+    '            new Scheduler.SchedulerThreadFactory("Stop").newThread(() -> {',
+    '            new Scheduler.SchedulerThreadFactory("Stop", false).newThread(() -> {',
+  );
+  source = once(
+    source,
     "    public void requestProcessingStarted() {",
     "    private volatile boolean finalLedgerFailure;\n\n    public void requestProcessingStarted() {",
   );

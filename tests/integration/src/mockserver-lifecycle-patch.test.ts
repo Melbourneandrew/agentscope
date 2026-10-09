@@ -86,6 +86,19 @@ const authenticationSource = [
   "return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);",
   "return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);",
 ].join("\n");
+const stopWorkerSource =
+  '            new Scheduler.SchedulerThreadFactory("Stop").newThread(() -> {';
+const lifecycleSource = [
+  "    public void requestProcessingStarted() {",
+  "                            // best-effort cleanup during shutdown - log and continue",
+  "                    // best-effort cleanup during shutdown - log and continue",
+  "        int remaining = requestsInFlight.get();",
+  stopWorkerSource,
+  "                serverChannel.close();",
+  "                httpState.stop();",
+  "                workerGroup.terminationFuture().syncUninterruptibly();",
+  "                stopFuture.complete(message);",
+].join("\n");
 const noMatchLog = (
   message: string,
   arguments_: string,
@@ -654,15 +667,7 @@ describe("terminal persistence and existing stop barrier", () => {
     );
     for (const original of authenticationSource.split("\n"))
       expect(state).not.toContain(original);
-    const lifecycle = patches.lifeCycle(
-      [
-        "    public void requestProcessingStarted() {",
-        "                            // best-effort cleanup during shutdown - log and continue",
-        "                    // best-effort cleanup during shutdown - log and continue",
-        "        int remaining = requestsInFlight.get();",
-        "                stopFuture.complete(message);",
-      ].join("\n"),
-    );
+    const lifecycle = patches.lifeCycle(lifecycleSource);
     expect(lifecycle).toContain(
       "if (remaining > 0) {\n            finalLedgerFailure = true;\n        }",
     );
@@ -672,5 +677,33 @@ describe("terminal persistence and existing stop barrier", () => {
     expect(lifecycle.indexOf("httpState.completeRecordedLedger")).toBeLessThan(
       lifecycle.indexOf("stopFuture.complete(message)"),
     );
+  });
+});
+describe("existing Stop worker completion lifetime", () => {
+  it("keeps the same Stop worker alive until completion without moving terminal work", () => {
+    const output = patches.lifeCycle(lifecycleSource);
+    const ownedWorker = stopWorkerSource.replace('("Stop")', '("Stop", false)');
+    expect(output).toContain(ownedWorker);
+    expect(output).not.toContain(stopWorkerSource);
+    const positions = [
+      ownedWorker,
+      "serverChannel.close();",
+      "httpState.stop();",
+      "workerGroup.terminationFuture().syncUninterruptibly();",
+      "httpState.completeRecordedLedger(!finalLedgerFailure && requestsInFlight.get() == 0);",
+      "stopFuture.complete(message);",
+    ].map((text) => output.indexOf(text));
+    for (const [index, position] of positions.entries()) {
+      expect(position).toBeGreaterThan(-1);
+      if (index > 0) expect(position).toBeGreaterThan(positions[index - 1]!);
+    }
+    for (const input of [
+      lifecycleSource.replace(stopWorkerSource, ""),
+      lifecycleSource.replace(stopWorkerSource, ownedWorker),
+      `${lifecycleSource}\n${stopWorkerSource}`,
+    ])
+      expect(() => patches.lifeCycle(input)).toThrow(
+        "integration.mockserver-material.lifecycle-preimage",
+      );
   });
 });
