@@ -560,6 +560,7 @@ const ledgerReasons = [
   "request-type",
   "correlation-missing",
   "response-missing",
+  ...Array.from({ length: 16 }, (_, index) => `response-missing-${index + 1}`),
   "response-duplicate",
   "response-null",
   "response-status",
@@ -609,6 +610,9 @@ describe("closed event-log refusal reason observation", () => {
       "[agentscope-mockserver-ledger:v1 stage=eligibility terminal=true snapshotAvailable=false persistenceClosed=true persistenceFailed=false reason=correlation]\n";
     for (const stderr of [
       line.replace("correlation", "PRIVATE"),
+      ...["0", "-1", "17", "01", "1PRIVATE"].map((ordinal) =>
+        line.replace("correlation", `response-missing-${ordinal}`),
+      ),
       line.replace("reason=", "other="),
       line.replace("]", " other=false]"),
       line + line,

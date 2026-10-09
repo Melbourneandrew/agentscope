@@ -497,6 +497,28 @@ describe("actual optional Maven publisher block", () => {
     },
   );
 });
+describe("received-row structural ordinal", () => {
+  it("numbers only retained received rows with a capped structural ordinal", () => {
+    const patched = patches.eventLog(eventSource);
+    expect(patched).toContain(
+      "finalLedgerRequest(LogEntry received, int ordinal)",
+    );
+    expect(patched).toContain("int[] receivedOrdinal = {0};");
+    expect(patched).toContain(
+      ".filter(entry -> entry.getType() == RECEIVED_REQUEST)\n                    .map(entry -> finalLedgerRequest(entry, receivedOrdinal[0] < 16 ? ++receivedOrdinal[0] : 17))",
+    );
+    const expression = patched.match(
+      /finalLedgerRequest\(entry, (receivedOrdinal\[0\] < 16 \? \+\+receivedOrdinal\[0\] : 17)\)/u,
+    )?.[1];
+    expect(expression).toBeDefined();
+    const receivedOrdinal = [0];
+    for (let ordinal = 1; ordinal <= 18; ordinal++)
+      expect(runInNewContext(expression!, { receivedOrdinal })).toBe(
+        Math.min(ordinal, 17),
+      );
+    expect(receivedOrdinal).toEqual([16]);
+  });
+});
 describe("fixed event-log refusal source sites", () => {
   it("selects each pair refusal and preserves the first observed reason", () => {
     const patched = patches.eventLog(eventSource);
@@ -510,8 +532,19 @@ describe("fixed event-log refusal source sites", () => {
       [2, "response-duplicate"],
     ] as const)
       expect(
-        runInNewContext(expression!, { responses: { size: () => size } }),
+        runInNewContext(expression!, {
+          responses: { size: () => size },
+          ordinal: 17,
+        }),
       ).toBe(reason);
+    for (let ordinal = 1; ordinal <= 16; ordinal++)
+      expect(
+        runInNewContext(expression!, { responses: { size: () => 0 }, ordinal }),
+      ).toBe(`response-missing-${ordinal}`);
+    for (const ordinal of [-1, 0, 17])
+      expect(
+        runInNewContext(expression!, { responses: { size: () => 0 }, ordinal }),
+      ).toBe("response-missing");
     const body = patched.match(
       /private void observeFinalLedgerFailure\(String reason\) \{[^\n]*\n[^\n]*\n\s+([^\n]+)\n/u,
     )?.[1];
@@ -524,9 +557,9 @@ describe("fixed event-log refusal source sites", () => {
         if (first === before) first = after;
       },
     };
-    for (const reason of ["response-missing", "correlation", "clear"])
+    for (const reason of ["response-missing-16", "correlation", "clear"])
       runInNewContext(body!, { finalLedgerRefusalReason, reason });
-    expect(first).toBe("response-missing");
+    expect(first).toBe("response-missing-16");
   });
   it("records first-observed reasons without changing original failure flags or throws", () => {
     const patched = patches.eventLog(eventSource);
@@ -566,7 +599,7 @@ describe("fixed event-log refusal source sites", () => {
       'if (correlation == null || correlation.isEmpty()) {\n            observeFinalLedgerFailure("correlation-missing");\n            throw new IllegalStateException();',
     );
     expect(patched).toContain(
-      'observeFinalLedgerFailure(responses.size() == 0 ? "response-missing"\n                : responses.size() != 1 ? "response-duplicate" : "response-null");',
+      'observeFinalLedgerFailure(responses.size() == 0 ? ordinal >= 1 && ordinal <= 16 ? "response-missing-" + ordinal : "response-missing"\n                : responses.size() != 1 ? "response-duplicate" : "response-null");',
     );
     expect(patched).toContain(
       'if (status == null || status < 100 || status > 599) {\n            observeFinalLedgerFailure("response-status");\n            throw new IllegalStateException();',
@@ -639,7 +672,9 @@ describe("single upstream received-request capture and closure", () => {
       "request.clone().withBody(request.getBodyAsOriginalRawBytes())",
     );
     expect(patched).toContain("requests.size() > 16");
-    expect(patched).toContain(".map(this::finalLedgerRequest)");
+    expect(patched).toContain(
+      ".map(entry -> finalLedgerRequest(entry, receivedOrdinal[0] < 16 ? ++receivedOrdinal[0] : 17))",
+    );
     for (const guard of [
       "|| status < 100 || status > 599) {",
       "if (body == null || body.length > 1024 * 1024) {",
@@ -705,6 +740,10 @@ describe("terminal persistence and existing stop barrier", () => {
         "request-type",
         "correlation-missing",
         "response-missing",
+        ...Array.from(
+          { length: 16 },
+          (_, index) => `response-missing-${index + 1}`,
+        ),
         "response-duplicate",
         "response-null",
         "response-status",
