@@ -498,6 +498,36 @@ describe("actual optional Maven publisher block", () => {
   );
 });
 describe("fixed event-log refusal source sites", () => {
+  it("selects each pair refusal and preserves the first observed reason", () => {
+    const patched = patches.eventLog(eventSource);
+    const expression = patched.match(
+      /observeFinalLedgerFailure\((responses\.size\(\) == 0 \?[^;]+)\);/u,
+    )?.[1];
+    expect(expression).toBeDefined();
+    for (const [size, reason] of [
+      [0, "response-missing"],
+      [1, "response-null"],
+      [2, "response-duplicate"],
+    ] as const)
+      expect(
+        runInNewContext(expression!, { responses: { size: () => size } }),
+      ).toBe(reason);
+    const body = patched.match(
+      /private void observeFinalLedgerFailure\(String reason\) \{[^\n]*\n[^\n]*\n\s+([^\n]+)\n/u,
+    )?.[1];
+    expect(body).toBe(
+      'finalLedgerRefusalReason.compareAndSet("none", reason);',
+    );
+    let first = "none";
+    const finalLedgerRefusalReason = {
+      compareAndSet: (before: string, after: string) => {
+        if (first === before) first = after;
+      },
+    };
+    for (const reason of ["response-missing", "correlation", "clear"])
+      runInNewContext(body!, { finalLedgerRefusalReason, reason });
+    expect(first).toBe("response-missing");
+  });
   it("records first-observed reasons without changing original failure flags or throws", () => {
     const patched = patches.eventLog(eventSource);
     expect(patched).toContain(
@@ -529,11 +559,18 @@ describe("fixed event-log refusal source sites", () => {
           "u",
         ),
       );
-    expect(
-      patched.match(
-        /observeFinalLedgerFailure\("correlation"\);\s+throw new IllegalStateException\(\);/gu,
-      ),
-    ).toHaveLength(4);
+    expect(patched).toContain(
+      'if (!(received.getHttpRequest() instanceof HttpRequest)) {\n            observeFinalLedgerFailure("request-type");\n            throw new IllegalStateException();',
+    );
+    expect(patched).toContain(
+      'if (correlation == null || correlation.isEmpty()) {\n            observeFinalLedgerFailure("correlation-missing");\n            throw new IllegalStateException();',
+    );
+    expect(patched).toContain(
+      'observeFinalLedgerFailure(responses.size() == 0 ? "response-missing"\n                : responses.size() != 1 ? "response-duplicate" : "response-null");',
+    );
+    expect(patched).toContain(
+      'if (status == null || status < 100 || status > 599) {\n            observeFinalLedgerFailure("response-status");\n            throw new IllegalStateException();',
+    );
     expect(patched).toContain('String finalLedgerStep = "shutdown";');
     expect(patched).toContain(
       'finalLedgerStep = "drain";\n            disruptor.shutdown(2, SECONDS);',
@@ -665,6 +702,12 @@ describe("terminal persistence and existing stop barrier", () => {
         "clear",
         "drain",
         "correlation",
+        "request-type",
+        "correlation-missing",
+        "response-missing",
+        "response-duplicate",
+        "response-null",
+        "response-status",
         "row-count",
         "serialization",
         "control-capture",

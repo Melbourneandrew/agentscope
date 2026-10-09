@@ -135,7 +135,7 @@ const finalLedgerCapture = `
 
     private RequestDefinition finalLedgerRequest(LogEntry received) {
         if (!(received.getHttpRequest() instanceof HttpRequest)) {
-            observeFinalLedgerFailure("correlation");
+            observeFinalLedgerFailure("request-type");
             throw new IllegalStateException();
         }
         HttpRequest request = (HttpRequest) received.getHttpRequest();
@@ -144,18 +144,19 @@ const finalLedgerCapture = `
         }
         String correlation = received.getCorrelationId();
         if (correlation == null || correlation.isEmpty()) {
-            observeFinalLedgerFailure("correlation");
+            observeFinalLedgerFailure("correlation-missing");
             throw new IllegalStateException();
         }
         List<LogEntry> responses = eventLog.stream().filter(requestResponseLogPredicate)
             .filter(entry -> correlation.equals(entry.getCorrelationId())).collect(Collectors.toList());
         if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {
-            observeFinalLedgerFailure("correlation");
+            observeFinalLedgerFailure(responses.size() == 0 ? "response-missing"
+                : responses.size() != 1 ? "response-duplicate" : "response-null");
             throw new IllegalStateException();
         }
         Integer status = responses.get(0).getHttpResponse().getStatusCode();
         if (status == null || status < 100 || status > 599) {
-            observeFinalLedgerFailure("correlation");
+            observeFinalLedgerFailure("response-status");
             throw new IllegalStateException();
         }
         return request.clone().withBody(request.getBodyAsOriginalRawBytes())
