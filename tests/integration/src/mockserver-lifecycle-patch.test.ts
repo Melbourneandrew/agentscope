@@ -497,6 +497,61 @@ describe("actual optional Maven publisher block", () => {
     },
   );
 });
+describe("fixed event-log refusal source sites", () => {
+  it("records first-observed reasons without changing original failure flags or throws", () => {
+    const patched = patches.eventLog(eventSource);
+    expect(patched).toContain(
+      'finalLedgerRefusalReason.compareAndSet("none", reason);',
+    );
+    expect(patched).toContain(
+      'new java.util.concurrent.atomic.AtomicReference<>("none")',
+    );
+    expect(patched).toContain(
+      "return finalLedgerFailure ? null : finalRecordedRequests;",
+    );
+    for (const reason of [
+      "late-publish",
+      "load-generated",
+      "drop",
+      "consumer",
+      "start",
+      "shutdown",
+      "eviction",
+      "truncation",
+      "reset",
+      "clear",
+      "row-count",
+      "control-capture",
+    ])
+      expect(patched).toMatch(
+        new RegExp(
+          `finalLedgerFailure = true;\\s+observeFinalLedgerFailure\\("${reason}"\\);`,
+          "u",
+        ),
+      );
+    expect(
+      patched.match(
+        /observeFinalLedgerFailure\("correlation"\);\s+throw new IllegalStateException\(\);/gu,
+      ),
+    ).toHaveLength(4);
+    expect(patched).toContain('String finalLedgerStep = "shutdown";');
+    expect(patched).toContain(
+      'finalLedgerStep = "drain";\n            disruptor.shutdown(2, SECONDS);',
+    );
+    expect(patched).toContain(
+      'finalLedgerStep = "clear";\n            eventLog.clear();',
+    );
+    expect(patched.indexOf('finalLedgerStep = "correlation"')).toBeGreaterThan(
+      patched.indexOf("disruptor.shutdown(2, SECONDS)"),
+    );
+    expect(patched).toContain(
+      'finalLedgerStep = "serialization";\n                    finalRecordedRequests =',
+    );
+    expect(patched).toContain(
+      "finalLedgerFailure = true;\n            observeFinalLedgerFailure(finalLedgerStep);",
+    );
+  });
+});
 describe("single upstream received-request capture and closure", () => {
   it("closes the sole publisher, preserves the bounded consumer join, and snapshots every received request before clear", () => {
     const patched = patches.eventLog(eventSource);
@@ -504,7 +559,7 @@ describe("single upstream received-request capture and closure", () => {
       "public synchronized void add(LogEntry logEntry)",
     );
     expect(patched).toContain(
-      "if (finalLedgerStopped) {\n            finalLedgerFailure = true;\n            return;\n        }",
+      'if (finalLedgerStopped) {\n            finalLedgerFailure = true;\n            observeFinalLedgerFailure("late-publish");\n            return;\n        }',
     );
     const closed = patched.indexOf(
       "synchronized (this) {\n            finalLedgerStopped = true;\n        }",
@@ -561,7 +616,7 @@ describe("single upstream received-request capture and closure", () => {
       expect(patched).toContain(guard);
     }
     expect(patched).toContain(
-      "} else {\n                    finalRecordedRequests =",
+      '} else {\n                    finalLedgerStep = "serialization";\n                    finalRecordedRequests =',
     );
   });
   it("refuses missing or duplicated exact transformation anchors", () => {
@@ -590,22 +645,43 @@ describe("terminal persistence and existing stop barrier", () => {
     );
     const format = helper.match(/System\.err\.printf\("([^"\n]+)"/u)?.[1];
     expect(format).toBe(
-      "[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b]\\n",
+      "[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b reason=%s]\\n",
     );
     expect(helper).not.toMatch(
       /snapshot\.|filePath|throwable|\.getMessage|\.toString/u,
     );
     for (const stage of ["eligibility", "publication"])
-      for (let value = 0; value < 16; value++) {
-        let index = 0;
-        const line = format!
-          .replace("%s", stage)
-          .replace(/%b/gu, () => String(Boolean(value & (1 << index++))))
-          .replace(/\\n$/u, "\n");
-        expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
-        expect(line).not.toContain("%b");
-      }
+      for (const reason of [
+        "none",
+        "late-publish",
+        "load-generated",
+        "drop",
+        "consumer",
+        "start",
+        "shutdown",
+        "eviction",
+        "truncation",
+        "reset",
+        "clear",
+        "drain",
+        "correlation",
+        "row-count",
+        "serialization",
+        "control-capture",
+      ])
+        for (let value = 0; value < 16; value++) {
+          let index = 0;
+          const line = format!
+            .replace("%s", stage)
+            .replace("%s", reason)
+            .replace(/%b/gu, () => String(Boolean(value & (1 << index++))))
+            .replace(/\\n$/u, "\n");
+          expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+          expect(line).not.toContain("%b");
+        }
   });
+});
+describe("unchanged strict persistence completion", () => {
   it("always closes persistence, preserves first failure, and publishes a fixed receipt only after snapshot and receipt close", () => {
     const input = [
       "    private final Writer writer;",
@@ -629,10 +705,10 @@ describe("terminal persistence and existing stop barrier", () => {
     );
     expect(patched).toContain('equals("/control/private/requests.json")');
     expect(patched).toContain(
-      'equals("/control/private/requests.json")) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null);\n                return;',
+      'equals("/control/private/requests.json")) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);\n                return;',
     );
     expect(patched).toContain(
-      "if (bytes.length > 1024 * 1024) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null);\n                return;",
+      "if (bytes.length > 1024 * 1024) {\n                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);\n                return;",
     );
     expect(patched.indexOf("Files.write(filePath")).toBeLessThan(
       patched.indexOf("receipt.write"),
@@ -643,14 +719,14 @@ describe("terminal persistence and existing stop barrier", () => {
     expect(patched).toContain("java.nio.file.LinkOption.NOFOLLOW_LINKS");
     expect(patched).toContain("java.nio.file.StandardCopyOption.ATOMIC_MOVE");
     expect(patched).toContain(
-      "recordedPersistenceFailed = true;\n            observeFinalLedgerRefusal(true, terminal, snapshot != null);",
+      "recordedPersistenceFailed = true;\n            observeFinalLedgerRefusal(true, terminal, snapshot != null, reason);",
     );
     expect(patched).toContain(
       "catch (Throwable ignored) {\n            // Optional fixed observation cannot change persistence or completion.",
     );
     expect(
       patched.match(
-        /observeFinalLedgerRefusal\((?:false|true), terminal, snapshot != null\);/gu,
+        /observeFinalLedgerRefusal\((?:false|true), terminal, snapshot != null, reason\);/gu,
       ),
     ).toHaveLength(3);
   });

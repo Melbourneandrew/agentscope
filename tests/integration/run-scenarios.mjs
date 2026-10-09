@@ -2455,7 +2455,7 @@ const mockServerProducerRefusalObservation = (output) => {
     if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
     const parts = lines[0].split(" ");
     if (
-      parts.length !== 6 ||
+      parts.length !== 7 ||
       parts[0] !== "[agentscope-mockserver-ledger:v1" ||
       !["stage=eligibility", "stage=publication"].includes(parts[1])
     )
@@ -2469,7 +2469,7 @@ const mockServerProducerRefusalObservation = (output) => {
     const observation = { stage: parts[1].slice(6) };
     for (let index = 0; index < names.length; index++) {
       const name = names[index];
-      const suffix = index === names.length - 1 ? "]" : "";
+      const suffix = "";
       if (
         ![`${name}=true${suffix}`, `${name}=false${suffix}`].includes(
           parts[index + 2],
@@ -2478,6 +2478,27 @@ const mockServerProducerRefusalObservation = (output) => {
         return;
       observation[name] = parts[index + 2] === `${name}=true${suffix}`;
     }
+    const reasons = [
+      "none",
+      "late-publish",
+      "load-generated",
+      "drop",
+      "consumer",
+      "start",
+      "shutdown",
+      "eviction",
+      "truncation",
+      "reset",
+      "clear",
+      "drain",
+      "correlation",
+      "row-count",
+      "serialization",
+      "control-capture",
+    ];
+    const reason = reasons.find((value) => parts[6] === `reason=${value}]`);
+    if (reason === undefined) return;
+    observation.reason = reason;
     return observation;
   } catch {
     // Unavailable diagnostic bytes never establish producer authority.
@@ -2510,6 +2531,7 @@ const publishMockServerProducerRefusalDiagnostic = (plan, observation) => {
         snapshotAvailable: observation?.snapshotAvailable ?? null,
         persistenceClosed: observation?.persistenceClosed ?? null,
         persistenceFailed: observation?.persistenceFailed ?? null,
+        reason: observation?.reason ?? null,
       })}\n`,
     );
     if (bytes.length <= 256) writeSync(2, bytes);
