@@ -259,6 +259,20 @@ const actualCompletionObservation = (sinkFails = false) => {
   };
   return { functions, runId, output, copies, error, state };
 };
+const assertUnknownProducerRefusal = (output: string[], runId: string) => {
+  expect(output).toHaveLength(2);
+  expect(output[1]).toBe(
+    `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify({
+      runId,
+      stage: "unknown",
+      terminal: null,
+      snapshotAvailable: null,
+      persistenceClosed: null,
+      persistenceFailed: null,
+    })}\n`,
+  );
+  expect(Buffer.byteLength(output[1]!)).toBeLessThanOrEqual(256);
+};
 
 describe("actual-source completion copy observation", () => {
   it.each([false, true])(
@@ -286,7 +300,7 @@ describe("actual-source completion copy observation", () => {
       ]);
       if (sinkFails) expect(f.output).toEqual([]);
       else {
-        expect(f.output).toHaveLength(1);
+        assertUnknownProducerRefusal(f.output, f.runId);
         expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
         const row: unknown = JSON.parse(
           f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
@@ -303,7 +317,7 @@ describe("actual-source completion copy observation", () => {
           "/control/private/",
           completionResponse,
         ])
-          expect(f.output[0]).not.toContain(privateText);
+          expect(f.output.join("")).not.toContain(privateText);
       }
     },
   );
@@ -319,7 +333,7 @@ describe("actual-source completion copy observation", () => {
       await expect(
         f.functions.joinMockServer({ runId: f.runId }, controller.signal),
       ).rejects.toBe(f.error);
-      expect(f.output).toHaveLength(1);
+      assertUnknownProducerRefusal(f.output, f.runId);
       const row: unknown = JSON.parse(
         f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
       );
@@ -348,8 +362,10 @@ describe("actual-source completion copy observation", () => {
         },
       );
     expect(f.output).toHaveLength(3);
-    for (const row of f.output)
+    for (const row of f.output) {
       expect(row).not.toContain("completionSourceMissingResponse");
+      expect(row).not.toContain("mockserver-ledger-diagnostic");
+    }
   });
 });
 
