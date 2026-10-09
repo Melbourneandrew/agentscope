@@ -46,6 +46,68 @@ const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
   };
+describe("integration failure diagnostic preimages", () => {
+  it("hashes the actual builder image tuple identically in private diagnostic and failure manifest", () => {
+    const boundary = readIntegration("image-preparation/boundary.mjs");
+    const runner = readIntegration("run-scenarios.mjs");
+    const docker = readIntegration("image-preparation/docker.mjs");
+    const slice = (source: string, begin: string, end: string): string => {
+      const start = source.indexOf(begin);
+      const finish = source.indexOf(end, start);
+      if (start < 0 || finish <= start)
+        throw new Error("actual-diagnostic-source-boundary");
+      return source.slice(start, finish).replaceAll("export const", "const");
+    };
+    const privateHash =
+      slice(
+        boundary,
+        "export const diagnosticDigest =",
+        "export const classifyBuildxStderrForTesting",
+      ) +
+      slice(
+        boundary,
+        "export const digestBytes =",
+        "export const jsonRecord =",
+      );
+    const manifestHash = slice(
+      runner,
+      "const diagnosticDigest =",
+      "const admissionDigest =",
+    );
+    const privateTuple = /image: diagnosticDigest\((\{[^}]+\})\)/u.exec(
+      docker,
+    )?.[1];
+    const manifestTuple =
+      /buildkitImage: diagnosticDigest\((\{[^}]+\})\)/u.exec(runner)?.[1];
+    expect(privateTuple).toBeDefined();
+    expect(manifestTuple).toBeDefined();
+    const facts = {
+      image: `buildkit@sha256:${"a".repeat(64)}`,
+      configDigest: `sha256:${"b".repeat(64)}`,
+    };
+    const privateDigest = runInNewContext(
+      `${privateHash}; diagnosticDigest(${privateTuple});`,
+      {
+        Buffer,
+        createHash,
+        authority: { buildkit: facts },
+      },
+    ) as string;
+    const manifestDigest = (buildkit: typeof facts): string =>
+      runInNewContext(`${manifestHash}; diagnosticDigest(${manifestTuple});`, {
+        createHash,
+        buildkit,
+      }) as string;
+    expect(manifestDigest(facts)).toBe(privateDigest);
+    expect(
+      manifestDigest({ ...facts, image: `buildkit@sha256:${"c".repeat(64)}` }),
+    ).not.toBe(privateDigest);
+    expect(
+      manifestDigest({ ...facts, configDigest: `sha256:${"d".repeat(64)}` }),
+    ).not.toBe(privateDigest);
+  });
+});
+
 describe("integration controller policy", () => {
   it("retains the original packed CLI material roles after candidate preparation", () => {
     const workflow = readFileSync(
