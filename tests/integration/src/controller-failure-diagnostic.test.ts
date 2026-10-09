@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
 import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-preparation.mjs";
 import {
   createPullOperation,
@@ -9,6 +10,7 @@ import {
   recordUnexpectedEngineStatus,
 } from "../image-preparation/preparation.mjs";
 import {
+  completionCopySourceMissingResponseMatches,
   formatControllerFailureDiagnostic,
   knownFailureCode,
   readControllerFailureDiagnostic,
@@ -39,6 +41,317 @@ const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
       status?: number,
     ) => ErrorType;
   };
+
+const completionContainerId = "c".repeat(64);
+const completionResponse = `Error response from daemon: Could not find the file /control/private/requests.complete in container ${completionContainerId}\n`;
+const completionContext = {
+  containerId: completionContainerId,
+  originalAborted: false,
+  joinAborted: false,
+  deadline: "live",
+};
+const completionError = (fields: object = {}) =>
+  Object.assign(new Error("SYNTHETIC PRIVATE ERROR"), {
+    code: 1,
+    signal: null,
+    killed: false,
+    stdout: "",
+    stderr: completionResponse,
+    ...fields,
+  });
+
+describe("exact completion source-missing response observation", () => {
+  it("matches the exact upstream response without changing the Error", () => {
+    const error = completionError();
+    const before = Object.getOwnPropertyDescriptors(error);
+    expect(
+      completionCopySourceMissingResponseMatches(error, completionContext),
+    ).toBe(true);
+    expect(Object.getOwnPropertyDescriptors(error)).toEqual(before);
+  });
+  it.each([
+    completionResponse.trimEnd(),
+    `${completionResponse}\n`,
+    completionResponse.replace("\n", "\r\n"),
+    `PRIVATE ${completionResponse}`,
+    `${completionResponse}PRIVATE`,
+    completionResponse.replace("requests.complete", "requests.json"),
+    completionResponse.replace("requests.complete", "requests.complete.tmp"),
+    completionResponse.replace("/control/private/", "/control/private/../"),
+    completionResponse.replace(completionContainerId, "d".repeat(64)),
+    completionResponse.replace(completionContainerId, "named-container"),
+    completionResponse.replace("Could", "could"),
+    `\u001b[31m${completionResponse}`,
+    "ENOENT: missing local destination",
+    "Error response from daemon: No such container",
+    "",
+    "PRIVATE".repeat(100),
+    Buffer.from(completionResponse),
+    { toString: () => completionResponse },
+  ])("does not interpret a near miss as missing source %#", (stderr) => {
+    expect(
+      completionCopySourceMissingResponseMatches(
+        completionError({ stderr }),
+        completionContext,
+      ),
+    ).toBe(false);
+  });
+  it.each([
+    { code: 0 },
+    { code: "1" },
+    { code: "ENOENT" },
+    { signal: "SIGTERM" },
+    { signal: undefined },
+    { killed: true },
+    { killed: undefined },
+    { stdout: "PRIVATE" },
+    { stdout: undefined },
+  ])("requires all exact settled process fields %#", (fields) => {
+    expect(
+      completionCopySourceMissingResponseMatches(
+        completionError(fields),
+        completionContext,
+      ),
+    ).toBe(false);
+  });
+  it.each([
+    { containerId: "c".repeat(63) },
+    { containerId: "C".repeat(64) },
+    { containerId: null },
+    { originalAborted: true },
+    { originalAborted: undefined },
+    { joinAborted: true },
+    { joinAborted: null },
+    { deadline: "expired" },
+    { deadline: "unavailable" },
+  ])("requires the same live join context %#", (fields) => {
+    expect(
+      completionCopySourceMissingResponseMatches(completionError(), {
+        ...completionContext,
+        ...fields,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("hostile completion response metadata", () => {
+  it.each(["stderr", "stdout", "code", "signal", "killed"])(
+    "never invokes an own %s accessor",
+    (field) => {
+      const getter = vi.fn(() => {
+        throw new Error("PRIVATE GETTER");
+      });
+      const error = completionError();
+      Object.defineProperty(error, field, { get: getter });
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+      expect(getter).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects plain, inherited and Proxy metadata without traps/coercion", () => {
+    const trap = vi.fn(() => {
+      throw new Error("PRIVATE TRAP");
+    });
+    const native = completionError();
+    const proxy = new Proxy(native, {
+      get: trap,
+      getOwnPropertyDescriptor: trap,
+      getPrototypeOf: trap,
+    });
+    for (const error of [
+      { ...native },
+      Object.create(native),
+      proxy,
+      undefined,
+      null,
+    ])
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+    expect(trap).not.toHaveBeenCalled();
+  });
+  it("rejects inherited fields on a native Error and never coerces stderr", () => {
+    const inherited = completionError();
+    Reflect.deleteProperty(inherited, "stderr");
+    Object.setPrototypeOf(inherited, completionError());
+    const coerce = vi.fn(() => completionResponse);
+    for (const error of [
+      inherited,
+      completionError({ stderr: { toString: coerce } }),
+    ])
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+    expect(coerce).not.toHaveBeenCalled();
+  });
+});
+
+const actualCompletionObservation = (sinkFails = false) => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const operationFailureSlots =");
+  const end = source.indexOf("/* eslint-disable complexity", start);
+  const joinStart = source.indexOf("const joinMockServer =");
+  const joinEnd = source.indexOf("const createScenarioContainer =", joinStart);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  expect(joinEnd).toBeGreaterThan(joinStart);
+  const runId = "e".repeat(16);
+  const error = completionError();
+  const output: string[] = [];
+  const copies: string[][] = [];
+  const identities = new Map([[runId, completionContainerId]]);
+  const state = {
+    now: 100,
+    retired: false,
+    beforeFailure: undefined as (() => void) | undefined,
+  };
+  const functions = runInNewContext(
+    `${source.slice(start, end)}\n${source.slice(joinStart, joinEnd)};
+    ({ joinMockServer, publishOperationFailureDiagnostic })`,
+    {
+      Buffer,
+      types,
+      AbortSignal,
+      completionCopySourceMissingResponseMatches,
+      knownFailureCode,
+      preparedDockerClient: {},
+      preparedDockerClientRequiresOuterHostRetirement: () => state.retired,
+      linuxBootMonotonicMilliseconds: () => state.now,
+      writeSync: (_fd: number, bytes: Buffer) => {
+        if (sinkFails) throw new Error("PRIVATE SINK");
+        output.push(bytes.toString("utf8"));
+      },
+      mockServerContainerIdentities: identities,
+      mockServerJoinDeadlines: new Map([[runId, 1000]]),
+      assertControlVolumeCurrent: () => {},
+      mockServerControls: new Map([[runId, {}]]),
+      openMockServerControl: () => ({ stop: () => ({ status: 200 }) }),
+      verifyMockServerControlBoundary: () => {},
+      assertJoinedMockServerTerminal: () => {},
+      createFinalMockServerLedgerDirectory: () => "/synthetic-ledger",
+      resolve: (_directory: string, name: string) =>
+        `/synthetic-ledger/${name}`,
+      dockerWithSignal: (args: string[]) => {
+        if (args[0] !== "cp") return { stdout: "" };
+        copies.push(args);
+        if (args[1]!.endsWith("requests.json")) {
+          // The observer must use the same held identity, never reread this map.
+          identities.set(runId, "f".repeat(64));
+          return { stdout: "" };
+        }
+        state.retired = true;
+        state.beforeFailure?.();
+        throw error;
+      },
+    },
+  ) as {
+    joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+    publishOperationFailureDiagnostic: (
+      slot: string,
+      error: unknown,
+      plan: object,
+      context: object,
+    ) => void;
+  };
+  return { functions, runId, output, copies, error, state };
+};
+
+describe("actual-source completion copy observation", () => {
+  it.each([false, true])(
+    "preserves the identical copy error and retirement when sinkFails=%s",
+    async (sinkFails) => {
+      const f = actualCompletionObservation(sinkFails);
+      await expect(
+        f.functions.joinMockServer(
+          { runId: f.runId },
+          new AbortController().signal,
+        ),
+      ).rejects.toBe(f.error);
+      expect(f.state.retired).toBe(true);
+      expect(f.copies).toEqual([
+        [
+          "cp",
+          `${completionContainerId}:/control/private/requests.json`,
+          "/synthetic-ledger/requests.json",
+        ],
+        [
+          "cp",
+          `${completionContainerId}:/control/private/requests.complete`,
+          "/synthetic-ledger/requests.complete",
+        ],
+      ]);
+      if (sinkFails) expect(f.output).toEqual([]);
+      else {
+        expect(f.output).toHaveLength(1);
+        expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+        const row: unknown = JSON.parse(
+          f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+        );
+        expect(row).toMatchObject({
+          slot: "join-ledger-complete",
+          runId: f.runId,
+          clientRetirementRequired: true,
+          process: { completionSourceMissingResponse: true },
+        });
+        for (const privateText of [
+          "PRIVATE",
+          completionContainerId,
+          "/control/private/",
+          completionResponse,
+        ])
+          expect(f.output[0]).not.toContain(privateText);
+      }
+    },
+  );
+  it.each(["abort", "expired"])(
+    "does not match when actual join context becomes %s",
+    async (failure) => {
+      const f = actualCompletionObservation();
+      const controller = new AbortController();
+      f.state.beforeFailure = () => {
+        if (failure === "abort") controller.abort();
+        else f.state.now = 1000;
+      };
+      await expect(
+        f.functions.joinMockServer({ runId: f.runId }, controller.signal),
+      ).rejects.toBe(f.error);
+      expect(f.output).toHaveLength(1);
+      const row: unknown = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      );
+      expect(row).toMatchObject({
+        process: { completionSourceMissingResponse: false },
+      });
+      expect(f.state.retired).toBe(true);
+    },
+  );
+  it("leaves candidate and other slots without the match-only field", () => {
+    const f = actualCompletionObservation();
+    for (const slot of [
+      "candidate-image-build",
+      "runtime-original",
+      "cleanup-images",
+    ])
+      f.functions.publishOperationFailureDiagnostic(
+        slot,
+        f.error,
+        { runId: f.runId },
+        {
+          signal: new AbortController().signal,
+          joinSignal: new AbortController().signal,
+          deadline: 1000,
+          containerId: completionContainerId,
+        },
+      );
+    expect(f.output).toHaveLength(3);
+    for (const row of f.output)
+      expect(row).not.toContain("completionSourceMissingResponse");
+  });
+});
 
 const storage = {
   cleanupFails: false,
