@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 import {
+  existsSync,
   chmodSync,
   linkSync,
   mkdtempSync,
@@ -9,8 +10,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +41,177 @@ const writeResult = (path: string, content = record()) => {
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);
 };
+
+const producerTail = (invalidLifecycle = false) => {
+  const root = createRoot();
+  const source = readFileSync(
+    join(import.meta.dirname, "../platform-fixture.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const processEvidence = {");
+  expect(start).toBeGreaterThan(0);
+  const oracle = readFileSync(
+    join(import.meta.dirname, "../process-platform-oracle.mjs"),
+    "utf8",
+  );
+  const authority = runInNewContext(
+    `${oracle.replaceAll("export const ", "const ")}; ({assertProcessFixtureEvidence, requiredLifecycle, requiredEventKinds, expectedIngestion, expectedRetrieval})`,
+    { Buffer },
+  ) as {
+    assertProcessFixtureEvidence: (value: unknown, input: unknown) => void;
+    requiredLifecycle: string[];
+    requiredEventKinds: string[];
+    expectedIngestion: [string, string, string, number, string][];
+    expectedRetrieval: [string, string, string, number, string][];
+  };
+  const rows = (entries: typeof authority.expectedIngestion) =>
+    entries.map(([operation, method, path, bodyBytes, outcome]) => ({
+      operation,
+      method,
+      path,
+      bodyBytes,
+      outcome,
+    }));
+  const child = new EventEmitter();
+  const stdout = Object.assign(new EventEmitter(), {
+    setEncoding: () => undefined,
+    destroy: () => undefined,
+  });
+  let spawned = 0;
+  const timers = new Map<object, () => void>();
+  const lines: string[] = [];
+  const result = runInNewContext(`(async () => { ${source.slice(start)} })()`, {
+    Buffer,
+    createHash,
+    basename,
+    join,
+    writeFileSync,
+    scenarioId,
+    artifactPath: "CLI.tgz",
+    observedLifecycle: invalidLifecycle ? [] : authority.requiredLifecycle,
+    partial: {
+      eventKinds: authority.requiredEventKinds,
+      modelLedger: {
+        ledgerVersion: 1,
+        scenarioId,
+        entries: [
+          {
+            routeId: "unmatched",
+            provider: "none",
+            method: "GET",
+            path: "/agentscope-unmatched",
+            bodyBytes: 0,
+          },
+        ],
+      },
+      destinationLedger: {
+        ledgerVersion: 1,
+        scenarioId,
+        ingestion: rows(authority.expectedIngestion),
+        retrieval: rows(authority.expectedRetrieval),
+      },
+    },
+    assertProcessFixtureEvidence: authority.assertProcessFixtureEvidence,
+    routeFixture: { routes: [] },
+    scenario: { scenarioId, modelRoutes: [] },
+    substrateCertificationCase: "leaked-child",
+    certificationReadiness: null,
+    randomBytes: () => Buffer.alloc(16, 0xab),
+    ledgerHome: root,
+    interactive: false,
+    trafficEvidence: (value: unknown) => value,
+    process: { execPath: "selected-node" },
+    console: { log: (value: string) => lines.push(value) },
+    spawn: (executable: string, arguments_: string[]) => {
+      expect(executable).toBe("selected-node");
+      expect(arguments_).toEqual([
+        "/opt/agentscope/fixtures/substrate-negative-process.mjs",
+        "leaked-child",
+        "ab".repeat(16),
+      ]);
+      spawned++;
+      return Object.assign(child, { stdout, unref: () => undefined });
+    },
+    setTimeout: (callback: () => void, milliseconds: number) => {
+      expect(milliseconds).toBe(5_000);
+      const id = {};
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id: object) => timers.delete(id),
+  }) as Promise<void>;
+  return { root, result, stdout, child, timers, lines, spawned: () => spawned };
+};
+
+describe("actual producer tail retains only after strict readiness", () => {
+  it("holds publication until exact split readiness, then the real reader authenticates", async () => {
+    const f = producerTail();
+    expect(f.spawned()).toBe(1);
+    expect(existsSync(join(f.root, "fixture-result.json"))).toBe(false);
+    expect(existsSync(join(f.root, "fixture-lifecycle.json"))).toBe(false);
+    expect(f.lines).toEqual([]);
+    f.stdout.emit("data", "AGENTSCOPE_NEGATIVE_READY=");
+    expect(existsSync(join(f.root, "fixture-result.json"))).toBe(false);
+    f.stdout.emit("data", `${"ab".repeat(16)}\n`);
+    await f.result;
+    expect(f.timers.size).toBe(0);
+    expect(
+      String(
+        readRetainedFixtureOutput(
+          join(f.root, "fixture-result.json"),
+          scenarioId,
+        ),
+      ).trim(),
+    ).toBe(f.lines[0]);
+    expect(f.lines[0]).toContain("AGENTSCOPE_FIXTURE_RESULT=");
+  });
+  it.each(["error", "exit", "timeout", "oversized", "mismatch"])(
+    "does not publish after %s readiness refusal",
+    async (kind) => {
+      const f = producerTail();
+      const refused = expect(f.result).rejects.toThrow();
+      if (kind === "timeout") {
+        for (const callback of f.timers.values()) callback();
+        f.timers.clear();
+      } else if (kind === "oversized" || kind === "mismatch") {
+        f.stdout.emit(
+          "data",
+          kind === "oversized" ? "X".repeat(100) : "PRIVATE wrong readiness",
+        );
+        // Existing source leaves mismatch pending until its original timeout.
+        for (const callback of f.timers.values()) callback();
+        f.timers.clear();
+      } else f.child.emit(kind, new Error("synthetic readiness refusal"));
+      await refused;
+      expect(f.timers.size).toBe(0);
+      expect(f.lines).toEqual([]);
+      expect(() =>
+        readRetainedFixtureOutput(
+          join(f.root, "fixture-result.json"),
+          scenarioId,
+        ),
+      ).toThrow("integration.runner.fixture-result");
+    },
+  );
+  it("strict oracle rejects before spawn and exclusive writer never replaces existing bytes", async () => {
+    const invalid = producerTail(true);
+    await expect(invalid.result).rejects.toThrow(
+      "integration.fixture.oracle-lifecycle",
+    );
+    expect(invalid.spawned()).toBe(0);
+    expect(invalid.timers.size).toBe(0);
+    const f = producerTail();
+    writeResult(join(f.root, "fixture-result.json"), "existing owned bytes");
+    const refused = expect(f.result).rejects.toThrow();
+    f.stdout.emit("data", `AGENTSCOPE_NEGATIVE_READY=${"ab".repeat(16)}\n`);
+    await refused;
+    expect(readFileSync(join(f.root, "fixture-result.json"), "utf8")).toBe(
+      "existing owned bytes",
+    );
+    expect(f.lines).toEqual([]);
+    expect(f.timers.size).toBe(0);
+  });
+});
 
 const returnedHeadlessFixture = async (
   certificationCase: string,
