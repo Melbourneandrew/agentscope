@@ -124,17 +124,43 @@ const diagnosticBuffer = (diagnosticBytes?: number) =>
             : bytes;
         },
       };
+const collectorPlan = () => ({
+  runId: "a".repeat(16),
+  collectorName: "owned",
+  scenarioId: "codex-tui-trace-smoke",
+});
+const collectorSnapshotOutput = (failure: string, scenarioId: string) => ({
+  stdout:
+    failure === "snapshot"
+      ? "PRIVATE INVALID"
+      : JSON.stringify({
+          observationVersion: 2,
+          scenarioId,
+          batches: ["e30="],
+          aggregateBytes: 2,
+        }),
+});
+const assertCollectorExec = (args: string[], options: unknown) => {
+  expect(args.slice(0, 5)).toEqual([
+    "exec",
+    completionContainerId,
+    "/usr/local/bin/node",
+    "--input-type=module",
+    "-e",
+  ]);
+  expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
+};
 const actualCollectorObservation = (
   failure: string,
   sinkFails = false,
   execError?: Error,
   diagnosticBytes?: number,
+  deferredExec?: {
+    result: Promise<{ stdout: string }>;
+    entered(): void;
+  },
 ) => {
-  const plan = {
-    runId: "a".repeat(16),
-    collectorName: "owned",
-    scenarioId: "codex-tui-trace-smoke",
-  };
+  const plan = collectorPlan();
   const output: string[] = [],
     calls: string[][] = [];
   const original = new Error("PRIVATE PROCESS FAILURE");
@@ -193,33 +219,35 @@ const actualCollectorObservation = (
       )
         return { stdout: "", stderr: "" };
       if (args[0] === "exec") {
-        expect(args.slice(0, 5)).toEqual([
-          "exec",
-          completionContainerId,
-          "/usr/local/bin/node",
-          "--input-type=module",
-          "-e",
-        ]);
-        expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
+        assertCollectorExec(args, options);
+        if (deferredExec) {
+          deferredExec.entered();
+          return deferredExec.result;
+        }
         if (failure === "https-exec")
           return Promise.reject(execError ?? original);
         if (failure === "expired") now = 1000;
-        return {
-          stdout:
-            failure === "snapshot"
-              ? "PRIVATE INVALID"
-              : JSON.stringify({
-                  observationVersion: 2,
-                  scenarioId: plan.scenarioId,
-                  batches: ["e30="],
-                  aggregateBytes: 2,
-                }),
-        };
+        return collectorSnapshotOutput(failure, plan.scenarioId);
       }
       if (args[1] === "wait") {
         if (failure === "terminal-wait") throw original;
         if (failure === "expired") throw original;
         return { stdout: "0\n" };
+      }
+      if (args[1] === "kill") {
+        expect(args).toEqual([
+          "container",
+          "kill",
+          "--signal",
+          "SIGTERM",
+          completionContainerId,
+        ]);
+        expect(options).toMatchObject({
+          terminal: true,
+          mutationCapable: true,
+        });
+        if (failure === "shutdown" || failure === "expired") throw original;
+        return { stdout: `${completionContainerId}\n` };
       }
       if (failure === "terminal-witness") return { stdout: "[]" };
       return { stdout: JSON.stringify([collectorTerminal]) };
@@ -239,6 +267,83 @@ const actualCollectorObservation = (
 };
 const nativeHttpsError = (properties: object) =>
   Object.assign(new Error("PRIVATE NATIVE FAILURE"), properties);
+describe("collector reader terminal before producer shutdown", () => {
+  it.each(["https-exec", "snapshot"])(
+    "does not request normal shutdown after %s failure",
+    async (failure) => {
+      const f = actualCollectorObservation(failure);
+      await expect(
+        f.functions.joinCollectorObservations(
+          f.plan,
+          new AbortController().signal,
+          1000,
+          f.observe,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.calls.some((args) => args[1] === "kill")).toBe(false);
+    },
+  );
+  it("preserves failed shutdown and refuses to continue to terminal success", async () => {
+    const f = actualCollectorObservation("shutdown");
+    await expect(
+      f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        f.observe,
+      ),
+    ).rejects.toBe(f.original);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "kill"]);
+  });
+  it("does not signal while the exec reader is live and orders shutdown after validation", async () => {
+    let release!: (output: { stdout: string }) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const result = new Promise<{ stdout: string }>((resolve) => {
+      release = resolve;
+    });
+    const f = actualCollectorObservation(
+      "success",
+      false,
+      undefined,
+      undefined,
+      { result, entered },
+    );
+    const joined = f.functions.joinCollectorObservations(
+      f.plan,
+      new AbortController().signal,
+      1000,
+      f.observe,
+    );
+    await started;
+    expect(f.calls.map((args) => args[0])).toEqual(["exec"]);
+    release({
+      stdout: JSON.stringify({
+        observationVersion: 2,
+        scenarioId: f.plan.scenarioId,
+        batches: ["e30="],
+        aggregateBytes: 2,
+      }),
+    });
+    expect(await joined).toEqual([Buffer.from("{}")]);
+    expect(f.calls[1]).toEqual([
+      "container",
+      "kill",
+      "--signal",
+      "SIGTERM",
+      completionContainerId,
+    ]);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "kill", "wait", "inspect"]);
+  });
+});
 describe("actual collector HTTPS native disposition", () => {
   it.each([
     [
@@ -521,7 +626,7 @@ describe("actual collector failure phase observation", () => {
     ).toEqual([Buffer.from("{}")]);
     expect(
       f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
-    ).toEqual(["exec", "wait", "inspect"]);
+    ).toEqual(["exec", "kill", "wait", "inspect"]);
     expect(f.output).toEqual([]);
   });
   it("preserves the original remaining deadline when exec work consumes it", async () => {

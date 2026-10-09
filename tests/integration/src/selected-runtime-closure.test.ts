@@ -46,6 +46,7 @@ it("uses ordinary Node CA and hostname verification on the real TLS receiver", a
     URL,
     console: { log: () => undefined },
     process: {
+      once: () => undefined,
       argv: ["node", "destination-server.mjs", "ingestion"],
       env: {
         AGENTSCOPE_SCENARIO_ID: "codex-tui-trace-smoke",
@@ -148,6 +149,21 @@ const collectorFixture = () => {
       "",
     );
   let closes = 0;
+  let terminate!: () => void;
+  const process = {
+    exitCode: 0,
+    once: (signal: string, listener: () => void) => {
+      expect(signal).toBe("SIGTERM");
+      terminate = listener;
+    },
+    argv: ["node", "destination-server.mjs", "ingestion"],
+    env: {
+      AGENTSCOPE_SCENARIO_ID: "codex-tui-trace-smoke",
+      AGENTSCOPE_MAXIMUM_REQUEST_BYTES: "1048576",
+      AGENTSCOPE_COLLECTOR_TLS_CERT: "synthetic-cert",
+      AGENTSCOPE_COLLECTOR_TLS_KEY: "synthetic-key",
+    },
+  };
   const server = {
     listen: () => undefined,
     close: () => {
@@ -158,15 +174,7 @@ const collectorFixture = () => {
     Buffer,
     URL,
     console: { log: () => undefined },
-    process: {
-      argv: ["node", "destination-server.mjs", "ingestion"],
-      env: {
-        AGENTSCOPE_SCENARIO_ID: "codex-tui-trace-smoke",
-        AGENTSCOPE_MAXIMUM_REQUEST_BYTES: "1048576",
-        AGENTSCOPE_COLLECTOR_TLS_CERT: "synthetic-cert",
-        AGENTSCOPE_COLLECTOR_TLS_KEY: "synthetic-key",
-      },
-    },
+    process,
     createServer: () => {
       throw new Error("unexpected-insecure-server");
     },
@@ -198,21 +206,94 @@ const collectorFixture = () => {
       yield* chunks;
     },
   });
-  const receive = (input: CollectorRequest) => {
+  const receive = (input: CollectorRequest, sendFails = false) => {
     const result = { status: 0, text: "" };
     const settled = receiver.handleRequest(input, {
       writeHead: (status: number) => {
         result.status = status;
       },
       end: (text: string) => {
+        if (sendFails) throw new Error("PRIVATE SEND FAILURE");
         result.text = text;
       },
     });
     return { result, settled };
   };
-  return { request, receive, closes: () => closes };
+  return {
+    request,
+    receive,
+    closes: () => closes,
+    terminate: () => {
+      terminate();
+    },
+    exitCode: () => process.exitCode,
+  };
 };
 const emittedRoot = resolve(integrationRoot, "../../packages/testkit/dist");
+describe("collector guarded ordinary termination", () => {
+  it("makes unsealed termination nonzero", () => {
+    const fixture = collectorFixture();
+    fixture.terminate();
+    expect(fixture.closes()).toBe(1);
+    expect(fixture.exitCode()).toBe(1);
+  });
+  it("makes partial snapshot send termination nonzero", async () => {
+    const fixture = collectorFixture();
+    const snapshot = fixture.receive(
+      fixture.request("GET", "/observations", "127.0.0.1"),
+      true,
+    );
+    await expect(snapshot.settled).rejects.toThrow("PRIVATE SEND FAILURE");
+    fixture.terminate();
+    expect(fixture.closes()).toBe(1);
+    expect(fixture.exitCode()).toBe(1);
+  });
+  it("makes failed collector termination nonzero after its refused snapshot", async () => {
+    const fixture = collectorFixture();
+    const request = fixture.request(
+      "POST",
+      "/api/public/otel/v1/traces",
+      "172.20.0.2",
+      [Buffer.from("{}")],
+    );
+    request.headers.authorization = "Basic invalid";
+    await fixture.receive(request).settled;
+    const snapshot = fixture.receive(
+      fixture.request("GET", "/observations", "127.0.0.1"),
+    );
+    await snapshot.settled;
+    expect(snapshot.result.status).toBe(409);
+    fixture.terminate();
+    expect(fixture.exitCode()).toBe(1);
+  });
+});
+it("keeps the sealed producer alive while its snapshot reader has not terminated", async () => {
+  const fixture = collectorFixture();
+  const body = Buffer.from('{"synthetic":true}');
+  await fixture.receive(
+    fixture.request("POST", "/api/public/otel/v1/traces", "172.20.0.2", [body]),
+  ).settled;
+  const snapshot = fixture.receive(
+    fixture.request("GET", "/observations", "127.0.0.1"),
+  );
+  await snapshot.settled;
+  expect(snapshot.result.status).toBe(200);
+  expect(JSON.parse(snapshot.result.text) as unknown).toMatchObject({
+    observationVersion: 2,
+    batches: [body.toString("base64")],
+    aggregateBytes: body.byteLength,
+  });
+  // Snapshot publication is not proof that the same-container reader exited.
+  expect(fixture.closes()).toBe(0);
+  const late = fixture.receive(
+    fixture.request("POST", "/api/public/otel/v1/traces", "172.20.0.2", [body]),
+  );
+  await late.settled;
+  expect(late.result.status).toBe(409);
+  fixture.terminate();
+  expect(fixture.closes()).toBe(1);
+  expect(fixture.exitCode()).toBe(0);
+});
 const parse = (text: string) =>
   ts.createSourceFile("fixture.js", text, ts.ScriptTarget.ESNext, true);
 
@@ -415,7 +496,10 @@ describe("independent collector socket custody", () => {
       aggregateBytes: body.length,
     });
     expect(terminal.result.status).toBe(200);
+    expect(fixture.closes()).toBe(0);
+    fixture.terminate();
     expect(fixture.closes()).toBe(1);
+    expect(fixture.exitCode()).toBe(0);
   });
   it("drains all admitted handlers without accepting new work after the cut", async () => {
     const fixture = collectorFixture();
@@ -442,7 +526,10 @@ describe("independent collector socket custody", () => {
     release();
     await Promise.all([pending.settled, terminal.settled]);
     expect(terminal.result.status).toBe(200);
+    expect(fixture.closes()).toBe(0);
+    fixture.terminate();
     expect(fixture.closes()).toBe(1);
+    expect(fixture.exitCode()).toBe(0);
   });
   it("refuses overflow or failed authentication without publishing original bodies", async () => {
     for (const overflow of [false, true]) {
