@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 import {
   MODEL_PROTOCOL_ROUTES,
   type ModelProtocolRoute,
-} from "../../../packages/testkit/src/model-routes.js";
+} from "@agentscope/testkit";
 import {
   mockServerTrafficRow,
   snapshotMockServerTraffic,
