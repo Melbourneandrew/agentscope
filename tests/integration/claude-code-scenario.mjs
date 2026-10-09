@@ -296,6 +296,33 @@ const waitForClaudeModelPair = async (control, turn, deadline) => {
   return { pair, rows };
 };
 
+// A delivered second request is not a delivered final response. Observe the
+// actual final native record before allowing the existing PTY owner to exit.
+// This trigger is not evidence: a strict independent reread follows the join.
+const waitForClaudeNativeFinalTurn = async (turn, deadline) => {
+  const earlyExit = turn.then(() => {
+    throw new Error("integration.claude-code.native-early-exit");
+  });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const observed = await Promise.race([
+      Promise.resolve().then(() =>
+        observeClaudeCodeNativeTurn(claudeCodeReadStimulus, true),
+      ),
+      earlyExit,
+    ]);
+    if (observed !== undefined) return;
+    const remaining = deadline - monotonicNow();
+    if (remaining <= 0 || attempt === 4)
+      throw new Error("integration.claude-code.native-final-turn");
+    await Promise.race([
+      new Promise((resolve) =>
+        setTimeout(resolve, Math.floor(remaining / (5 - attempt))),
+      ),
+      earlyExit,
+    ]);
+  }
+};
+
 // This is the existing selected PTY scenario process, not a second driver.
 // It emits only native partial evidence; the outer authenticated collector
 // must independently join four real OTLP graphs before completing it.
@@ -360,6 +387,7 @@ export const runClaudeCodeScenario = async () => {
     deadline,
   );
   const { pair, rows } = await waitForClaudeModelPair(control, turn, deadline);
+  await waitForClaudeNativeFinalTurn(turn, deadline);
   await publishClaudeMarker(
     `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`,
   );

@@ -247,59 +247,59 @@ describe("Claude native correlation predicate (synthetic only)", () => {
   });
 });
 
-describe("Claude held native transcript projection (synthetic records only)", () => {
-  const sessionId = "01234567-89ab-cdef-0123-456789abcdef";
-  const nativeRecords = () => {
-    const record = (type: string, content: unknown, model?: string) => ({
-      type,
-      sessionId,
-      cwd: "/worktree",
-      version: "2.1.245",
-      isSidechain: false,
-      message: { content, ...(model === undefined ? {} : { model }) },
-    });
-    return [
-      record("user", claudeCodeReadStimulus.prompt),
-      record(
-        "assistant",
-        [
-          {
-            type: "tool_use",
-            id: "toolu_agentscope_claude_read_1",
-            name: "Read",
-            input: { file_path: claudeCodeReadStimulus.path },
-          },
-        ],
-        "synthetic-model",
-      ),
-      record("user", [
+const sessionId = "01234567-89ab-cdef-0123-456789abcdef";
+const nativeRecords = () => {
+  const record = (type: string, content: unknown, model?: string) => ({
+    type,
+    sessionId,
+    cwd: "/worktree",
+    version: "2.1.245",
+    isSidechain: false,
+    message: { content, ...(model === undefined ? {} : { model }) },
+  });
+  return [
+    record("user", claudeCodeReadStimulus.prompt),
+    record(
+      "assistant",
+      [
         {
-          type: "tool_result",
-          tool_use_id: "toolu_agentscope_claude_read_1",
-          content: "synthetic-private-body",
+          type: "tool_use",
+          id: "toolu_agentscope_claude_read_1",
+          name: "Read",
+          input: { file_path: claudeCodeReadStimulus.path },
         },
-      ]),
-      record("assistant", [{ type: "text", text: "DONE" }], "synthetic-model"),
-    ];
-  };
-  const observe = async (records: unknown[]) => {
-    const { readFileSync } = await vi.importActual<typeof NodeFs>("node:fs");
-    const source = readFileSync(
-      new URL("../claude-code-platform-oracle.mjs", import.meta.url),
-      "utf8",
-    );
-    const start = source.indexOf("const assertClaudeNativeRecord =");
-    const end = source.indexOf(
-      "// This is one native correlation predicate",
-      start,
-    );
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    return runInNewContext(
-      `${source.slice(start, end)}; inspectClaudeCodeNativeRecords(records, sessionId, claudeCodeReadStimulus)`,
-      { records, sessionId, claudeCodeReadStimulus },
-    ) as unknown;
-  };
+      ],
+      "synthetic-model",
+    ),
+    record("user", [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_agentscope_claude_read_1",
+        content: "synthetic-private-body",
+      },
+    ]),
+    record("assistant", [{ type: "text", text: "DONE" }], "synthetic-model"),
+  ];
+};
+const observe = async (records: unknown[], pending = false) => {
+  const { readFileSync } = await vi.importActual<typeof NodeFs>("node:fs");
+  const source = readFileSync(
+    new URL("../claude-code-platform-oracle.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const assertClaudeNativeRecord =");
+  const end = source.indexOf(
+    "// This is one native correlation predicate",
+    start,
+  );
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return runInNewContext(
+    `${source.slice(start, end)}; inspectClaudeCodeNativeRecords(records, sessionId, claudeCodeReadStimulus, pending)`,
+    { records, sessionId, claudeCodeReadStimulus, pending },
+  ) as unknown;
+};
+describe("Claude held native transcript projection (synthetic records only)", () => {
   it("retains only actual native identities/model and discards all bodies", async () => {
     const result = await observe(nativeRecords());
     expect(result).toEqual({
@@ -316,6 +316,33 @@ describe("Claude held native transcript projection (synthetic records only)", ()
     const records = nativeRecords();
     for (const record of records) delete record.message.model;
     expect(await observe(records)).not.toHaveProperty("nativeModelName");
+  });
+  it("pending accepts only a validated incomplete prefix, never malformed native facts", async () => {
+    expect(await observe(nativeRecords().slice(0, -1), true)).toBeUndefined();
+    expect(await observe(nativeRecords(), true)).toMatchObject({
+      nativeSessionId: sessionId,
+    });
+    const hostile = nativeRecords().slice(0, -1);
+    hostile[1]!.sessionId = "foreign";
+    await expect(observe(hostile, true)).rejects.toThrow(
+      "integration.claude-code.native-record",
+    );
+    const failed = nativeRecords().slice(0, -1);
+    failed[2]!.message.content = [
+      {
+        type: "tool_result",
+        tool_use_id: "toolu_agentscope_claude_read_1",
+        is_error: true,
+      },
+    ];
+    await expect(observe(failed, true)).rejects.toThrow(
+      "integration.claude-code.native-tool-result",
+    );
+    const reordered = nativeRecords().slice(0, -1);
+    [reordered[1], reordered[2]] = [reordered[2]!, reordered[1]!];
+    await expect(observe(reordered, true)).rejects.toThrow(
+      "integration.claude-code.native-turn",
+    );
   });
   it("refuses wrong session/version/cwd, tool IDs, failed results and reordered turns", async () => {
     for (const replacement of [

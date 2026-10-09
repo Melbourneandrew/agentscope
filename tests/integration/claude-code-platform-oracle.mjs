@@ -185,9 +185,12 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
     modelRequestBodySha256: Object.freeze([first.digest, second.digest]),
   });
 };
-// Called only after the official child is terminally joined. Raw native bodies
-// remain ephemeral; these independently observed facts are not hook payloads.
-export const observeClaudeCodeNativeTurn = (claudeCodeReadStimulus) => {
+// Pending observation only gates terminal input; authoritative evidence is
+// independently reread after the official child is joined. Bodies stay local.
+export const observeClaudeCodeNativeTurn = (
+  claudeCodeReadStimulus,
+  pending = false,
+) => {
   const opened = [];
   const openDirectory = (path) => {
     const descriptor = openSync(
@@ -275,6 +278,7 @@ export const observeClaudeCodeNativeTurn = (claudeCodeReadStimulus) => {
       lines.map((line) => JSON.parse(line)),
       files[0].slice(0, -6),
       claudeCodeReadStimulus,
+      pending,
     );
   } finally {
     for (const descriptor of opened.reverse()) closeSync(descriptor);
@@ -340,6 +344,7 @@ const inspectClaudeCodeNativeRecords = (
   records,
   sessionId,
   claudeCodeReadStimulus,
+  pending = false,
 ) => {
   const state = { toolIndex: -1, resultIndex: -1, finalIndex: -1 };
   let promptSeen = false;
@@ -366,6 +371,13 @@ const inspectClaudeCodeNativeRecords = (
         claudeCodeReadStimulus,
       );
   }
+  if (
+    (state.toolIndex >= 0 && !promptSeen) ||
+    (state.resultIndex >= 0 && state.resultIndex <= state.toolIndex) ||
+    (state.resultIndex >= 0 && state.toolIndex < 0)
+  )
+    throw new Error("integration.claude-code.native-turn");
+  if (pending && state.finalIndex < 0) return undefined;
   if (
     !promptSeen ||
     state.toolIndex < 0 ||
