@@ -5,6 +5,7 @@ import {
   fchmodSync,
   openSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { promisify } from "node:util";
@@ -449,10 +450,17 @@ export const runClaudeCodeScenario = async () => {
     { flag: "wx", mode: 0o600 },
   );
 };
-if (
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
-)
+const isClaudeScenarioMain = () => {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return (
+      import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+    );
+  } catch {
+    return false;
+  }
+};
+if (isClaudeScenarioMain())
   try {
     await runClaudeCodeScenario();
   } catch {

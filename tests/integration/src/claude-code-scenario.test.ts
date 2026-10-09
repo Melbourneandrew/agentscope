@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type realpathSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const synthetic = vi.hoisted(() => ({
@@ -16,6 +16,11 @@ const synthetic = vi.hoisted(() => ({
 vi.mock("node:fs", async () => ({
   constants: (await vi.importActual<{ constants: typeof constants }>("node:fs"))
     .constants,
+  realpathSync: (
+    await vi.importActual<{
+      realpathSync: typeof realpathSync;
+    }>("node:fs")
+  ).realpathSync,
   readFileSync: () => synthetic.uptime,
   openSync: (path: string, flags: number, mode: number) => {
     if (synthetic.writeError) throw new Error("synthetic-existing-path");
