@@ -1800,6 +1800,42 @@ const collectorHttpsFailureObservation = (error) => {
     ) ?? null
   );
 };
+const collectorHttpsErrorObservation = (error) => {
+  let code = "unknown",
+    disposition = "unknown";
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    code = knownFailureCode(error);
+    const own = (key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(error, key);
+      return descriptor && Object.hasOwn(descriptor, "value")
+        ? descriptor.value
+        : undefined;
+    };
+    const exit = own("code"),
+      signal = own("signal"),
+      killed = own("killed");
+    if (exit === "ABORT_ERR") disposition = "native-aborted";
+    else if (killed === true) disposition = "native-killed";
+    else if (typeof signal === "string" && signal.length > 0)
+      disposition = "native-signaled";
+    else if (signal === null && killed === false && exit === 1)
+      disposition = "native-exit-one";
+    else if (
+      signal === null &&
+      killed === false &&
+      Number.isSafeInteger(exit) &&
+      exit >= 0 &&
+      exit <= 255
+    )
+      disposition = "native-nonstandard";
+    else if (code !== "unknown") disposition = "known-refusal";
+  }
+  return Object.freeze({
+    httpsFailure: collectorHttpsFailureObservation(error),
+    code,
+    disposition,
+  });
+};
 const joinCollectorObservations = async (
   plan,
   signal,
@@ -1844,7 +1880,7 @@ const joinCollectorObservations = async (
       { terminal: true, maxBuffer: 12 * 1024 * 1024 },
     );
   } catch (error) {
-    observe("https-exec", collectorHttpsFailureObservation(error));
+    observe("https-exec", collectorHttpsErrorObservation(error));
     // Native exec errors can contain original received bytes; never propagate
     // output or cause through the controller's diagnostic error boundary.
     throw refuse();
@@ -2465,9 +2501,31 @@ const publishOperationFailureDiagnostic = (
                         "response-error",
                         "http-rejected",
                         "output-bound",
-                      ].includes(processContext.collectorHttpsFailure)
-                        ? processContext.collectorHttpsFailure
+                      ].includes(
+                        processContext.collectorHttpsFailure?.httpsFailure,
+                      )
+                        ? processContext.collectorHttpsFailure.httpsFailure
                         : null,
+                      httpsCode: knownFailureCode(
+                        new Error(
+                          typeof processContext.collectorHttpsFailure?.code ===
+                            "string"
+                            ? processContext.collectorHttpsFailure.code
+                            : "",
+                        ),
+                      ),
+                      httpsDisposition: [
+                        "known-refusal",
+                        "native-aborted",
+                        "native-killed",
+                        "native-signaled",
+                        "native-exit-one",
+                        "native-nonstandard",
+                      ].includes(
+                        processContext.collectorHttpsFailure?.disposition,
+                      )
+                        ? processContext.collectorHttpsFailure.disposition
+                        : "unknown",
                     }
                   : {}),
               },
