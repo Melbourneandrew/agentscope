@@ -140,6 +140,58 @@ const fixture = () => ({
   },
 });
 
+it("refuses hostile consumed metadata without invoking getters or proxy traps", () => {
+  const input = fixture();
+  const genuine = componentFixture();
+  let observed = 0;
+  const getter = () => {
+    observed++;
+    throw new Error("PRIVATE_RAW_CANARY");
+  };
+  const rootAccessor = Object.defineProperty({ ...genuine }, "harnessId", {
+    get: getter,
+  });
+  const authorityAccessor = Object.defineProperty({}, "status", {
+    get: getter,
+  });
+  const proxy = new Proxy(genuine, { getPrototypeOf: getter, ownKeys: getter });
+  const revoked = Proxy.revocable(genuine, {});
+  revoked.revoke();
+  for (const value of [
+    proxy,
+    revoked.proxy,
+    rootAccessor,
+    {
+      ...genuine,
+      governance: {
+        ...genuine.governance,
+        provenance: {
+          ...genuine.governance.provenance,
+          artifactAuthority: authorityAccessor,
+        },
+      },
+    },
+    { ...genuine, fixtureVersion: 2 },
+    { ...genuine, governance: { ...genuine.governance, representative: [] } },
+  ])
+    expect(() =>
+      compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
+  expect(observed).toBe(0);
+});
+
+it("consumes reviewed governance identity, not the test-only native payload grammar", () => {
+  const input = fixture();
+  const { fixtureVersion, harnessId, harnessVersion, governance } =
+    input.componentFixture;
+  const seed = compileHarnessAdmissionSeed({
+    ...input,
+    componentFixture: { fixtureVersion, harnessId, harnessVersion, governance },
+  });
+  expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+  expect(seed.component.fixtureDigest).toBe(digest("3"));
+});
+
 // eslint-disable-next-line max-lines-per-function -- complete bridge matrix
 describe("real harness scenario admission bridge", () => {
   it("refuses missing, synthetic, foreign and unbound component fixtures", () => {

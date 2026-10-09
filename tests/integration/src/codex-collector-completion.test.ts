@@ -75,9 +75,12 @@ it("parses only the same bounded descriptor bytes bound to the reviewed fixture 
       closeSync: (fd: number) => {
         closed.push(fd);
       },
-      parseHarnessSanitizedFixture: (value: unknown) => {
-        parsed.push(value);
-        return value;
+      JSON: {
+        parse: (text: string) => {
+          const value: unknown = JSON.parse(text);
+          parsed.push(value);
+          return value;
+        },
       },
     },
   ) as (value: unknown) => unknown;
