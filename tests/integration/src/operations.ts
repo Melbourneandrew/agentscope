@@ -103,10 +103,29 @@ const certificationReadiness = z.union([
     challengeSha256: z.string().regex(/^sha256:[a-f\d]{64}$/u),
   }),
 ]);
+const codexTranscriptRange = z
+  .strictObject({
+    nativeFormat: z.literal("codex-0.149.1-rollout-jsonl"),
+    boundaryKind: z.literal("transcript-range"),
+    positionKind: z.literal("line"),
+    availableStartPosition: z.literal(0),
+    exclusiveEndPosition: z.number().int().min(1).max(4096),
+    sessionMetaPosition: z.number().int().min(0).max(4095),
+    turnContextPosition: z.number().int().min(0).max(4095),
+    taskCompletePosition: z.number().int().min(0).max(4095),
+    sourceGeneration: z.null(),
+  })
+  .refine(
+    (value) =>
+      value.sessionMetaPosition < value.turnContextPosition &&
+      value.turnContextPosition < value.taskCompletePosition &&
+      value.taskCompletePosition < value.exclusiveEndPosition,
+  );
 const nativeContext = {
   nativeSessionId: z.string().min(1).max(256),
   nativeTurnId: z.string().min(1).max(256),
   nativeModelName: z.string().min(1).max(256),
+  nativeTranscriptRange: codexTranscriptRange.optional(),
 };
 const harnessObservation = z
   .strictObject({

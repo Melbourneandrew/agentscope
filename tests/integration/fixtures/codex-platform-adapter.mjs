@@ -49,10 +49,50 @@ const translateModelRequest = (request) => {
 // exclusively to the independently checksum-bound oracle.
 const validateNativeIdentity = (native) => {
   if (
-    !exactKeys(native, ["sessionId", "turnId", "modelName"]) ||
+    !exactKeys(native, [
+      "sessionId",
+      "turnId",
+      "modelName",
+      ...(native?.nativeTranscriptRange === undefined
+        ? []
+        : ["nativeTranscriptRange"]),
+    ]) ||
     [native.sessionId, native.turnId, native.modelName].some(
       (value) => !boundedString(value, 256) || value.length === 0,
     )
+  )
+    throw new Error("integration.codex.adapter-observation");
+  if (native.nativeTranscriptRange !== undefined)
+    validateTranscriptRange(native.nativeTranscriptRange);
+};
+const validateTranscriptRange = (range) => {
+  if (
+    !exactKeys(range, [
+      "nativeFormat",
+      "boundaryKind",
+      "positionKind",
+      "availableStartPosition",
+      "exclusiveEndPosition",
+      "sessionMetaPosition",
+      "turnContextPosition",
+      "taskCompletePosition",
+      "sourceGeneration",
+    ]) ||
+    range.nativeFormat !== "codex-0.149.1-rollout-jsonl" ||
+    range.boundaryKind !== "transcript-range" ||
+    range.positionKind !== "line" ||
+    range.availableStartPosition !== 0 ||
+    range.sourceGeneration !== null ||
+    [
+      range.sessionMetaPosition,
+      range.turnContextPosition,
+      range.taskCompletePosition,
+      range.exclusiveEndPosition,
+    ].some((position) => !Number.isSafeInteger(position) || position < 0) ||
+    range.exclusiveEndPosition > 4096 ||
+    range.sessionMetaPosition >= range.turnContextPosition ||
+    range.turnContextPosition >= range.taskCompletePosition ||
+    range.taskCompletePosition >= range.exclusiveEndPosition
   )
     throw new Error("integration.codex.adapter-observation");
 };
@@ -165,7 +205,18 @@ const translateObservations = (input, nativeOnly) => {
     mediation: Object.freeze({ ...mediation }),
     modelRequests: Object.freeze(modelRequests),
     ...(nativeOnly
-      ? { native: Object.freeze({ ...native }) }
+      ? {
+          native: Object.freeze({
+            ...native,
+            ...(native.nativeTranscriptRange === undefined
+              ? {}
+              : {
+                  nativeTranscriptRange: Object.freeze({
+                    ...native.nativeTranscriptRange,
+                  }),
+                }),
+          }),
+        }
       : {
           search: Object.freeze({ ...search }),
           retrieval: Object.freeze({

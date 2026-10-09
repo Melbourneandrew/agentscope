@@ -496,6 +496,7 @@ const {
   codexStopHookReadyForExit,
   inspectCodexRootHookLifecycle,
   codexSessionIdentity,
+  projectCodexPostJoinTranscript,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
   inspectDiagnosticBeforeDeadline,
@@ -863,6 +864,7 @@ const waitForCodexStopBeforeExit = async (traceDeadline) => {
 };
 let completed = false;
 let codexLedgerBaseline;
+let codexTerminalLedger;
 let codexSessionId;
 let codexTurnId;
 try {
@@ -1120,7 +1122,8 @@ try {
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
-  ({ turnId: codexTurnId } = await waitForCodexTurnTerminal(traceDeadline));
+  ({ turnId: codexTurnId, records: codexTerminalLedger } =
+    await waitForCodexTurnTerminal(traceDeadline));
   recordInteractivePhase("trace-terminal");
   // The rollout can record a completed turn while Codex is still executing
   // its Stop hook. Releasing /exit at that point can race the TUI composer.
@@ -1160,6 +1163,20 @@ try {
     throw error;
   }
   recordInteractivePhase("tui-joined");
+  const nativeTranscriptRange = inspectDiagnosticBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    inspect: () =>
+      projectCodexPostJoinTranscript({
+        records: readCodexSessionLedgerRecords(homeDescriptor),
+        baseline: codexLedgerBaseline,
+        observedRecords: codexTerminalLedger,
+        expectedMessage: expectedAssistantMessage,
+        sessionId: codexSessionId,
+        turnId: codexTurnId,
+        modelName: "fixture-model",
+      }),
+  });
   const rootHookLifecycle = inspectDiagnosticBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1225,6 +1242,7 @@ try {
       sessionId: codexSessionId,
       turnId: codexTurnId,
       modelName: "fixture-model",
+      nativeTranscriptRange,
     },
     doctor: { completion: "complete", ...doctor },
     uninstall: {

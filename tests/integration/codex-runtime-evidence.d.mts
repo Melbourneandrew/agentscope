@@ -206,6 +206,26 @@ export function codexSessionIdentity(
   ledgers: readonly CodexSessionLedgerRecord[],
 ): string;
 
+export function projectCodexPostJoinTranscript(input: {
+  records: readonly CodexSessionLedgerRecord[];
+  baseline: readonly CodexSessionLedgerRecord[];
+  observedRecords: readonly CodexSessionLedgerRecord[];
+  expectedMessage: string;
+  sessionId: string;
+  turnId: string;
+  modelName: string;
+}): Readonly<{
+  nativeFormat: "codex-0.149.1-rollout-jsonl";
+  boundaryKind: "transcript-range";
+  positionKind: "line";
+  availableStartPosition: 0;
+  exclusiveEndPosition: number;
+  sessionMetaPosition: number;
+  turnContextPosition: number;
+  taskCompletePosition: number;
+  sourceGeneration: null;
+}>;
+
 export interface CodexSessionLedgerRecord {
   readonly relativePath: string;
   readonly dev: bigint;
