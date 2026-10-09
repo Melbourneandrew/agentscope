@@ -1,12 +1,13 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { performance } from "node:perf_hooks";
 
 const execute = promisify(execFile);
 const maximumOutputBytes = 8 * 1024 * 1024;
+let verificationStage = "entry";
 const fail = () => {
   throw new Error("integration.harness-material-command.failed");
 };
@@ -55,6 +56,7 @@ const gpgArguments = (home) => [
 ];
 
 const verifyNpm = async (root, policy) => {
+  verificationStage = "npm-input";
   const packages = Array.isArray(policy.packages) ? policy.packages : fail();
   writeFileSync(
     resolve(root, "package.json"),
@@ -75,6 +77,7 @@ const verifyNpm = async (root, policy) => {
   );
   const environment = npmEnvironment(resolve(root, "home"), policy.registry);
   const npm = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+  verificationStage = "npm-version";
   const { stdout: npmVersion } = await execute(
     "/usr/local/bin/node",
     [npm, "--version"],
@@ -86,6 +89,7 @@ const verifyNpm = async (root, policy) => {
     },
   );
   if (npmVersion !== `${policy.verifierNpmVersion}\n`) fail();
+  verificationStage = "npm-install";
   await execute(
     "/usr/local/bin/node",
     [
@@ -99,6 +103,7 @@ const verifyNpm = async (root, policy) => {
     ],
     { cwd: root, env: environment, maxBuffer: maximumOutputBytes },
   );
+  verificationStage = "npm-lock";
   const lock = readJson(resolve(root, "package-lock.json"));
   for (const entry of packages) {
     const installed = record(
@@ -111,6 +116,7 @@ const verifyNpm = async (root, policy) => {
     )
       fail();
   }
+  verificationStage = "npm-audit";
   const { stdout } = await execute(
     "/usr/local/bin/node",
     [
@@ -140,6 +146,7 @@ const verifyNpm = async (root, policy) => {
     audit.verified.length !== packages.length
   )
     fail();
+  verificationStage = "npm-bundles";
   for (const entry of packages) {
     const verified = audit.verified.find(
       (candidate) =>
@@ -158,15 +165,18 @@ const verifyNpm = async (root, policy) => {
 const verifyGpg = async (root, policy) => {
   if (policy.platformPackage !== undefined)
     await verifyPlatformPackage(root, policy);
+  verificationStage = "gpg-home";
   const home = resolve(root, "gpg-home");
   mkdirSync(home, { mode: 0o700 });
   const common = gpgArguments(home);
   const environment = { HOME: home, LANG: "C.UTF-8", PATH: "/usr/bin:/bin" };
+  verificationStage = "gpg-import";
   await execute("/usr/bin/gpg", [...common, "--import", resolve(root, "key")], {
     cwd: root,
     env: environment,
     maxBuffer: maximumOutputBytes,
   });
+  verificationStage = "gpg-list";
   const { stdout: listing } = await execute(
     "/usr/bin/gpg",
     [...common, "--with-colons", "--fingerprint", "--list-keys"],
@@ -177,6 +187,7 @@ const verifyGpg = async (root, policy) => {
       maxBuffer: maximumOutputBytes,
     },
   );
+  verificationStage = "gpg-key-policy";
   const fingerprints = listing
     .split("\n")
     .filter((line) => line.startsWith("fpr:"))
@@ -189,6 +200,7 @@ const verifyGpg = async (root, policy) => {
     !fingerprints.includes(policy.signerFingerprint)
   )
     fail();
+  verificationStage = "gpg-signature";
   const { stdout } = await execute(
     "/usr/bin/gpg",
     [
@@ -205,6 +217,7 @@ const verifyGpg = async (root, policy) => {
       maxBuffer: maximumOutputBytes,
     },
   );
+  verificationStage = "gpg-signature-policy";
   const status = stdout
     .split("\n")
     .filter((line) => line.startsWith("[GNUPG:] "));
@@ -295,6 +308,7 @@ const streamPlatformMember = (archive, descriptor, deadline) =>
   });
 
 const verifyPlatformPackage = async (root, policy) => {
+  verificationStage = "platform-archive";
   const descriptor = record(policy.platformPackage);
   if (
     !Number.isSafeInteger(policy.maximumMilliseconds) ||
@@ -318,6 +332,7 @@ const verifyPlatformPackage = async (root, policy) => {
   )
     fail();
   bytes.fill(0);
+  verificationStage = "platform-inventory";
   const { stdout, stderr } = await execute(
     "/usr/bin/tar",
     [
@@ -359,6 +374,7 @@ const verifyPlatformPackage = async (root, policy) => {
       fail();
   }
   if (expected.size !== 0 || performance.now() >= deadline) fail();
+  verificationStage = "platform-member";
   await streamPlatformMember(archive, descriptor, deadline);
 };
 
@@ -377,5 +393,12 @@ try {
     await runBootstrapGpgVerification(policy.kind, execute);
   }
 } catch {
+  if (operation !== "bootstrap-gpg") {
+    try {
+      writeSync(2, `[agentscope-verifier:v1 failure=${verificationStage}]\n`);
+    } catch {
+      // Diagnostic delivery cannot replace the original failed command.
+    }
+  }
   process.exitCode = 1;
 }
