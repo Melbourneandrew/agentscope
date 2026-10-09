@@ -27,9 +27,11 @@ Group help uses `human`. Leaf commands additionally support their declared machi
 
 Langfuse configuration accepts non-secret JSON and explicit CI environment
 references. Secrets are never accepted as settings or rendered in results.
-The required Langfuse slot IDs are `public-key` and `secret-key`. Local SQLite
-commands in 0.1.0 fail with `destination.capability-unavailable`; they do not
-present or apply a persistence plan.
+The required Langfuse slot IDs are `public-key` and `secret-key`. In 0.1.0,
+`destination configure local-sqlite` fails with
+`destination.capability-unavailable`; it does not present or apply a
+persistence plan. Local lifecycle commands retain the diagnostics documented
+on their command pages.
 
 ## Diagnostics
 
