@@ -242,7 +242,7 @@ const claudeLedgerFixture = () => {
       },
       runId,
     );
-    assertMockServerFinalLedger(
+    Reflect.apply(assertMockServerFinalLedger, undefined, [
       rows,
       {
         modelLedger: {
@@ -253,7 +253,7 @@ const claudeLedgerFixture = () => {
       { routes: selected },
       selectedScenario,
       { traffic, runId },
-    );
+    ]);
   };
   return { ledger, native, routes, scenario, check };
 };
@@ -275,17 +275,20 @@ describe("existing Codex final ledger", () => {
         { routes },
         { scenarioId: "codex-tui-trace-smoke", modelRoutes: ["route"] },
         {
-          traffic: {
+          traffic: snapshotMockServerTraffic(
+            {
+              runId,
+              entries: rows.map((row) => ({
+                method: row.method,
+                path: row.path,
+                role: row.role,
+                status: row.status,
+                bodyBytes: row.bodyBytes,
+                bodySha256: row.bodySha256,
+              })),
+            },
             runId,
-            entries: rows.map((row) => ({
-              method: row.method,
-              path: row.path,
-              role: row.role,
-              status: row.status,
-              bodyBytes: row.bodyBytes,
-              bodySha256: row.bodySha256,
-            })),
-          },
+          ),
           runId,
         },
       );
