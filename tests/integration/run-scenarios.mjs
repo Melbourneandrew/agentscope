@@ -3042,8 +3042,8 @@ const publishControllerFailureManifest = (identities) => {
     certificationCase: substrateCertificationCase ?? null,
     preparedAuthorityDigests: {
       buildkitImage: diagnosticDigest({
-        configDigest: buildkit.configDigest,
         image: buildkit.image,
+        configDigest: buildkit.configDigest,
       }),
       buildkitPlatform: diagnosticDigest(buildkit.platform),
       daemon: diagnosticDigest(preparedImageEvidence.dockerDaemon),
