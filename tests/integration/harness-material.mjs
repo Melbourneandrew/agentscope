@@ -5,6 +5,7 @@ import { request } from "node:https";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { types } from "node:util";
 
 import {
   compileNpmAttestationAudit,
@@ -44,6 +45,73 @@ const phaseFailure = (phase) =>
   new Error("integration.harness-material.failed", {
     cause: new Error(`integration.harness-material.${phase}`),
   });
+
+const buildFailurePhases = new Map([
+  ["integration.images.build.input", "input"],
+  ["integration.images.build.context", "context"],
+  ["integration.images.build.authority", "authority"],
+  ["integration.images.containment", "containment"],
+  ["integration.images.timeout", "timeout"],
+  ["integration.images.deadline", "timeout"],
+  ...[
+    "header",
+    "path",
+    "file-type",
+    "file-identity",
+    "aggregate-size",
+    "file-length",
+    "file-race",
+    "directory",
+    "symlink",
+    "special",
+    "policy",
+    "root",
+    "size",
+    "entries",
+    "unknown",
+  ].map((reason) => [`integration.images.build.context-${reason}`, "context"]),
+  ...[
+    "harness-material",
+    "candidate",
+    "testkit",
+    "runtime",
+    "controller",
+  ].flatMap((role) =>
+    ["default", "harness"].map((limit) => [
+      `integration.images.build.context-file-size-${role}-${limit}`,
+      "context",
+    ]),
+  ),
+  ...[
+    "preflight",
+    "builder-create",
+    "builder-bootstrap",
+    "image-build",
+  ].flatMap((operation) =>
+    [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].map((reason) => [
+      `integration.images.build.${operation}.${reason}`,
+      operation === "builder-create"
+        ? "create"
+        : operation === "builder-bootstrap"
+          ? "bootstrap"
+          : operation,
+    ]),
+  ),
+]);
+const materialBuildFailurePhase = (error) => {
+  if (types.isProxy(error) || !types.isNativeError(error))
+    return "verify-build";
+  const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+  const phase =
+    typeof message === "string" ? buildFailurePhases.get(message) : undefined;
+  return phase === undefined ? "verify-build" : `verify-build-${phase}`;
+};
 
 const remaining = (deadline) => {
   const value = Math.floor(deadline - performance.now());
@@ -228,23 +296,29 @@ const runMaterialVerification = async ({
   const buildDeadline =
     retirementBoundary - materialRetirementReserveMilliseconds;
   onPhase("verify-build");
-  const imageId = await buildPreparedDockerImage(client, {
-    buildArguments: { BASE_IMAGE: material.verifierImage },
-    context,
-    dockerfile: "Verifier.Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": runId,
-    },
-    maximumBuildContextBytes:
-      material.platformPackage === undefined
-        ? maximumAuditBytes
-        : material.platformPackage.bytes + maximumAuditBytes,
-    maximumMilliseconds: remaining(buildDeadline),
-    retirementRequired: true,
-    signal,
-    tag,
-  });
+  let imageId;
+  try {
+    imageId = await buildPreparedDockerImage(client, {
+      buildArguments: { BASE_IMAGE: material.verifierImage },
+      context,
+      dockerfile: "Verifier.Dockerfile",
+      labels: {
+        "com.agentscope.integration": "true",
+        "com.agentscope.integration.run": runId,
+      },
+      maximumBuildContextBytes:
+        material.platformPackage === undefined
+          ? maximumAuditBytes
+          : material.platformPackage.bytes + maximumAuditBytes,
+      maximumMilliseconds: remaining(buildDeadline),
+      retirementRequired: true,
+      signal,
+      tag,
+    });
+  } catch (error) {
+    onPhase(materialBuildFailurePhase(error));
+    throw error;
+  }
   const retirementDeadline = Math.min(
     retirementBoundary,
     performance.now() + materialRetirementReserveMilliseconds,

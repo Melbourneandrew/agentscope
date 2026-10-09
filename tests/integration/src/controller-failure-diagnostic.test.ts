@@ -154,6 +154,15 @@ describe("closed first controller failure codes", () => {
     "verify",
     "verify-context",
     "verify-build",
+    "verify-build-input",
+    "verify-build-context",
+    "verify-build-authority",
+    "verify-build-preflight",
+    "verify-build-create",
+    "verify-build-bootstrap",
+    "verify-build-image-build",
+    "verify-build-containment",
+    "verify-build-timeout",
     "verify-retire",
     "compile-authority",
     "publish",
@@ -241,6 +250,10 @@ describe("closed controller code hostile inputs", () => {
       new Error(
         "integration.harness-material.download-attestation-root-upstream",
       ),
+      new Error(
+        "integration.harness-material.verify-build-image-build.PRIVATE",
+      ),
+      new Error("integration.harness-material.verify-build-unknown"),
       new Error("integration.isolation.context" + "PRIVATE".repeat(100)),
     ])
       expect(controllerCodes(value)).toBeUndefined();
