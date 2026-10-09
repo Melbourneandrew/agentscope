@@ -45,6 +45,7 @@ let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
 let adapterReportedFailure;
+let modelControlFailureHint;
 const candidateConfigStages = Object.freeze([
   "closed-marker",
   "render",
@@ -82,9 +83,12 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       ? `integration.fixture.codex-candidate-config-${candidateConfigStage}`
       : undefined;
   const gateResearchDiagnostic =
-    interactiveFailurePhase === "model-gate-arm-health-pending"
-      ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
-      : undefined;
+    interactiveFailurePhase === "verify-gate" &&
+    modelControlFailureHint !== undefined
+      ? `integration.fixture.codex-gate-research-${modelControlFailureHint}`
+      : interactiveFailurePhase === "model-gate-arm-health-pending"
+        ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
+        : undefined;
   const ownedDiagnostic =
     preCheckpointFailureDiagnostic ??
     candidateConfigDiagnostic ??
@@ -602,14 +606,24 @@ let upstreamControl;
 let candidateTraffic;
 let upstreamTraffic;
 const readModelRequests = async () => {
-  // One configuration, four candidate denials, one model and four final outer
-  // controls leave at most six retrievals within the existing sixteen rows.
-  if (upstreamControl.snapshot().entries.length >= 7)
+  // Compare the current configuration, candidate denials and controller
+  // retrievals without changing the existing controller-call ceiling.
+  if (upstreamControl.snapshot().entries.length >= 7) {
+    modelControlFailureHint ??= "model-budget";
     throw new Error("integration.codex.model-control");
+  }
   const response = await upstreamControl.requests();
-  if (response.status !== 200)
+  if (response.status !== 200) {
+    modelControlFailureHint ??= "model-http-status";
     throw new Error("integration.codex.model-control");
-  const observed = projectMockServerRequests(response.bytes, promptSha256);
+  }
+  let observed;
+  try {
+    observed = projectMockServerRequests(response.bytes, promptSha256);
+  } catch (error) {
+    modelControlFailureHint ??= "model-projection";
+    throw error;
+  }
   const sent = upstreamControl.snapshot().entries;
   const controls = [sent[0], ...candidateTraffic.entries, ...sent.slice(1)];
   let controlIndex = 0;
@@ -629,21 +643,30 @@ const readModelRequests = async () => {
       ["method", "path", "role", "status", "bodyBytes", "bodySha256"].some(
         (key) => row[key] !== client[key],
       )
-    )
+    ) {
+      modelControlFailureHint ??= "model-control-order";
       throw new Error("integration.codex.model-control");
+    }
     return client;
   });
-  if (controlIndex !== controls.length)
+  if (controlIndex !== controls.length) {
+    modelControlFailureHint ??= "model-control-count";
     throw new Error("integration.codex.model-control");
+  }
   upstreamTraffic = snapshotMockServerTraffic(
     { runId: integrationRunId, entries },
     integrationRunId,
   );
-  return boundedRequestLedger(
-    observed.filter(
-      (row) => row.role === undefined || row.role === "data-plane",
-    ),
-  );
+  try {
+    return boundedRequestLedger(
+      observed.filter(
+        (row) => row.role === undefined || row.role === "data-plane",
+      ),
+    );
+  } catch (error) {
+    modelControlFailureHint ??= "model-ledger";
+    throw error;
+  }
 };
 const configureModelGate = async (preparationCutoff, traceDeadline) => {
   const endpoint = new URL(modelEndpoint);

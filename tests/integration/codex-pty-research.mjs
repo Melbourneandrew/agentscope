@@ -155,6 +155,12 @@ export const createCodexModelControlRequest = ({
 };
 
 export const codexGateResearchHints = Object.freeze([
+  "model-budget",
+  "model-http-status",
+  "model-projection",
+  "model-control-order",
+  "model-control-count",
+  "model-ledger",
   "arm-log-unavailable",
   "arm-log-invalid",
   "arm-hook-unseen",
