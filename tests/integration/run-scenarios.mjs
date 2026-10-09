@@ -1776,7 +1776,20 @@ const decodeCollectorSnapshot = (output, plan) => {
     throw refuse();
   return batches;
 };
-const joinCollectorObservations = async (plan, signal, deadline) => {
+const joinCollectorObservations = async (
+  plan,
+  signal,
+  deadline,
+  observePhase,
+) => {
+  const observe = (phase) => {
+    try {
+      observePhase?.(phase);
+    } catch {
+      // Optional observation cannot alter collector acceptance or errors.
+    }
+  };
+  observe("held-identity");
   const refuse = () => new Error("integration.isolation.collector-terminal");
   const containerId = scenarioContainerIdentities.get(plan.collectorName);
   if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) throw refuse();
@@ -1792,6 +1805,7 @@ const joinCollectorObservations = async (plan, signal, deadline) => {
   );
   if (current !== containerId) throw refuse();
   let output;
+  observe("https-exec");
   try {
     output = await dockerWithSignal(
       [
@@ -1810,12 +1824,15 @@ const joinCollectorObservations = async (plan, signal, deadline) => {
     // output or cause through the controller's diagnostic error boundary.
     throw refuse();
   }
+  observe("snapshot");
   const batches = decodeCollectorSnapshot(output, plan);
+  observe("terminal-wait");
   const waited = await dockerWithSignal(
     ["container", "wait", containerId],
     joinSignal,
     { terminal: true },
   );
+  observe("terminal-witness");
   const inspected = JSON.parse(
     (
       await dockerWithSignal(
@@ -2405,6 +2422,16 @@ const publishOperationFailureDiagnostic = (
         code: knownFailureCode(error),
         clientRetirementRequired:
           preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
+        ...(slot === "join-collector-read" &&
+        [
+          "held-identity",
+          "https-exec",
+          "snapshot",
+          "terminal-wait",
+          "terminal-witness",
+        ].includes(processContext?.collectorPhase)
+          ? { collector: { phase: processContext.collectorPhase } }
+          : {}),
         ...((slot === "join-ledger-complete" ||
           slot === "candidate-image-build") &&
         processContext
@@ -2591,10 +2618,7 @@ const createFinalMockServerLedgerDirectory = (plan) => {
 };
 const joinMockServer = async (plan, signal) => {
   let failureSlot = "join-identity";
-  let deadline;
-  let joinSignal;
-  let containerId;
-  let refusal;
+  let deadline, joinSignal, containerId, refusal, collectorPhase;
   try {
     containerId = mockServerContainerIdentities.get(plan.runId);
     deadline = mockServerJoinDeadlines.get(plan.runId);
@@ -2681,28 +2705,25 @@ const joinMockServer = async (plan, signal) => {
         runId: plan.runId,
       },
     );
+    const read = joinCollectorObservations;
+    const note = (phase) => {
+      collectorPhase = phase;
+    };
     if (plan.scenarioId === "codex-tui-trace-smoke") {
       failureSlot = "join-collector-read";
-      const batches = await joinCollectorObservations(
-        plan,
-        joinSignal,
-        deadline,
-      );
+      const batches = await read(plan, joinSignal, deadline, note);
       failureSlot = "join-collector-project";
       completeCodexCollectorFixture(plan, batches);
     }
     if (plan.scenarioId === "claude-interactive-trace-smoke") {
       failureSlot = "join-collector-read";
-      const batches = await joinCollectorObservations(
-        plan,
-        joinSignal,
-        deadline,
-      );
+      const batches = await read(plan, joinSignal, deadline, note);
       failureSlot = "join-collector-project";
       completeClaudeCollectorFixture(plan, batches, ledger);
     }
   } catch (error) {
     const context = { containerId, signal, joinSignal, deadline };
+    context.collectorPhase = collectorPhase;
     publishOperationFailureDiagnostic(failureSlot, error, plan, context);
     if (failureSlot === "join-ledger-complete")
       publishMockServerProducerRefusalDiagnostic(plan, refusal);
