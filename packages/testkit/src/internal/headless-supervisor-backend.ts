@@ -1085,12 +1085,11 @@ const createImmutableCandidateAuthority = (
     return fail("testkit.pty.immutable-candidate");
   immutableCandidateAuthorityCreated = true;
   const record = exactImmutableCandidateRecord(candidate);
-  const profile = [
-    "codex-tui-trace-smoke",
-    "claude-interactive-trace-smoke",
-  ].includes(record.scenarioId)
-    ? "codex-controller"
-    : "ordinary";
+  const profile =
+    record.scenarioId === "codex-tui-trace-smoke" ||
+    record.scenarioId === "claude-interactive-trace-smoke"
+      ? "codex-controller"
+      : "ordinary";
   const initial = readPrincipalAuthority(profile);
   const assertRuntime = (): void => {
     const current = readPrincipalAuthority(profile);
