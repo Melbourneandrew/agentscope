@@ -19,6 +19,7 @@ import {
   compileVerifiedNpmHarnessMaterial,
   compileVerifiedSignedManifestHarnessMaterial,
 } from "../../tests/integration/src/harness-material.ts";
+import { sanitizeFixtureResult } from "../../tests/integration/src/operations.ts";
 
 const entrySource = readFileSync(
   new URL("../record-release-stage.mjs", import.meta.url),
@@ -689,6 +690,135 @@ const bindClaude = (f) =>
     encode(f.support),
     codexFiles(f),
   );
+const transcriptRangeFixture = (family) => ({
+  nativeFormat:
+    family === "codex"
+      ? "codex-0.149.1-rollout-jsonl"
+      : "claude-code-2.1.245-jsonl",
+  boundaryKind: "transcript-range",
+  positionKind: "line",
+  availableStartPosition: 0,
+  exclusiveEndPosition: 4,
+  sourceGeneration: null,
+  ...(family === "codex"
+    ? {
+        sessionMetaPosition: 0,
+        turnContextPosition: 1,
+        taskCompletePosition: 3,
+      }
+    : { toolUsePosition: 0, toolResultPosition: 1, finalAssistantPosition: 3 }),
+});
+const validateProducerRange = (f) =>
+  sanitizeFixtureResult(
+    {
+      ...f.lifecycle,
+      artifactFileName: "agentscope-cli.tgz",
+      modelLedger: f.model,
+      destinationLedger: f.destination,
+      harnessObservation: f.observation,
+    },
+    f.lifecycle.scenarioId,
+  );
+const transcriptFamilies = [
+  {
+    family: "codex",
+    fixtureFor: codexFixture,
+    bind: bindCodex,
+    first: "sessionMetaPosition",
+    second: "turnContextPosition",
+    final: "taskCompletePosition",
+    maximum: 4096,
+  },
+  {
+    family: "claude-code",
+    fixtureFor: claudeFixture,
+    bind: bindClaude,
+    first: "toolUsePosition",
+    second: "toolResultPosition",
+    final: "finalAssistantPosition",
+    maximum: 128,
+  },
+];
+test.each(transcriptFamilies)(
+  "$family binds optional producer-shaped transcript ranges without promoting fixture admission",
+  ({ family, fixtureFor, bind, first, second, final, maximum }) => {
+    const f = fixtureFor();
+    expect(bind(f).family).toBe(family);
+    f.observation.nativeTranscriptRange = transcriptRangeFixture(family);
+    expect(
+      validateProducerRange(f).harnessObservation.nativeTranscriptRange,
+    ).toEqual(f.observation.nativeTranscriptRange);
+    f.support = codexSupportFixture(f, family);
+    expect(bind(f).family).toBe(family);
+    Object.assign(f.observation.nativeTranscriptRange, {
+      exclusiveEndPosition: maximum,
+      [first]: maximum - 3,
+      [second]: maximum - 2,
+      [final]: maximum - 1,
+    });
+    expect(
+      validateProducerRange(f).harnessObservation.nativeTranscriptRange,
+    ).toEqual(f.observation.nativeTranscriptRange);
+    f.support = codexSupportFixture(f, family);
+    expect(bind(f).family).toBe(family);
+    expect(() => requireActualSemanticAdmission([bind(f)])).toThrow();
+  },
+);
+test.each(transcriptFamilies)(
+  "$family rejects malformed family range shape, format, bounds, order and invented generation even after completion rehash",
+  ({ family, fixtureFor, bind, first, second, final, maximum }) => {
+    const original = transcriptRangeFixture(family);
+    for (const range of [
+      null,
+      [],
+      {
+        ...original,
+        nativeFormat: transcriptRangeFixture(
+          family === "codex" ? "claude-code" : "codex",
+        ).nativeFormat,
+      },
+      { ...original, boundaryKind: "hook-input" },
+      { ...original, positionKind: "byte" },
+      { ...original, availableStartPosition: 1 },
+      { ...original, exclusiveEndPosition: 0 },
+      { ...original, exclusiveEndPosition: maximum + 1 },
+      { ...original, exclusiveEndPosition: "4" },
+      { ...original, exclusiveEndPosition: 3.5 },
+      { ...original, [first]: -1 },
+      { ...original, [first]: "0" },
+      { ...original, [second]: 1.5 },
+      { ...original, [final]: maximum },
+      { ...original, [final]: undefined },
+      { ...original, [second]: original[first] },
+      { ...original, [final]: original[second] },
+      { ...original, [final]: original.exclusiveEndPosition },
+      { ...original, sourceGeneration: 0 },
+      { ...original, sourceGeneration: "unavailable" },
+      { ...original, sourceGeneration: undefined },
+      { ...original, rawTranscript: "forbidden" },
+      { ...original, toolUsePosition: 0, sessionMetaPosition: 0 },
+    ]) {
+      const f = fixtureFor();
+      f.observation.nativeTranscriptRange = range;
+      expect(() => validateProducerRange(f)).toThrow();
+      f.support = codexSupportFixture(f, family);
+      expect(() => bind(f)).toThrow("release.admission.evidence");
+    }
+  },
+);
+test.each(transcriptFamilies)(
+  "$family rejects a valid range mutation that is not bound by the original completion",
+  ({ family, fixtureFor, bind }) => {
+    const f = fixtureFor();
+    f.observation.nativeTranscriptRange = transcriptRangeFixture(family);
+    f.support = codexSupportFixture(f, family);
+    expect(bind(f).family).toBe(family);
+    f.observation.nativeTranscriptRange.exclusiveEndPosition++;
+    expect(() => bind(f)).toThrow("release.admission.evidence");
+    delete f.observation.nativeTranscriptRange;
+    expect(() => bind(f)).toThrow("release.admission.evidence");
+  },
+);
 test("binds all four actual-shape Claude projections without granting synthetic admission", () => {
   const f = claudeFixture();
   expect(bindClaude(f).family).toBe("claude-code");
