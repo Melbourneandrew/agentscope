@@ -146,6 +146,9 @@ function syntheticEngine(packageRoot, { input, dependency }) {
       inputs[options.stdin.sourcefile] = {
         bytes: Buffer.byteLength(options.stdin.contents),
       };
+    for (const [name, value] of Object.entries(options.define ?? {}))
+      if (value.startsWith("[") || value.startsWith("{"))
+        inputs[`<define:${name}>`] = { bytes: Buffer.byteLength(value) };
     return {
       outputFiles: embedded ? [{ contents: output }] : undefined,
       metafile: {
@@ -186,6 +189,10 @@ async function fixture() {
         ? {
             stdin: { sourcefile: "virtual-entry.ts", contents: "export {};" },
             define: {
+              __AGENTSCOPE_HOOK_HARNESS_TYPES__: JSON.stringify([
+                "@agentscope/harness-codex",
+                "@agentscope/harness-claude-code",
+              ]),
               __COORDINATOR_PROGRAM__: JSON.stringify(
                 Buffer.from(first.outputFiles[0].contents).toString(),
               ),
@@ -246,9 +253,11 @@ describe("observed whole CLI release materials (synthetic inputs only)", () => {
     expect(value.build.builds[2].inputs.some((input) => input.virtual)).toBe(
       true,
     );
-    expect(value.build.builds[2].defines[0].programSha256).toBe(
-      value.build.builds[0].outputs[0].sha256,
-    );
+    expect(
+      value.build.builds[2].defines.find(
+        (row) => row.name === "__COORDINATOR_PROGRAM__",
+      ).programSha256,
+    ).toBe(value.build.builds[0].outputs[0].sha256);
     expect(sbom.packages.map((row) => row.name)).toEqual(
       expect.arrayContaining([
         "agentscope-cli",
@@ -336,6 +345,67 @@ describe("release material refusals", () => {
       }),
     ).rejects.toThrow();
   });
+});
+
+describe("compiler-injected define input observations", () => {
+  it("binds compiler-injected complex defines to the exact options bytes", async () => {
+    const value = await fixture();
+    const input = value.build.builds[2].inputs.find(
+      (row) => row.path === "<define:__AGENTSCOPE_HOOK_HARNESS_TYPES__>",
+    );
+    const bytes = Buffer.from(
+      JSON.stringify([
+        "@agentscope/harness-codex",
+        "@agentscope/harness-claude-code",
+      ]),
+    );
+    expect(input).toEqual({
+      path: "<define:__AGENTSCOPE_HOOK_HARNESS_TYPES__>",
+      bytes: bytes.length,
+      sha256: sha(bytes),
+      virtual: true,
+    });
+    expect(
+      value.build.builds[2].outputs[0].inputs.some(
+        (row) => row.path === input.path,
+      ),
+    ).toBe(true);
+  });
+  it.each(["unknown-define", "unknown-pseudo", "wrong-byte-count"])(
+    "refuses unbound compiler pseudo input %s",
+    async (kind) => {
+      const value = await fixture();
+      const name =
+        kind === "unknown-pseudo"
+          ? "<unknown>"
+          : "<define:__AGENTSCOPE_HOOK_HARNESS_TYPES__>";
+      const define = { __AGENTSCOPE_HOOK_HARNESS_TYPES__: '["codex"]' };
+      const recorder = createReleaseBuildRecorder({
+        repositoryRoot: value.root,
+        packageRoot: value.packageRoot,
+        version: "0.28.2",
+        engine: async () => ({
+          outputFiles: [{ contents: Buffer.from("x") }],
+          metafile: {
+            inputs: {
+              [name]: {
+                bytes:
+                  Buffer.byteLength(define.__AGENTSCOPE_HOOK_HARNESS_TYPES__) +
+                  (kind === "wrong-byte-count" ? 1 : 0),
+              },
+            },
+            outputs: {},
+          },
+        }),
+      });
+      await expect(
+        recorder.build({
+          write: false,
+          ...(kind === "unknown-define" ? {} : { define }),
+        }),
+      ).rejects.toThrow();
+    },
+  );
 });
 
 describe("actual transformed build input observations", () => {

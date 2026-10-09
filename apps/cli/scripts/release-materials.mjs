@@ -136,6 +136,30 @@ function recordingPlugin(original, transformations) {
   };
 }
 
+function observeVirtualInput(name, metadata, options) {
+  const defined = /^<define:([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)>$/u.exec(
+    name,
+  );
+  if (defined) {
+    fail(Object.hasOwn(options.define ?? {}, defined[1]));
+    const value = options.define[defined[1]];
+    fail(typeof value === "string");
+    const bytes = Buffer.from(value);
+    fail(bytes.length === metadata.bytes);
+    return {
+      path: name,
+      bytes: bytes.length,
+      sha256: sha(bytes),
+      virtual: true,
+    };
+  }
+  fail(!name.startsWith("<"));
+  if (name !== options.stdin?.sourcefile) return undefined;
+  const bytes = Buffer.from(options.stdin.contents);
+  fail(bytes.length === metadata.bytes);
+  return { path: name, bytes: bytes.length, sha256: sha(bytes), virtual: true };
+}
+
 /** Observe the actual ordinary esbuild calls without changing their topology. */
 export function createReleaseBuildRecorder({
   repositoryRoot,
@@ -149,16 +173,8 @@ export function createReleaseBuildRecorder({
   const root = realpathSync(repositoryRoot);
   const packageDirectory = realpathSync(packageRoot);
   const observeInput = (name, metadata, options) => {
-    if (name === options.stdin?.sourcefile) {
-      const bytes = Buffer.from(options.stdin.contents);
-      fail(bytes.length === metadata.bytes);
-      return {
-        path: name,
-        bytes: bytes.length,
-        sha256: sha(bytes),
-        virtual: true,
-      };
-    }
+    const virtual = observeVirtualInput(name, metadata, options);
+    if (virtual) return virtual;
     const path = realpathSync(resolve(packageDirectory, name));
     const bytes = file(path);
     const transformation = transformations.get(path);
