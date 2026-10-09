@@ -1,6 +1,5 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";
 
 import { z } from "zod";
 
@@ -486,9 +485,28 @@ const verifyComponentFixture = (
 ): void => {
   let fixture;
   try {
-    fixture = parseHarnessSanitizedFixture(
-      JSON.parse(artifactBytes.toString("utf8")),
-    );
+    // Only reviewed metadata consumed here; full native grammar is test-only.
+    fixture = z
+      .object({
+        fixtureVersion: z.literal(1),
+        harnessId: id,
+        harnessVersion: semver,
+        governance: z.object({
+          provenance: z.object({
+            captureKind: z.literal("disposable-hermetic"),
+            artifactAuthority: z.object({
+              status: z.literal("authenticated"),
+              digest,
+            }),
+          }),
+          representative: z.object({
+            representativeVersion: semver,
+            scenarioId: id,
+            evidenceSlot: id,
+          }),
+        }),
+      })
+      .parse(JSON.parse(artifactBytes.toString("utf8")));
   } catch {
     throw new Error("integration.manifest.fixture-provenance");
   }

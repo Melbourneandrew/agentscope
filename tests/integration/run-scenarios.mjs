@@ -21,7 +21,6 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
 import { deriveIdentityBundle } from "@agentscope/protocol";
-import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";
 import { observeSelectedWriterOtlp } from "./dist/selected-otlp-observation.js";
 
 import {
@@ -3132,7 +3131,7 @@ const readAdmissionComponentFixture = (evidence) => {
       createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
     )
       throw new Error("integration.harness-scenario-admission.invalid");
-    return parseHarnessSanitizedFixture(JSON.parse(bytes.toString("utf8")));
+    return JSON.parse(bytes.toString("utf8"));
   } catch {
     // Filesystem/native parser errors must not disclose fixture content or paths.
     throw new Error("integration.harness-scenario-admission.invalid");

@@ -1,3 +1,5 @@
+import { types } from "node:util";
+import { z } from "zod";
 import { canonicalJson, deepFreeze, sha256 } from "./canonical.js";
 import type {
   HarnessAdmissionCompletion,
@@ -9,6 +11,64 @@ type HarnessEvidence = CapabilityManifest["evidence"][number];
 
 const invalid = (): never => {
   throw new Error("integration.harness-scenario-admission.invalid");
+};
+
+const metadataRecord = (value: unknown): Record<string, unknown> => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    types.isProxy(value) ||
+    Array.isArray(value)
+  )
+    return invalid();
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (
+    Reflect.ownKeys(descriptors).some(
+      (key) => typeof key !== "string" || !("value" in descriptors[key]!),
+    )
+  )
+    return invalid();
+  return Object.fromEntries(
+    Object.entries(descriptors).map(([key, descriptor]) => [
+      key,
+      descriptor.value as unknown,
+    ]),
+  );
+};
+
+const consumedFixtureMetadata = (value: unknown) => {
+  const fixture = metadataRecord(value);
+  const governance = metadataRecord(fixture.governance);
+  const provenance = metadataRecord(governance.provenance);
+  const authority = metadataRecord(provenance.artifactAuthority);
+  const representative = metadataRecord(governance.representative);
+  const identity = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
+  const version = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
+  return z
+    .strictObject({
+      fixtureVersion: z.literal(1),
+      harnessId: identity,
+      harnessVersion: version,
+      captureKind: z.literal("disposable-hermetic"),
+      authorityStatus: z.literal("authenticated"),
+      authorityDigest: z.string().regex(/^sha256-[a-f\d]{64}$/u),
+      scenarioId: identity,
+      representativeVersion: version,
+      evidenceSlot: identity,
+    })
+    .parse({
+      fixtureVersion: fixture.fixtureVersion,
+      harnessId: fixture.harnessId,
+      harnessVersion: fixture.harnessVersion,
+      captureKind: provenance.captureKind,
+      authorityStatus: authority.status,
+      authorityDigest: authority.digest,
+      scenarioId: representative.scenarioId,
+      representativeVersion: representative.representativeVersion,
+      evidenceSlot: representative.evidenceSlot,
+    });
 };
 
 export const compileHarnessAdmissionSeed = (
@@ -35,22 +95,17 @@ export const compileHarnessAdmissionSeed = (
     return invalid();
   let fixture;
   try {
-    fixture = parseHarnessSanitizedFixture(input.componentFixture);
+    fixture = consumedFixtureMetadata(input.componentFixture);
   } catch {
     return invalid();
   }
-  const provenance = fixture.governance.provenance;
   if (
-    provenance.captureKind !== "disposable-hermetic" ||
-    provenance.artifactAuthority.status !== "authenticated" ||
-    provenance.artifactAuthority.digest !== input.materialIdentity ||
+    fixture.authorityDigest !== input.materialIdentity ||
     fixture.harnessId !== input.evidence.harnessId ||
     fixture.harnessVersion !== input.evidence.representativeVersion ||
-    fixture.governance.representative.representativeVersion !==
-      input.evidence.representativeVersion ||
-    fixture.governance.representative.scenarioId !==
-      input.scenario.scenarioId ||
-    fixture.governance.representative.evidenceSlot !== admission.evidenceSlot
+    fixture.representativeVersion !== input.evidence.representativeVersion ||
+    fixture.scenarioId !== input.scenario.scenarioId ||
+    fixture.evidenceSlot !== admission.evidenceSlot
   )
     return invalid();
   if (material.kind === "npm") {
@@ -148,4 +203,3 @@ export const compileHarnessAdmissionCompletion = (
     remainingOwnedResources: 0,
   });
 };
-import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";
