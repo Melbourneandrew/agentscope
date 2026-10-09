@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { sanitizeFixtureResult } from "./operations.js";
 import { compileInteractivePtyActions } from "./interactive-pty-actions.js";
 import type { CapabilityManifest } from "./manifest.js";
@@ -261,10 +261,11 @@ const selectedProcess = {
 
 // Real orchestration source with fake boundary results: this proves ordering,
 // not a vendor turn, credentials, provider compatibility or actual OTLP.
-const fixture = (failure?: string) => {
+const fixture = (failure?: string, pendingReads = 0, deferred = false) => {
   const events: string[] = [];
   const writes: Array<{ path: string; text: string; options: unknown }> = [];
   let joined!: () => void;
+  let finalResponse!: () => void;
   const record = (event: string) => {
     events.push(event);
     if (failure === event) throw new Error(`synthetic-${event}`);
@@ -332,10 +333,14 @@ const fixture = (failure?: string) => {
     },
     projectMockServerRequests: () => [],
     setTimeout: (callback: () => void) => {
-      callback();
+      if (deferred) finalResponse = callback;
+      else callback();
     },
-    observeClaudeCodeNativeTurn: () => {
-      record("held-native");
+    observeClaudeCodeNativeTurn: (_stimulus: unknown, pending = false) => {
+      if (pending) {
+        record("native-final-readiness");
+        if (pendingReads-- > 0) return undefined;
+      } else record("held-native");
       return {
         nativeSessionId: "01234567-89ab-cdef-0123-456789abcdef",
         nativeToolUseId: "toolu_agentscope_claude_read_1",
@@ -367,6 +372,9 @@ const fixture = (failure?: string) => {
   return {
     events,
     writes,
+    deliverFinalResponse: () => {
+      finalResponse();
+    },
     execute: runInNewContext(
       `${main}\nrunClaudeCodeScenario`,
       context,
@@ -386,6 +394,7 @@ describe("Claude selected scenario native-only orchestration", () => {
       "ready",
       "vendor-start",
       "matched-request-pair",
+      "native-final-readiness",
       "terminal-marker",
       "vendor-joined",
       "held-native",
@@ -420,7 +429,41 @@ describe("Claude selected scenario native-only orchestration", () => {
       sanitizeFixtureResult(retained, "claude-interactive-trace-smoke"),
     ).toEqual(retained);
   });
-  it.each(["configure", "candidate-denials", "matched-request-pair"])(
+  it("does not release terminal input while the second response/native final record is deferred", async () => {
+    const input = fixture(undefined, 1, true);
+    const running = input.execute();
+    await vi.waitFor(() => {
+      expect(input.events).toContain("native-final-readiness");
+    });
+    expect(input.events).toContain("matched-request-pair");
+    expect(input.events).not.toContain("terminal-marker");
+    expect(input.writes).toEqual([]);
+    input.deliverFinalResponse();
+    await running;
+    expect(
+      input.events.filter((event) => event === "native-final-readiness"),
+    ).toHaveLength(2);
+    expect(input.events.indexOf("terminal-marker")).toBeGreaterThan(
+      input.events.lastIndexOf("native-final-readiness"),
+    );
+    expect(input.events.indexOf("held-native")).toBeGreaterThan(
+      input.events.indexOf("vendor-joined"),
+    );
+  });
+  it("pending exhaustion refuses without terminal input or partial evidence", async () => {
+    const input = fixture(undefined, Infinity);
+    await expect(input.execute()).rejects.toThrow(
+      "integration.claude-code.native-final-turn",
+    );
+    expect(input.events).not.toContain("terminal-marker");
+    expect(input.writes).toEqual([]);
+  });
+  it.each([
+    "configure",
+    "candidate-denials",
+    "matched-request-pair",
+    "native-final-readiness",
+  ])(
     "%s failure cannot release terminal control or export a result",
     async (phase) => {
       const input = fixture(phase);
