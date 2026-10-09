@@ -68,6 +68,13 @@ const cleanupCodes = [
 const materialPhaseCodes = [
   "preflight",
   "validate-package",
+  "validate-descriptors",
+  "download-key",
+  "download-manifest",
+  "download-signature",
+  "download-platform-package",
+  "integrity",
+  "download-binary",
   "download-tarball",
   "download-attestation",
   "compile-audit",

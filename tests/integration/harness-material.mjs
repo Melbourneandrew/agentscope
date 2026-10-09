@@ -391,6 +391,7 @@ const runSignedManifestVerification = async ({
   root,
   runId,
   signal,
+  onPhase,
 }) => {
   const context = resolve(root, "verifier");
   mkdirSync(context, { mode: 0o700 });
@@ -418,6 +419,7 @@ const runSignedManifestVerification = async ({
     root,
     runId,
     signal,
+    onPhase,
   });
   return {
     primaryFingerprint: material.signingKey.fingerprint,
@@ -467,6 +469,7 @@ const signedMaterialDescriptors = (material) => {
 
 const prepareSignedManifestHarnessMaterial = async (input) => {
   let owned;
+  let phase = "preflight";
   try {
     const {
       dockerClient,
@@ -492,16 +495,26 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
     owned = exactDirectory(root);
     if (owned.dev !== parent.dev || !root.startsWith(`${parent.path}/`)) fail();
     const deadline = performance.now() + maximumMilliseconds;
+    phase = "validate-descriptors";
     const descriptors = signedMaterialDescriptors(material);
     const objects = {};
-    for (const [name, descriptor] of Object.entries(descriptors))
+    for (const [name, descriptor] of Object.entries(descriptors)) {
+      phase = {
+        key: "download-key",
+        manifest: "download-manifest",
+        signature: "download-signature",
+        platformPackage: "download-platform-package",
+      }[name];
       objects[name] = await download(descriptor, signal, deadline);
+    }
+    phase = "integrity";
     if (
       material.platformPackage !== undefined &&
       `sha512-${createHash("sha512").update(objects.platformPackage).digest("base64")}` !==
         material.platformPackage.integrity
     )
       fail();
+    phase = "verify-context";
     const verification = await runSignedManifestVerification({
       deadline,
       dockerClient,
@@ -510,10 +523,15 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       root,
       runId,
       signal,
+      onPhase: (value) => {
+        phase = value;
+      },
     });
     // The existing verifier has retired before expanded executable ingress.
     if (objects.platformPackage !== undefined) objects.platformPackage.fill(0);
+    phase = "download-binary";
     objects.binary = await download(material.binary, signal, deadline);
+    phase = "compile-authority";
     const authority = compileVerifiedSignedManifestHarnessMaterial({
       binary: objects.binary,
       evidenceId,
@@ -523,6 +541,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       signingKeyBytes: objects.key,
       verification,
     });
+    phase = "publish";
     if (performance.now() >= deadline) fail();
     sameDirectory(owned);
     for (const name of ["verifier"])
@@ -542,7 +561,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       fail();
     }
     return token;
-  } catch (error) {
+  } catch {
     if (owned !== undefined) {
       try {
         sameDirectory(owned);
@@ -551,12 +570,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
         // Outer disposable-host reconciliation retains ambiguous state.
       }
     }
-    if (
-      error instanceof Error &&
-      error.message === "integration.harness-material.failed"
-    )
-      throw error;
-    fail();
+    throw phaseFailure(phase);
   }
 };
 
