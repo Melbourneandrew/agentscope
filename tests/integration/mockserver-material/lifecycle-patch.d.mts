@@ -4,6 +4,7 @@ export type LifecycleSourceName =
   | "persistence"
   | "lifeCycle"
   | "jsonBody"
+  | "jsonBodyDTO"
   | "requestHandler"
   | "actionHandler"
   | "logger";

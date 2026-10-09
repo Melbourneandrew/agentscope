@@ -52,6 +52,12 @@ export const lifecycleSourcePins = Object.freeze([
     bytes: 12584,
     sha256: "d69533a68139ba799d3213bd7e78379c888aec3013c2cba4be77f7bbee74052e",
   }),
+  Object.freeze({
+    name: "jsonBodyDTO",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/serialization/serializers/body/JsonBodyDTOSerializer.java`,
+    bytes: 4397,
+    sha256: "99cf1f853c1cbca2158703988c693522f8dd169af0a32f3d7573e75f23d11768",
+  }),
 ]);
 // Pinned checkstyle.xml rule types, not configured instance counts. The two
 // RegexpSingleline instances share one type ordinal; messages never escape.
@@ -440,6 +446,12 @@ const jsonBody = (source) =>
     "            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));",
     "            && jsonBody.getRawBytes() != null;",
   );
+const jsonBodyDTO = (source) =>
+  once(
+    once(source, "import java.util.Arrays;\n", ""),
+    "            && jsonBodyDTO.getRawBytes() != null\n            && !Arrays.equals(jsonBodyDTO.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));",
+    "            && jsonBodyDTO.getRawBytes() != null;",
+  );
 const requestHandler = (source) => {
   for (const [condition, status] of [
     ["                    if (httpState.isInitializationComplete()) {", 200],
@@ -515,6 +527,7 @@ const patches = Object.freeze({
   httpState,
   lifeCycle,
   jsonBody,
+  jsonBodyDTO,
   requestHandler,
   actionHandler,
   logger,
