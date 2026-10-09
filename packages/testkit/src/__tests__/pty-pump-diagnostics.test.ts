@@ -418,41 +418,44 @@ describe("actual selected runtime closure", () => {
       { timeout: 1000 },
     ) as string[];
     const root = resolve(import.meta.dirname, "../../dist");
-    const missing = (selected: readonly string[]) => {
-      const absent: string[] = [];
-      for (const name of selected.filter((file) => file.endsWith(".js"))) {
-        const source = createSourceFile(
-          name,
-          readFileSync(resolve(root, name.replace(/^testkit\//u, "")), "utf8"),
-          ScriptTarget.Latest,
-          true,
-          ScriptKind.JS,
-        );
-        const visit = (node: Node): void => {
-          const specifier =
-            isImportDeclaration(node) || isExportDeclaration(node)
-              ? node.moduleSpecifier
-              : isCallExpression(node) &&
-                  node.expression.kind === SyntaxKind.ImportKeyword
-                ? node.arguments[0]
-                : undefined;
-          if (
-            specifier &&
-            isStringLiteral(specifier) &&
-            specifier.text.startsWith(".")
-          ) {
-            const target = resolve(
-              dirname(resolve("/", name)),
-              specifier.text,
-            ).slice(1);
-            if (!selected.includes(target)) absent.push(target);
-          }
-          forEachChild(node, visit);
-        };
-        visit(source);
-      }
-      return absent;
-    };
+    const edges = new Map<string, string[]>();
+    for (const name of files.filter((file) => file.endsWith(".js"))) {
+      const relativeTargets: string[] = [];
+      const source = createSourceFile(
+        name,
+        readFileSync(resolve(root, name.replace(/^testkit\//u, "")), "utf8"),
+        ScriptTarget.Latest,
+        true,
+        ScriptKind.JS,
+      );
+      const visit = (node: Node): void => {
+        const specifier =
+          isImportDeclaration(node) || isExportDeclaration(node)
+            ? node.moduleSpecifier
+            : isCallExpression(node) &&
+                node.expression.kind === SyntaxKind.ImportKeyword
+              ? node.arguments[0]
+              : undefined;
+        if (
+          specifier &&
+          isStringLiteral(specifier) &&
+          specifier.text.startsWith(".")
+        ) {
+          const target = resolve(
+            dirname(resolve("/", name)),
+            specifier.text,
+          ).slice(1);
+          relativeTargets.push(target);
+        }
+        forEachChild(node, visit);
+      };
+      visit(source);
+      edges.set(name, relativeTargets);
+    }
+    const missing = (selected: readonly string[]) =>
+      selected.flatMap((name) =>
+        (edges.get(name) ?? []).filter((target) => !selected.includes(target)),
+      );
     expect(missing(files)).toEqual([]);
     expect(
       missing(
