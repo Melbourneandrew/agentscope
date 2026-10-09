@@ -146,6 +146,25 @@ const nativeObservation = z.strictObject({
     .min(0)
     .nullable(),
 });
+const nativeLine = z.number().int().min(0).max(127);
+const claudeTranscriptRange = z
+  .strictObject({
+    nativeFormat: z.literal("claude-code-2.1.245-jsonl"),
+    boundaryKind: z.literal("transcript-range"),
+    positionKind: z.literal("line"),
+    availableStartPosition: z.literal(0),
+    exclusiveEndPosition: z.number().int().min(1).max(128),
+    toolUsePosition: nativeLine,
+    toolResultPosition: nativeLine,
+    finalAssistantPosition: nativeLine,
+    sourceGeneration: z.null(),
+  })
+  .refine(
+    (value) =>
+      value.toolUsePosition < value.toolResultPosition &&
+      value.toolResultPosition < value.finalAssistantPosition &&
+      value.finalAssistantPosition < value.exclusiveEndPosition,
+  );
 const claudeNativeFields = {
   observationVersion: z.literal(1),
   nativeSessionId: z
@@ -153,6 +172,7 @@ const claudeNativeFields = {
     .regex(/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/u),
   nativeToolUseId: z.literal("toolu_agentscope_claude_read_1"),
   nativeModelName: z.string().min(1).max(256).optional(),
+  nativeTranscriptRange: claudeTranscriptRange.optional(),
   modelRequestBodySha256: z.tuple([
     z.string().regex(/^[a-f\d]{64}$/u),
     z.string().regex(/^[a-f\d]{64}$/u),

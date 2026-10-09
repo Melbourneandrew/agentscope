@@ -396,7 +396,11 @@ export const runClaudeCodeScenario = async () => {
     `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`,
   );
   await turn;
-  const native = observeClaudeCodeNativeTurn(claudeCodeReadStimulus);
+  const native = observeClaudeCodeNativeTurn(
+    claudeCodeReadStimulus,
+    false,
+    true,
+  );
   await retireClaudeCodePackedCli(commands, settings, deadline);
   const traffic = correlateClaudeModelControl(
     rows,
