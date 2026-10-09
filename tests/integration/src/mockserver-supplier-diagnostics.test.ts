@@ -86,6 +86,21 @@ vi.mock("../controller-file-command.mjs", () => ({
 }));
 import { researchMockServerSupplier } from "../mockserver-material/prepare-supplier.mjs";
 const roots: string[] = [];
+const timing = (buildEntered = true): Record<string, unknown> => ({
+  elapsedMilliseconds: expect.any(Number),
+  buildEntryElapsedMilliseconds: buildEntered ? expect.any(Number) : null,
+  buildEntryRemainingMilliseconds: buildEntered ? expect.any(Number) : null,
+  buildElapsedMilliseconds: buildEntered ? expect.any(Number) : null,
+  remainingMilliseconds: expect.any(Number),
+});
+const readDiagnostic = (bytes: unknown) => {
+  const text = String(bytes);
+  expect(
+    text.startsWith("integration.mockserver-material.supplier-diagnostic:"),
+  ).toBe(true);
+  expect(text.endsWith("\n")).toBe(true);
+  return JSON.parse(text.slice(text.indexOf(":") + 1)) as unknown;
+};
 const fixture = () => {
   const privateRoot = mkdtempSync(
     resolve(tmpdir(), "agentscope-supplier-stage-"),
@@ -149,9 +164,17 @@ describe("ordinary supplier catch emits only owned diagnostics", () => {
     await expect(researchMockServerSupplier(input as never)).rejects.toBe(
       state.primary,
     );
-    expect(output).toEqual([
-      `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({ phase: "supplier-build", imagePreparation: diagnostic, primaryFailure: { kind: "unknown", callerAborted: false, preparationAborted: false } })}\n`,
-    ]);
+    expect(output).toHaveLength(1);
+    expect(readDiagnostic(output[0])).toEqual({
+      phase: "supplier-build",
+      imagePreparation: diagnostic,
+      primaryFailure: {
+        kind: "unknown",
+        callerAborted: false,
+        preparationAborted: false,
+      },
+      timing: timing(),
+    });
     expect(Buffer.byteLength(output[0] ?? "")).toBeLessThanOrEqual(4096);
     expect(output.join("")).not.toContain("raw-secret-canary");
     expect(causeReads).toBe(0);
@@ -163,11 +186,17 @@ describe("ordinary supplier catch emits only owned diagnostics", () => {
     await expect(
       researchMockServerSupplier(fixture() as never),
     ).rejects.toThrow("bootstrap");
-    expect(write).toHaveBeenCalledWith(
-      Buffer.from(
-        'integration.mockserver-material.supplier-diagnostic:{"phase":"bootstrap-preflight","imagePreparation":null,"primaryFailure":{"kind":"unknown","callerAborted":false,"preparationAborted":false}}\n',
-      ),
-    );
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(readDiagnostic(write.mock.calls[0]?.[0])).toEqual({
+      phase: "bootstrap-preflight",
+      imagePreparation: null,
+      primaryFailure: {
+        kind: "unknown",
+        callerAborted: false,
+        preparationAborted: false,
+      },
+      timing: timing(false),
+    });
   });
   it.each(["reader", "sink", "oversized"])(
     "preserves primary and cleanup if the optional %s observation fails",
@@ -222,6 +251,7 @@ describe("fixed primary failure and original cancellation observations", () => {
           callerAborted: false,
           preparationAborted: false,
         },
+        timing: timing(),
       });
       expect(String(stderr.mock.calls[0]?.[0])).not.toContain("PRIVATE");
       expect(readdirSync(input.privateRoot)).toEqual([]);
@@ -292,6 +322,7 @@ describe("fixed primary failure and original cancellation observations", () => {
           callerAborted: kind === "caller",
           preparationAborted: kind !== "neither",
         },
+        timing: timing(),
       });
       expect(readdirSync(input.privateRoot)).toEqual([]);
     },
@@ -302,6 +333,85 @@ const observe = (chunks: readonly string[]) => {
   for (const chunk of chunks) observation.consume(Buffer.from(chunk));
   return observation.snapshot();
 };
+describe("host monotonic supplier timing under the original deadline", () => {
+  it("separates bootstrap/context time from build time without renewing its budget", async () => {
+    let now = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const input = fixture();
+    const originalDeadline = input.deadline;
+    state.waitBootstrap = () => {
+      now += 4000;
+      return Promise.resolve();
+    };
+    state.afterBuild = () => {
+      now += 3000;
+    };
+    state.failure = "build";
+    await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+      state.primary,
+    );
+    expect(readDiagnostic(stderr.mock.calls[0]?.[0])).toMatchObject({
+      timing: {
+        elapsedMilliseconds: 7000,
+        buildEntryElapsedMilliseconds: 4000,
+        buildEntryRemainingMilliseconds: 10000,
+        buildElapsedMilliseconds: 3000,
+        remainingMilliseconds: 13000,
+      },
+    });
+    expect(state.inputs[0]?.deadline).toBe(originalDeadline);
+    expect(input.deadline).toBe(originalDeadline);
+    expect(state.builds[0]?.maximumMilliseconds).toBe(10000);
+    expect(state.builds[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+  it("reports absent build entry honestly on bootstrap failure", async () => {
+    let now = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const input = fixture();
+    state.waitBootstrap = () => {
+      now += 900;
+      return Promise.reject(state.primary);
+    };
+    await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+      state.primary,
+    );
+    expect(readDiagnostic(stderr.mock.calls[0]?.[0])).toMatchObject({
+      timing: {
+        elapsedMilliseconds: 900,
+        buildEntryElapsedMilliseconds: null,
+        buildEntryRemainingMilliseconds: null,
+        buildElapsedMilliseconds: null,
+        remainingMilliseconds: 19100,
+      },
+    });
+    expect(state.builds).toHaveLength(0);
+  });
+  it("bounds late failure timing without changing primary failure or output caps", async () => {
+    let now = 1000;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const input = fixture();
+    state.failure = "build";
+    state.afterBuild = () => {
+      now += 500000;
+    };
+    await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+      state.primary,
+    );
+    const bytes = stderr.mock.calls[0]?.[0];
+    expect(readDiagnostic(bytes)).toMatchObject({
+      timing: {
+        elapsedMilliseconds: 300000,
+        buildEntryElapsedMilliseconds: 0,
+        buildEntryRemainingMilliseconds: 14000,
+        buildElapsedMilliseconds: 300000,
+        remainingMilliseconds: 0,
+      },
+    });
+    expect(bytes?.byteLength).toBeLessThanOrEqual(4096);
+    expect(state.marked).toBe(true);
+  });
+});
 describe("fixed untrusted BuildKit supplier RUN result", () => {
   const summary = (mode = "cache-seeding", code = "137") =>
     `process "/usr/local/bin/node /supplier/command/supplier-command.mjs ${mode}" did not complete successfully: exit code: ${code}\n`;
