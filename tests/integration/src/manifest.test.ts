@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { transpileModule } from "typescript";
 import { z } from "zod";
+import type { HarnessComponentEvidence } from "@agentscope/harnesses-core/testing";
 
 import { describe, expect, it } from "vitest";
 
@@ -35,6 +37,114 @@ const withIdentity = (
 ): CapabilityManifest => ({
   ...value,
   manifestIdentity: capabilityManifestIdentity(value),
+});
+
+const publicComponentEvidence = (
+  harness: "codex" | "claude-code",
+): HarnessComponentEvidence => {
+  // Ordinary Node ESM self-reference selects the existing public import export.
+  const source =
+    harness === "codex"
+      ? 'import {codexComponentEvidence} from "@agentscope/harness-codex/testing"; console.log(JSON.stringify(codexComponentEvidence));'
+      : 'import {claudeCodeComponentAdapter} from "@agentscope/harness-claude-code/testing"; console.log(JSON.stringify(claudeCodeComponentAdapter.componentEvidence));';
+  const output = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", source],
+    {
+      cwd: resolve(integrationRoot, `../../packages/harnesses/${harness}`),
+      encoding: "utf8",
+      maxBuffer: 4096,
+      timeout: 3000,
+    },
+  );
+  return JSON.parse(output) as HarnessComponentEvidence;
+};
+
+describe("actual catalog component source attribution", () => {
+  it.each(["codex", "claude-code"] as const)(
+    "binds %s source bytes and public component digest without promoting its fixture",
+    (harness) => {
+      const manifest = compileCapabilityManifest(manifestFixture());
+      const row = manifest.evidence.find(
+        ({ harnessId }) => harnessId === harness,
+      )!;
+      const admission = row.admission!;
+      const component = publicComponentEvidence(harness);
+      expect(admission.component.componentEvidenceDigest).toBe(
+        component.componentDigest,
+      );
+      expect(admission.evidenceSlot).toBe(component.evidenceSlot);
+      expect(row.representativeVersion).toBe(component.testedVersion);
+      expect(admission.eligibleRange.minimumInclusive).toBe(
+        component.testedVersion,
+      );
+      const root = resolve(integrationRoot, "../..");
+      for (const artifact of [
+        admission.component.fixture,
+        admission.component.adapterArtifact,
+        admission.component.mappingArtifact,
+      ]) {
+        const bytes = readFileSync(resolve(root, artifact.path));
+        expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+          artifact.sha256,
+        );
+      }
+      const fixture = JSON.parse(
+        readFileSync(resolve(root, admission.component.fixture.path), "utf8"),
+      ) as {
+        governance: {
+          provenance: unknown;
+          representative: { scenarioId: string };
+        };
+      };
+      expect(fixture.governance.provenance).toMatchObject({
+        captureKind: "synthetic",
+        artifactAuthority: {
+          status: "unresolved",
+          reason: "independent-integrity-unavailable",
+        },
+      });
+      const runtime = manifest.scenarios.find(
+        ({ harnessEvidenceId }) => harnessEvidenceId === row.evidenceId,
+      )!;
+      expect(runtime.executionMode).toBe("interactive");
+      expect(runtime.outputContract).toBe("semantic-pty");
+      expect(fixture.governance.representative.scenarioId).toBe(
+        component.scenarioId,
+      );
+      expect(runtime.scenarioId).not.toBe(component.scenarioId);
+      verifyManifestEvidence(manifest, integrationRoot);
+    },
+  );
+
+  it.each(["fixture", "adapterArtifact", "mappingArtifact"] as const)(
+    "rejects substituted %s bytes even with a recomputed catalog identity",
+    (key) => {
+      const manifest = manifestFixture();
+      manifest.evidence[0]!.admission!.component[key].sha256 = "0".repeat(64);
+      expect(() => {
+        verifyManifestEvidence(
+          compileCapabilityManifest(withIdentity(manifest)),
+          integrationRoot,
+        );
+      }).toThrow("integration.manifest.evidence-digest");
+    },
+  );
+
+  it("does not accept a catalog label as an actual support result", () => {
+    const manifest = manifestFixture();
+    expect(() => {
+      compileCapabilityManifest(
+        withIdentity({
+          ...manifest,
+          evidence: manifest.evidence.map((row) => ({
+            ...row,
+            supportStatus: "passed",
+          })),
+        }),
+      );
+    }).toThrow("integration.manifest.invalid");
+  });
 });
 
 const verifyActualComponentMetadata = (fixture: unknown): void => {
@@ -185,7 +295,9 @@ describe("integration capability manifest", () => {
       ({ evidenceId }) => evidenceId === "codex-0-149-1",
     );
     expect(codex?.material.kind).toBe("npm");
-    expect(codex?.admission).toBeUndefined();
+    expect(codex?.admission?.distributionReference).toBe(
+      "npm:@openai/codex@0.149.1",
+    );
   });
 
   it("keeps authenticated diagnostic material distinct from support admission", () => {
@@ -194,7 +306,9 @@ describe("integration capability manifest", () => {
       ({ evidenceId }) => evidenceId === "codex-0-149-1",
     )!;
     expect(codex.material.kind).toBe("npm");
-    expect(codex.admission).toBeUndefined();
+    expect(codex.admission?.component.componentEvidenceDigest).toMatch(
+      /^component-sha256-[a-f\d]{64}$/u,
+    );
 
     const fixture = original.evidence.find(
       ({ evidenceId }) => evidenceId === "fixture-process-v1",
