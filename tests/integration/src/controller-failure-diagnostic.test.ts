@@ -68,6 +68,11 @@ const collectorTerminal = {
   },
 };
 type CollectorFunctions = {
+  collectorHttpsErrorObservation: (error: unknown) => Readonly<{
+    httpsFailure: string | null;
+    code: string;
+    disposition: string;
+  }>;
   joinCollectorObservations: (
     plan: object,
     signal: AbortSignal,
@@ -102,12 +107,28 @@ const collectorTestSource = () => {
   expect(collectorEnd).toBeGreaterThan(collectorStart);
   expect(diagnosticEnd).toBeGreaterThan(diagnosticStart);
   expect(joinEnd).toBeGreaterThan(joinStart);
-  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
+  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({collectorHttpsErrorObservation:typeof collectorHttpsErrorObservation === "undefined" ? undefined : collectorHttpsErrorObservation,joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
 };
+const diagnosticBuffer = (diagnosticBytes?: number) =>
+  diagnosticBytes === undefined
+    ? Buffer
+    : {
+        byteLength: (value: string) => Buffer.byteLength(value),
+        from: (value: string, encoding?: BufferEncoding) => {
+          const bytes = Buffer.from(value, encoding);
+          return value.startsWith("integration.isolation.operation-diagnostic:")
+            ? Buffer.concat([
+                bytes,
+                Buffer.alloc(diagnosticBytes - bytes.length, 32),
+              ])
+            : bytes;
+        },
+      };
 const actualCollectorObservation = (
   failure: string,
   sinkFails = false,
   execError?: Error,
+  diagnosticBytes?: number,
 ) => {
   const plan = {
     runId: "a".repeat(16),
@@ -120,7 +141,7 @@ const actualCollectorObservation = (
   let phase: string | undefined,
     now = 0;
   const functions = runInNewContext(collectorTestSource(), {
-    Buffer,
+    Buffer: diagnosticBuffer(diagnosticBytes),
     AbortSignal,
     types,
     knownFailureCode,
@@ -216,6 +237,160 @@ const actualCollectorObservation = (
     },
   };
 };
+const nativeHttpsError = (properties: object) =>
+  Object.assign(new Error("PRIVATE NATIVE FAILURE"), properties);
+describe("actual collector HTTPS native disposition", () => {
+  it.each([
+    [
+      new Error("integration.images.docker-client"),
+      "known-refusal",
+      "integration.images.docker-client",
+    ],
+    [
+      nativeHttpsError({ code: 1, signal: null, killed: false }),
+      "native-exit-one",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ code: 2, signal: null, killed: false }),
+      "native-nonstandard",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ code: "ABORT_ERR", killed: true }),
+      "native-aborted",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ killed: true, signal: "PRIVATE SIGNAL" }),
+      "native-killed",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ signal: "PRIVATE SIGNAL" }),
+      "native-signaled",
+      "unknown",
+    ],
+    [new Error("PRIVATE UNKNOWN"), "unknown", "unknown"],
+  ] as const)(
+    "projects closed %s disposition without inferring child origin",
+    async (error, disposition, code) => {
+      const f = actualCollectorObservation("https-exec", false, error);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      const row = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      ) as {
+        collector: object;
+      };
+      expect(row.collector).toEqual({
+        phase: "https-exec",
+        httpsFailure: null,
+        httpsCode: code,
+        httpsDisposition: disposition,
+      });
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    },
+  );
+});
+describe("actual collector HTTPS native disposition privacy and bounds", () => {
+  it("keeps owned observation immutable and refuses hostile or inherited shapes", () => {
+    const f = actualCollectorObservation("success");
+    let traps = 0;
+    const accessor = new Error("PRIVATE MESSAGE");
+    for (const key of [
+      "message",
+      "code",
+      "signal",
+      "killed",
+      "stdout",
+      "stderr",
+    ])
+      Object.defineProperty(accessor, key, {
+        get: () => {
+          traps++;
+          throw new Error("PRIVATE GETTER");
+        },
+      });
+    const inherited = new Error("PRIVATE MESSAGE");
+    Object.setPrototypeOf(inherited, {
+      code: 1,
+      signal: null,
+      killed: false,
+      stdout: "",
+      stderr: "[agentscope-collector-https:v1 request-error]\n",
+    });
+    const proxy = new Proxy(new Error("PRIVATE MESSAGE"), {
+      getOwnPropertyDescriptor: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+    });
+    const revoked = Proxy.revocable(new Error("PRIVATE MESSAGE"), {});
+    revoked.revoke();
+    for (const error of [
+      accessor,
+      inherited,
+      proxy,
+      revoked.proxy,
+      { code: 1 },
+      null,
+    ]) {
+      const observation = f.functions.collectorHttpsErrorObservation(error);
+      expect(observation).toEqual({
+        httpsFailure: null,
+        code: "unknown",
+        disposition: "unknown",
+      });
+      expect(Object.isFrozen(observation)).toBe(true);
+    }
+    expect(traps).toBe(0);
+  });
+  it("bounds the longest actual canonical code and exact 512/513 guard", async () => {
+    const source = readFileSync(
+      new URL("./controller-failure-diagnostic.ts", import.meta.url),
+      "utf8",
+    );
+    const codes = [...source.matchAll(/"(integration\.[A-Za-z0-9.-]+)"/gu)]
+      .map((match) => knownFailureCode(new Error(match[1])))
+      .filter((code) => code !== "unknown")
+      .sort((left, right) => right.length - left.length);
+    const worst = codes[0]!;
+    expect(worst).not.toBe("unknown");
+    const error = new Error(worst);
+    const actual = actualCollectorObservation("https-exec", false, error);
+    await expect(
+      actual.functions.joinMockServer(
+        actual.plan,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: "integration.isolation.collector-terminal",
+    });
+    expect(actual.output).toHaveLength(1);
+    expect(Buffer.byteLength(actual.output[0]!)).toBeLessThanOrEqual(512);
+    expect(actual.output[0]).toContain(`"httpsCode":"${worst}"`);
+    for (const length of [512, 513]) {
+      const f = actualCollectorObservation("https-exec", false, error, length);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(length === 512 ? 1 : 0);
+      if (length === 512) expect(Buffer.byteLength(f.output[0]!)).toBe(512);
+    }
+  });
+});
 describe("actual collector HTTPS marker projection", () => {
   it.each(["request-error", "response-error", "http-rejected", "output-bound"])(
     "projects only the exact native %s HTTPS marker through the existing line",
@@ -235,7 +410,7 @@ describe("actual collector HTTPS marker projection", () => {
       });
       expect(f.output).toHaveLength(1);
       expect(f.output[0]).toContain(
-        `"collector":{"phase":"https-exec","httpsFailure":"${reason}"}`,
+        `"collector":{"phase":"https-exec","httpsFailure":"${reason}","httpsCode":"unknown","httpsDisposition":"native-exit-one"}`,
       );
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
       expect(f.output[0]).not.toContain("PRIVATE");
@@ -427,7 +602,13 @@ describe("actual collector failure phase observation", () => {
       ) as { collector: object };
       expect(row.collector).toEqual({
         phase,
-        ...(phase === "https-exec" ? { httpsFailure: null } : {}),
+        ...(phase === "https-exec"
+          ? {
+              httpsFailure: null,
+              httpsCode: "unknown",
+              httpsDisposition: "unknown",
+            }
+          : {}),
       });
       expect(f.output[0]).not.toContain("PRIVATE");
       expect(f.output[0]).not.toContain(completionContainerId);
