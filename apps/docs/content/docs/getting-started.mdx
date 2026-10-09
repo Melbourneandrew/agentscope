@@ -34,8 +34,10 @@ npm install --global agentscope-cli@0.1.0
 agentscope --version
 ```
 
-Do not use bare `agentscope-cli` or `npx agentscope-cli`: npm `latest` remains an
-inert ownership bootstrap until a later stable release.
+Before the first stable release, do not use bare/default requests such as
+`agentscope-cli` or `npx agentscope-cli`. They are not a product installation:
+`latest` may resolve to the inert ownership bootstrap or may be absent. Select
+`agentscope-cli@alpha` or an exact product version.
 
 Use only a complete version, mode, platform, credential-context, and OTLP
 combination explicitly listed in this guide after publication. If your exact
