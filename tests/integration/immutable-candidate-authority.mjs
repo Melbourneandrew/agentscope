@@ -1317,6 +1317,12 @@ const selectedControlMountMatches = (container, controlVolume, handoff) => {
     mount.RW === true
   );
 };
+const nativeControllerHandoff = (handoff) =>
+  plainRecord(handoff) &&
+  ["codex-tui-trace-smoke", "claude-interactive-trace-smoke"].includes(
+    handoff.scenarioId,
+  );
+
 export const validateImmutableScenarioContainer = ({
   container,
   controlVolume,
@@ -1325,6 +1331,7 @@ export const validateImmutableScenarioContainer = ({
   networkName,
   tmpfs,
 }) => {
+  const nativeController = nativeControllerHandoff(handoff);
   if (
     !plainRecord(container) ||
     !plainRecord(handoff) ||
@@ -1332,8 +1339,7 @@ export const validateImmutableScenarioContainer = ({
     image.Id !== handoff.imageId ||
     sha256(JSON.stringify(image.Config)) !== handoff.imageConfigSha256 ||
     container.Image !== handoff.imageId ||
-    container.Config?.User !==
-      (handoff.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") ||
+    container.Config?.User !== (nativeController ? "0:0" : "1000:1000") ||
     !Array.isArray(container.Config?.Env) ||
     !container.Config.Env.includes(
       `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${handoff.encoded}`,
@@ -1343,7 +1349,7 @@ export const validateImmutableScenarioContainer = ({
     JSON.stringify(container.HostConfig?.CapDrop) !== JSON.stringify(["ALL"]) ||
     JSON.stringify(container.HostConfig?.CapAdd ?? []) !==
       JSON.stringify(
-        handoff.scenarioId === "codex-tui-trace-smoke"
+        nativeController
           ? [
               "CAP_CHOWN",
               "CAP_DAC_OVERRIDE",

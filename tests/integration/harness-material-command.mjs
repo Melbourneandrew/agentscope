@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 
 const execute = promisify(execFile);
 const maximumOutputBytes = 8 * 1024 * 1024;
@@ -155,6 +156,8 @@ const verifyNpm = async (root, policy) => {
 };
 
 const verifyGpg = async (root, policy) => {
+  if (policy.platformPackage !== undefined)
+    await verifyPlatformPackage(root, policy);
   const home = resolve(root, "gpg-home");
   mkdirSync(home, { mode: 0o700 });
   const common = gpgArguments(home);
@@ -227,6 +230,136 @@ const verifyGpg = async (root, policy) => {
     !good[0].endsWith(` ${policy.uid}`)
   )
     fail();
+};
+
+const streamPlatformMember = (archive, descriptor, deadline) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      "/usr/bin/tar",
+      [
+        "--use-compress-program=/usr/bin/gzip",
+        "--extract",
+        "--to-stdout",
+        "--file",
+        archive,
+        "--",
+        "package/claude",
+      ],
+      {
+        env: { LANG: "C", PATH: "/usr/bin:/bin" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let bytes = 0,
+      stderrBytes = 0,
+      rejected = false;
+    const hash = createHash("sha256");
+    const stop = () => {
+      rejected = true;
+      child.kill("SIGKILL");
+    };
+    const timer = setTimeout(stop, Math.max(1, deadline - performance.now()));
+    child.stdout.on("data", (chunk) => {
+      if (!Buffer.isBuffer(chunk)) {
+        stop();
+        return;
+      }
+      bytes += chunk.byteLength;
+      if (bytes > descriptor.memberBytes || performance.now() >= deadline)
+        stop();
+      else hash.update(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      if (!Buffer.isBuffer(chunk)) {
+        stop();
+        return;
+      }
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > 65_536) stop();
+    });
+    child.once("error", () => {
+      rejected = true;
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (
+        rejected ||
+        code !== 0 ||
+        stderrBytes !== 0 ||
+        bytes !== descriptor.memberBytes ||
+        hash.digest("hex") !== descriptor.memberSha256
+      )
+        reject(new Error("integration.harness-material-command.failed"));
+      else resolve();
+    });
+  });
+
+const verifyPlatformPackage = async (root, policy) => {
+  const descriptor = record(policy.platformPackage);
+  if (
+    !Number.isSafeInteger(policy.maximumMilliseconds) ||
+    policy.maximumMilliseconds < 1 ||
+    policy.maximumMilliseconds > 300_000 ||
+    !Number.isSafeInteger(descriptor.memberBytes) ||
+    descriptor.memberBytes < 1 ||
+    descriptor.memberBytes > 384 * 1024 * 1024 ||
+    descriptor.memberName !== "package/claude"
+  )
+    fail();
+  const deadline = performance.now() + policy.maximumMilliseconds;
+  const archive = resolve(root, "platform.tgz");
+  const bytes = readFileSync(archive);
+  if (
+    bytes.byteLength !== descriptor.bytes ||
+    bytes.byteLength > 312 * 1024 * 1024 ||
+    digest(bytes) !== descriptor.sha256 ||
+    `sha512-${createHash("sha512").update(bytes).digest("base64")}` !==
+      descriptor.integrity
+  )
+    fail();
+  bytes.fill(0);
+  const { stdout, stderr } = await execute(
+    "/usr/bin/tar",
+    [
+      "--use-compress-program=/usr/bin/gzip",
+      "--list",
+      "--verbose",
+      "--numeric-owner",
+      "--full-time",
+      "--quoting-style=literal",
+      "--file",
+      archive,
+    ],
+    {
+      env: { LANG: "C", PATH: "/usr/bin:/bin" },
+      encoding: "utf8",
+      maxBuffer: 65_536,
+      timeout: Math.max(1, deadline - performance.now()),
+      killSignal: "SIGKILL",
+    },
+  );
+  const expected = new Set([
+    "package/claude",
+    "package/package.json",
+    "package/LICENSE.md",
+    "package/README.md",
+  ]);
+  if (Buffer.byteLength(stdout) > 4096 || stderr !== "") fail();
+  for (const line of stdout.trimEnd().split("\n")) {
+    const fields =
+      /^-[rwx-]{9} \d+\/\d+\s+(\d+) \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (package\/[A-Za-z.]+)$/u.exec(
+        line,
+      );
+    if (
+      fields === null ||
+      !expected.delete(fields[2]) ||
+      (fields[2] === descriptor.memberName &&
+        Number(fields[1]) !== descriptor.memberBytes)
+    )
+      fail();
+  }
+  if (expected.size !== 0 || performance.now() >= deadline) fail();
+  await streamPlatformMember(archive, descriptor, deadline);
 };
 
 const [operation, root] = process.argv.slice(2);

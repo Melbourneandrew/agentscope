@@ -51,6 +51,9 @@ describe("Claude native hook observation projection (synthetic only)", () => {
       "--dangerously-skip-permissions",
     );
     expect(Object.keys(invocation.environment).sort()).toEqual([
+      "AGENTSCOPE_HOME",
+      "AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "AGENTSCOPE_LANGFUSE_SECRET_KEY",
       "ANTHROPIC_AUTH_TOKEN",
       "ANTHROPIC_BASE_URL",
       "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
@@ -59,17 +62,33 @@ describe("Claude native hook observation projection (synthetic only)", () => {
       "DISABLE_UPDATES",
       "HOME",
       "LANG",
+      "NODE_EXTRA_CA_CERTS",
       "PATH",
       "TERM",
     ]);
     expect(invocation.environment.ANTHROPIC_AUTH_TOKEN).toBe(
       "DUMMY_INTERNAL_MOCK_TOKEN",
     );
+    expect(invocation.environment.AGENTSCOPE_LANGFUSE_PUBLIC_KEY).toBe(
+      "DUMMY_PUBLIC_KEY",
+    );
+    expect(invocation.environment.AGENTSCOPE_LANGFUSE_SECRET_KEY).toBe(
+      "DUMMY_SECRET_KEY",
+    );
+    expect(invocation.environment.NODE_EXTRA_CA_CERTS).toBe(
+      "/opt/agentscope/collector-ca.pem",
+    );
+    expect(invocation.environment).not.toHaveProperty(
+      "NODE_TLS_REJECT_UNAUTHORIZED",
+    );
     expect(Object.isFrozen(invocation.environment)).toBe(true);
     expect(() =>
       claudeCodeInteractiveInvocation("https://api.anthropic.com"),
     ).toThrow("claude-code.execution.internal-endpoint");
   });
+});
+
+describe("Claude decoded hook observation boundaries (synthetic only)", () => {
   it("preserves four observed boundaries without retaining raw content", () => {
     const hooks = translateClaudeCodeHookObservations([
       payload("SessionStart", { source: "startup", model: "fixture-model" }),
@@ -119,8 +138,8 @@ describe("Claude native hook observation projection (synthetic only)", () => {
       payload("Stop", { stop_hook_active: true }),
       payload("SessionEnd", { reason: "other" }),
     ]);
-    expect(hooks[0].stopHookActive).toBe(true);
-    expect(hooks[1].eventName).toBe("SessionEnd");
+    expect(hooks[0]!.stopHookActive).toBe(true);
+    expect(hooks[1]!.eventName).toBe("SessionEnd");
   });
 
   it("reuses duplicate-key and byte bounds of the component decoder", () => {

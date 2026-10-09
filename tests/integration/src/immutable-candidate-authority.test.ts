@@ -1330,65 +1330,83 @@ describe("immutable candidate authority", () => {
     ).toBe(true);
   });
 
-  it("binds the Codex controller profile without admitting a substitute capability", () => {
-    const handoff = compileImmutableCandidateHandoff({
-      candidate: candidate(),
-      image: image(),
-      plan: { ...plan(), scenarioId: "codex-tui-trace-smoke" },
-    });
-    const selected = container(handoff);
-    selected.Config.User = "0:0";
-    selected.HostConfig.CapAdd = [
-      "CAP_CHOWN",
-      "CAP_DAC_OVERRIDE",
-      "CAP_KILL",
-      "CAP_SETGID",
-      "CAP_SETUID",
-    ];
-    const controlVolume = {
-      name: `agentscope-int-${handoff.runId}-control`,
-      mountpoint: "/var/lib/docker/volumes/control/_data",
-    };
-    selected.Mounts = [
-      {
-        Type: "volume",
-        Name: controlVolume.name,
-        Source: controlVolume.mountpoint,
-        Destination: "/control",
-        RW: true,
-      },
-    ];
-    const input = {
-      container: selected,
-      controlVolume,
-      handoff,
-      image: image(),
-      networkName: "selected-network",
-      tmpfs: selected.HostConfig.Tmpfs,
-    };
-    expect(validateImmutableScenarioContainer(input)).toBe(true);
-    expect(() =>
-      validateImmutableScenarioContainer({
-        ...input,
-        container: {
-          ...selected,
-          HostConfig: {
-            ...selected.HostConfig,
-            CapAdd: ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "binds the exact %s controller profile without admitting a substitute capability",
+    (scenarioId) => {
+      const handoff = compileImmutableCandidateHandoff({
+        candidate: candidate(),
+        image: image(),
+        plan: { ...plan(), scenarioId },
+      });
+      const selected = container(handoff);
+      selected.Config.User = "0:0";
+      selected.HostConfig.CapAdd = [
+        "CAP_CHOWN",
+        "CAP_DAC_OVERRIDE",
+        "CAP_KILL",
+        "CAP_SETGID",
+        "CAP_SETUID",
+      ];
+      const controlVolume = {
+        name: `agentscope-int-${handoff.runId}-control`,
+        mountpoint: "/var/lib/docker/volumes/control/_data",
+      };
+      selected.Mounts = [
+        {
+          Type: "volume",
+          Name: controlVolume.name,
+          Source: controlVolume.mountpoint,
+          Destination: "/control",
+          RW: true,
+        },
+      ];
+      const input = {
+        container: selected,
+        controlVolume,
+        handoff,
+        image: image(),
+        networkName: "selected-network",
+        tmpfs: selected.HostConfig.Tmpfs,
+      };
+      expect(validateImmutableScenarioContainer(input)).toBe(true);
+      const foreign = compileImmutableCandidateHandoff({
+        candidate: candidate(),
+        image: image(),
+        plan: { ...plan(), scenarioId: "claude-foreign-trace-smoke" },
+      });
+      const foreignContainer = container(foreign);
+      foreignContainer.Config.User = "0:0";
+      foreignContainer.HostConfig.CapAdd = selected.HostConfig.CapAdd;
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: foreignContainer,
+          handoff: foreign,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: {
+            ...selected,
+            HostConfig: {
+              ...selected.HostConfig,
+              CapAdd: ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+            },
           },
-        },
-      }),
-    ).toThrow("integration.immutable-candidate.authority");
-    expect(() =>
-      validateImmutableScenarioContainer({
-        ...input,
-        container: {
-          ...selected,
-          HostConfig: { ...selected.HostConfig, CapAdd: ["SETUID"] },
-        },
-      }),
-    ).toThrow("integration.immutable-candidate.authority");
-  });
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: {
+            ...selected,
+            HostConfig: { ...selected.HostConfig, CapAdd: ["SETUID"] },
+          },
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+    },
+  );
 
   it("rejects duplicate and non-closed candidate inventory entries", () => {
     const duplicate = candidate();
@@ -1985,59 +2003,34 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
     );
     expect(names.indexOf("verify-trace-get")).toBe(68);
     expect(source).toContain("64 + interactiveFailurePhaseIndex");
-    expect(source).toContain('interactiveFailurePhase === "verify-trace-get"');
-    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
+    expect(source).not.toContain(
+      'interactiveFailurePhase === "verify-trace-get"',
+    );
+    expect(source).not.toContain(
+      "classifyCodexTraceGetFailure(error?.message)",
+    );
   });
 
-  it("executes the production get predicate unchanged for positive, count and locator cases", async () => {
+  it("keeps Local retrieval out of production while retaining legacy locator categories", () => {
     const source = readIntegration("codex-pty-scenario.mjs");
-    const start = source.indexOf('recordInteractivePhase("verify-trace-get");');
-    const end = source.indexOf(
-      'recordInteractivePhase("verify-correlation");',
-      start,
-    );
-    const block = source.slice(start, end);
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    const invoke = (summary: unknown, records: unknown[]) => {
-      const calls: unknown[][] = [];
-      const result: Promise<unknown> = runInNewContext(
-        `(async () => { ${block} return getRecords; })()`,
-        {
-          summary,
-          traceDeadline: 12345,
-          recordInteractivePhase: () => undefined,
-          cli: (...args: unknown[]) => {
-            calls.push(args);
-            return Promise.resolve(records);
-          },
-        },
-      );
-      return { calls, result };
-    };
-    const summary = { harness: "codex", locator: { traceId: "synthetic" } };
-    const valid = [{ locator: { traceId: "synthetic" } }];
-    const positive = invoke(summary, valid);
-    await expect(positive.result).resolves.toEqual(valid);
-    expect(positive.calls).toHaveLength(1);
-    expect(positive.calls[0]?.[2]).toEqual({
-      monotonicDeadline: 12345,
-      traceGetDiagnostic: true,
-    });
-    for (const [input, records, category] of [
-      [{ harness: "other" }, valid, "locator-input"],
-      [summary, [], "record-count"],
-      [summary, [...valid, ...valid], "record-count"],
-      [summary, [{ locator: { traceId: "other" } }], "locator-result"],
-    ] as const) {
-      try {
-        await invoke(input, [...records]).result;
-        expect.fail("expected a trace-get rejection");
-      } catch (error) {
-        const message = (error as Error).message;
-        expect(classifyCodexTraceGetFailure(message)).toBe(category);
-      }
+    expect(source).not.toContain('recordInteractivePhase("verify-trace-get");');
+    expect(source).not.toContain('["traces", "get"');
+    expect(source).not.toContain("local-sqlite");
+    expect(source).toContain("native: {");
+    expect(source).toContain("sessionId: codexSessionId");
+    expect(source).toContain("turnId: codexTurnId");
+    for (const category of [
+      "locator-input",
+      "record-count",
+      "locator-result",
+    ]) {
+      expect(
+        classifyCodexTraceGetFailure(`integration.codex.trace-get-${category}`),
+      ).toBe(category);
     }
+    expect(classifyCodexTraceGetFailure("arbitrary-private-body")).toBe(
+      "unclassified",
+    );
   });
 
   it("executes the production CLI parser and both original deadline checks", async () => {
@@ -2049,6 +2042,7 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
       const cli = runInNewContext(`${declaration}; cli`, {
         run: () => Promise.resolve({ stdout }),
         agentscope: "synthetic-cli",
+        process: { env: {} },
         terminalObservationBeforeDeadline: () => terminalChecks.shift(),
         bootNow: () => 123,
         parseMachine: parseCodexMachineOutput,

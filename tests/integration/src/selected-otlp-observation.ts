@@ -20,7 +20,7 @@ const contextField = z.strictObject({ key: string, value: string });
 const expectedSchema = z.strictObject({
   harness: z.strictObject({ name: string, version: string }),
   sessionId: string,
-  modelName: string,
+  modelName: string.optional(),
   identity: z
     .strictObject({
       traceId: z.string().regex(/^[a-f0-9]{32}$/u),
@@ -410,7 +410,7 @@ const checkContext = (
     rootContext["agentscope.harness.name"] !== expected.harness.name ||
     rootContext["agentscope.harness.version"] !== expected.harness.version ||
     rootContext["session.id"] !== expected.sessionId ||
-    models.length === 0 ||
+    (models.length === 0) !== (expected.modelName === undefined) ||
     models.some((model) => model !== expected.modelName)
   )
     refuse();

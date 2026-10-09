@@ -969,7 +969,7 @@ describe("integration capability selection", () => {
     for (const shard of [
       { index: -1, total: 1 },
       { index: 1, total: 1 },
-      { index: 0, total: 4 },
+      { index: 0, total: compiled.scenarios.length + 1 },
     ])
       expect(() => selectCapabilityScenarios(compiled, { shard })).toThrow(
         "integration.manifest.shard",

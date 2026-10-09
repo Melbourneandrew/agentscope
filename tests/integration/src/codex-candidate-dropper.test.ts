@@ -63,6 +63,36 @@ describe("Codex candidate principal dropper", () => {
     expect(() => {
       execute({ ...env, NODE_TLS_REJECT_UNAUTHORIZED: "0" });
     }).toThrow("integration.codex.candidate-principal");
+    const claude = {
+      AGENTSCOPE_CANDIDATE_HARNESS: "claude-code",
+      AGENTSCOPE_CANDIDATE_RUN_ID: env.AGENTSCOPE_CANDIDATE_RUN_ID,
+      AGENTSCOPE_HOME: env.AGENTSCOPE_HOME,
+      AGENTSCOPE_LANGFUSE_PUBLIC_KEY: env.AGENTSCOPE_LANGFUSE_PUBLIC_KEY,
+      AGENTSCOPE_LANGFUSE_SECRET_KEY: env.AGENTSCOPE_LANGFUSE_SECRET_KEY,
+      ANTHROPIC_AUTH_TOKEN: "DUMMY_INTERNAL_MOCK_TOKEN",
+      ANTHROPIC_BASE_URL: "http://mockserver.agentscope.internal:1080",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
+      CLAUDE_CONFIG_DIR: "/harness-home",
+      DISABLE_UPDATES: "1",
+      HOME: "/home/agentscope",
+      LANG: env.LANG,
+      NODE_EXTRA_CA_CERTS: env.NODE_EXTRA_CA_CERTS,
+      PATH: env.PATH,
+      TERM: env.TERM,
+    };
+    expect(() => {
+      execute(claude);
+    }).not.toThrow();
+    for (const changed of [
+      { ...claude, AGENTSCOPE_CANDIDATE_HARNESS: "unknown" },
+      { ...claude, CODEX_HOME: env.CODEX_HOME },
+      { ...claude, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+      { ...claude, AGENTSCOPE_LANGFUSE_SECRET_KEY: "substituted" },
+    ])
+      expect(() => {
+        execute(changed);
+      }).toThrow("integration.codex.candidate-principal");
   });
   it("rejects any caller-selected command or argument", () => {
     const result = spawnSync(process.execPath, [helper, "--forbidden"], {

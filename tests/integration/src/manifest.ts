@@ -28,7 +28,9 @@ const relativeEvidencePath = z
   .refine((value) => !value.split("/").includes(".."));
 const relativeAdapterPath = z
   .string()
-  .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
+  .regex(
+    /^(?:fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}|dist\/claude-code-platform-adapter)\.mjs$/u,
+  )
   .refine((value) => !value.split("/").includes(".."));
 const relativeScenarioProcessPath = z
   .string()
@@ -160,6 +162,27 @@ const harnessMaterialSchema = z.discriminatedUnion("kind", [
       signatureHashAlgorithm: z.enum(["sha256", "sha384", "sha512"]),
       uid: z.string().min(1).max(256),
     }),
+    platformPackage: z
+      .strictObject({
+        packageName: npmPackageName,
+        version: semver,
+        tarballUrl: httpsUrl,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(312 * 1024 * 1024),
+        sha256: fileDigest,
+        integrity: sriSha512,
+        memberName: z.literal("package/claude"),
+        memberBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(384 * 1024 * 1024),
+        memberSha256: fileDigest,
+      })
+      .optional(),
   }),
 ]);
 
@@ -208,6 +231,23 @@ const evidenceSchema = z
     )
       context.addIssue({ code: "custom", message: "admission mismatch" });
     if (value.material.kind === "signed-release-manifest") {
+      const platformPackage = value.material.platformPackage;
+      if (
+        (value.material.distributionId === "claude-code" &&
+          platformPackage === undefined) ||
+        (platformPackage !== undefined &&
+          (platformPackage.packageName !==
+            `@anthropic-ai/claude-code-${value.material.platform}` ||
+            platformPackage.version !== value.material.version ||
+            platformPackage.memberBytes !== value.material.binary.bytes ||
+            platformPackage.memberSha256 !== value.material.binary.sha256 ||
+            platformPackage.tarballUrl !==
+              `https://registry.npmjs.org/${platformPackage.packageName}/-/claude-code-${value.material.platform}-${value.material.version}.tgz`))
+      )
+        context.addIssue({
+          code: "custom",
+          message: "platform package mismatch",
+        });
       const origins = [
         value.material.binary.url,
         value.material.manifest.url,
@@ -340,7 +380,11 @@ const scenarioSchema = z
       (value.nativeReadiness?.kind === "challenge-process-topology" ||
         value.nativeReadiness?.kind === "challenge-marker" ||
         value.nativeReadiness?.kind === "codex-challenge-idle-prompt") &&
-      value.harnessEvidenceId !== "codex-0-149-1"
+      value.harnessEvidenceId !== "codex-0-149-1" &&
+      !(
+        value.nativeReadiness.kind === "challenge-marker" &&
+        value.harnessEvidenceId === "claude-code-2-1-245"
+      )
     )
       context.addIssue({
         code: "custom",

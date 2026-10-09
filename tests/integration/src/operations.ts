@@ -146,6 +146,56 @@ const nativeObservation = z.strictObject({
     .min(0)
     .nullable(),
 });
+const claudeNativeFields = {
+  observationVersion: z.literal(1),
+  nativeSessionId: z
+    .string()
+    .regex(/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/u),
+  nativeToolUseId: z.literal("toolu_agentscope_claude_read_1"),
+  nativeModelName: z.string().min(1).max(256).optional(),
+  modelRequestBodySha256: z.tuple([
+    z.string().regex(/^[a-f\d]{64}$/u),
+    z.string().regex(/^[a-f\d]{64}$/u),
+  ]),
+  doctorErrors: z.literal(0),
+  uninstallDisposition: z.literal("committed"),
+};
+const claudeSpanId = z.string().regex(/^[a-f\d]{16}$/u);
+const claudeHook = <Event extends string>(eventName: Event) => ({
+  eventName: z.literal(eventName),
+  traceId: z.string().regex(/^[a-f\d]{32}$/u),
+  canonicalGraphDigest: z.string().regex(/^[a-f\d]{64}$/u),
+  contextDisposition: z.literal("unversioned-workspace-redacted"),
+});
+const claudeRootChild = <Event extends string>(eventName: Event) =>
+  z
+    .strictObject({
+      ...claudeHook(eventName),
+      spanIds: z.tuple([claudeSpanId, claudeSpanId]),
+    })
+    .refine((value) => value.spanIds[0] !== value.spanIds[1]);
+const claudeNativeObservation = z.strictObject({
+  ...claudeNativeFields,
+  kind: z.literal("claude-code-native"),
+});
+const claudeTraceObservation = z
+  .strictObject({
+    ...claudeNativeFields,
+    kind: z.literal("claude-code-trace"),
+    hookObservations: z.tuple([
+      z.strictObject({
+        ...claudeHook("SessionStart"),
+        spanIds: z.tuple([claudeSpanId]),
+      }),
+      claudeRootChild("PreToolUse"),
+      claudeRootChild("PostToolUse"),
+      claudeRootChild("Stop"),
+    ]),
+  })
+  .refine(
+    (value) =>
+      new Set(value.hookObservations.map((row) => row.traceId)).size === 4,
+  );
 const fixtureResult = z
   .strictObject({
     evidenceVersion: z.literal(1),
@@ -156,7 +206,12 @@ const fixtureResult = z
     certificationReadiness,
     eventKinds: z.array(id).max(32),
     harnessObservation: z
-      .discriminatedUnion("kind", [harnessObservation, nativeObservation])
+      .discriminatedUnion("kind", [
+        harnessObservation,
+        nativeObservation,
+        claudeNativeObservation,
+        claudeTraceObservation,
+      ])
       .optional(),
     modelLedger: z.strictObject({
       ledgerVersion: z.literal(1),
@@ -177,7 +232,9 @@ const fixtureResult = z
   )
   .refine(
     (value) =>
-      value.harnessObservation?.kind !== "codex-tui-native" ||
+      !["codex-tui-native", "claude-code-native"].includes(
+        value.harnessObservation?.kind ?? "",
+      ) ||
       (value.resultStatus === "partial" &&
         JSON.stringify(value.lifecycle) ===
           JSON.stringify(["install", "configure", "hook", "execute"]) &&
@@ -185,6 +242,29 @@ const fixtureResult = z
           JSON.stringify(["hook", "model"]) &&
         value.modelLedger.entries.length > 0 &&
         value.destinationLedger.ingestion.length === 0 &&
+        value.destinationLedger.retrieval.length === 0),
+  )
+  .refine(
+    (value) =>
+      value.harnessObservation?.kind !== "claude-code-trace" ||
+      (value.resultStatus === "complete" &&
+        JSON.stringify(value.eventKinds) ===
+          JSON.stringify(["hook", "model", "destination"]) &&
+        value.modelLedger.entries.filter(
+          (entry) =>
+            entry.routeId === "anthropic-messages" &&
+            entry.provider === "anthropic" &&
+            entry.method === "POST" &&
+            entry.path === "/v1/messages",
+        ).length >= 2 &&
+        value.destinationLedger.ingestion.length === 4 &&
+        value.destinationLedger.ingestion.every(
+          (entry) =>
+            entry.operation === "otlp" &&
+            entry.method === "POST" &&
+            entry.path === "/api/public/otel/v1/traces" &&
+            entry.outcome === "accepted",
+        ) &&
         value.destinationLedger.retrieval.length === 0),
   )
   .refine(
