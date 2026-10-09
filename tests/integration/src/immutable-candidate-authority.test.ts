@@ -37,6 +37,9 @@ const {
   encodeInteractiveFailureExitCode,
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
+  formatInteractiveChildDiagnostic,
+  readInteractiveChildFailureObservation,
+  validInstalledPtyFailure,
   extractUntrustedCodexConfigHint,
   extractUntrustedCodexGateHint,
   extractUntrustedCodexPtyHint,
@@ -66,6 +69,266 @@ const {
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
+
+const semanticFacts = {
+  finalSemanticState: "ready",
+  inputJoined: false,
+  readinessObserved: true,
+  allInputBytesWritten: false,
+};
+const semanticPredicate = "testkit.pty.transport.semantic-incomplete";
+describe("bounded existing PTY diagnostic frame", () => {
+  it.each(["active", "ready"])(
+    "round-trips settled %s facts without admission authority",
+    (state) => {
+      const facts = { ...semanticFacts, finalSemanticState: state };
+      const frame: string = formatInteractiveChildDiagnostic(
+        semanticPredicate,
+        facts,
+      );
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(readInteractiveChildFailureObservation(frame)).toEqual({
+        predicate: semanticPredicate,
+        semanticFailure: facts,
+      });
+      expect(extractInteractiveChildDiagnostic(frame)).toBe(semanticPredicate);
+      expect(
+        readInteractiveChildFailureObservation(
+          formatInteractiveChildDiagnostic(semanticPredicate),
+        ),
+      ).toEqual({ predicate: semanticPredicate });
+    },
+  );
+  it.each([
+    ";completed;1;1;1",
+    ";ready;true;1;1",
+    ";ready;1;1",
+    ";ready;1;1;1;PRIVATE",
+    ";ready;1;1;1;claude-interactive-trace-smoke",
+    ";ready;1;1;1\r",
+  ])("rejects foreign/malformed scalar suffix %s", (suffix) => {
+    const frame = `integration.runner.interactive-diagnostic:${semanticPredicate}${suffix}\n`;
+    expect(readInteractiveChildFailureObservation(frame)).toBeUndefined();
+  });
+  it("rejects duplicates, other predicates and excessive frames", () => {
+    const frame = formatInteractiveChildDiagnostic(
+      semanticPredicate,
+      semanticFacts,
+    );
+    expect(
+      readInteractiveChildFailureObservation(frame + frame),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        frame + "integration.runner.interactive-diagnostic:PRIVATE\n",
+      ),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        frame.replace(semanticPredicate, "testkit.pty.request"),
+      ),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        `integration.runner.interactive-diagnostic:${"x".repeat(256)}\n`,
+      ),
+    ).toBeUndefined();
+    expect(readInteractiveChildFailureObservation({})).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
+    expect(formatInteractiveChildDiagnostic("PRIVATE")).not.toContain(
+      "PRIVATE",
+    );
+  });
+});
+describe("content-free installed PTY diagnostic validator", () => {
+  const original = {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate: semanticPredicate,
+  };
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "validates held-plan scenario %s only",
+    (scenarioId) => {
+      expect(
+        validInstalledPtyFailure({
+          ...original,
+          scenarioId,
+          semanticFailure: semanticFacts,
+        }),
+      ).toBe(true);
+      expect(validInstalledPtyFailure({ ...original, scenarioId })).toBe(true);
+      expect(validInstalledPtyFailure(original)).toBe(true);
+      expect(validInstalledPtyFailure(null)).toBe(true);
+    },
+  );
+  it("refuses forged/accessor/proxy and malformed field projections without reading content", () => {
+    let traps = 0;
+    const accessor = Object.defineProperty(
+      { ...semanticFacts },
+      "inputJoined",
+      {
+        get() {
+          traps++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    const proxy = new Proxy(semanticFacts, {
+      ownKeys() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const semanticFailure of [
+      accessor,
+      proxy,
+      { ...semanticFacts, extra: true },
+      { ...semanticFacts, inputJoined: 1 },
+      { ...semanticFacts, readinessObserved: 1 },
+      { ...semanticFacts, allInputBytesWritten: 1 },
+      { ...semanticFacts, finalSemanticState: "completed" },
+    ]) {
+      expect(
+        validInstalledPtyFailure({
+          ...original,
+          scenarioId: "codex-tui-trace-smoke",
+          semanticFailure,
+        }),
+      ).toBe(false);
+      expect(
+        readInteractiveChildFailureObservation(
+          formatInteractiveChildDiagnostic(semanticPredicate, semanticFailure),
+        ),
+      ).toEqual({ predicate: semanticPredicate });
+    }
+    for (const value of [
+      undefined,
+      [],
+      { ...original, scenarioId: "PRIVATE" },
+      {
+        ...original,
+        phase: "pty-receipt",
+        scenarioId: "codex-tui-trace-smoke",
+      },
+      {
+        ...original,
+        scenarioId: "codex-tui-trace-smoke",
+        predicate: "testkit.pty.request",
+        semanticFailure: semanticFacts,
+      },
+      { ...original, extra: true },
+      new Proxy(original, {
+        getPrototypeOf() {
+          traps++;
+          throw new Error("PRIVATE");
+        },
+      }),
+    ])
+      expect(validInstalledPtyFailure(value)).toBe(false);
+    expect(traps).toBe(0);
+  });
+});
+describe("actual held-plan parent PTY failure projection", () => {
+  it("binds the existing parent record to its held plan, never child metadata", () => {
+    const original = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate: semanticPredicate,
+    };
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const recordInteractiveExecutionFailure ="),
+      end = source.indexOf("const retainCodexResearchDiagnostic =", start);
+    const failures = new Map();
+    const record = runInNewContext(
+      `${source.slice(start, end)}; recordInteractiveExecutionFailure`,
+      {
+        installedPtyFailures: failures,
+        readInteractiveChildFailureObservation,
+        selectInteractiveExecutionFailurePredicate: () => semanticPredicate,
+        contentFreeChildFailureCode: () => semanticPredicate,
+      },
+    );
+    const plan = {
+      runId: "a".repeat(16),
+      executionMode: "interactive",
+      scenarioId: "codex-tui-trace-smoke",
+    };
+    const originalError = new Error("PRIVATE");
+    expect(
+      record(
+        plan,
+        originalError,
+        formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
+        undefined,
+      ),
+    ).toBe(semanticPredicate);
+    expect(failures.get(plan.runId)).toEqual({
+      ...original,
+      scenarioId: plan.scenarioId,
+      semanticFailure: semanticFacts,
+    });
+    record(
+      plan,
+      originalError,
+      `${formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts).trim()};claude-interactive-trace-smoke\n`,
+      undefined,
+    );
+    expect(failures.get(plan.runId)).toEqual({
+      ...original,
+      scenarioId: plan.scenarioId,
+    });
+  });
+});
+describe("actual runner caught-failure diagnostic routing", () => {
+  it("uses the existing private reader on the same caught error and preserves the predicate", () => {
+    const source = readIntegration("runner.mjs");
+    const caught = source.indexOf(
+      "} catch (error) {\n  emitCodexPtyFailureHint();",
+    );
+    const start = source.indexOf(
+      '  if (scenario.executionMode === "interactive")',
+      caught,
+    );
+    const end = source.indexOf(
+      '  if (\n    scenario.executionMode === "headless"',
+      start,
+    );
+    expect(caught).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const error = new Error(semanticPredicate),
+      frames: string[] = [];
+    runInNewContext(
+      `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+      {
+        scenario: { executionMode: "interactive" },
+        error,
+        ledger: "/synthetic",
+        readBoundedInteractiveFailureMarker: () => undefined,
+        retainedInteractivePhase: () => undefined,
+        selectInteractiveFailureDiagnostic: (
+          _fixture: unknown,
+          _phase: unknown,
+          code: unknown,
+        ) => code,
+        readPtySemanticFailure: (caughtError: unknown) => {
+          expect(caughtError).toBe(error);
+          return semanticFacts;
+        },
+        formatInteractiveChildDiagnostic,
+        process: { stdout: { write: (frame: string) => frames.push(frame) } },
+      },
+    );
+    expect(frames).toEqual([
+      formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
+    ]);
+    expect(readInteractiveChildFailureObservation(frames[0])).toEqual({
+      predicate: semanticPredicate,
+      semanticFailure: semanticFacts,
+    });
+  });
+});
 
 const hex = (character: string): string => character.repeat(64);
 

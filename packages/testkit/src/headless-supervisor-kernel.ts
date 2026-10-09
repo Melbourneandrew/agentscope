@@ -22,6 +22,7 @@ import type {
 import {
   kernelError,
   readPtyReconciliationStage,
+  readPtySemanticFailure,
 } from "./internal/kernel-errors.js";
 
 /**
@@ -96,6 +97,7 @@ export const executeSelectedPtyProcess = async (
       readHeadlessSupervisorKernelErrorCode(error) ??
         "testkit.headless.kernel.failure",
       readPtyReconciliationStage(error),
+      readPtySemanticFailure(error),
     );
   }
 };

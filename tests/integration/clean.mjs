@@ -20,7 +20,7 @@ import {
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
 import {
-  installedPtyFailurePredicates,
+  validInstalledPtyFailure,
   validCodexResearchDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
@@ -185,16 +185,6 @@ const artifactMaximumBytes = Object.freeze({
   "current-selection.json": 16_384,
   "harness-support-evidence.json": 1_048_576,
 });
-const validInstalledPtyFailure = (value) =>
-  value === null ||
-  (typeof value === "object" &&
-    value !== null &&
-    Object.getPrototypeOf(value) === Object.prototype &&
-    JSON.stringify(Object.keys(value).sort()) ===
-      JSON.stringify(["phase", "predicate", "receiptVersion"].sort()) &&
-    value.receiptVersion === 1 &&
-    Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
-    installedPtyFailurePredicates[value.phase].includes(value.predicate));
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;

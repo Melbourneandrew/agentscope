@@ -21,7 +21,10 @@ import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
-import { readPtyReconciliationStage } from "./testkit/internal/kernel-errors.js";
+import {
+  readPtyReconciliationStage,
+  readPtySemanticFailure,
+} from "./testkit/internal/kernel-errors.js";
 import {
   encodeAdapterReportedFailureMarker,
   failedCodexSessionStartHint,
@@ -34,6 +37,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  formatInteractiveChildDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyReceiptFailed,
   readBoundedInteractiveFailureMarker,
@@ -775,7 +779,10 @@ try {
     );
     interactiveFailureDiagnostic = diagnostic;
     process.stdout.write(
-      `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
+      formatInteractiveChildDiagnostic(
+        diagnostic ?? "integration.runner.fixture-failed",
+        readPtySemanticFailure(error),
+      ),
     );
   }
   if (

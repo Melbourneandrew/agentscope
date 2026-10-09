@@ -7,6 +7,13 @@ import { ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
+import {
+  kernelError,
+  readPtySemanticFailure,
+  readPtyReconciliationStage,
+  trustedErrorCode,
+} from "../internal/kernel-errors.js";
+import { boundedInvoke } from "../internal/kernel-promise.js";
 import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.js";
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
@@ -199,6 +206,179 @@ const request = (
       .digest("hex"),
   };
 };
+describe("private terminal semantic refusal facts", () => {
+  it("retains final state/input facts from the actual synthetic backend", async () => {
+    const selected = request({ stdin: new Uint8Array() });
+    try {
+      await executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [{ action: "wait-for-semantic-completion" }],
+          },
+        },
+        "missing-completion",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "testkit.pty.transport.semantic-incomplete",
+      });
+      expect(readPtySemanticFailure(error)).toEqual({
+        finalSemanticState: "ready",
+        inputJoined: false,
+        readinessObserved: true,
+        allInputBytesWritten: true,
+      });
+      return;
+    }
+    throw new Error("expected refusal");
+  });
+  it.each(["sync", "async"])(
+    "preserves private facts through the existing %s promise remint",
+    async (kind) => {
+      const facts = {
+        finalSemanticState: "active" as const,
+        inputJoined: false,
+        readinessObserved: false,
+        allInputBytesWritten: false,
+      };
+      const original = kernelError(
+        "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        facts,
+      );
+      const work =
+        kind === "sync"
+          ? () => {
+              throw original;
+            }
+          : () => Promise.reject(original);
+      try {
+        await boundedInvoke(
+          work,
+          performance.now() + 1000,
+          "testkit.headless.shutdown.deadline",
+        );
+      } catch (error) {
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtySemanticFailure(error)).toEqual(facts);
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+  it("preserves private facts through the actual production wrapper catch", async () => {
+    const facts = {
+      finalSemanticState: "ready" as const,
+      inputJoined: true,
+      readinessObserved: true,
+      allInputBytesWritten: false,
+    };
+    const original = kernelError(
+      "testkit.pty.transport.semantic-incomplete",
+      undefined,
+      facts,
+    );
+    const source = readFileSync(
+      new URL("../headless-supervisor-kernel.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("export const executeSelectedPtyProcess =");
+    expect(start).toBeGreaterThan(0);
+    const compiled = transpileModule(
+      `${source.slice(start + 7)}; executeSelectedPtyProcess`,
+      { compilerOptions: { target: ScriptTarget.ES2022 } },
+    ).outputText;
+    const execute = runInNewContext(compiled, {
+      executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
+      kernelError,
+      readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+      readPtyReconciliationStage,
+      readPtySemanticFailure,
+    }) as (...args: unknown[]) => Promise<unknown>;
+    try {
+      await execute({}, {}, {});
+    } catch (error) {
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtySemanticFailure(error)).toEqual(facts);
+      return;
+    }
+    throw new Error("expected refusal");
+  });
+});
+describe("private terminal facts reject substituted metadata", () => {
+  it("snapshots only exact scalar data and ignores forged error fields", () => {
+    const facts = {
+      finalSemanticState: "ready" as const,
+      inputJoined: true,
+      readinessObserved: true,
+      allInputBytesWritten: true,
+    };
+    const genuine = kernelError(
+      "testkit.pty.transport.semantic-incomplete",
+      undefined,
+      facts,
+    );
+    facts.inputJoined = false;
+    expect(readPtySemanticFailure(genuine)?.inputJoined).toBe(true);
+    expect(Object.isFrozen(readPtySemanticFailure(genuine))).toBe(true);
+    let traps = 0;
+    const accessor = Object.defineProperty({ ...facts }, "inputJoined", {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(facts, {
+      ownKeys() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const candidate of [
+      accessor,
+      proxy,
+      { ...facts, extra: true },
+      { ...facts, finalSemanticState: "completed" },
+      { ...facts, inputJoined: 1 },
+      { ...facts, readinessObserved: 1 },
+      { ...facts, allInputBytesWritten: 1 },
+      null,
+    ]) {
+      const error: unknown = Reflect.apply(kernelError, undefined, [
+        "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        candidate,
+      ]);
+      expect(trustedErrorCode(error)).toBe(
+        "testkit.pty.transport.semantic-incomplete",
+      );
+      expect(readPtySemanticFailure(error)).toBeUndefined();
+    }
+    expect(
+      readPtySemanticFailure(
+        Object.assign(new Error(genuine.message), { semanticFailure: facts }),
+      ),
+    ).toBeUndefined();
+    expect(
+      readPtySemanticFailure(
+        new Proxy(genuine, {
+          get() {
+            traps++;
+            throw new Error("PRIVATE");
+          },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      readPtySemanticFailure(
+        kernelError("testkit.pty.request", undefined, facts),
+      ),
+    ).toBeUndefined();
+    expect(traps).toBe(0);
+  });
+});
 
 const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
   const challenge = "a".repeat(64);

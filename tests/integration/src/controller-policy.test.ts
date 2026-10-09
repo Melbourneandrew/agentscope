@@ -29,6 +29,7 @@ import { sanitizeFixtureResult } from "./operations.js";
 import {
   completionCopySourceMissingResponseMatches,
   knownFailureCode,
+  readOtlpObservationFailure,
 } from "./controller-failure-diagnostic.js";
 
 type OperationDiagnosticFunctions = {
@@ -177,6 +178,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
       types,
       completionCopySourceMissingResponseMatches,
       knownFailureCode,
+      readOtlpObservationFailure,
       preparedDockerClient: {},
       preparedDockerClientRequiresOuterHostRetirement: () => {
         if (state.observerFails) throw new Error("PRIVATE observer");
@@ -275,6 +277,9 @@ describe("actual-source optional original operation diagnostics", () => {
         runId: f.plan.runId,
         code: "integration.mockserver.control",
         clientRetirementRequired: true,
+        ...(slot === "join-collector-project"
+          ? { collectorRefusal: null }
+          : {}),
         ...(slot === "join-ledger-complete"
           ? {
               process: {
