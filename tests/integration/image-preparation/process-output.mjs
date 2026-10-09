@@ -88,6 +88,10 @@ const bootstrapFamilies = [
 ];
 const marker = "[agentscope-material";
 const markerBytes = Buffer.from(marker);
+const verifierMarkerBytes = Buffer.from("[agentscope-verifier");
+const includesMarker = (suffix, segment, text, bytes) =>
+  (suffix + segment.subarray(0, 256).toString("latin1")).includes(text) ||
+  segment.includes(bytes);
 const familyFor = (stage) =>
   stage === "authenticate-inputs"
     ? "input"
@@ -301,6 +305,40 @@ const createSupplierBuildPhaseObservation = () => {
     },
   };
 };
+const createVerifierFailureObservation = () => {
+  let failure;
+  let ambiguous = false;
+  let candidate = false;
+  return {
+    consume(segment, suffix) {
+      candidate ||=
+        (suffix + segment.subarray(0, 256).toString("latin1")).includes(
+          "[agentscope-verifier",
+        ) || segment.includes(verifierMarkerBytes);
+    },
+    line(suffix, bytes) {
+      if (!candidate) return false;
+      candidate = false;
+      const match =
+        /^(?:(?:#\d{1,8} )?\d{1,8}\.\d{1,6} )?\[agentscope-verifier:v1 failure=(entry|npm-(?:input|version|install|lock|audit|bundles)|platform-(?:archive|inventory|member)|gpg-(?:home|import|list|key-policy|signature|signature-policy))\]$/u.exec(
+          suffix,
+        );
+      if (bytes > 256 || !match || (failure && failure !== match[1]))
+        ambiguous = true;
+      else failure = match[1];
+      return true;
+    },
+    snapshot() {
+      return ambiguous || candidate
+        ? "unknown"
+        : failure
+          ? `verifier-${failure}`
+          : undefined;
+    },
+  };
+};
+const classifyBuildPrefix = (prefix, pending) =>
+  classifyBuildxStderr(Buffer.concat([prefix, pending]).toString("utf8"));
 export const createBuildStderrObservation = () => {
   const prefix = Buffer.alloc(maximumHeaderBytes);
   const pending = Buffer.alloc(maximumHeaderBytes);
@@ -314,11 +352,13 @@ export const createBuildStderrObservation = () => {
   let stage = "unknown";
   let family = "unknown";
   let mavenFailure;
+  const verifier = createVerifierFailureObservation();
   const execution = createSupplierExecutionObservation();
   const buildPhase = createSupplierBuildPhaseObservation();
   const originalLines = new Set();
   const replayedLines = new Set();
   const line = () => {
+    if (verifier.line(suffix, lineBytes)) return true;
     execution.observe(suffix, lineBytes);
     buildPhase.line(suffix, lineBytes);
     if (!candidate) return false;
@@ -380,10 +420,8 @@ export const createBuildStderrObservation = () => {
           0,
           Math.max(0, maximumHeaderBytes - prefixBytes - pendingBytes),
         );
-        candidate ||=
-          (suffix + segment.subarray(0, 256).toString("latin1")).includes(
-            marker,
-          ) || segment.includes(markerBytes);
+        candidate ||= includesMarker(suffix, segment, marker, markerBytes);
+        verifier.consume(segment, suffix);
         suffix =
           segment.length >= 256
             ? segment.subarray(-256).toString("latin1")
@@ -407,21 +445,20 @@ export const createBuildStderrObservation = () => {
     },
     snapshot() {
       if (candidate) ambiguous = true;
-      const executionSnapshot = execution.snapshot(suffix);
       return Object.freeze({
-        stderrClass: classifyBuildxStderr(
-          Buffer.concat([
+        stderrClass:
+          verifier.snapshot() ??
+          classifyBuildPrefix(
             prefix.subarray(0, prefixBytes),
             pending.subarray(0, pendingBytes),
-          ]).toString("utf8"),
-        ),
+          ),
         ...bootstrapObservation(
           buildPhase.snapshot() ?? stage,
           buildPhase.snapshot() ? "none" : family,
           mavenFailure,
           ambiguous,
         ),
-        ...executionSnapshot,
+        ...execution.snapshot(suffix),
       });
     },
   });
