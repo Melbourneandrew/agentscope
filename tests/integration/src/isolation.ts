@@ -1293,6 +1293,10 @@ const cleanupFailureReason = (error: unknown): string => {
     "message",
   )?.value;
   switch (message) {
+    case "integration.mockserver.control":
+      return "mockserver-control";
+    case "integration.isolation.mockserver-terminal":
+      return "mockserver-terminal";
     case "integration.isolation.cleanup-network-remove":
       return "network-remove";
     case "integration.isolation.cleanup-control-volume":
@@ -1367,7 +1371,7 @@ const failCleanup = (
 ): never => {
   try {
     process.stderr.write(
-      `integration.isolation.cleanup-diagnostic:${JSON.stringify({ ...cleanup, originalWorkPhase, failedRemovals: result.failures })}\n`,
+      `integration.isolation.cleanup-diagnostic:${JSON.stringify({ ...cleanup, originalWorkPhase, originalWorkFailureReason: originalWorkPhase === null ? null : cleanupFailureReason(workFailure), failedRemovals: result.failures })}\n`,
     );
   } catch {
     // Optional content-free output cannot replace the original cleanup failure.
