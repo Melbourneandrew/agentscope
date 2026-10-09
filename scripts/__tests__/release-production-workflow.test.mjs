@@ -126,6 +126,11 @@ const requireProbeGraph = (workflow) => {
   ]);
   expect(workflow.jobs["verify-candidate"].if).toContain("refs/heads/main");
   const verify = workflow.jobs["verify-candidate"].steps;
+  for (const command of ["--prepare-admission", "--verify-admission"]) {
+    expect(verify.find((step) => step.run?.endsWith(command)).if).toBe(
+      "github.ref == 'refs/tags/v0.1.0' || inputs.operation == 'prepare-candidate'",
+    );
+  }
   const pack = verify.filter((step) => step.run?.startsWith("npm pack "));
   expect(pack).toHaveLength(1);
   expect(pack[0]).toEqual({

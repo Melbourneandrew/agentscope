@@ -241,7 +241,10 @@ function selectRetainedCandidate(run, jobs, artifacts) {
     artifact.created_at,
     artifact.updated_at,
     job.completed_at,
-  ].map(Date.parse);
+  ].map((value) => {
+    if (typeof value !== "string") fail();
+    return Date.parse(value);
+  });
   if (
     job.run_id !== run.id ||
     job.head_sha !== run.head_sha ||
