@@ -65,6 +65,9 @@ jobs:
         run: |
           pnpm build
           pnpm test:integration
+          install -d -m 700 artifacts/integration/cli-release-materials
+          install -m 600 artifacts/npm/sbom.json artifacts/integration/cli-release-materials/sbom.json
+          install -m 600 artifacts/npm/attestations.json artifacts/integration/cli-release-materials/attestations.json
       - name: Publish checksum-bound candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -72,6 +75,8 @@ jobs:
           path: |
             artifacts/integration/candidates
             artifacts/integration/current-candidate.json
+            artifacts/integration/cli-release-materials/sbom.json
+            artifacts/integration/cli-release-materials/attestations.json
           if-no-files-found: error
           retention-days: 1
   hermetic-platform:

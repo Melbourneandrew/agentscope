@@ -47,6 +47,32 @@ const manifest = (path: string) =>
     scripts: Record<string, string>;
   };
 describe("integration controller policy", () => {
+  it("retains the original packed CLI material roles after candidate preparation", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const prepare = workflow.slice(
+      workflow.indexOf("      - name: Build and prepare candidate once"),
+      workflow.indexOf("  hermetic-platform:"),
+    );
+    const terminal = prepare.indexOf("          pnpm test:integration\n");
+    expect(terminal).toBeGreaterThan(-1);
+    for (const role of ["sbom", "attestations"]) {
+      const target = `artifacts/integration/cli-release-materials/${role}.json`;
+      const copy = `install -m 600 artifacts/npm/${role}.json ${target}`;
+      expect(prepare.indexOf(copy)).toBeGreaterThan(terminal);
+      expect(prepare).toContain(`            ${target}\n`);
+    }
+    expect(prepare).toContain("            artifacts/integration/candidates\n");
+    expect(prepare).toContain(
+      "            artifacts/integration/current-candidate.json\n",
+    );
+    expect(prepare).not.toMatch(
+      /npm (?:pack|publish)|assembleCandidateAssets/u,
+    );
+  });
+
   it("requires the exact private control mount for ordinary and TUI consumers", () => {
     const source = readIntegration("immutable-candidate-authority.mjs");
     const start = source.indexOf("const selectedControlMountMatches =");
