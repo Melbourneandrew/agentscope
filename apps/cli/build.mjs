@@ -1,13 +1,26 @@
-import { cp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { build } from "esbuild";
+import { build as esbuild, version } from "esbuild";
+import { createReleaseBuildRecorder } from "./scripts/release-materials.mjs";
 import {
   directoryLoaderBinPlugin,
   stageDirectoryArtifact,
 } from "./scripts/directory-artifact.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+const materialRoot = new URL(
+  "../../artifacts/cli-build-materials/",
+  import.meta.url,
+);
+await rm(materialRoot, { force: true, recursive: true });
+const recorder = createReleaseBuildRecorder({
+  repositoryRoot: fileURLToPath(new URL("../..", import.meta.url)),
+  packageRoot,
+  engine: esbuild,
+  version,
+});
+const build = recorder.build;
 const manifest = JSON.parse(
   await readFile(new URL("package.json", import.meta.url), "utf8"),
 );
@@ -176,7 +189,7 @@ await build({
   format: "esm",
   minify: false,
   outfile: `${packageRoot}dist/bin/agentscope.js`,
-  plugins: [await directoryLoaderBinPlugin()],
+  plugins: [recorder.plugin(await directoryLoaderBinPlugin())],
   platform: "node",
   sourcemap: false,
   target: "node22",
@@ -196,3 +209,8 @@ if (
     "Process-private hook code leaked into the public CLI bundle",
   );
 }
+await mkdir(materialRoot, { recursive: true });
+await writeFile(
+  new URL("observed-build.json", materialRoot),
+  `${JSON.stringify(recorder.finish(), null, 2)}\n`,
+);
