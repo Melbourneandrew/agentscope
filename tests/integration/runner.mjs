@@ -408,6 +408,8 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+let recoveryAttempted = false;
+let recoverySucceeded = false;
 let interactiveFailureDiagnostic;
 let codexPtyFailureHint =
   scenarioId === "codex-tui-trace-smoke" ? "arm-pty-before-call" : undefined;
@@ -743,7 +745,9 @@ try {
       substrateCertificationCase === "leaked-child"
     ) {
       try {
+        recoveryAttempted = true;
         fixtureOutput = recoverRetainedFixtureOutput();
+        recoverySucceeded = true;
       } catch {
         // Keep the original failed output when retained bytes cannot authenticate.
       }
@@ -771,7 +775,9 @@ try {
     substrateCertificationCase === "leaked-child"
   ) {
     try {
+      recoveryAttempted = true;
       fixtureOutput = recoverRetainedFixtureOutput();
+      recoverySucceeded = true;
     } catch {
       fixtureOutput = "";
     }
@@ -822,6 +828,21 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
       process.stdout.write(
         `integration.runner.untrusted-trace-hint:${traceHint}\n`,
       );
+  }
+}
+if (
+  scenario.executionMode === "headless" &&
+  substrateCertificationCase === "leaked-child"
+) {
+  try {
+    const observation = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+      runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+      recoveryAttempted,
+      recoverySucceeded,
+    })}`;
+    if (Buffer.byteLength(observation) <= 256) console.log(observation);
+  } catch {
+    // Optional observation cannot replace the original receipt or failure.
   }
 }
 const fixtureResult = fixtureOutput

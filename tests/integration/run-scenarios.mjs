@@ -2418,6 +2418,9 @@ const publishOperationFailureDiagnostic = (
                 complete: processContext.leakedChild.complete === true,
                 readinessValid:
                   processContext.leakedChild.readinessValid === true,
+                ...(processContext.leakedChild.recovery
+                  ? { recovery: processContext.leakedChild.recovery }
+                  : {}),
               },
             }
           : {}),
@@ -2784,7 +2787,7 @@ const captureFailedScenarioReceipt = (
           true,
         )
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
-  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured, output);
   registerScenarioReceipt(plan, receipt);
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
   return receipt;
@@ -2804,7 +2807,56 @@ const captureAvailableFailedScenarioReceipt = (
         fixtureCaptured,
       )
     : undefined;
-const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
+const retainedRecoveryObservation = (output, runId, receipt) => {
+  try {
+    if (typeof output !== "string") return;
+    const prefix = "AGENTSCOPE_RETAINED_RECOVERY=";
+    const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+    if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
+    const value = JSON.parse(lines[0].slice(prefix.length));
+    if (
+      !value ||
+      JSON.stringify(Object.keys(value).sort()) !==
+        JSON.stringify(["recoveryAttempted", "recoverySucceeded", "runId"]) ||
+      value.runId !== runId ||
+      typeof value.recoveryAttempted !== "boolean" ||
+      typeof value.recoverySucceeded !== "boolean" ||
+      (value.recoverySucceeded && !value.recoveryAttempted)
+    )
+      return;
+    return {
+      attempted: value.recoveryAttempted,
+      succeeded: value.recoverySucceeded,
+      outcome: new Set([
+        "exited",
+        "timed-out",
+        "output-limit",
+        "cleanup-failed",
+      ]).has(receipt.outcome)
+        ? receipt.outcome
+        : "unknown",
+      termRequested:
+        typeof receipt.termRequested === "boolean"
+          ? receipt.termRequested
+          : null,
+      killRequested:
+        typeof receipt.killRequested === "boolean"
+          ? receipt.killRequested
+          : null,
+      cleanup: new Set(["clean", "residual", "uncertain"]).has(receipt.cleanup)
+        ? receipt.cleanup
+        : "unknown",
+    };
+  } catch {
+    // Unavailable or malformed optional observations remain unknown.
+  }
+};
+const observeNegativeScenarioReceipt = (
+  plan,
+  receipt,
+  fixtureCaptured,
+  output,
+) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
   let observed;
@@ -2850,6 +2902,7 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
             readinessValid: leakedChildReadinessIsValid(
               result?.certificationReadiness,
             ),
+            recovery: retainedRecoveryObservation(output, plan.runId, receipt),
           },
         });
       } catch {
@@ -3014,7 +3067,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           outerMonotonicDeadline,
         });
   const fixtureCaptured = captureFixtureResult(stdout, plan);
-  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured, stdout);
   registerScenarioReceipt(plan, receipt);
   if (plan.executionMode === "interactive") {
     const predicate = interactiveReceiptFailurePredicate(
