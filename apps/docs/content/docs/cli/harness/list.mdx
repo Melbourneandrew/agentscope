@@ -7,7 +7,11 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 `agentscope harness list` runs only adapter-owned executable, version, and known configuration-location probes. Unsupported installed versions remain distinct from absent harnesses, and ambiguous or unavailable evidence is `indeterminate`.
 
-The current packed registry is intentionally empty, so this release returns an empty list. Concrete discovery results begin only after the first-party harness adapters are registered and certified.
+The production registry contains `codex` and `claude-code`, so the command
+returns one discovery record for each adapter. Each record reflects the current
+machine and may be `installed`, `absent`, `unsupported`, or `indeterminate`.
+Registration alone is not a support claim; consult the release support manifest
+before installation.
 
 ## Syntax
 

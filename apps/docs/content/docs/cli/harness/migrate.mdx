@@ -7,7 +7,10 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 `agentscope harness migrate <harness>` is the only CLI authority that permits a descriptor planner's `replace-overlap` decision. It remains dry-run by default and uses the same conflict-safe, crash-recoverable transaction as install and uninstall.
 
-No concrete adapter is registered in the current packed CLI, so named migration requests currently return `harness.adapter-missing`.
+The production CLI registers the `codex` and `claude-code` adapters. Migration
+can inspect either adapter, but it proceeds only when exact discovery and
+overlap checks authorize a replacement; registration is not a support claim.
+Any other harness name returns `harness.adapter-missing`.
 
 ## Syntax
 

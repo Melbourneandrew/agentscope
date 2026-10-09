@@ -7,7 +7,10 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 `agentscope harness status <harness>` reports both compatibility discovery and the current install-plan disposition without applying the plan. A recovery-required disposition is preserved rather than guessed from a journal.
 
-No concrete adapter is registered in the current packed CLI, so named status requests currently return `harness.adapter-missing`.
+The production CLI registers `codex` and `claude-code`. Status can inspect either
+adapter, but registration alone does not establish support for the discovered
+version, mode, or platform. Any other harness name returns
+`harness.adapter-missing`.
 
 ## Syntax
 
