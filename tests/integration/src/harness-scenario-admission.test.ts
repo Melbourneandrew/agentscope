@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { compileVerifiedSignedManifestHarnessMaterial } from "./harness-material.js";
 
 import { sha256 } from "./canonical.js";
 import {
@@ -330,6 +332,16 @@ describe("real harness scenario admission bridge", () => {
 
   it("uses the same admission seam for a signed-manifest distribution", () => {
     const input = fixture();
+    const binary = Buffer.from("inert binary"),
+      signature = Buffer.from("inert signature"),
+      key = Buffer.from("inert public key");
+    const hash = (bytes: Uint8Array) =>
+      createHash("sha256").update(bytes).digest("hex");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        platforms: { "linux-x64": { checksum: hash(binary) } },
+      }),
+    );
     const signed = {
       ...input,
       componentFixture: componentFixture("2.1.89"),
@@ -345,24 +357,24 @@ describe("real harness scenario admission bridge", () => {
           verifierImage: `node@sha256:${"a".repeat(64)}`,
           binary: {
             url: "https://downloads.vendor.invalid/2.1.89/linux-x64/tool",
-            bytes: 1,
-            sha256: "a".repeat(64),
+            bytes: binary.length,
+            sha256: hash(binary),
             executableName: "tool",
           },
           manifest: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json",
-            bytes: 1,
-            sha256: "b".repeat(64),
+            bytes: manifest.length,
+            sha256: hash(manifest),
           },
           signature: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json.sig",
-            bytes: 1,
-            sha256: "c".repeat(64),
+            bytes: signature.length,
+            sha256: hash(signature),
           },
           signingKey: {
             url: "https://downloads.vendor.invalid/keys/release.asc",
-            bytes: 1,
-            sha256: "d".repeat(64),
+            bytes: key.length,
+            sha256: hash(key),
             fingerprint: "A".repeat(40),
             signerFingerprint: "A".repeat(40),
             signatureHashAlgorithm: "sha512" as const,
@@ -375,7 +387,35 @@ describe("real harness scenario admission bridge", () => {
         },
       },
     };
+    const record = compileVerifiedSignedManifestHarnessMaterial({
+      binary,
+      evidenceId: input.evidence.evidenceId,
+      material: signed.evidence.material,
+      manifestBytes: manifest,
+      signatureBytes: signature,
+      signingKeyBytes: key,
+      verification: {
+        primaryFingerprint: "A".repeat(40),
+        signerFingerprint: "A".repeat(40),
+        uid: signed.evidence.material.signingKey.uid,
+        manifestSha256: hash(manifest),
+        signatureHashAlgorithm: "sha512",
+        verifier: {
+          controllerSha256: "d".repeat(64),
+          image: signed.evidence.material.verifierImage,
+          imageConfigDigest: `sha256:${"b".repeat(64)}`,
+          imageId: digest("c"),
+          imageManifestDigest: `sha256:${"e".repeat(64)}`,
+          name: "gpg",
+        },
+      },
+    });
+    signed.materialIdentity = record.materialIdentity;
+    expect(record.materialIdentity).not.toBe(
+      sha256(JSON.stringify(signed.evidence.material)),
+    );
     const seed = compileHarnessAdmissionSeed(signed);
+    expect(seed.harness.artifactDigest).toBe(record.materialIdentity);
     expect(seed.harness.distributionReference).toBe(
       "signed-manifest:vendor-tool@2.1.89#linux-x64",
     );

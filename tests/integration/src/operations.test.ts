@@ -2,6 +2,37 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
+it("operational projection strips only the prepared member without authenticating or mutating it", () => {
+  const source = readFileSync(
+    new URL("../verify-operations.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const operationalIsolationEvidence =");
+  const end = source.indexOf("const wait =", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  const project = runInNewContext(
+    `${source.slice(start, end)}; operationalIsolationEvidence`,
+    {
+      compileIsolationEvidence: (value: Record<string, unknown>) => {
+        if (Object.keys(value).some((key) => key !== "runId"))
+          throw new Error("strict-isolation");
+        return value;
+      },
+    },
+  ) as (value: unknown) => unknown;
+  const original = Object.freeze({
+    runId: "owned",
+    preparedHarnessMaterial: Object.freeze({ untrusted: true }),
+  });
+  expect(project(original)).toEqual({ runId: "owned" });
+  expect(project({ runId: "owned" })).toEqual({ runId: "owned" });
+  expect(original.preparedHarnessMaterial).toEqual({ untrusted: true });
+  expect(() => project({ ...original, arbitraryExtra: true })).toThrow(
+    "strict-isolation",
+  );
+});
+
 import {
   compileLocalSelection,
   mapWithConcurrency,

@@ -472,7 +472,7 @@ function claudeHooks(hooks) {
   if (new Set(hooks.map((row) => row.traceId)).size !== 4) reject();
 }
 
-function bindSourceMaterial(input, entry) {
+function bindSourceMaterial(input, entry, preparedHarnessMaterial) {
   if (
     types.isProxy(input) ||
     !input ||
@@ -480,7 +480,13 @@ function bindSourceMaterial(input, entry) {
     Object.getOwnPropertySymbols(input).length !== 0
   )
     reject();
-  keys(input, ["catalogBytes", "fixtureBytes", "adapterBytes", "mappingBytes"]);
+  keys(input, [
+    "catalogBytes",
+    "fixtureBytes",
+    "adapterBytes",
+    "mappingBytes",
+    "controllerBytes",
+  ]);
   const descriptors = Object.getOwnPropertyDescriptors(input);
   if (
     Object.values(descriptors).some((value) => !Object.hasOwn(value, "value"))
@@ -510,6 +516,7 @@ function bindSourceMaterial(input, entry) {
   )
     reject();
   bindSourceAuthority(fixture, evidence[0], entry);
+  bindPreparedMaterial(input, evidence[0], entry, preparedHarnessMaterial);
   bindSourceComponent(input, evidence[0], entry);
   bindSourceCatalog(rows[0], evidence[0], entry);
 }
@@ -565,10 +572,154 @@ function bindSourceAuthority(fixture, row, entry) {
     row.harnessPackage !== entry.harnessType ||
     row.representativeVersion !== entry.testedVersion ||
     row.admission.evidenceSlot !== entry.evidenceSlot ||
-    row.material.platformIdentity !== seed.platformIdentity ||
-    seed.harness.artifactDigest !== integrationDigest(row.material)
+    row.material.platformIdentity !== seed.platformIdentity
   )
     reject();
+}
+function bindPreparedMaterial(input, row, entry, record) {
+  const descriptor = row.material;
+  const { materialIdentity, ...preimage } = record ?? {};
+  const signed = descriptor.kind === "signed-release-manifest";
+  keys(
+    record,
+    signed
+      ? [
+          "authorityVersion",
+          "evidenceId",
+          "kind",
+          "binary",
+          "platformIdentity",
+          "manifestSha256",
+          "signatureSha256",
+          "signatureHashAlgorithm",
+          "signingKey",
+          "verifier",
+          "materialIdentity",
+          ...(descriptor.platformPackage === undefined
+            ? []
+            : ["platformPackage"]),
+        ]
+      : [
+          "authorityVersion",
+          "evidenceId",
+          "kind",
+          "packages",
+          "platformIdentity",
+          "verifierNpmVersion",
+          "verifier",
+          "materialIdentity",
+        ],
+  );
+  if (
+    record.authorityVersion !== 1 ||
+    record.evidenceId !== row.evidenceId ||
+    record.kind !== descriptor.kind ||
+    record.platformIdentity !== descriptor.platformIdentity ||
+    materialIdentity !== integrationDigest(preimage) ||
+    materialIdentity !== entry.binding.seed.harness.artifactDigest
+  )
+    reject();
+  const verifier = record.verifier;
+  keys(verifier, [
+    "controllerSha256",
+    "image",
+    "imageConfigDigest",
+    "imageId",
+    "imageManifestDigest",
+    "name",
+  ]);
+  if (
+    verifier.name !== (signed ? "gpg" : "npm") ||
+    verifier.image !== descriptor.verifierImage ||
+    !/^sha256:[a-f\d]{64}$/u.test(verifier.imageManifestDigest) ||
+    !/^sha256:[a-f\d]{64}$/u.test(verifier.imageConfigDigest) ||
+    !/^sha256-[a-f\d]{64}$/u.test(verifier.imageId) ||
+    verifier.controllerSha256 !==
+      integrationDigestBytes(input.controllerBytes).slice(7)
+  )
+    reject();
+  if (signed) bindPreparedSignedMaterial(record, descriptor);
+  else bindPreparedNpmMaterial(record, descriptor);
+}
+function bindPreparedSignedMaterial(record, descriptor) {
+  keys(record.binary, [
+    "bytes",
+    "executableName",
+    "fileName",
+    "platform",
+    "sha256",
+    "version",
+  ]);
+  if (
+    !equal(record.binary, {
+      bytes: descriptor.binary.bytes,
+      executableName: descriptor.binary.executableName,
+      fileName: `${descriptor.binary.sha256}.bin`,
+      platform: descriptor.platform,
+      sha256: descriptor.binary.sha256,
+      version: descriptor.version,
+    }) ||
+    record.manifestSha256 !== descriptor.manifest.sha256 ||
+    record.signatureSha256 !== descriptor.signature.sha256 ||
+    record.signatureHashAlgorithm !==
+      descriptor.signingKey.signatureHashAlgorithm ||
+    (descriptor.platformPackage !== undefined &&
+      !equal(record.platformPackage, descriptor.platformPackage))
+  )
+    reject();
+  keys(record.signingKey, [
+    "fingerprint",
+    "sha256",
+    "signerFingerprint",
+    "uid",
+  ]);
+  if (
+    !equal(record.signingKey, {
+      fingerprint: descriptor.signingKey.fingerprint,
+      sha256: descriptor.signingKey.sha256,
+      signerFingerprint: descriptor.signingKey.signerFingerprint,
+      uid: descriptor.signingKey.uid,
+    })
+  )
+    reject();
+}
+function bindPreparedNpmMaterial(record, descriptor) {
+  if (
+    record.verifierNpmVersion !== descriptor.verifierNpmVersion ||
+    !Array.isArray(record.packages) ||
+    record.packages.length !== descriptor.packages.length
+  )
+    reject();
+  for (const pin of descriptor.packages) {
+    const rows = record.packages.filter(
+      (value) =>
+        value.packageName === pin.packageName && value.version === pin.version,
+    );
+    if (rows.length !== 1) reject();
+    const archive = rows[0];
+    keys(archive, [
+      "packageName",
+      "installName",
+      "version",
+      "fileName",
+      "bytes",
+      "sha256",
+      "integrity",
+      "shasum",
+      "attestationBundleDigest",
+    ]);
+    if (
+      archive.installName !== pin.installName ||
+      archive.bytes !== pin.bytes ||
+      archive.integrity !== pin.integrity ||
+      archive.shasum !== pin.shasum ||
+      !/^[a-f\d]{64}$/u.test(archive.sha256) ||
+      archive.fileName !== `${archive.sha256}.tgz` ||
+      archive.attestationBundleDigest !==
+        `sha256-${pin.attestations.bundleDigest}`
+    )
+      reject();
+  }
 }
 function bindSourceComponent(input, row, entry) {
   const seed = entry.binding.seed;
@@ -836,6 +987,8 @@ function codexCompletion(entry, evidence, native, receipt, prepared) {
     ].map((key) => [key, evidence[key]]),
   );
   execution.receipt = receipt;
+  if (Object.hasOwn(evidence, "preparedHarnessMaterial"))
+    execution.preparedHarnessMaterial = evidence.preparedHarnessMaterial;
   if (
     seed.productIdentity !== "agentscope-cli" ||
     seed.candidateDigest !== prepared.bundleIdentity ||
@@ -985,7 +1138,7 @@ export function bindScenarioEvidence(
       entries[0].binding.controller.authorityIdentity,
   });
   if (material !== undefined) {
-    bindSourceMaterial(material, entries[0]);
+    bindSourceMaterial(material, entries[0], evidence.preparedHarnessMaterial);
     admitted.add(result);
   }
   return result;
