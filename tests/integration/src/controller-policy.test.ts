@@ -19,7 +19,12 @@ import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
-import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
+import {
+  leakedChildReadinessIsValid,
+  leakedChildReadinessWasObserved,
+  SUBSTRATE_CERTIFICATION_CASES,
+  SUBSTRATE_CERTIFICATION_PREDICATES,
+} from "./substrate-certification.js";
 import { sanitizeFixtureResult } from "./operations.js";
 import { knownFailureCode } from "./controller-failure-diagnostic.js";
 
@@ -29,11 +34,19 @@ type OperationDiagnosticFunctions = {
     slot: string,
     error: unknown,
     plan?: object,
-    processContext?: {
-      signal: AbortSignal;
-      joinSignal?: AbortSignal;
-      deadline?: number;
-    },
+    processContext?:
+      | {
+          signal: AbortSignal;
+          joinSignal?: AbortSignal;
+          deadline?: number;
+        }
+      | {
+          leakedChild: {
+            fixtureCaptured: boolean;
+            complete: boolean;
+            readinessValid: boolean;
+          };
+        },
   ) => void;
 };
 const terminalMockContainer = (containerId: string, runId: string) => ({
@@ -418,6 +431,149 @@ describe("hostile completion-copy observation metadata", () => {
       f.functions.joinMockServer(f.plan, new AbortController().signal),
     ).rejects.toBe(f.error);
     expect(copyRow(f.output)).not.toHaveProperty("process");
+  });
+});
+
+const leakedChildPredicateFixture = (
+  result: unknown,
+  sinkFails = false,
+  certificationCase = "leaked-child",
+) => {
+  const f = operationDiagnosticFixture("", sinkFails);
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const observeNegativeScenarioReceipt =");
+  const end = source.indexOf("const contentFreeChildFailureCode =", start);
+  const diagnosed: unknown[] = [];
+  const predicates: unknown[] = [];
+  const observe = runInNewContext(
+    `${source.slice(start, end)}; observeNegativeScenarioReceipt`,
+    {
+      Error,
+      substrateCertificationCase: certificationCase,
+      fixtureResults: new Map([[f.plan.runId, result]]),
+      leakedChildReadinessIsValid,
+      leakedChildReadinessWasObserved,
+      SUBSTRATE_CERTIFICATION_PREDICATES,
+      observeSubstrateCertificationPredicate: (...args: unknown[]) =>
+        predicates.push(args),
+      publishOperationFailureDiagnostic: (
+        ...args: Parameters<
+          OperationDiagnosticFunctions["publishOperationFailureDiagnostic"]
+        >
+      ) => {
+        diagnosed.push(args[1]);
+        f.functions.publishOperationFailureDiagnostic(...args);
+      },
+    },
+  ) as (plan: object, receipt: object, captured: unknown) => void;
+  return { ...f, observe, diagnosed, predicates };
+};
+describe("actual-source leaked-child predicate observation", () => {
+  const readiness = {
+    readinessVersion: 1,
+    certificationCase: "leaked-child",
+    challengeSha256: `sha256:${"b".repeat(64)}`,
+  };
+  it.each([
+    [false, "complete", readiness, [false, true, true]],
+    [true, "partial", readiness, [true, false, true]],
+    [true, "complete", null, [true, true, false]],
+    [
+      true,
+      "complete",
+      { ...readiness, challengeSha256: "PRIVATE raw readiness" },
+      [true, true, false],
+    ],
+    [false, undefined, undefined, [false, false, false]],
+  ])(
+    "observes only the failed conjunction bits %#",
+    (captured, status, ready, bits) => {
+      const f = leakedChildPredicateFixture({
+        resultStatus: status,
+        certificationReadiness: ready,
+      });
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, captured);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(rejected).toHaveProperty(
+        "message",
+        "integration.certification.predicate",
+      );
+      expect(f.predicates).toEqual([]);
+      expect(f.output).toHaveLength(1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(copyRow(f.output)).toEqual({
+        slot: "runtime-original",
+        runId: f.plan.runId,
+        code: "integration.certification.predicate",
+        clientRetirementRequired: false,
+        leakedChild: {
+          fixtureCaptured: bits[0],
+          complete: bits[1],
+          readinessValid: bits[2],
+        },
+      });
+      expect(f.output.join("")).not.toContain(readiness.challengeSha256);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+  it("leaves valid readiness acceptance and non-leak refusals unchanged and silent", () => {
+    const f = leakedChildPredicateFixture({
+      resultStatus: "complete",
+      certificationReadiness: readiness,
+    });
+    expect(() => {
+      f.observe({ ...f.plan, executionMode: "headless" }, {}, true);
+    }).toThrow("integration.certification.leaked-child");
+    expect(f.predicates).toEqual([
+      [f.plan.runId, SUBSTRATE_CERTIFICATION_PREDICATES["leaked-child"]],
+    ]);
+    expect(f.output).toEqual([]);
+    const other = leakedChildPredicateFixture(undefined, false, "missing-hook");
+    expect(() => {
+      other.observe({ ...other.plan, executionMode: "headless" }, {}, false);
+    }).toThrow("integration.certification.predicate");
+    expect(other.output).toEqual([]);
+  });
+  it.each(["sink", "retirement"])(
+    "preserves the identical refusal when optional %s throws",
+    (failure) => {
+      const f = leakedChildPredicateFixture(undefined, failure === "sink");
+      f.state.observerFails = failure === "retirement";
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(rejected).toHaveProperty(
+        "message",
+        "integration.certification.predicate",
+      );
+      expect(f.output).toEqual([]);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+  it("does not extend another slot with readiness data", () => {
+    const f = leakedChildPredicateFixture(undefined);
+    f.functions.publishOperationFailureDiagnostic(
+      "cleanup-images",
+      f.error,
+      f.plan,
+      {
+        leakedChild: {
+          fixtureCaptured: true,
+          complete: true,
+          readinessValid: true,
+        },
+      },
+    );
+    expect(copyRow(f.output)).not.toHaveProperty("leakedChild");
   });
 });
 
