@@ -11,9 +11,10 @@ The production CLI registers the `codex` and `claude-code` adapters, so
 `harness list` reports both and the named management commands can inspect them.
 Registration does not establish release support: each command still applies
 exact discovery and installation checks, and the exact version's
-[GitHub Release](https://github.com/Melbourneandrew/agentscope/releases) and
-attached support manifest are authoritative for supported versions, modes, and
-platforms. Other harness names return `harness.adapter-missing`.
+[GitHub Release](https://github.com/Melbourneandrew/agentscope/releases) and its
+attached `support-admission.json` asset are authoritative for supported
+versions, modes, and platforms. Other harness names return
+`harness.adapter-missing`.
 
 ## Syntax
 
