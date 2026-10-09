@@ -348,11 +348,24 @@ describe("actual-source optional original operation diagnostics", () => {
   );
 });
 
+const expectCanonicalCollectorRead = (outer: string) => {
+  expect(outer.match(/const read = joinCollectorObservations;/gu)).toHaveLength(
+    1,
+  );
+  expect(outer).toContain(
+    "const note = (phase) => {\n      collectorPhase = phase;\n    };",
+  );
+  expect(
+    outer.match(
+      /const batches = await read\(plan, joinSignal, deadline, note\);/gu,
+    ),
+  ).toHaveLength(2);
+};
 const producerRefusalLine = (
   stage = "eligibility",
   bits = [true, false, true, false],
 ) =>
-  `[agentscope-mockserver-ledger:v1 stage=${stage} terminal=${bits[0]} snapshotAvailable=${bits[1]} persistenceClosed=${bits[2]} persistenceFailed=${bits[3]}]\n`;
+  `[agentscope-mockserver-ledger:v1 stage=${stage} terminal=${bits[0]} snapshotAvailable=${bits[1]} persistenceClosed=${bits[2]} persistenceFailed=${bits[3]} reason=none]\n`;
 describe("actual-source terminal producer refusal projection", () => {
   it.each(["eligibility", "publication"])(
     "projects only fixed %s fields for all primitive boolean tuples",
@@ -373,6 +386,7 @@ describe("actual-source terminal producer refusal projection", () => {
           snapshotAvailable: bits[1],
           persistenceClosed: bits[2],
           persistenceFailed: bits[3],
+          reason: "none",
         });
       }
     },
@@ -382,6 +396,8 @@ describe("actual-source terminal producer refusal projection", () => {
     "duplicate",
     "foreign-stage",
     "foreign-version",
+    "foreign-reason",
+    "missing-reason",
     "nonboolean",
     "extra",
     "changed-key",
@@ -401,6 +417,9 @@ describe("actual-source terminal producer refusal projection", () => {
       if (kind === "duplicate") stdout = line;
       if (kind === "foreign-stage") stderr = producerRefusalLine("PRIVATE");
       if (kind === "foreign-version") stderr = line.replace(":v1", ":v2");
+      if (kind === "foreign-reason")
+        stderr = line.replace("reason=none", "reason=PRIVATE");
+      if (kind === "missing-reason") stderr = line.replace(" reason=none", "");
       if (kind === "nonboolean")
         stderr = line.replace("terminal=true", "terminal=1");
       if (kind === "extra") stderr = line.replace("]\n", " private=PRIVATE]\n");
@@ -488,6 +507,7 @@ describe("actual-source optional terminal log read", () => {
         snapshotAvailable: logsFail ? null : false,
         persistenceClosed: logsFail ? null : true,
         persistenceFailed: logsFail ? null : false,
+        reason: logsFail ? null : "none",
       });
     },
   );
@@ -1786,9 +1806,7 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
     expectCodexNativeBeforeCollectorCompletion(scenario);
     expect(outer).toContain("observeSelectedWriterOtlp(");
-    expect(outer).toMatch(
-      /await joinCollectorObservations\(\s*plan,\s*joinSignal,\s*deadline,?\s*\)/u,
-    );
+    expectCanonicalCollectorRead(outer);
     expect(scenario).toContain("classifyCodexCollectedChildFailure(");
     const search = diagnostic.indexOf(
       "codexTraceSearchChildFailureCategory(observation)",
