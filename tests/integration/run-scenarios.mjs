@@ -21,7 +21,6 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
 import { deriveIdentityBundle } from "@agentscope/protocol";
-import { observeSelectedWriterOtlp } from "./dist/selected-otlp-observation.js";
 
 import {
   compileIsolationEvidence,
@@ -33,6 +32,7 @@ import {
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
   mapWithConcurrency,
+  observeSelectedWriterOtlp,
   sanitizeFixtureResult,
   scenarioContainerTerminalWitness,
   SCENARIO_HOME,
