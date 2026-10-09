@@ -19,6 +19,72 @@ const entrySource = readFileSync(
   new URL("../record-release-stage.mjs", import.meta.url),
   "utf8",
 );
+test.each([
+  ["prepare-probe", "--prepare-probe", true],
+  ["prepare-draft", "--prepare-probe", false],
+  ["unknown", "--prepare-probe", false],
+  ["prepare-probe", "--unknown", false],
+])(
+  "main entry routes %s/%s only to its inert handler",
+  async (operation, mode, allowed) => {
+    const start = entrySource.indexOf(
+      "// Acquiring read-only artifact metadata",
+    );
+    const end = entrySource.indexOf(
+      "const store = createGitHubReleaseStore",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const writes = [];
+    const completed = Error("synthetic process exit");
+    const denied = Error("product authority must not be reached");
+    const run = runInNewContext(
+      `(async () => { ${entrySource.slice(start, end)} })()`,
+      {
+        Buffer,
+        JSON,
+        Number,
+        fail: () => {
+          throw denied;
+        },
+        readBounded: () =>
+          Buffer.from(JSON.stringify({ inputs: { operation } })),
+        readAdmissionCandidate: () => {
+          throw denied;
+        },
+        canonicalJson,
+        mkdirSync: (...args) => writes.push(["mkdir", ...args]),
+        writeFileSync: (...args) => writes.push(["write", ...args]),
+        process: {
+          argv: ["node", "entry", mode],
+          env: {
+            GITHUB_REF: "refs/heads/main",
+            GITHUB_EVENT_PATH: "held-event",
+            GITHUB_RUN_ID: "15",
+            GITHUB_RUN_ATTEMPT: "1",
+          },
+          exit: (code) => {
+            expect(code).toBe(0);
+            throw completed;
+          },
+        },
+      },
+    );
+    await expect(run).rejects.toBe(allowed ? completed : denied);
+    if (!allowed) expect(writes).toEqual([]);
+    else {
+      expect(writes).toHaveLength(3);
+      expect(JSON.parse(writes[2][2])).toEqual({
+        name: "agentscope-cli",
+        version: "0.0.0-oidc-probe.15-1",
+        description:
+          "Inert trusted-publisher probe; not the Agentscope product",
+      });
+      expect(writes[2][3]).toEqual({ flag: "wx", mode: 0o600 });
+    }
+  },
+);
 function releaseFanInBoundary() {
   const source = entrySource.slice(
     entrySource.indexOf("function bindReleaseSbom("),
