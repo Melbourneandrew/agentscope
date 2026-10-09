@@ -1162,310 +1162,370 @@ describe("integration workflow policy", () => {
     }
   });
 
-  // The fixture must rewrite one exact manifest repeatedly to prove every
-  // cross-bound substitution against the same file identities.
-  // eslint-disable-next-line max-lines-per-function
-  it("separates unsettled retirement evidence from witnessed certification", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-retirement-"));
-    const artifacts = resolve(directory, "artifacts/integration");
-    const runId = "0123456789abcdef";
-    const run = resolve(artifacts, "runs", runId);
-    const diagnostic = {
-      diagnosticVersion: 1,
-      stage: "scenario-operation",
-      authorityDigests: {
-        daemon: `sha256:${"a".repeat(64)}`,
-        images: `sha256:${"b".repeat(64)}`,
-        socket: `sha256:${"c".repeat(64)}`,
-      },
-      outcome: "retired-failure",
-      retirementReason: "mutation-outcome-unknown",
-    };
-    const preparedAuthorityDigests = {
-      buildkitImage: `sha256:${"d".repeat(64)}`,
-      buildkitPlatform: `sha256:${"e".repeat(64)}`,
-      daemon: diagnostic.authorityDigests.daemon,
-      images: diagnostic.authorityDigests.images,
-      socket: diagnostic.authorityDigests.socket,
-    };
-    const writeEvidence = (
-      privateCleanup: unknown,
-      certification = {
-        certificationCase: null as string | null,
-        certificationPredicate: null as string | null,
-        primaryFailure: "integration.controller.unsettled-operation",
-      },
-      codexResearchDiagnostic: unknown = null,
-      runIds = [runId],
-    ) => {
-      const failureEvidence = runIds.map((recipientRunId) => {
-        const recipient = resolve(artifacts, "runs", recipientRunId);
-        mkdirSync(recipient, { recursive: true, mode: 0o700 });
-        const content = `${JSON.stringify({
-          controllerFailureEvidenceVersion: 3,
-          runId: recipientRunId,
-          certificationCase: certification.certificationCase,
-          certificationPredicate: certification.certificationPredicate,
-          certificationReadiness: null,
-          scenarioOutcome: "failed",
-          controllerOutcome: "retired-failure",
-          primaryFailure: certification.primaryFailure,
-          causalFailure: null,
-          cleanupFailure: null,
-          installedPtyFailure: null,
-          codexResearchDiagnostic,
-          privateCleanup,
-        })}\n`;
-        writeFileSync(resolve(recipient, "controller-failure.json"), content, {
-          mode: 0o600,
-        });
-        const status = lstatSync(resolve(recipient, "controller-failure.json"));
-        return {
-          dev: status.dev,
-          digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
-          ino: status.ino,
-          runId: recipientRunId,
-          size: status.size,
-        };
-      });
-      writeFileSync(
-        resolve(artifacts, "controller-failure-manifest.json"),
-        `${JSON.stringify({
-          controllerFailureManifestVersion: 1,
-          controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
-          certificationCase: certification.certificationCase,
-          preparedAuthorityDigests,
-          runIds: [...runIds].sort(),
-          failureEvidence: failureEvidence.sort((left, right) =>
-            left.runId.localeCompare(right.runId),
-          ),
-        })}\n`,
-        { mode: 0o600 },
+  // Each case retains the full ordered mutation setup on the same held file
+  // identities, but launches only its selected real verifier under default 5s.
+  it.each([
+    [1, "scenario retirement"],
+    [2, "bounded research observation"],
+    [3, "research hint privacy"],
+    [4, "research exit refusal"],
+    [5, "missing cleanup"],
+    [6, "scenario success refusal"],
+    [7, "scenario daemon substitution"],
+    [8, "builder retirement"],
+    [9, "settled failure"],
+    [10, "settled negative refusal"],
+    [11, "settled success refusal"],
+    [12, "settled retired-success refusal"],
+    [13, "settled unknown refusal"],
+    [14, "settled resource count"],
+    [15, "settled response truncation"],
+    [16, "settled response bound"],
+    [17, "settled resource digest"],
+    [18, "settled generation"],
+    [19, "settled process output bound"],
+    [20, "retired generation"],
+    [21, "retired resource count"],
+    [22, "retired response truncation"],
+    [23, "retired resource digest"],
+    [24, "witnessed wrong argv"],
+    [25, "unwitnessed wrong argv"],
+    [26, "shared settled failure"],
+    [27, "shared negative refusal"],
+    [28, "shared foreign owner"],
+    [29, "shared crossed builder"],
+    [30, "shared crossed resources"],
+    [31, "shared rehashed recipient identity"],
+    [32, "shared duplicate recipient"],
+  ] as const)(
+    "separates retirement and certification: %s %s",
+    // eslint-disable-next-line max-lines-per-function
+    (caseNumber, _caseName) => {
+      const directory = mkdtempSync(
+        resolve(tmpdir(), "agentscope-retirement-"),
       );
-    };
-    const verify = (mode = "failure", certificationCase?: string) =>
-      spawnSync(
-        process.execPath,
-        [
-          resolve(
-            workspaceRoot,
-            "tests/integration/verify-substrate-certification.mjs",
-          ),
-          mode,
-        ],
-        {
-          cwd: directory,
-          env: {
-            ...(certificationCase === undefined
-              ? {}
-              : {
-                  AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
-                }),
-            PATH: process.env.PATH,
-          },
-        },
-      ).status;
-    try {
-      mkdirSync(run, { recursive: true, mode: 0o700 });
-      writeEvidence(diagnostic);
-      expect(verify()).toBe(0);
-      writeEvidence(diagnostic, undefined, {
+      const artifacts = resolve(directory, "artifacts/integration");
+      const runId = "0123456789abcdef";
+      const run = resolve(artifacts, "runs", runId);
+      const diagnostic = {
         diagnosticVersion: 1,
-        untrustedConfigHint: "render",
-        exitPair: "150:78",
-      });
-      expect(verify()).toBe(0);
-      writeEvidence(diagnostic, undefined, {
-        diagnosticVersion: 1,
-        untrustedConfigHint: "render:secret",
-        exitPair: "150:78",
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence(diagnostic, undefined, {
-        diagnosticVersion: 1,
-        untrustedConfigHint: "render",
-        exitPair: "150:0",
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence(null);
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...diagnostic, outcome: "retired-success" });
-      expect(verify()).not.toBe(0);
-      writeEvidence({
-        ...diagnostic,
+        stage: "scenario-operation",
         authorityDigests: {
-          ...diagnostic.authorityDigests,
-          daemon: `sha256:${"f".repeat(64)}`,
-        },
-      });
-      expect(verify()).not.toBe(0);
-      const digestJson = (value: unknown) =>
-        `sha256:${createHash("sha256")
-          .update(JSON.stringify(value))
-          .digest("hex")}`;
-      const builderCleanup = {
-        diagnosticVersion: 1,
-        stage: "builder-reconciliation",
-        operationKind: "image-build",
-        identityDigests: {
-          builder: digestJson(`agentscope-${runId}`),
-          daemon: preparedAuthorityDigests.daemon,
-          image: preparedAuthorityDigests.buildkitImage,
-          platform: preparedAuthorityDigests.buildkitPlatform,
-          runGeneration: digestJson(runId),
-        },
-        process: {
-          observed: true,
-          exited: false,
-          signaled: true,
-          timedOut: true,
-          joined: false,
-          outputBytes: 1,
-          outputTruncated: false,
-          stderrClass: "unknown",
-        },
-        responseBytes: 1,
-        responseTruncated: false,
-        expectedResourceCount: 2,
-        observedResourceCount: 1,
-        expectedResourceDigest: digestJson([
-          `buildx_buildkit_agentscope-${runId}0`,
-          `buildx_buildkit_agentscope-${runId}0_state`,
-        ]),
-        observedResourceDigest: `sha256:${"f".repeat(64)}`,
-        reconciliationReasons: {
-          builderContainer: "matched",
-          builderVolume: "absent",
-          builtTag: "not-observed",
+          daemon: `sha256:${"a".repeat(64)}`,
+          images: `sha256:${"b".repeat(64)}`,
+          socket: `sha256:${"c".repeat(64)}`,
         },
         outcome: "retired-failure",
+        retirementReason: "mutation-outcome-unknown",
       };
-      writeEvidence(builderCleanup);
-      expect(verify()).toBe(0);
-      // rejectSettledBuild records this distinct disposition after reconciliation;
-      // the captured process is the first failure, not a successful build result.
-      const settledFailure = { ...builderCleanup, outcome: "failed-settled" };
-      writeEvidence(settledFailure);
-      expect(verify()).toBe(0);
-      expect(verify("negative", "wrong-argv")).not.toBe(0);
-      for (const outcome of ["success", "retired-success", "unknown"]) {
-        writeEvidence({ ...settledFailure, outcome });
-        expect(verify()).not.toBe(0);
-      }
-      for (const substitution of [
-        { expectedResourceCount: 3 },
-        { responseTruncated: true },
-        { responseBytes: 16_777_217 },
-        { expectedResourceDigest: `sha256:${"a".repeat(64)}` },
-        {
+      const preparedAuthorityDigests = {
+        buildkitImage: `sha256:${"d".repeat(64)}`,
+        buildkitPlatform: `sha256:${"e".repeat(64)}`,
+        daemon: diagnostic.authorityDigests.daemon,
+        images: diagnostic.authorityDigests.images,
+        socket: diagnostic.authorityDigests.socket,
+      };
+      const writeEvidence = (
+        privateCleanup: unknown,
+        certification = {
+          certificationCase: null as string | null,
+          certificationPredicate: null as string | null,
+          primaryFailure: "integration.controller.unsettled-operation",
+        },
+        codexResearchDiagnostic: unknown = null,
+        runIds = [runId],
+      ) => {
+        const failureEvidence = runIds.map((recipientRunId) => {
+          const recipient = resolve(artifacts, "runs", recipientRunId);
+          mkdirSync(recipient, { recursive: true, mode: 0o700 });
+          const content = `${JSON.stringify({
+            controllerFailureEvidenceVersion: 3,
+            runId: recipientRunId,
+            certificationCase: certification.certificationCase,
+            certificationPredicate: certification.certificationPredicate,
+            certificationReadiness: null,
+            scenarioOutcome: "failed",
+            controllerOutcome: "retired-failure",
+            primaryFailure: certification.primaryFailure,
+            causalFailure: null,
+            cleanupFailure: null,
+            installedPtyFailure: null,
+            codexResearchDiagnostic,
+            privateCleanup,
+          })}\n`;
+          writeFileSync(
+            resolve(recipient, "controller-failure.json"),
+            content,
+            {
+              mode: 0o600,
+            },
+          );
+          const status = lstatSync(
+            resolve(recipient, "controller-failure.json"),
+          );
+          return {
+            dev: status.dev,
+            digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+            ino: status.ino,
+            runId: recipientRunId,
+            size: status.size,
+          };
+        });
+        writeFileSync(
+          resolve(artifacts, "controller-failure-manifest.json"),
+          `${JSON.stringify({
+            controllerFailureManifestVersion: 1,
+            controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
+            certificationCase: certification.certificationCase,
+            preparedAuthorityDigests,
+            runIds: [...runIds].sort(),
+            failureEvidence: failureEvidence.sort((left, right) =>
+              left.runId.localeCompare(right.runId),
+            ),
+          })}\n`,
+          { mode: 0o600 },
+        );
+      };
+      const verify = (mode = "failure", certificationCase?: string) =>
+        spawnSync(
+          process.execPath,
+          [
+            resolve(
+              workspaceRoot,
+              "tests/integration/verify-substrate-certification.mjs",
+            ),
+            mode,
+          ],
+          {
+            cwd: directory,
+            env: {
+              ...(certificationCase === undefined
+                ? {}
+                : {
+                    AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
+                  }),
+              PATH: process.env.PATH,
+            },
+          },
+        ).status;
+      let vectorNumber = 0;
+      let executed = 0;
+      const checkVerification = (
+        success: boolean,
+        mode = "failure",
+        certificationCase?: string,
+      ) => {
+        vectorNumber += 1;
+        if (vectorNumber !== caseNumber) return;
+        executed += 1;
+        const status = verify(mode, certificationCase);
+        if (success) expect(status).toBe(0);
+        else expect(status).not.toBe(0);
+      };
+      try {
+        mkdirSync(run, { recursive: true, mode: 0o700 });
+        writeEvidence(diagnostic);
+        checkVerification(true);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render",
+          exitPair: "150:78",
+        });
+        checkVerification(true);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render:secret",
+          exitPair: "150:78",
+        });
+        checkVerification(false);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render",
+          exitPair: "150:0",
+        });
+        checkVerification(false);
+        writeEvidence(null);
+        checkVerification(false);
+        writeEvidence({ ...diagnostic, outcome: "retired-success" });
+        checkVerification(false);
+        writeEvidence({
+          ...diagnostic,
+          authorityDigests: {
+            ...diagnostic.authorityDigests,
+            daemon: `sha256:${"f".repeat(64)}`,
+          },
+        });
+        checkVerification(false);
+        const digestJson = (value: unknown) =>
+          `sha256:${createHash("sha256")
+            .update(JSON.stringify(value))
+            .digest("hex")}`;
+        const builderCleanup = {
+          diagnosticVersion: 1,
+          stage: "builder-reconciliation",
+          operationKind: "image-build",
           identityDigests: {
-            ...settledFailure.identityDigests,
+            builder: digestJson(`agentscope-${runId}`),
+            daemon: preparedAuthorityDigests.daemon,
+            image: preparedAuthorityDigests.buildkitImage,
+            platform: preparedAuthorityDigests.buildkitPlatform,
+            runGeneration: digestJson(runId),
+          },
+          process: {
+            observed: true,
+            exited: false,
+            signaled: true,
+            timedOut: true,
+            joined: false,
+            outputBytes: 1,
+            outputTruncated: false,
+            stderrClass: "unknown",
+          },
+          responseBytes: 1,
+          responseTruncated: false,
+          expectedResourceCount: 2,
+          observedResourceCount: 1,
+          expectedResourceDigest: digestJson([
+            `buildx_buildkit_agentscope-${runId}0`,
+            `buildx_buildkit_agentscope-${runId}0_state`,
+          ]),
+          observedResourceDigest: `sha256:${"f".repeat(64)}`,
+          reconciliationReasons: {
+            builderContainer: "matched",
+            builderVolume: "absent",
+            builtTag: "not-observed",
+          },
+          outcome: "retired-failure",
+        };
+        writeEvidence(builderCleanup);
+        checkVerification(true);
+        // rejectSettledBuild records this distinct disposition after reconciliation;
+        // the captured process is the first failure, not a successful build result.
+        const settledFailure = { ...builderCleanup, outcome: "failed-settled" };
+        writeEvidence(settledFailure);
+        checkVerification(true);
+        checkVerification(false, "negative", "wrong-argv");
+        for (const outcome of ["success", "retired-success", "unknown"]) {
+          writeEvidence({ ...settledFailure, outcome });
+          checkVerification(false);
+        }
+        for (const substitution of [
+          { expectedResourceCount: 3 },
+          { responseTruncated: true },
+          { responseBytes: 16_777_217 },
+          { expectedResourceDigest: `sha256:${"a".repeat(64)}` },
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              runGeneration: `sha256:${"f".repeat(64)}`,
+            },
+          },
+          { process: { ...settledFailure.process, outputBytes: 16_777_217 } },
+        ]) {
+          writeEvidence({ ...settledFailure, ...substitution });
+          checkVerification(false);
+        }
+        writeEvidence({
+          ...builderCleanup,
+          identityDigests: {
+            ...builderCleanup.identityDigests,
             runGeneration: `sha256:${"f".repeat(64)}`,
           },
-        },
-        { process: { ...settledFailure.process, outputBytes: 16_777_217 } },
-      ]) {
-        writeEvidence({ ...settledFailure, ...substitution });
-        expect(verify()).not.toBe(0);
-      }
-      writeEvidence({
-        ...builderCleanup,
-        identityDigests: {
-          ...builderCleanup.identityDigests,
-          runGeneration: `sha256:${"f".repeat(64)}`,
-        },
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...builderCleanup, expectedResourceCount: 3 });
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...builderCleanup, responseTruncated: true });
-      expect(verify()).not.toBe(0);
-      writeEvidence({
-        ...builderCleanup,
-        expectedResourceDigest: `sha256:${"a".repeat(64)}`,
-      });
-      expect(verify()).not.toBe(0);
-      const witnessedWrongArgv = {
-        certificationCase: "wrong-argv",
-        certificationPredicate: "request-argv-mismatch",
-        primaryFailure: "integration.certification.wrong-argv",
-      };
-      writeEvidence(null, witnessedWrongArgv);
-      expect(verify("negative", "wrong-argv")).toBe(0);
-      writeEvidence(diagnostic, {
-        ...witnessedWrongArgv,
-        primaryFailure: "integration.controller.unsettled-operation",
-      });
-      expect(verify("negative", "wrong-argv")).not.toBe(0);
-      // One material build belongs to an owned plan, while its shared-client
-      // failure is copied into every selected recipient's retained record.
-      const recipients = [runId, "1123456789abcdef", "2123456789abcdef"];
-      const writeShared = (cleanup: unknown) => {
-        writeEvidence(cleanup, undefined, null, recipients);
-      };
-      writeShared(settledFailure);
-      expect(verify()).toBe(0);
-      expect(verify("negative", "wrong-argv")).not.toBe(0);
-      for (const substitution of [
-        {
-          identityDigests: {
-            ...settledFailure.identityDigests,
-            runGeneration: digestJson("foreign-owner"),
+        });
+        checkVerification(false);
+        writeEvidence({ ...builderCleanup, expectedResourceCount: 3 });
+        checkVerification(false);
+        writeEvidence({ ...builderCleanup, responseTruncated: true });
+        checkVerification(false);
+        writeEvidence({
+          ...builderCleanup,
+          expectedResourceDigest: `sha256:${"a".repeat(64)}`,
+        });
+        checkVerification(false);
+        const witnessedWrongArgv = {
+          certificationCase: "wrong-argv",
+          certificationPredicate: "request-argv-mismatch",
+          primaryFailure: "integration.certification.wrong-argv",
+        };
+        writeEvidence(null, witnessedWrongArgv);
+        checkVerification(true, "negative", "wrong-argv");
+        writeEvidence(diagnostic, {
+          ...witnessedWrongArgv,
+          primaryFailure: "integration.controller.unsettled-operation",
+        });
+        checkVerification(false, "negative", "wrong-argv");
+        // One material build belongs to an owned plan, while its shared-client
+        // failure is copied into every selected recipient's retained record.
+        const recipients = [runId, "1123456789abcdef", "2123456789abcdef"];
+        const writeShared = (cleanup: unknown) => {
+          writeEvidence(cleanup, undefined, null, recipients);
+        };
+        writeShared(settledFailure);
+        checkVerification(true);
+        checkVerification(false, "negative", "wrong-argv");
+        for (const substitution of [
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              runGeneration: digestJson("foreign-owner"),
+            },
           },
-        },
-        {
-          identityDigests: {
-            ...settledFailure.identityDigests,
-            builder: digestJson(`agentscope-${recipients[1]}`),
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              builder: digestJson(`agentscope-${recipients[1]}`),
+            },
           },
-        },
-        {
-          expectedResourceDigest: digestJson([
-            `buildx_buildkit_agentscope-${recipients[1]}0`,
-            `buildx_buildkit_agentscope-${recipients[1]}0_state`,
-          ]),
-        },
-      ]) {
-        writeShared({ ...settledFailure, ...substitution });
-        expect(verify()).not.toBe(0);
+          {
+            expectedResourceDigest: digestJson([
+              `buildx_buildkit_agentscope-${recipients[1]}0`,
+              `buildx_buildkit_agentscope-${recipients[1]}0_state`,
+            ]),
+          },
+        ]) {
+          writeShared({ ...settledFailure, ...substitution });
+          checkVerification(false);
+        }
+        writeShared(settledFailure);
+        const manifestPath = resolve(
+          artifacts,
+          "controller-failure-manifest.json",
+        );
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          runIds: string[];
+          failureEvidence: { runId: string; size: number; digest: string }[];
+        };
+        const recipientPath = resolve(
+          artifacts,
+          "runs",
+          recipients[1]!,
+          "controller-failure.json",
+        );
+        const recipient = JSON.parse(
+          readFileSync(recipientPath, "utf8"),
+        ) as Record<string, unknown>;
+        recipient.runId = runId;
+        const substituted = `${JSON.stringify(recipient)}\n`;
+        writeFileSync(recipientPath, substituted);
+        const identity = manifest.failureEvidence.find(
+          (value) => value.runId === recipients[1],
+        )!;
+        identity.size = Buffer.byteLength(substituted);
+        identity.digest = `sha256:${createHash("sha256").update(substituted).digest("hex")}`;
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        checkVerification(false);
+        writeShared(settledFailure);
+        const duplicated = JSON.parse(
+          readFileSync(manifestPath, "utf8"),
+        ) as Record<string, unknown>;
+        duplicated.runIds = [runId, runId, recipients[2]!];
+        writeFileSync(manifestPath, JSON.stringify(duplicated));
+        checkVerification(false);
+        expect(vectorNumber).toBe(32);
+        expect(executed).toBe(1);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
       }
-      writeShared(settledFailure);
-      const manifestPath = resolve(
-        artifacts,
-        "controller-failure-manifest.json",
-      );
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-        runIds: string[];
-        failureEvidence: { runId: string; size: number; digest: string }[];
-      };
-      const recipientPath = resolve(
-        artifacts,
-        "runs",
-        recipients[1]!,
-        "controller-failure.json",
-      );
-      const recipient = JSON.parse(
-        readFileSync(recipientPath, "utf8"),
-      ) as Record<string, unknown>;
-      recipient.runId = runId;
-      const substituted = `${JSON.stringify(recipient)}\n`;
-      writeFileSync(recipientPath, substituted);
-      const identity = manifest.failureEvidence.find(
-        (value) => value.runId === recipients[1],
-      )!;
-      identity.size = Buffer.byteLength(substituted);
-      identity.digest = `sha256:${createHash("sha256").update(substituted).digest("hex")}`;
-      writeFileSync(manifestPath, JSON.stringify(manifest));
-      expect(verify()).not.toBe(0);
-      writeShared(settledFailure);
-      const duplicated = JSON.parse(
-        readFileSync(manifestPath, "utf8"),
-      ) as Record<string, unknown>;
-      duplicated.runIds = [runId, runId, recipients[2]!];
-      writeFileSync(manifestPath, JSON.stringify(duplicated));
-      expect(verify()).not.toBe(0);
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
+    },
+  );
 });
