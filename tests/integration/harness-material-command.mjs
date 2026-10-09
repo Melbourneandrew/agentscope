@@ -349,7 +349,7 @@ const verifyPlatformPackage = async (root, policy) => {
       env: { LANG: "C", PATH: "/usr/bin:/bin" },
       encoding: "utf8",
       maxBuffer: 65_536,
-      timeout: Math.max(1, deadline - performance.now()),
+      timeout: Math.max(1, Math.floor(deadline - performance.now())),
       killSignal: "SIGKILL",
     },
   );

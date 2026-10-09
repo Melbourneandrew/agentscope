@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 import { settledBuildFailure } from "../image-preparation/build-policy.mjs";
@@ -53,10 +55,17 @@ const policy = {
 };
 const gpgListing = `pub:::::::::\nfpr:::::::::${policy.primaryFingerprint}:\n`;
 const signature = `[GNUPG:] GOODSIG fixed ${policy.uid}\n[GNUPG:] VALIDSIG ${policy.signerFingerprint} date 0 0 4 0 1 10 00 ${policy.primaryFingerprint}\n`;
+const runCommandSource = (context: object) =>
+  runInNewContext(
+    `(async () => { ${source.slice(start)} })()`,
+    context,
+  ) as Promise<void>;
 const commandFixture = (
   operation: string,
   failedStage?: string,
   sinkFails = false,
+  clock: { now: () => number } = performance,
+  inventoryExecute?: (options: { timeout: number }) => Promise<unknown>,
 ) => {
   const process = {
     argv: ["node", "command", operation, "/verify"],
@@ -70,7 +79,7 @@ const commandFixture = (
     Buffer,
     createHash,
     resolve,
-    performance,
+    performance: clock,
     setTimeout,
     clearTimeout,
     process,
@@ -105,12 +114,18 @@ const commandFixture = (
         }),
       );
     },
-    execute: (_executable: string, arguments_: string[]) => {
+    execute: (
+      _executable: string,
+      arguments_: string[],
+      options: { timeout: number },
+    ) => {
       let stage: string;
       let stdout: string;
       if (arguments_.includes("--list")) {
         stage = "platform-inventory";
         stdout = listing;
+        if (inventoryExecute)
+          return inventoryExecute(options).then(() => ({ stdout, stderr: "" }));
       } else if (arguments_.includes("--import")) {
         stage = "gpg-import";
         stdout = "";
@@ -159,11 +174,7 @@ const commandFixture = (
   return {
     process,
     output,
-    run: () =>
-      runInNewContext(
-        `(async () => { ${source.slice(start)} })()`,
-        context,
-      ) as Promise<void>,
+    run: () => runCommandSource(context),
   };
 };
 
@@ -185,6 +196,36 @@ const stages = [
   "gpg-signature-policy",
 ];
 describe("actual verifier command fixed failure stages", () => {
+  it("passes a rounded-down original inventory deadline to actual execFile", async () => {
+    const execute = promisify(execFile);
+    expect(() =>
+      execute(process.execPath, ["--version"], {
+        timeout: 999.5,
+        maxBuffer: 1024,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "ERR_OUT_OF_RANGE" }));
+    let reads = 0;
+    const observed: number[] = [];
+    const fixture = commandFixture(
+      "gpg-verify",
+      undefined,
+      false,
+      { now: () => (++reads === 1 ? 0 : 0.5) },
+      async (options) => {
+        observed.push(options.timeout);
+        expect(Number.isInteger(options.timeout)).toBe(true);
+        expect(options.timeout).toBeLessThanOrEqual(999.5);
+        await execute(process.execPath, ["--version"], {
+          ...options,
+          maxBuffer: 1024,
+        });
+      },
+    );
+    await fixture.run();
+    expect(observed).toEqual([999]);
+    expect(fixture.process.exitCode).toBeUndefined();
+    expect(fixture.output).toEqual([]);
+  });
   it.each(stages)(
     "retains only the fixed %s marker and original failure",
     async (stage) => {
