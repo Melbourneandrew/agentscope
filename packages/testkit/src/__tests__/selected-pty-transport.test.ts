@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { runInNewContext } from "node:vm";
 
+import { ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
@@ -19,6 +20,80 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const compiledManifestRequest = (
+  scenarioId: "codex-tui-trace-smoke" | "claude-interactive-trace-smoke",
+): SelectedPtyExecutionRequest => {
+  const integration = new URL(
+    "../../../../tests/integration/",
+    import.meta.url,
+  );
+  const compilerSource = readFileSync(
+    new URL("src/interactive-pty-actions.ts", integration),
+    "utf8",
+  );
+  const canonicalSource = readFileSync(
+    new URL("src/canonical.ts", integration),
+    "utf8",
+  );
+  const compilerStart = compilerSource.indexOf("const claudeChallenge =");
+  const freezeStart = canonicalSource.indexOf("export const deepFreeze =");
+  expect(compilerStart).toBeGreaterThan(0);
+  expect(freezeStart).toBeGreaterThan(0);
+  const code = transpileModule(
+    `${canonicalSource.slice(freezeStart).replace("export const", "const")}\n${compilerSource.slice(compilerStart).replace("export const", "const")}`,
+    { compilerOptions: { target: ScriptTarget.ES2022 } },
+  ).outputText;
+  const compile = runInNewContext(
+    `${code}\ncompileInteractivePtyActions;`,
+    { Buffer, createHash },
+    { timeout: 1_000 },
+  ) as (
+    scenario: object,
+    input: Uint8Array,
+  ) => SelectedPtyExecutionRequest["interaction"]["actions"];
+  const manifest = JSON.parse(
+    readFileSync(new URL("capability-manifest.json", integration), "utf8"),
+  ) as {
+    scenarios: { scenarioId: string; terminalInputBase64: string }[];
+  };
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === scenarioId,
+  );
+  if (scenario === undefined) throw new Error("test.compiler.scenario");
+  const challenge = "a".repeat(64);
+  const stdin = new Uint8Array(
+    Buffer.concat([
+      Buffer.from(`${challenge}\n`),
+      Buffer.from(scenario.terminalInputBase64, "base64"),
+    ]),
+  );
+  const now = performance.now();
+  const styledReadiness = protocolPromptRequest().readiness;
+  if (styledReadiness.kind !== "challenge-styled-text")
+    throw new Error("test.compiler.readiness");
+  return {
+    ...request({
+      stdin,
+      monotonicStartupDeadlineMs: now + 5_000,
+      monotonicExecutionDeadlineMs: now + 10_000,
+      monotonicShutdownDeadlineMs: now + 15_000,
+    }),
+    readiness:
+      scenarioId === "claude-interactive-trace-smoke"
+        ? { kind: "challenge-marker", challenge }
+        : {
+            ...styledReadiness,
+            postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          },
+    interaction: {
+      trigger: "immediate",
+      // Move the genuine compiler output back to this realm; the production
+      // snapshot requires its ordinary host array, not a VM prototype.
+      actions: structuredClone(compile(scenario, stdin)),
+    },
+  };
+};
 
 const actualImmutablePrincipalProfile = (
   scenarioId: string,
@@ -213,6 +288,80 @@ const boundedNegativePostSubmissionRequest =
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"] as const)(
+    "snapshots the genuine %s compiler request before cancellation",
+    async (scenarioId) => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          compiledManifestRequest(scenarioId),
+          "clean",
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow("testkit.headless.aborted");
+    },
+  );
+
+  it.each([
+    ["claude-interactive-trace-smoke", "newline", Buffer.from("\n")],
+    ["claude-interactive-trace-smoke", "arbitrary byte", Buffer.from("x")],
+    ["claude-interactive-trace-smoke", "empty", Buffer.from([])],
+    ["claude-interactive-trace-smoke", "two CR bytes", Buffer.from("\r\r")],
+    [
+      "claude-interactive-trace-smoke",
+      "malformed CSI-u",
+      Buffer.from("\x1b[13~"),
+    ],
+    ["codex-tui-trace-smoke", "CR instead of CSI-u", Buffer.from("\r")],
+    ["codex-tui-trace-smoke", "malformed CSI-u", Buffer.from("\x1b[13~")],
+  ] as const)(
+    "rejects %s compiler submission replaced with %s",
+    async (scenarioId, _label, submission) => {
+      const selected = compiledManifestRequest(scenarioId);
+      const promptAction = selected.interaction.actions[3];
+      const submitAction = selected.interaction.actions[4];
+      if (promptAction?.action !== "input" || submitAction?.action !== "input")
+        throw new Error("test.compiler.actions");
+      const start = 65 + promptAction.byteLength;
+      const stdin = new Uint8Array(
+        Buffer.concat([
+          Buffer.from(selected.process.stdin.subarray(0, start)),
+          submission,
+          Buffer.from(
+            selected.process.stdin.subarray(start + submitAction.byteLength),
+          ),
+        ]),
+      );
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...selected,
+            process: { ...selected.process, stdin },
+            interaction: {
+              ...selected.interaction,
+              actions: selected.interaction.actions.map((action, index) =>
+                index === 4
+                  ? {
+                      action: "input" as const,
+                      byteLength: submission.length,
+                      inputSha256: createHash("sha256")
+                        .update(submission)
+                        .digest("hex"),
+                    }
+                  : action,
+              ),
+            },
+          },
+          "clean",
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow("testkit.pty.request");
+    },
+  );
+
   const principalFacts = () => ({
     uid: 1000,
     euid: 1000,
