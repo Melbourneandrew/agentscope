@@ -2015,6 +2015,8 @@ const startMockServer = async (plan, signal) => {
       plan.networkName,
       "--network-alias",
       "mockserver",
+      "--network-alias",
+      "mockserver.agentscope.internal",
       "--read-only",
       "--cap-drop",
       "ALL",

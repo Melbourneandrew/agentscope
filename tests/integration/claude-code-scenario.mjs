@@ -388,7 +388,7 @@ export const runClaudeCodeScenario = async () => {
   );
   await publishClaudeMarker(`AGENTSCOPE_PTY_READY:${challenge}\r\n`);
   const turn = runClaudeCodeInteractiveTurn(
-    process.env.AGENTSCOPE_MODEL_SERVER_URL,
+    "http://mockserver.agentscope.internal:1080",
     deadline,
   );
   const { pair, rows } = await waitForClaudeModelPair(control, turn, deadline);
