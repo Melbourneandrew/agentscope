@@ -1780,6 +1780,7 @@ const reapAdoptedZombies = (
   context: Readonly<{
     namespaceIdentity: string;
     diagnostic?: { stage?: PtyReconciliationStage | undefined };
+    polling?: true;
   }>,
   runtime: ProcessAuthorityRuntime,
 ): void => {
@@ -1814,6 +1815,7 @@ const reapAdoptedZombies = (
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
       return failObserverIdentity("observer-zombie-after");
+    if (receipt.status === "not-ready" && context.polling === true) continue;
     if (
       (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
       after !== undefined
@@ -3455,6 +3457,7 @@ const armSelectedPty = (
           {
             namespaceIdentity: composition.namespaceIdentity,
             diagnostic: reapDiagnostic,
+            polling: true,
           },
           runtime,
         );
@@ -3502,6 +3505,7 @@ const armSelectedPty = (
           {
             namespaceIdentity: composition.namespaceIdentity,
             diagnostic: reapDiagnostic,
+            polling: true,
           },
           runtime,
         );
@@ -3913,7 +3917,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          { namespaceIdentity: composition.namespaceIdentity },
+          { namespaceIdentity: composition.namespaceIdentity, polling: true },
           runtime,
         );
         await delay(containerPollMilliseconds);
@@ -3941,7 +3945,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          { namespaceIdentity: composition.namespaceIdentity },
+          { namespaceIdentity: composition.namespaceIdentity, polling: true },
           runtime,
         );
         await delay(containerPollMilliseconds);
