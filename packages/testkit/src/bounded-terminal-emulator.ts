@@ -80,7 +80,92 @@ export type PtyMalformedControlReason =
   | "trailing-control"
   | "utf8";
 
-export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
+const hasOwn = Object.hasOwn;
+// Documented DECSET/DECRST identities are diagnostic only; none is admitted here.
+const rejectedPrivateModeReasons = Object.freeze({
+  1: "extended-csi-private-mode-1",
+  2: "extended-csi-private-mode-2",
+  3: "extended-csi-private-mode-3",
+  4: "extended-csi-private-mode-4",
+  5: "extended-csi-private-mode-5",
+  6: "extended-csi-private-mode-6",
+  8: "extended-csi-private-mode-8",
+  9: "extended-csi-private-mode-9",
+  10: "extended-csi-private-mode-10",
+  13: "extended-csi-private-mode-13",
+  14: "extended-csi-private-mode-14",
+  18: "extended-csi-private-mode-18",
+  19: "extended-csi-private-mode-19",
+  30: "extended-csi-private-mode-30",
+  35: "extended-csi-private-mode-35",
+  38: "extended-csi-private-mode-38",
+  40: "extended-csi-private-mode-40",
+  41: "extended-csi-private-mode-41",
+  42: "extended-csi-private-mode-42",
+  43: "extended-csi-private-mode-43",
+  44: "extended-csi-private-mode-44",
+  45: "extended-csi-private-mode-45",
+  46: "extended-csi-private-mode-46",
+  47: "extended-csi-private-mode-47",
+  66: "extended-csi-private-mode-66",
+  67: "extended-csi-private-mode-67",
+  69: "extended-csi-private-mode-69",
+  80: "extended-csi-private-mode-80",
+  95: "extended-csi-private-mode-95",
+  1000: "extended-csi-private-mode-1000",
+  1001: "extended-csi-private-mode-1001",
+  1002: "extended-csi-private-mode-1002",
+  1003: "extended-csi-private-mode-1003",
+  1005: "extended-csi-private-mode-1005",
+  1006: "extended-csi-private-mode-1006",
+  1010: "extended-csi-private-mode-1010",
+  1011: "extended-csi-private-mode-1011",
+  1014: "extended-csi-private-mode-1014",
+  1015: "extended-csi-private-mode-1015",
+  1016: "extended-csi-private-mode-1016",
+  1020: "extended-csi-private-mode-1020",
+  1021: "extended-csi-private-mode-1021",
+  1022: "extended-csi-private-mode-1022",
+  1023: "extended-csi-private-mode-1023",
+  1034: "extended-csi-private-mode-1034",
+  1035: "extended-csi-private-mode-1035",
+  1036: "extended-csi-private-mode-1036",
+  1037: "extended-csi-private-mode-1037",
+  1039: "extended-csi-private-mode-1039",
+  1040: "extended-csi-private-mode-1040",
+  1041: "extended-csi-private-mode-1041",
+  1042: "extended-csi-private-mode-1042",
+  1043: "extended-csi-private-mode-1043",
+  1044: "extended-csi-private-mode-1044",
+  1045: "extended-csi-private-mode-1045",
+  1046: "extended-csi-private-mode-1046",
+  1047: "extended-csi-private-mode-1047",
+  1048: "extended-csi-private-mode-1048",
+  1050: "extended-csi-private-mode-1050",
+  1051: "extended-csi-private-mode-1051",
+  1052: "extended-csi-private-mode-1052",
+  1053: "extended-csi-private-mode-1053",
+  1060: "extended-csi-private-mode-1060",
+  1061: "extended-csi-private-mode-1061",
+  2001: "extended-csi-private-mode-2001",
+  2002: "extended-csi-private-mode-2002",
+  2003: "extended-csi-private-mode-2003",
+  2005: "extended-csi-private-mode-2005",
+  2006: "extended-csi-private-mode-2006",
+} as const);
+
+export type PtyUnsupportedControlReason =
+  | "csi"
+  | "extended-csi"
+  | "osc"
+  | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
+  | "extended-csi-secondary-device-attributes"
+  | "extended-csi-tertiary-device-attributes"
+  | "extended-csi-xterm-version"
+  | "extended-csi-key-modifier-query"
+  | "extended-csi-intermediate"
+  | "extended-csi-keyboard-shape"
+  | "extended-csi-modifier-shape";
 
 type ChallengeScreenRevocationKind =
   | "combined-sync"
@@ -1606,7 +1691,7 @@ export class BoundedTerminalEmulator {
   ): void {
     if (intermediate === " " && prefix === "" && final === "q") return;
     if (intermediate !== "") {
-      this.#recordUnsupportedControl("extended-csi");
+      this.#recordUnsupportedControl("extended-csi-intermediate");
       return;
     }
     if (prefix === "?" && (final === "h" || final === "l")) {
@@ -1614,7 +1699,13 @@ export class BoundedTerminalEmulator {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
         else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
-          this.#recordUnsupportedControl("extended-csi");
+          this.#recordUnsupportedControl(
+            hasOwn(rejectedPrivateModeReasons, mode)
+              ? rejectedPrivateModeReasons[
+                  mode as keyof typeof rejectedPrivateModeReasons
+                ]
+              : "extended-csi",
+          );
           return;
         }
       }
@@ -1629,7 +1720,36 @@ export class BoundedTerminalEmulator {
       (values[1] === 0 || values[1] === 2)
     )
       return;
-    this.#recordUnsupportedControl("extended-csi");
+    this.#recordUnsupportedControl(
+      this.#extendedCsiRefusalReason(final, prefix, values),
+    );
+  }
+
+  #extendedCsiRefusalReason(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    values: readonly number[],
+  ): PtyUnsupportedControlReason {
+    const zero = values.length === 1 && values[0] === 0;
+    let reason: PtyUnsupportedControlReason = "extended-csi";
+    if (prefix === ">" && final === "c" && zero)
+      reason = "extended-csi-secondary-device-attributes";
+    else if (prefix === "=" && final === "c" && zero)
+      reason = "extended-csi-tertiary-device-attributes";
+    else if (prefix === ">" && final === "q" && zero)
+      reason = "extended-csi-xterm-version";
+    else if (
+      prefix === "?" &&
+      final === "g" &&
+      values.length === 1 &&
+      [0, 1, 2, 3, 4, 6, 7].includes(values[0]!)
+    )
+      reason = "extended-csi-key-modifier-query";
+    else if (final === "u" && prefix !== "")
+      reason = "extended-csi-keyboard-shape";
+    else if (prefix === ">" && final === "m")
+      reason = "extended-csi-modifier-shape";
+    return reason;
   }
 
   #applyRequiredTerminalProtocolCsi(
