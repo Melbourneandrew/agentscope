@@ -25,6 +25,10 @@ export type PtyReconciliationStage =
   | "observer-zombie-after"
   | "signal"
   | "reap"
+  | "reap-call"
+  | "reap-receipt"
+  | "reap-not-ready"
+  | "reap-persisted"
   | "residual"
   | "child-join"
   | "output-join"
@@ -107,6 +111,10 @@ const stages = new Set<PtyReconciliationStage>([
   "observer-zombie-after",
   "signal",
   "reap",
+  "reap-call",
+  "reap-receipt",
+  "reap-not-ready",
+  "reap-persisted",
   "residual",
   "child-join",
   "output-join",

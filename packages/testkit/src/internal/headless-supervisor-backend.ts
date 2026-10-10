@@ -43,6 +43,7 @@ import {
   readPtySemanticFailure,
   readPtyExitSignal,
   trustedErrorCode,
+  type PtyReconciliationStage,
 } from "./kernel-errors.js";
 import {
   boundedInvoke,
@@ -1776,9 +1777,14 @@ const reapAdoptedZombies = (
   processes: readonly ProcessSnapshot[],
   rootPid: number,
   nativeDeadlineNs: bigint,
-  namespaceIdentity: string,
+  context: Readonly<{
+    namespaceIdentity: string;
+    diagnostic?: { stage?: PtyReconciliationStage | undefined };
+  }>,
   runtime: ProcessAuthorityRuntime,
 ): void => {
+  const { namespaceIdentity, diagnostic = {} } = context;
+  diagnostic.stage = undefined;
   for (const identity of processesDescendantsFirst(processes, rootPid)) {
     if (
       identity.pid === rootPid ||
@@ -1795,23 +1801,27 @@ const reapAdoptedZombies = (
       current.state !== "Z"
     )
       return failObserverIdentity("observer-zombie-before");
-    const receipt = exactAdoptedZombieReapReceipt(
-      runtime.reapAdoptedZombie(
-        identity.pid,
-        identity.startIdentity,
-        rootPid,
-        nativeDeadlineNs,
-      ),
-      identity,
+    diagnostic.stage = "reap-call";
+    const result = runtime.reapAdoptedZombie(
+      identity.pid,
+      identity.startIdentity,
+      rootPid,
+      nativeDeadlineNs,
     );
+    diagnostic.stage = "reap-receipt";
+    const receipt = exactAdoptedZombieReapReceipt(result, identity);
+    diagnostic.stage = undefined;
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
       return failObserverIdentity("observer-zombie-after");
     if (
       (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
       after !== undefined
-    )
+    ) {
+      diagnostic.stage =
+        receipt.status === "not-ready" ? "reap-not-ready" : "reap-persisted";
       return fail("testkit.headless.observer.reap");
+    }
   }
 };
 const productionContainerRuntime = (
@@ -2653,9 +2663,18 @@ const armSelectedPty = (
     if (root !== undefined) observed.set(root.startIdentity, root);
     let authorityFailure: string | undefined;
     let authorityFailureStage: ReturnType<typeof readPtyReconciliationStage>;
-    const retainAuthorityFailure = (error: unknown, fallback: string): void => {
+    const reapDiagnostic: { stage?: PtyReconciliationStage | undefined } = {};
+    const retainAuthorityFailure = (
+      error: unknown,
+      fallback: string,
+      reapStage?: PtyReconciliationStage,
+    ): void => {
       authorityFailure = trustedErrorCode(error) ?? fallback;
-      authorityFailureStage = readPtyReconciliationStage(error);
+      authorityFailureStage =
+        readPtyReconciliationStage(error) ??
+        (authorityFailure === "testkit.headless.observer.reap"
+          ? reapStage
+          : undefined);
     };
     const currentProcessSet = (): readonly ProcessSnapshot[] => {
       if (authorityFailure !== undefined) return [];
@@ -3433,11 +3452,18 @@ const armSelectedPty = (
           currentProcessSet(),
           child.pid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          {
+            namespaceIdentity: composition.namespaceIdentity,
+            diagnostic: reapDiagnostic,
+          },
           runtime,
         );
       } catch (error) {
-        retainAuthorityFailure(error, "testkit.headless.observer.reap");
+        retainAuthorityFailure(
+          error,
+          "testkit.headless.observer.reap",
+          reapDiagnostic.stage,
+        );
         break;
       }
       pumpTransport(false);
@@ -3473,11 +3499,18 @@ const armSelectedPty = (
           currentProcessSet(),
           child.pid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          {
+            namespaceIdentity: composition.namespaceIdentity,
+            diagnostic: reapDiagnostic,
+          },
           runtime,
         );
       } catch (error) {
-        retainAuthorityFailure(error, "testkit.headless.observer.reap");
+        retainAuthorityFailure(
+          error,
+          "testkit.headless.observer.reap",
+          reapDiagnostic.stage,
+        );
         break;
       }
       pumpTransport(false);
@@ -3489,11 +3522,18 @@ const armSelectedPty = (
         currentProcessSet(),
         child.pid,
         nativeShutdownDeadlineNs,
-        composition.namespaceIdentity,
+        {
+          namespaceIdentity: composition.namespaceIdentity,
+          diagnostic: reapDiagnostic,
+        },
         runtime,
       );
     } catch (error) {
-      retainAuthorityFailure(error, "testkit.headless.observer.reap");
+      retainAuthorityFailure(
+        error,
+        "testkit.headless.observer.reap",
+        reapDiagnostic.stage,
+      );
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     const residual = currentProcessSet();
@@ -3873,7 +3913,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          { namespaceIdentity: composition.namespaceIdentity },
           runtime,
         );
         await delay(containerPollMilliseconds);
@@ -3901,7 +3941,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          { namespaceIdentity: composition.namespaceIdentity },
           runtime,
         );
         await delay(containerPollMilliseconds);
@@ -3910,7 +3950,7 @@ const selectedContainerBackend = (
         runtime.listProcesses(composition.namespaceIdentity),
         childPid,
         nativeShutdownDeadlineNs,
-        composition.namespaceIdentity,
+        { namespaceIdentity: composition.namespaceIdentity },
         runtime,
       );
       const residual = runtime.listProcesses(composition.namespaceIdentity);
