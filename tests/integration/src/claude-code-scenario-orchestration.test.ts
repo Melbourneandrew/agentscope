@@ -18,6 +18,17 @@ import type { CapabilityManifest } from "./manifest.js";
 
 // @ts-expect-error private checksum-bound scenario module has no declaration
 import * as adapterModule from "../fixtures/claude-code-platform-adapter.mjs";
+// @ts-expect-error private integration authority has no declaration
+import * as authorityModule from "../immutable-candidate-authority.mjs";
+
+const { claudeScenarioFailureDiagnostic, encodeInteractiveFailureExitCode } =
+  authorityModule as {
+    claudeScenarioFailureDiagnostic: (error: unknown, phase: string) => string;
+    encodeInteractiveFailureExitCode: (
+      diagnostic: string,
+      scenario: string,
+    ) => number | undefined;
+  };
 
 const { claudeCodeInteractiveInvocation } = adapterModule as {
   claudeCodeInteractiveInvocation: (endpoint: string) => Readonly<{
@@ -44,6 +55,66 @@ const start = source.indexOf("const waitForClaudeModelPair =");
 const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
+
+it("preserves the original Claude refusal through the actual top-level catch", async () => {
+  const boundary = source.indexOf("if (isClaudeScenarioMain())\n");
+  expect(boundary).toBeGreaterThan(0);
+  const caught = source
+    .slice(boundary)
+    .replace("if (isClaudeScenarioMain())", "");
+  const writes: unknown[][] = [];
+  const stderr: string[] = [];
+  const process = {
+    stderr: { write: (value: string) => stderr.push(value) },
+    exitCode: 0,
+  };
+  const run = runInNewContext(`(async () => { ${caught} })`, {
+    process,
+    claudeScenarioFailureDiagnostic,
+    encodeInteractiveFailureExitCode,
+    claudeFailurePhase: "bootstrap",
+    writeFileSync: (...args: unknown[]) => writes.push(args),
+    runClaudeCodeScenario: () =>
+      Promise.reject(new Error("integration.claude-code.environment")),
+  }) as () => Promise<void>;
+  await run();
+  expect(writes).toEqual([
+    [
+      "/ledger/interactive-failure.txt",
+      "integration.fixture.claude-environment\n",
+      { flag: "wx", mode: 0o600 },
+    ],
+  ]);
+  expect(process.exitCode).toBe(200);
+  expect(stderr).toEqual(["integration.claude-code.scenario\n"]);
+});
+
+it("keeps failed/conflicting marker publication a refusal without reflecting the error", async () => {
+  const boundary = source.indexOf("if (isClaudeScenarioMain())\n");
+  const caught = source
+    .slice(boundary)
+    .replace("if (isClaudeScenarioMain())", "");
+  const original = new Error("PRIVATE_CANARY");
+  const stderr: string[] = [];
+  const process = {
+    stderr: { write: (value: string) => stderr.push(value) },
+    exitCode: 0,
+  };
+  const run = runInNewContext(`(async () => { ${caught} })`, {
+    process,
+    claudeScenarioFailureDiagnostic,
+    encodeInteractiveFailureExitCode,
+    claudeFailurePhase: "packed-install",
+    writeFileSync: () => {
+      throw new Error("EEXIST:PRIVATE_CANARY");
+    },
+    runClaudeCodeScenario: () => Promise.reject(original),
+  }) as () => Promise<void>;
+  await run();
+  expect(process.exitCode).toBe(1);
+  expect(original.message).toBe("PRIVATE_CANARY");
+  expect(stderr).toEqual(["integration.claude-code.scenario\n"]);
+});
 
 describe("Claude actual module entry", () => {
   it("executes the same environment refusal through direct and aliased entries", () => {
