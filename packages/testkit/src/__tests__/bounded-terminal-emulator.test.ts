@@ -12,6 +12,31 @@ const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
 describe("fixed rejected extended-CSI identities", () => {
+  it.each([0, 9999, 65535])(
+    "localizes bounded unlisted mode %s without admitting it",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        for (const character of `\u001b[?25;${mode};1000${final}`)
+          terminal.write(bytes(character));
+        expect(terminal.unsupportedControlReason()).toBe(
+          `extended-csi-private-mode-unlisted-${final}-${mode}`,
+        );
+        expect(terminal.end().unsupportedControlCount).toBe(1);
+      }
+    },
+  );
+  it("keeps oversized parameters malformed and first refusal latched", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b[?65536h\u001b[?9999l\u001b[?0h"));
+    expect(terminal.malformedControlReason()).toBe("csi-parameters");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-l-9999",
+    );
+  });
+});
+
+describe("fixed rejected extended-CSI legacy identities", () => {
   it("models only the exact disabled Win32-input reset without changing screen or trust", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes("ordinary ASCII"));
@@ -38,7 +63,7 @@ describe("fixed rejected extended-CSI identities", () => {
     terminal.write(bytes("\u0000\u001b[?9999h\u001b[?9001l"));
     expect(terminal.malformedControlReason()).toBe("ground-control-0");
     expect(terminal.unsupportedControlReason()).toBe(
-      "extended-csi-private-mode-unlisted",
+      "extended-csi-private-mode-unlisted-h-9999",
     );
     expect(terminal.end().semanticState).not.toBe("completed");
   });
@@ -101,8 +126,8 @@ describe("fixed rejected extended-CSI identities", () => {
     ["\u001b[>1q", "residual-shape"],
     ["\u001b[?5g", "residual-shape"],
     ["\u001b[<3p", "residual-shape"],
-    ["\u001b[?65535h", "private-mode-unlisted"],
-    ["\u001b[?9999l", "private-mode-unlisted"],
+    ["\u001b[?65535h", "private-mode-unlisted-h-65535"],
+    ["\u001b[?9999l", "private-mode-unlisted-l-9999"],
   ])("identifies only the refusal branch for %j", (sequence, reason) => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes(sequence));

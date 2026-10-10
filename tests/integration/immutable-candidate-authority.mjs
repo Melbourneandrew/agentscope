@@ -562,6 +562,25 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-trace-get-child-invoke-get",
 ]);
 
+const unlistedModeNumber = Number;
+const unlistedModeSafeInteger = Number.isSafeInteger;
+const unlistedModePattern =
+  /^testkit\.pty\.transport\.semantic-unsupported-extended-csi-private-mode-unlisted-[hl]-(0|[1-9][0-9]{0,4})$/u;
+const unlistedModeMatch = RegExp.prototype.exec;
+const unlistedModeApply = Reflect.apply;
+const validPtyExecutionFailurePredicate = (value) => {
+  if (typeof value !== "string") return false;
+  if (ptyExecutionFailurePredicates.includes(value)) return true;
+  const match = unlistedModeApply(unlistedModeMatch, unlistedModePattern, [
+    value,
+  ]);
+  return (
+    match !== null &&
+    unlistedModeSafeInteger(unlistedModeNumber(match[1])) &&
+    unlistedModeNumber(match[1]) <= 65535
+  );
+};
+
 export const selectInteractiveFailureDiagnostic = (
   fixtureFailure,
   retainedPhase,
@@ -570,7 +589,7 @@ export const selectInteractiveFailureDiagnostic = (
   [fixtureFailure, retainedPhase, selectedError].find(
     (value) =>
       typeof value === "string" &&
-      ptyExecutionFailurePredicates.includes(value) &&
+      validPtyExecutionFailurePredicate(value) &&
       value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
       value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
       !value.startsWith("integration.fixture.codex-candidate-config-") &&
@@ -1319,7 +1338,7 @@ export const selectInteractiveExecutionFailurePredicate = (
       retainedDiagnostic !== diagnostic)
   )
     return "child-failure";
-  return ptyExecutionFailurePredicates.includes(diagnostic)
+  return validPtyExecutionFailurePredicate(diagnostic)
     ? diagnostic
     : "child-failure";
 };
@@ -1447,7 +1466,7 @@ export const formatInteractiveChildDiagnostic = (
   exitSignal,
   childTerminal,
 ) => {
-  const code = ptyExecutionFailurePredicates.includes(predicate)
+  const code = validPtyExecutionFailurePredicate(predicate)
     ? predicate
     : "integration.runner.fixture-failed";
   const semantic =
@@ -1482,7 +1501,7 @@ export const readInteractiveChildFailureObservation = (output) => {
     );
   if (
     !match ||
-    !ptyExecutionFailurePredicates.includes(match[1]) ||
+    !validPtyExecutionFailurePredicate(match[1]) ||
     (match[2] !== undefined &&
       match[1] !== "testkit.pty.transport.semantic-incomplete") ||
     (match[6] !== undefined &&
@@ -1557,7 +1576,9 @@ export const validInstalledPtyFailure = (input) => {
     !value ||
     value.receiptVersion !== 1 ||
     !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
-    !installedPtyFailurePredicates[value.phase].includes(value.predicate)
+    !(value.phase === "pty-execution"
+      ? validPtyExecutionFailurePredicate(value.predicate)
+      : installedPtyFailurePredicates[value.phase].includes(value.predicate))
   )
     return false;
   if (old) return !claudeFailurePredicates.includes(value.predicate);

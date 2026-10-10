@@ -219,6 +219,121 @@ it.each([
 );
 
 describe("fixed extended-CSI refusal wire admission", () => {
+  it("captures new numeric and regexp guards against post-initialization substitution", () => {
+    const source = readIntegration("immutable-candidate-authority.mjs");
+    const start = source.indexOf("const unlistedModeNumber =");
+    const end = source.indexOf(
+      "export const selectInteractiveFailureDiagnostic =",
+      start,
+    );
+    const result = runInNewContext(
+      `${source.slice(start, end)}
+      Number.isSafeInteger = () => true;
+      Number = () => 0;
+      RegExp.prototype.exec = () => ["forged", "0"];
+      Reflect.apply = () => ["forged", "0"];
+      [validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-65535"), validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-65536"), validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-1.5")];`,
+      { ptyExecutionFailurePredicates: [] },
+    );
+    expect(result).toEqual([true, false, false]);
+  });
+  it("preserves legacy refusal and decoded precedence over normalized mode", () => {
+    const legacy =
+      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted";
+    const normalized = `${legacy}-h-9999`;
+    expect(
+      selectInteractiveFailureDiagnostic(legacy, undefined, normalized),
+    ).toBe(legacy);
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(legacy),
+      ),
+    ).toBe(legacy);
+    expect(
+      selectInteractiveFailureDiagnostic(
+        undefined,
+        "integration.runner.fixture-failed",
+        normalized,
+      ),
+    ).toBe("integration.runner.fixture-failed");
+  });
+  it.each([0, 9999, 65535])(
+    "retains bounded unlisted identity %s through every wire guard",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${final}-${mode}`;
+        expect(
+          selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+        ).toBe(predicate);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            predicate,
+            undefined,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(predicate);
+        const frame: string = formatInteractiveChildDiagnostic(predicate);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+        expect(
+          extractInteractiveChildDiagnostic(frame + frame),
+        ).toBeUndefined();
+        const record = {
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+        };
+        expect(
+          validInstalledPtyFailure(JSON.parse(JSON.stringify(record))),
+        ).toBe(true);
+        expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+        expect(
+          validInstalledPtyFailure({
+            ...record,
+            get predicate() {
+              throw Error("getter must not run");
+            },
+          }),
+        ).toBe(false);
+      }
+    },
+  );
+});
+
+describe("noncanonical unlisted-mode wire refusal", () => {
+  it.each([
+    "h-65536",
+    "h--1",
+    "h-01",
+    "h-1.5",
+    "h-1e3",
+    "h-+1",
+    "H-1",
+    "x-1",
+    "h-1-extra",
+    "h- 1",
+  ])("rejects noncanonical unlisted identity %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${suffix}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBeUndefined();
+    expect(formatInteractiveChildDiagnostic(predicate)).toContain(
+      "integration.runner.fixture-failed",
+    );
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
   it("preserves the existing reconciliation deadline refusal through selector/frame/persisted record", () => {
     const predicate = "testkit.headless.reconciliation.deadline";
     expect(
@@ -251,6 +366,9 @@ describe("fixed extended-CSI refusal wire admission", () => {
       ),
     ).toBe("child-failure");
   });
+});
+
+describe("legacy fixed extended-CSI refusal wire admission", () => {
   it.each(fixedExtendedCsiSuffixes)(
     "admits only fixed extended-CSI identity %s in the existing frame",
     (suffix) => {
