@@ -57,6 +57,10 @@ const reconciliationRunnerFrame = (
   );
   const wire = runInNewContext(
     [
+      authority.slice(
+        authority.indexOf("const claudeModelPairFailurePredicates ="),
+        authority.indexOf("const isClaudeFailurePredicate ="),
+      ),
       authority.slice(predicates, authority.indexOf("]);", predicates) + 3),
       authority.slice(predicateGuard, selector),
       authority.slice(
