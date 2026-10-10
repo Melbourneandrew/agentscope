@@ -541,6 +541,21 @@ const executeWithControl = async (
   }
 };
 describe("fixed extended-CSI selected transport refusals", () => {
+  it.each(["\u001b[>q", "\u001b[>0q"])(
+    "answers terminal identification through the existing transport %j",
+    async (sequence) => {
+      await expect(
+        executeWithControl(
+          sequence,
+          "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\",
+        ),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
   it.each(["\u001b[?2031h", "\u001b[?2031l", "\u001b[?2031h\u001b[?996n"])(
     "drives documented fixed theme protocol %j",
     async (sequence) => {
@@ -611,7 +626,6 @@ describe("fixed extended-CSI selected transport refusals", () => {
   it.each([
     ["\u001b[>c", "secondary-device-attributes"],
     ["\u001b[=c", "tertiary-device-attributes"],
-    ["\u001b[>q", "xterm-version"],
     ["\u001b[?4g", "key-modifier-query"],
     ["\u001b[1 p", "intermediate"],
     ["\u001b[>32u", "keyboard-shape"],
