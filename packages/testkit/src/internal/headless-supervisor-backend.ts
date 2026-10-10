@@ -1863,17 +1863,12 @@ const productionPtyRuntime = (
       deadline,
     );
   },
-  releaseFrozenProcessSet: (
-    namespaceIdentity,
-    processes,
-    rootPid,
-    notifyRoot,
-  ) => {
+  releaseFrozenProcessSet: (namespaceIdentity, processes, rootPid) => {
     releaseFrozenContainerProcessSet(
       namespaceIdentity,
       processes,
       rootPid,
-      notifyRoot && authority.publishTopologyCheckpoint === undefined,
+      false,
       monotonicDeadlineMs,
     );
   },

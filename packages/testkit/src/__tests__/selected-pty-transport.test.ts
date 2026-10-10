@@ -29,6 +29,137 @@ import {
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
+type CheckpointFacade = {
+  releaseFrozenProcessSet: (
+    namespace: string,
+    set: readonly object[],
+    pid: number,
+    notify: boolean,
+  ) => void;
+};
+type CheckpointProduction = {
+  create: (authority: object, deadline: number) => CheckpointFacade;
+  publish: (
+    runtime: CheckpointFacade,
+    request: object,
+    root: object,
+    set: readonly object[],
+  ) => void;
+};
+
+describe("actual production checkpoint resume composition", () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const)(
+    "resumes without an undeclared root signal (protected callback=%s, substituted identity=%s)",
+    (protectedCallback, substitutedIdentity) => {
+      const source = readFileSync(
+        new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+        "utf8",
+      );
+      const releaseStart = source.indexOf(
+        "const releaseFrozenContainerProcessSet =",
+      );
+      const releaseEnd = source.indexOf("const delay =", releaseStart);
+      const facadeStart = source.indexOf("const productionPtyRuntime =");
+      const facadeEnd = source.indexOf(
+        "/* eslint-enable max-lines-per-function */",
+        facadeStart,
+      );
+      const publishStart = source.indexOf(
+        "const publishTopologyCheckpointIfSelected =",
+      );
+      const publishEnd = source.indexOf("const armSelectedPty =", publishStart);
+      for (const [start, end] of [
+        [releaseStart, releaseEnd],
+        [facadeStart, facadeEnd],
+        [publishStart, publishEnd],
+      ] as const) {
+        expect(start).toBeGreaterThan(0);
+        expect(end).toBeGreaterThan(start);
+      }
+      const root = { pid: 2, parentPid: 1, startIdentity: "2:10", state: "T" },
+        child = { pid: 3, parentPid: 2, startIdentity: "3:11", state: "T" };
+      const processes = Object.freeze([root, child]);
+      const signals: { pid: number; signal: string }[] = [],
+        publications: unknown[][] = [];
+      const compiled = transpileModule(
+        `${source.slice(releaseStart, releaseEnd)}\n${source.slice(facadeStart, facadeEnd)}\n${source.slice(publishStart, publishEnd)}\n({ create: productionPtyRuntime, publish: publishTopologyCheckpointIfSelected });`,
+        { compilerOptions: { target: ScriptTarget.ES2022 } },
+      ).outputText;
+      const production = runInNewContext(compiled, {
+        assertNamespaceIdentity: (namespace: string) => {
+          expect(namespace).toBe("held-namespace");
+        },
+        readProcessSnapshot: (pid: number) => {
+          const entry = processes.find((value) => value.pid === pid);
+          return substitutedIdentity && entry
+            ? { ...entry, startIdentity: "substituted" }
+            : entry;
+        },
+        process: {
+          kill: (pid: number, signal: string) => signals.push({ pid, signal }),
+        },
+        fail: (code: string) => {
+          throw new Error(code);
+        },
+      }) as CheckpointProduction;
+      const authority = {
+        assertFile: () => undefined,
+        assertRuntime: () => undefined,
+        ...(protectedCallback
+          ? {
+              publishTopologyCheckpoint: (...args: unknown[]) =>
+                publications.push(args),
+            }
+          : {}),
+      };
+      const runtime = production.create(authority, 1000);
+      if (substitutedIdentity) {
+        expect(() => {
+          runtime.releaseFrozenProcessSet(
+            "held-namespace",
+            processes,
+            root.pid,
+            true,
+          );
+        }).toThrow("testkit.headless.observer.identity");
+        expect(signals).toEqual([]);
+        expect(publications).toEqual([]);
+        return;
+      }
+      runtime.releaseFrozenProcessSet(
+        "held-namespace",
+        processes,
+        root.pid,
+        true,
+      );
+      production.publish(
+        runtime,
+        { readiness: { challenge: "a".repeat(64) } },
+        root,
+        processes,
+      );
+      expect(publications).toEqual(
+        protectedCallback ? [["a".repeat(64), root, processes]] : [],
+      );
+      expect(signals).toEqual([
+        { pid: child.pid, signal: "SIGCONT" },
+        { pid: root.pid, signal: "SIGCONT" },
+      ]);
+      if (protectedCallback) {
+        expect(() => {
+          production.publish(runtime, { readiness: {} }, root, processes);
+        }).toThrow("testkit.pty.checkpoint-witness");
+        expect(publications).toHaveLength(1);
+      }
+    },
+  );
+});
+
 const compiledManifestRequest = (
   scenarioId: "codex-tui-trace-smoke" | "claude-interactive-trace-smoke",
 ): SelectedPtyExecutionRequest => {
