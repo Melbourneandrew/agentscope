@@ -139,6 +139,63 @@ const claudeFailureCodes = Object.freeze([
   "vendor-terminal",
   "internal-endpoint",
 ]);
+const claudePackedInstallDiagnostics = Object.freeze([
+  ["packed-hook-absent", "harness.absent", "not-found", 3],
+  ["packed-hook-adapter-missing", "harness.adapter-missing", "not-found", 3],
+  [
+    "packed-hook-discovery-indeterminate",
+    "harness.discovery-indeterminate",
+    "unavailable",
+    5,
+  ],
+  [
+    "packed-hook-installation-unsupported",
+    "harness.installation-unsupported",
+    "unavailable",
+    5,
+  ],
+  ["packed-hook-overlap-conflict", "harness.overlap-conflict", "conflict", 4],
+  ["packed-hook-plan-invalid", "harness.plan-invalid", "unavailable", 5],
+  ["packed-hook-recovery-required", "harness.recovery-required", "conflict", 4],
+  ["packed-hook-unavailable", "harness.unavailable", "unavailable", 5],
+  [
+    "packed-hook-version-unsupported",
+    "harness.version-unsupported",
+    "unavailable",
+    5,
+  ],
+  ["packed-hook-internal", "cli.internal", "internal-error", 70],
+]);
+export const claudePackedInstallFailurePhase = (error) => {
+  const fallback = "packed-hook-install";
+  if (types.isProxy(error) || !types.isNativeError(error)) return fallback;
+  const fields = ["code", "stderr", "signal", "killed"].map((key) =>
+    Object.getOwnPropertyDescriptor(error, key),
+  );
+  if (fields.some((field) => !field || !Object.hasOwn(field, "value")))
+    return fallback;
+  const [exit, stderr, signal, killed] = fields.map((field) => field.value);
+  if (
+    typeof stderr !== "string" ||
+    Buffer.byteLength(stderr, "utf8") > 512 ||
+    signal !== null ||
+    killed !== false
+  )
+    return fallback;
+  return (
+    claudePackedInstallDiagnostics.find(
+      ([, code, category, expectedExit]) =>
+        exit === expectedExit &&
+        stderr ===
+          `${JSON.stringify({
+            category,
+            code,
+            command: "agentscope install",
+            schema: "agentscope.cli.diagnostic.v1",
+          })}\n`,
+    )?.[0] ?? fallback
+  );
+};
 const claudeFailurePhases = Object.freeze([
   "bootstrap",
   "readiness",
@@ -156,6 +213,7 @@ const claudeFailurePhases = Object.freeze([
   "packed-hook-install",
   "packed-status",
   "packed-settings",
+  ...claudePackedInstallDiagnostics.map(([phase]) => phase),
 ]);
 const claudeFailurePredicates = Object.freeze([
   ...claudeFailureCodes.map((code) => `integration.fixture.claude-${code}`),

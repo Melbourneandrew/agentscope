@@ -99,6 +99,66 @@ it.each([
     "integration.fixture.claude-phase-packed-settings",
     245,
   ],
+  [
+    "packed-hook-absent",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-absent",
+    246,
+  ],
+  [
+    "packed-hook-adapter-missing",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-adapter-missing",
+    247,
+  ],
+  [
+    "packed-hook-discovery-indeterminate",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-discovery-indeterminate",
+    248,
+  ],
+  [
+    "packed-hook-installation-unsupported",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-installation-unsupported",
+    249,
+  ],
+  [
+    "packed-hook-overlap-conflict",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-overlap-conflict",
+    250,
+  ],
+  [
+    "packed-hook-plan-invalid",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-plan-invalid",
+    251,
+  ],
+  [
+    "packed-hook-recovery-required",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-recovery-required",
+    252,
+  ],
+  [
+    "packed-hook-unavailable",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-unavailable",
+    253,
+  ],
+  [
+    "packed-hook-version-unsupported",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-version-unsupported",
+    254,
+  ],
+  [
+    "packed-hook-internal",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-internal",
+    255,
+  ],
 ] as const)(
   "preserves the Claude refusal at actual fixed phase %s through the top-level catch",
   async (phase, message, predicate, exit) => {

@@ -533,6 +533,101 @@ describe("Claude actual packed lifecycle (synthetic CLI and owned settings)", ()
   );
 });
 
+describe("Claude existing install diagnostic (synthetic CLI rejection)", () => {
+  beforeEach(resetPackedLifecycleFixture);
+  it.each([
+    ["harness.absent", "not-found", 3, "packed-hook-absent"],
+    ["harness.adapter-missing", "not-found", 3, "packed-hook-adapter-missing"],
+    [
+      "harness.discovery-indeterminate",
+      "unavailable",
+      5,
+      "packed-hook-discovery-indeterminate",
+    ],
+    [
+      "harness.installation-unsupported",
+      "unavailable",
+      5,
+      "packed-hook-installation-unsupported",
+    ],
+    ["harness.overlap-conflict", "conflict", 4, "packed-hook-overlap-conflict"],
+    ["harness.plan-invalid", "unavailable", 5, "packed-hook-plan-invalid"],
+    [
+      "harness.recovery-required",
+      "conflict",
+      4,
+      "packed-hook-recovery-required",
+    ],
+    ["harness.unavailable", "unavailable", 5, "packed-hook-unavailable"],
+    [
+      "harness.version-unsupported",
+      "unavailable",
+      5,
+      "packed-hook-version-unsupported",
+    ],
+    ["cli.internal", "internal-error", 70, "packed-hook-internal"],
+  ] as const)(
+    "retains exact fixed diagnostic %s and SAME original failure",
+    async (code, category, exit, phase) => {
+      const original = Object.assign(new Error("PRIVATE_CHILD_OUTPUT"), {
+        code: exit,
+        signal: null,
+        killed: false,
+        stderr: `${JSON.stringify({ category, code, command: "agentscope install", schema: "agentscope.cli.diagnostic.v1" })}\n`,
+      });
+      synthetic.commandFailure = original;
+      synthetic.failAt = 3;
+      const notes: string[] = [];
+      await expect(
+        prepareClaudeCodePackedCli(1500, (value) => notes.push(value)),
+      ).rejects.toBe(original);
+      expect(notes.at(-1)).toBe(phase);
+      expect(synthetic.calls).toHaveLength(4);
+    },
+  );
+});
+
+describe("Claude diagnostic remains non-authoritative", () => {
+  beforeEach(resetPackedLifecycleFixture);
+  const fixedError = () =>
+    Object.assign(new Error("PRIVATE"), {
+      code: 5,
+      signal: null,
+      killed: false,
+      stderr:
+        '{"category":"unavailable","code":"harness.unavailable","command":"agentscope install","schema":"agentscope.cli.diagnostic.v1"}\n',
+    });
+  it("rethrows SAME original command error even when classification note fails", async () => {
+    const original = fixedError();
+    synthetic.commandFailure = original;
+    synthetic.failAt = 3;
+    await expect(
+      prepareClaudeCodePackedCli(1500, (phase) => {
+        if (phase === "packed-hook-unavailable")
+          throw new Error("NOTE_PRIVATE");
+      }),
+    ).rejects.toBe(original);
+  });
+  it.each([
+    [0, "packed-init"],
+    [1, "packed-configure"],
+    [2, "packed-routing"],
+    [4, "packed-status"],
+  ] as const)(
+    "does not classify foreign command position %i",
+    async (index, phase) => {
+      const original = fixedError();
+      synthetic.commandFailure = original;
+      synthetic.failAt = index;
+      const notes: string[] = [];
+      await expect(
+        prepareClaudeCodePackedCli(1500, (value) => notes.push(value)),
+      ).rejects.toBe(original);
+      expect(notes.at(-1)).toBe(phase);
+    },
+  );
+});
+
 describe("Claude ordinary command deadline (mocked child, no native evidence)", () => {
   beforeEach(() => {
     synthetic.uptime = "1.000 0.000\n";

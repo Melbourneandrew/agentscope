@@ -9,7 +9,10 @@ import {
   readSync,
 } from "node:fs";
 import { promisify } from "node:util";
-import { parseCodexMachineOutput } from "./immutable-candidate-authority.mjs";
+import {
+  claudePackedInstallFailurePhase,
+  parseCodexMachineOutput,
+} from "./immutable-candidate-authority.mjs";
 
 const execute = promisify(execFile);
 const cli = "/opt/agentscope/installed/node_modules/.bin/agentscope";
@@ -34,7 +37,18 @@ export const prepareClaudeCodePackedCli = async (
   ];
   for (const [index, arguments_] of commands.slice(0, 4).entries()) {
     note(phases[index]);
-    await runClaudeCodeLifecycleCommand(arguments_, deadline);
+    try {
+      await runClaudeCodeLifecycleCommand(arguments_, deadline);
+    } catch (error) {
+      if (index === 3) {
+        try {
+          note(claudePackedInstallFailurePhase(error));
+        } catch {
+          // Failure localization cannot replace the original command refusal.
+        }
+      }
+      throw error;
+    }
   }
   note("packed-status");
   const installed = await claudeMachine(

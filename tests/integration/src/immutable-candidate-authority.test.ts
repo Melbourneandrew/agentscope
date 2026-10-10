@@ -22,6 +22,7 @@ const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
 const {
+  claudePackedInstallFailurePhase,
   claudeScenarioFailureDiagnostic,
   codexArmPendingResearchHint,
   codexArmPtyResearchHint,
@@ -70,6 +71,186 @@ const {
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
+
+const packedInstallError = () =>
+  Object.assign(new Error("PRIVATE_NOT_RETAINED"), {
+    code: 5,
+    signal: null,
+    killed: false,
+    stderr:
+      '{"category":"unavailable","code":"harness.unavailable","command":"agentscope install","schema":"agentscope.cli.diagnostic.v1"}\n',
+  });
+
+describe("exact existing Claude install diagnostic envelopes", () => {
+  it.each([
+    ["packed-hook-absent", "harness.absent", "not-found", 3, 246],
+    [
+      "packed-hook-adapter-missing",
+      "harness.adapter-missing",
+      "not-found",
+      3,
+      247,
+    ],
+    [
+      "packed-hook-discovery-indeterminate",
+      "harness.discovery-indeterminate",
+      "unavailable",
+      5,
+      248,
+    ],
+    [
+      "packed-hook-installation-unsupported",
+      "harness.installation-unsupported",
+      "unavailable",
+      5,
+      249,
+    ],
+    [
+      "packed-hook-overlap-conflict",
+      "harness.overlap-conflict",
+      "conflict",
+      4,
+      250,
+    ],
+    ["packed-hook-plan-invalid", "harness.plan-invalid", "unavailable", 5, 251],
+    [
+      "packed-hook-recovery-required",
+      "harness.recovery-required",
+      "conflict",
+      4,
+      252,
+    ],
+    ["packed-hook-unavailable", "harness.unavailable", "unavailable", 5, 253],
+    [
+      "packed-hook-version-unsupported",
+      "harness.version-unsupported",
+      "unavailable",
+      5,
+      254,
+    ],
+    ["packed-hook-internal", "cli.internal", "internal-error", 70, 255],
+  ] as const)(
+    "maps exact %s at appended exit %i",
+    (phase, code, category, nativeExit, exit) => {
+      const error = Object.assign(packedInstallError(), {
+        code: nativeExit,
+        stderr: `${JSON.stringify({ category, code, command: "agentscope install", schema: "agentscope.cli.diagnostic.v1" })}\n`,
+      });
+      expect(claudePackedInstallFailurePhase(error)).toBe(phase);
+      const diagnostic = claudeScenarioFailureDiagnostic(error, phase);
+      expect(diagnostic).toBe(`integration.fixture.claude-phase-${phase}`);
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(exit);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exit,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+    },
+  );
+});
+describe("malformed existing Claude install diagnostic envelopes", () => {
+  it.each([
+    { code: 3 },
+    { code: "5" },
+    { signal: "SIGTERM" },
+    { killed: true },
+    { signal: undefined },
+    { killed: undefined },
+    { stderr: Buffer.from("private") },
+    { stderr: "x".repeat(513) },
+    { stderr: "😀".repeat(129) },
+    { stderr: "" },
+  ])("keeps malformed native error metadata a fixed fallback", (patch) => {
+    expect(
+      claudePackedInstallFailurePhase(
+        Object.assign(packedInstallError(), patch),
+      ),
+    ).toBe("packed-hook-install");
+  });
+
+  it("rejects every noncanonical or expanded existing diagnostic envelope", () => {
+    const original = packedInstallError().stderr;
+    for (const stderr of [
+      ` ${original}`,
+      `${original}\n`,
+      `${original}${original}`,
+      original.trimEnd(),
+      original.replace('"code":', '"code":"harness.unavailable","code":'),
+      original.replace("agentscope install", "agentscope uninstall"),
+      original.replace("agentscope.cli.diagnostic.v1", "foreign.v1"),
+      original.replace("harness.unavailable", "harness.private-content"),
+      original.replace('"unavailable"', '"conflict"'),
+      original.replace('"schema":', '"facts":{"private":true},"schema":'),
+      original.replace(
+        '"category":"unavailable","code":"harness.unavailable"',
+        '"code":"harness.unavailable","category":"unavailable"',
+      ),
+    ])
+      expect(
+        claudePackedInstallFailurePhase(
+          Object.assign(packedInstallError(), { stderr }),
+        ),
+      ).toBe("packed-hook-install");
+  });
+});
+describe("hostile existing Claude install error metadata", () => {
+  it("never evaluates forged/accessor/Proxy or unrelated error content", () => {
+    const trap = () => {
+      throw new Error("PRIVATE_TRAP");
+    };
+    const original = packedInstallError();
+    for (const key of ["stdout", "message", "cause", "facts"])
+      Object.defineProperty(original, key, { get: trap });
+    expect(claudePackedInstallFailurePhase(original)).toBe(
+      "packed-hook-unavailable",
+    );
+    for (const key of ["code", "stderr", "signal", "killed"]) {
+      const error = packedInstallError();
+      Object.defineProperty(error, key, { get: trap });
+      expect(claudePackedInstallFailurePhase(error)).toBe(
+        "packed-hook-install",
+      );
+      const missing = packedInstallError();
+      Reflect.deleteProperty(missing, key);
+      expect(claudePackedInstallFailurePhase(missing)).toBe(
+        "packed-hook-install",
+      );
+    }
+    expect(claudePackedInstallFailurePhase({ ...packedInstallError() })).toBe(
+      "packed-hook-install",
+    );
+    expect(
+      claudePackedInstallFailurePhase(
+        new Proxy(packedInstallError(), {
+          get: trap,
+          getOwnPropertyDescriptor: trap,
+          getPrototypeOf: trap,
+        }),
+      ),
+    ).toBe("packed-hook-install");
+    expect(
+      decodeInteractiveFailureExitCode(256, "claude-interactive-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      encodeInteractiveFailureExitCode(
+        "integration.fixture.claude-phase-packed-settings",
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(245);
+  });
+});
 
 const semanticFacts = {
   finalSemanticState: "ready",
@@ -2521,7 +2702,7 @@ describe("source-defined Claude failure phases", () => {
       ).toBeUndefined();
       expect(
         decodeInteractiveFailureExitCode(246, "claude-interactive-trace-smoke"),
-      ).toBeUndefined();
+      ).toBe("integration.fixture.claude-phase-packed-hook-absent");
       expect(
         decodeInteractiveFailureExitCode(256, "claude-interactive-trace-smoke"),
       ).toBeUndefined();
@@ -2589,6 +2770,16 @@ describe("Claude owned failure marker routing", () => {
     "integration.fixture.claude-phase-packed-hook-install",
     "integration.fixture.claude-phase-packed-status",
     "integration.fixture.claude-phase-packed-settings",
+    "integration.fixture.claude-phase-packed-hook-absent",
+    "integration.fixture.claude-phase-packed-hook-adapter-missing",
+    "integration.fixture.claude-phase-packed-hook-discovery-indeterminate",
+    "integration.fixture.claude-phase-packed-hook-installation-unsupported",
+    "integration.fixture.claude-phase-packed-hook-overlap-conflict",
+    "integration.fixture.claude-phase-packed-hook-plan-invalid",
+    "integration.fixture.claude-phase-packed-hook-recovery-required",
+    "integration.fixture.claude-phase-packed-hook-unavailable",
+    "integration.fixture.claude-phase-packed-hook-version-unsupported",
+    "integration.fixture.claude-phase-packed-hook-internal",
   ])(
     "routes owned marker %s through strict reader/frame/held-scenario selector",
     (diagnostic) => {
