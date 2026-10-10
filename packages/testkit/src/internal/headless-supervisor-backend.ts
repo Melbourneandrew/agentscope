@@ -41,6 +41,7 @@ import {
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
   readPtySemanticFailure,
+  readPtyExitSignal,
   trustedErrorCode,
 } from "./kernel-errors.js";
 import {
@@ -3546,7 +3547,12 @@ const armSelectedPty = (
       exit.signal !== 9 &&
       exit.signal !== 15
     )
-      return fail("testkit.pty.transport.exit");
+      return fail(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        exit.signal,
+      );
     const inputJoined =
       actionIndex === request.interaction.actions.length &&
       inputOffset === input.length &&
@@ -4432,6 +4438,7 @@ export const executeSelectedPtyProcessWithCapability = async (
         trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
         readPtyReconciliationStage(error),
         readPtySemanticFailure(error),
+        readPtyExitSignal(error),
       );
     }
     assertPtyReceiptBinding(receipt, stableRequest);

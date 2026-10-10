@@ -259,6 +259,102 @@ const semanticFacts = {
   allInputBytesWritten: false,
 };
 const semanticPredicate = "testkit.pty.transport.semantic-incomplete";
+describe("unsupported exit signal in the existing diagnostic frame", () => {
+  it.each([1, 3, 64])(
+    "round-trips unsupported signal %s in the same bounded frame",
+    (signal) => {
+      const predicate = "testkit.pty.transport.exit";
+      const frame: string = formatInteractiveChildDiagnostic(
+        predicate,
+        undefined,
+        signal,
+      );
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(readInteractiveChildFailureObservation(frame)).toEqual({
+        predicate,
+        exitSignal: signal,
+      });
+      expect(
+        readInteractiveChildFailureObservation(frame + frame),
+      ).toBeUndefined();
+      expect(
+        readInteractiveChildFailureObservation(
+          frame.replace(predicate, semanticPredicate),
+        ),
+      ).toBeUndefined();
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+        exitSignal: signal,
+      };
+      expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+        true,
+      );
+      expect(
+        validInstalledPtyFailure({
+          ...record,
+          scenarioId: "fixture-process-smoke",
+        }),
+      ).toBe(false);
+      expect(
+        validInstalledPtyFailure({ ...record, predicate: semanticPredicate }),
+      ).toBe(false);
+      let traps = 0;
+      expect(
+        validInstalledPtyFailure(
+          Object.defineProperty({ ...record }, "exitSignal", {
+            get() {
+              traps++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        validInstalledPtyFailure(
+          new Proxy(record, {
+            getPrototypeOf() {
+              traps++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ),
+      ).toBe(false);
+      expect(traps).toBe(0);
+    },
+  );
+  it.each(["0", "2", "9", "15", "65", "-1", "1.5", "01", "PRIVATE"])(
+    "rejects contradictory/malformed exit signal %s",
+    (signal) => {
+      const predicate = "testkit.pty.transport.exit";
+      expect(
+        readInteractiveChildFailureObservation(
+          `integration.runner.interactive-diagnostic:${predicate};signal;${signal}\n`,
+        ),
+      ).toBeUndefined();
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+          exitSignal: Number(signal),
+        }),
+      ).toBe(signal === "01");
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+          exitSignal: signal,
+        }),
+      ).toBe(false);
+    },
+  );
+});
 describe("bounded existing PTY diagnostic frame", () => {
   it.each(["active", "ready"])(
     "round-trips settled %s facts without admission authority",
@@ -413,13 +509,24 @@ describe("content-free installed PTY diagnostic validator", () => {
   });
 });
 describe("actual held-plan parent PTY failure projection", () => {
-  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
-    "binds the existing parent record to held %s plan, never child metadata",
-    (scenarioId) => {
+  it.each([
+    ["codex-tui-trace-smoke", false],
+    ["claude-interactive-trace-smoke", false],
+    ["codex-tui-trace-smoke", true],
+    ["claude-interactive-trace-smoke", true],
+  ] as const)(
+    "binds the existing parent record to held %s plan, never child metadata (exit=%s)",
+    (scenarioId, exit) => {
+      const predicate = exit ? "testkit.pty.transport.exit" : semanticPredicate;
+      const frame = formatInteractiveChildDiagnostic(
+        predicate,
+        exit ? undefined : semanticFacts,
+        exit ? 1 : undefined,
+      );
       const original = {
         receiptVersion: 1,
         phase: "pty-execution",
-        predicate: semanticPredicate,
+        predicate,
       };
       const source = readIntegration("run-scenarios.mjs");
       const start = source.indexOf("const recordInteractiveExecutionFailure ="),
@@ -430,8 +537,8 @@ describe("actual held-plan parent PTY failure projection", () => {
         {
           installedPtyFailures: failures,
           readInteractiveChildFailureObservation,
-          selectInteractiveExecutionFailurePredicate: () => semanticPredicate,
-          contentFreeChildFailureCode: () => semanticPredicate,
+          selectInteractiveExecutionFailurePredicate: () => predicate,
+          contentFreeChildFailureCode: () => predicate,
         },
       );
       const plan = {
@@ -440,28 +547,19 @@ describe("actual held-plan parent PTY failure projection", () => {
         scenarioId,
       };
       const originalError = new Error("PRIVATE");
-      expect(
-        record(
-          plan,
-          originalError,
-          formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
-          undefined,
-        ),
-      ).toBe(semanticPredicate);
+      expect(record(plan, originalError, frame, undefined)).toBe(predicate);
       expect(failures.get(plan.runId)).toEqual({
         ...original,
         scenarioId: plan.scenarioId,
-        semanticFailure: semanticFacts,
+        ...(exit ? { exitSignal: 1 } : { semanticFailure: semanticFacts }),
       });
-      const generic = { ...plan, scenarioId: "fixture-process-smoke" };
       expect(
-        record(
-          generic,
-          originalError,
-          formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
-          undefined,
+        validInstalledPtyFailure(
+          JSON.parse(JSON.stringify(failures.get(plan.runId))),
         ),
-      ).toBe(semanticPredicate);
+      ).toBe(true);
+      const generic = { ...plan, scenarioId: "fixture-process-smoke" };
+      expect(record(generic, originalError, frame, undefined)).toBe(predicate);
       expect(failures.get(generic.runId)).toEqual(original);
       // The persisted consumer reads ordinary JSON, not the VM's foreign realm.
       expect(
@@ -472,63 +570,86 @@ describe("actual held-plan parent PTY failure projection", () => {
       record(
         plan,
         originalError,
-        `${formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts).trim()};claude-interactive-trace-smoke\n`,
+        `${frame.trim()};claude-interactive-trace-smoke\n`,
         undefined,
       );
       expect(failures.get(plan.runId)).toEqual({
         ...original,
         scenarioId: plan.scenarioId,
       });
+      record(
+        plan,
+        originalError,
+        formatInteractiveChildDiagnostic(
+          exit ? semanticPredicate : "testkit.pty.transport.exit",
+          exit ? semanticFacts : undefined,
+          exit ? undefined : 1,
+        ),
+        undefined,
+      );
+      expect(failures.get(plan.runId)).toEqual({ ...original, scenarioId });
     },
   );
 });
 describe("actual runner caught-failure diagnostic routing", () => {
-  it("uses the existing private reader on the same caught error and preserves the predicate", () => {
-    const source = readIntegration("runner.mjs");
-    const caught = source.indexOf(
-      "} catch (error) {\n  emitCodexPtyFailureHint();",
-    );
-    const start = source.indexOf(
-      '  if (scenario.executionMode === "interactive")',
-      caught,
-    );
-    const end = source.indexOf(
-      '  if (\n    scenario.executionMode === "headless"',
-      start,
-    );
-    expect(caught).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    const error = new Error(semanticPredicate),
-      frames: string[] = [];
-    runInNewContext(
-      `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
-      {
-        scenario: { executionMode: "interactive" },
-        error,
-        ledger: "/synthetic",
-        readBoundedInteractiveFailureMarker: () => undefined,
-        retainedInteractivePhase: () => undefined,
-        selectInteractiveFailureDiagnostic: (
-          _fixture: unknown,
-          _phase: unknown,
-          code: unknown,
-        ) => code,
-        readPtySemanticFailure: (caughtError: unknown) => {
-          expect(caughtError).toBe(error);
-          return semanticFacts;
+  it.each([false, true])(
+    "uses the existing private reader on the same caught error and preserves the predicate (exit=%s)",
+    (exit) => {
+      const predicate = exit ? "testkit.pty.transport.exit" : semanticPredicate;
+      const source = readIntegration("runner.mjs");
+      const caught = source.indexOf(
+        "} catch (error) {\n  emitCodexPtyFailureHint();",
+      );
+      const start = source.indexOf(
+        '  if (scenario.executionMode === "interactive")',
+        caught,
+      );
+      const end = source.indexOf(
+        '  if (\n    scenario.executionMode === "headless"',
+        start,
+      );
+      expect(caught).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const error = new Error(predicate),
+        frames: string[] = [];
+      runInNewContext(
+        `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+        {
+          scenario: { executionMode: "interactive" },
+          error,
+          ledger: "/synthetic",
+          readBoundedInteractiveFailureMarker: () => undefined,
+          retainedInteractivePhase: () => undefined,
+          selectInteractiveFailureDiagnostic: (
+            _fixture: unknown,
+            _phase: unknown,
+            code: unknown,
+          ) => code,
+          readPtySemanticFailure: (caughtError: unknown) => {
+            expect(caughtError).toBe(error);
+            return exit ? undefined : semanticFacts;
+          },
+          readPtyExitSignal: (caughtError: unknown) => {
+            expect(caughtError).toBe(error);
+            return exit ? 1 : undefined;
+          },
+          formatInteractiveChildDiagnostic,
+          process: { stdout: { write: (frame: string) => frames.push(frame) } },
         },
-        formatInteractiveChildDiagnostic,
-        process: { stdout: { write: (frame: string) => frames.push(frame) } },
-      },
-    );
-    expect(frames).toEqual([
-      formatInteractiveChildDiagnostic(semanticPredicate, semanticFacts),
-    ]);
-    expect(readInteractiveChildFailureObservation(frames[0])).toEqual({
-      predicate: semanticPredicate,
-      semanticFailure: semanticFacts,
-    });
-  });
+      );
+      expect(frames).toEqual([
+        formatInteractiveChildDiagnostic(
+          predicate,
+          exit ? undefined : semanticFacts,
+          exit ? 1 : undefined,
+        ),
+      ]);
+      expect(readInteractiveChildFailureObservation(frames[0])).toEqual({
+        predicate,
+        ...(exit ? { exitSignal: 1 } : { semanticFailure: semanticFacts }),
+      });
+    },
+  );
 });
 
 const hex = (character: string): string => character.repeat(64);

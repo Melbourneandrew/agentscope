@@ -24,6 +24,7 @@ import {
 import {
   readPtyReconciliationStage,
   readPtySemanticFailure,
+  readPtyExitSignal,
 } from "./testkit/internal/kernel-errors.js";
 import {
   encodeAdapterReportedFailureMarker,
@@ -782,6 +783,7 @@ try {
       formatInteractiveChildDiagnostic(
         diagnostic ?? "integration.runner.fixture-failed",
         readPtySemanticFailure(error),
+        readPtyExitSignal(error),
       ),
     );
   }

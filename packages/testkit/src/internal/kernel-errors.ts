@@ -35,6 +35,7 @@ type KernelFailure = Readonly<{
   code: string;
   stage: PtyReconciliationStage | undefined;
   semanticFailure?: PtySemanticFailure;
+  exitSignal?: number;
 }>;
 
 // The existing private error registry is shared by both transports. Neither
@@ -139,6 +140,7 @@ export const kernelError = (
   code: string,
   stage?: PtyReconciliationStage,
   semanticFailure?: PtySemanticFailure,
+  exitSignal?: number,
 ): HeadlessSupervisorError => {
   const error = new HeadlessSupervisorError(code);
   const admittedStage =
@@ -161,6 +163,16 @@ export const kernelError = (
       code,
       stage: admittedStage,
       ...(semantic === undefined ? {} : { semanticFailure: semantic }),
+      ...(code === "testkit.pty.transport.exit" &&
+      typeof exitSignal === "number" &&
+      Number.isSafeInteger(exitSignal) &&
+      exitSignal >= 1 &&
+      exitSignal <= 64 &&
+      exitSignal !== 2 &&
+      exitSignal !== 9 &&
+      exitSignal !== 15
+        ? { exitSignal }
+        : {}),
     }),
   ]);
   return error;
@@ -170,8 +182,9 @@ export const fail = (
   code: string,
   stage?: PtyReconciliationStage,
   semanticFailure?: PtySemanticFailure,
+  exitSignal?: number,
 ): never => {
-  throw kernelError(code, stage, semanticFailure);
+  throw kernelError(code, stage, semanticFailure, exitSignal);
 };
 
 export const failObserverRead = (stage?: PtyReconciliationStage): never =>
@@ -188,6 +201,8 @@ export const readPtyReconciliationStage = (
 export const readPtySemanticFailure = (
   error: unknown,
 ): PtySemanticFailure | undefined => failure(error)?.semanticFailure;
+export const readPtyExitSignal = (error: unknown): number | undefined =>
+  failure(error)?.exitSignal;
 
 // Fixed syscall research only. Even disappearance remains an observer failure;
 // this classification never changes the existing ENOENT-only absence rule.

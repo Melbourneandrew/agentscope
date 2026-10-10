@@ -3038,6 +3038,10 @@ const recordInteractiveExecutionFailure = (
           observed.semanticFailure !== undefined
             ? { semanticFailure: observed.semanticFailure }
             : {}),
+          ...(observed?.predicate === predicate &&
+          observed.exitSignal !== undefined
+            ? { exitSignal: observed.exitSignal }
+            : {}),
         }
       : {}),
   });
