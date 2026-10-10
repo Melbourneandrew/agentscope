@@ -540,12 +540,39 @@ const executeWithControl = async (
       expect(responseBytes).toBe(expectedResponse);
   }
 };
+describe("bounded DECRQM selected transport", () => {
+  it.each([
+    ["?65536$p", "range"],
+    ["?1;2$p", "intermediate"],
+  ])("preserves neighboring refusal %j", async (control, reason) => {
+    await expect(executeWithControl(`\u001b[${control}`)).rejects.toMatchObject(
+      {
+        code: `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`,
+      },
+    );
+  });
+  it.each([
+    ["\u001b[?25$p", "\u001b[?25;1$y"],
+    ["\u001b[0$p", "\u001b[0;0$y"],
+    ["\u001b[?2026h\u001b[?2026$p", "\u001b[?2026;1$y"],
+  ])(
+    "answers exact mode query %j through actual transport",
+    async (query, response) => {
+      await expect(executeWithControl(query, response)).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+});
+
 describe("fixed rejected CSI parameter transport", () => {
   it.each([
     ["38:2::1:2:3m", "colon-sgr"],
     ["1:2u", "colon-keyboard"],
     ["?1:2h", "colon-other"],
-    ["?2026$p", "mode-query"],
+    ["?65536$p", "range"],
     ["1!p", "intermediate"],
     ["65536m", "range"],
   ])(

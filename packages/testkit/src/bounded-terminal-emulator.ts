@@ -454,16 +454,19 @@ const parseCsiParameters = (
   final: string,
 ):
   | Readonly<{
-      intermediate: "" | " ";
+      intermediate: "" | " " | "$";
       prefix: "" | "<" | "=" | ">" | "?";
       values: readonly number[];
     }>
   | PtyMalformedControlReason => {
-  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(value);
+  const modeQuery = final === "p" && /^\??\d*\$$/u.test(value);
+  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(
+    modeQuery ? value.slice(0, -1) : value,
+  );
   if (match === null) return rejectedCsiParameterShape(value, final);
   const prefix = match[1] as "" | "<" | "=" | ">" | "?";
   const body = match[2]!;
-  const intermediate = match[3] as "" | " ";
+  const intermediate = modeQuery ? "$" : (match[3] as "" | " ");
   const parts = body.split(";");
   const values: number[] = [];
   for (let index = 0; index < parts.length; index += 1) {
@@ -680,6 +683,8 @@ export class BoundedTerminalEmulator {
   #scrollRegionTop = 0;
   #scrollRegionBottom: number;
   #cursorVisible = true;
+  #synchronizedOutputModeEnabled = false;
+  #paletteNotificationModeEnabled = false;
   #savedColumn = 0;
   #savedRow = 0;
   #savedBold = false;
@@ -1568,6 +1573,10 @@ export class BoundedTerminalEmulator {
       const parameters = parseCsiParameters(this.#control, character);
       if (typeof parameters === "string")
         this.#recordMalformedControl(parameters);
+      else if (parameters.intermediate === "$")
+        this.#enqueueTerminalResponse(
+          `\u001b[${parameters.prefix}${parameters.values[0]};${parameters.prefix === "?" ? this.#privateModeQueryStatus(parameters.values[0]!) : 0}$y`,
+        );
       else
         this.#applyCsi(
           character,
@@ -1654,6 +1663,18 @@ export class BoundedTerminalEmulator {
       this.#row = this.#savedRow;
       this.#column = this.#savedColumn;
     } else this.#recordUnsupportedControl("csi");
+  }
+
+  #privateModeQueryStatus(mode: number): 0 | 1 | 2 | 4 {
+    if (mode === 9001) return 4;
+    let enabled: boolean;
+    if (mode === 7) enabled = this.#autoWrapEnabled;
+    else if (mode === 25) enabled = this.#cursorVisible;
+    else if (mode === 1049) enabled = this.#alternateScreen;
+    else if (mode === 2026) enabled = this.#synchronizedOutputModeEnabled;
+    else if (mode === 2031) enabled = this.#paletteNotificationModeEnabled;
+    else return 0;
+    return enabled ? 1 : 2;
   }
 
   #applyScrollRegionCsi(values: readonly number[]): void {
@@ -1752,6 +1773,10 @@ export class BoundedTerminalEmulator {
           return;
         }
       }
+      if (values.includes(2026))
+        this.#synchronizedOutputModeEnabled = final === "h";
+      if (values.includes(2031))
+        this.#paletteNotificationModeEnabled = final === "h";
       return;
     }
     if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
