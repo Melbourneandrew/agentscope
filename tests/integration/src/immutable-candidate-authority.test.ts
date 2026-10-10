@@ -98,7 +98,60 @@ const fixedExtendedCsiSuffixes = [
   "intermediate",
   "keyboard-shape",
   "modifier-shape",
+  "private-mode-unlisted",
+  "residual-shape",
 ] as const;
+
+it.each([
+  ["completion-state", "integration.runner.fixture-failed", true],
+  ["completion-state", undefined, true],
+  ["completion-state", "integration.fixture.claude-vendor-terminal", false],
+  ["completion-state", "testkit.pty.transport.semantic-incomplete", false],
+  ["receipt-rejected", "integration.runner.fixture-failed", false],
+])(
+  "keeps specific receipt %s over only generic child %s",
+  (prior, child, keep) => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const interactiveReceiptFailurePredicate =");
+    const failures = new Map();
+    const record = runInNewContext(
+      `${source.slice(start, source.indexOf("const retainCodexResearchDiagnostic =", start))}; ({ recordInteractiveReceiptFailure, recordInteractiveExecutionFailure })`,
+      {
+        installedPtyFailures: failures,
+        readInteractiveChildFailureObservation,
+        selectInteractiveExecutionFailurePredicate,
+        contentFreeChildFailureCode: () => child ?? "child-failure",
+      },
+    );
+    const plan = {
+      executionMode: "interactive",
+      scenarioId: "claude-interactive-trace-smoke",
+      runId: "a".repeat(16),
+    };
+    record.recordInteractiveReceiptFailure(
+      plan,
+      prior === "receipt-rejected"
+        ? undefined
+        : { outcome: "input-incomplete" },
+      false,
+    );
+    const receipt = failures.get(plan.runId);
+    record.recordInteractiveExecutionFailure(
+      plan,
+      new Error("PRIVATE"),
+      child === undefined ? "" : formatInteractiveChildDiagnostic(child),
+      child === "integration.fixture.claude-vendor-terminal"
+        ? child
+        : undefined,
+    );
+    expect(failures.get(plan.runId) === receipt).toBe(keep);
+    expect(
+      validInstalledPtyFailure(
+        JSON.parse(JSON.stringify(failures.get(plan.runId))),
+      ),
+    ).toBe(true);
+  },
+);
 
 describe("fixed extended-CSI refusal wire admission", () => {
   it.each(fixedExtendedCsiSuffixes)(

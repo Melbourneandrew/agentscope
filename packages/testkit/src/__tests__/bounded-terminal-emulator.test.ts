@@ -66,17 +66,18 @@ describe("fixed rejected extended-CSI identities", () => {
     expect(terminal.malformedControlReason()).toBe("ground-control-0");
   });
   it.each([
-    "\u001b[>1c",
-    "\u001b[=1c",
-    "\u001b[>1q",
-    "\u001b[?5g",
-    "\u001b[<3p",
-    "\u001b[?65535h",
-    "\u001b[?9999l",
-  ])("keeps unknown extended control %j generic", (sequence) => {
+    ["\u001b[>1c", "residual-shape"],
+    ["\u001b[=1c", "residual-shape"],
+    ["\u001b[>1q", "residual-shape"],
+    ["\u001b[?5g", "residual-shape"],
+    ["\u001b[<3p", "residual-shape"],
+    ["\u001b[?65535h", "private-mode-unlisted"],
+    ["\u001b[?9999l", "private-mode-unlisted"],
+  ])("identifies only the refusal branch for %j", (sequence, reason) => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes(sequence));
-    expect(terminal.unsupportedControlReason()).toBe("extended-csi");
+    expect(terminal.unsupportedControlReason()).toBe(`extended-csi-${reason}`);
+    expect(terminal.end().unsupportedControlCount).toBe(1);
   });
   it("does not reclassify existing supported modes or protocols", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });

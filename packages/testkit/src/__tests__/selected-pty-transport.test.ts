@@ -389,6 +389,8 @@ describe("fixed extended-CSI selected transport refusals", () => {
     ["\u001b[1 p", "intermediate"],
     ["\u001b[>32u", "keyboard-shape"],
     ["\u001b[>4;1m", "modifier-shape"],
+    ["\u001b[?9999h", "private-mode-unlisted"],
+    ["\u001b[<3p", "residual-shape"],
   ])(
     "retains fixed refused family %j through actual selected transport",
     async (sequence, reason) => {
@@ -397,14 +399,14 @@ describe("fixed extended-CSI selected transport refusals", () => {
       });
     },
   );
-  it("preserves earlier malformed priority and unknown generic refusal", async () => {
+  it("preserves earlier malformed priority and residual refusal", async () => {
     await expect(
       executeWithControl("\u0000\u001b[?1000h"),
     ).rejects.toMatchObject({
       code: "testkit.pty.transport.semantic-malformed-ground-control-0",
     });
     await expect(executeWithControl("\u001b[>1c")).rejects.toMatchObject({
-      code: "testkit.pty.transport.semantic-unsupported-extended-csi",
+      code: "testkit.pty.transport.semantic-unsupported-extended-csi-residual-shape",
     });
   });
 });
@@ -2148,7 +2150,7 @@ describe("selected PTY transport", () => {
     ],
     [
       "unsupported-control",
-      "testkit.pty.transport.semantic-unsupported-extended-csi",
+      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted",
     ],
   ] as const)(
     "rejects terminal semantic state %s as completion",

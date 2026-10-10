@@ -442,6 +442,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-nonzero",
   "testkit.pty.transport.semantic-unsupported-csi",
   "testkit.pty.transport.semantic-unsupported-extended-csi",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-residual-shape",
   "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1",
   "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2",
   "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-3",

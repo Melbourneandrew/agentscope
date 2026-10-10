@@ -157,6 +157,8 @@ const rejectedPrivateModeReasons = Object.freeze({
 export type PtyUnsupportedControlReason =
   | "csi"
   | "extended-csi"
+  | "extended-csi-private-mode-unlisted"
+  | "extended-csi-residual-shape"
   | "osc"
   | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
   | "extended-csi-secondary-device-attributes"
@@ -1704,7 +1706,7 @@ export class BoundedTerminalEmulator {
               ? rejectedPrivateModeReasons[
                   mode as keyof typeof rejectedPrivateModeReasons
                 ]
-              : "extended-csi",
+              : "extended-csi-private-mode-unlisted",
           );
           return;
         }
@@ -1731,7 +1733,7 @@ export class BoundedTerminalEmulator {
     values: readonly number[],
   ): PtyUnsupportedControlReason {
     const zero = values.length === 1 && values[0] === 0;
-    let reason: PtyUnsupportedControlReason = "extended-csi";
+    let reason: PtyUnsupportedControlReason = "extended-csi-residual-shape";
     if (prefix === ">" && final === "c" && zero)
       reason = "extended-csi-secondary-device-attributes";
     else if (prefix === "=" && final === "c" && zero)

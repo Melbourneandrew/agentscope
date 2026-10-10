@@ -3026,6 +3026,14 @@ const recordInteractiveExecutionFailure = (
     plan.scenarioId,
   );
   const observed = readInteractiveChildFailureObservation(output);
+  const prior = installedPtyFailures.get(plan.runId);
+  if (
+    (predicate === "integration.runner.fixture-failed" ||
+      predicate === "child-failure") &&
+    prior?.phase === "pty-receipt" &&
+    prior.predicate !== "receipt-rejected"
+  )
+    return predicate;
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
