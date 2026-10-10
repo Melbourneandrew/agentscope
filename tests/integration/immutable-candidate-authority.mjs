@@ -1269,8 +1269,9 @@ const ptySemanticFacts = (value) => {
     ? Object.freeze(fields)
     : undefined;
 };
+const ptySignalIsSafeInteger = Number.isSafeInteger;
 const unsupportedPtySignal = (value) =>
-  Number.isSafeInteger(value) &&
+  ptySignalIsSafeInteger(value) &&
   value >= 1 &&
   value <= 64 &&
   value !== 2 &&

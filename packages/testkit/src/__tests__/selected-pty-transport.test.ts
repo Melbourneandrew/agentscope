@@ -316,6 +316,54 @@ describe("private terminal semantic refusal facts", () => {
     },
   );
 });
+describe("private signal guard is fixed at module initialization", () => {
+  it.each([
+    ["sync", false],
+    ["async", false],
+    ["sync", true],
+    ["async", true],
+  ] as const)(
+    "preserves authentic %s settlement under post-import Number substitution (permissive=%s)",
+    async (kind, permissive) => {
+      const original = kernelError(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        1,
+      );
+      const guard = Number.isSafeInteger;
+      Number.isSafeInteger = permissive
+        ? () => true
+        : () => {
+            throw new Error("PRIVATE");
+          };
+      try {
+        expect(
+          readPtyExitSignal(
+            kernelError(original.code, undefined, undefined, 1.5),
+          ),
+        ).toBeUndefined();
+        const work =
+          kind === "sync"
+            ? () => {
+                throw original;
+              }
+            : () => Promise.reject(original);
+        const deadline = performance.now() + 1000;
+        const error: unknown = await Promise.resolve()
+          .then(() =>
+            boundedInvoke(work, deadline, "testkit.headless.shutdown.deadline"),
+          )
+          .catch((failure: unknown) => failure);
+        expect(performance.now()).toBeLessThan(deadline);
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtyExitSignal(error)).toBe(1);
+      } finally {
+        Number.isSafeInteger = guard;
+      }
+    },
+  );
+});
 describe("private unsupported exit signal facts", () => {
   it("preserves the unsupported signal in the existing backend launch catch", () => {
     const original = kernelError(
