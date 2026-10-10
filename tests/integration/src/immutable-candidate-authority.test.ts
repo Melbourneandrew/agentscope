@@ -91,6 +91,7 @@ const fixedExtendedCsiSuffixes = [
   "private-mode-2003",
   "private-mode-2005",
   "private-mode-2006",
+  "private-mode-9001",
   "secondary-device-attributes",
   "tertiary-device-attributes",
   "xterm-version",
@@ -154,6 +155,38 @@ it.each([
 );
 
 describe("fixed extended-CSI refusal wire admission", () => {
+  it("preserves the existing reconciliation deadline refusal through selector/frame/persisted record", () => {
+    const predicate = "testkit.headless.reconciliation.deadline";
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    expect(
+      validInstalledPtyFailure(
+        JSON.parse(
+          JSON.stringify({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate,
+            scenarioId: "claude-interactive-trace-smoke",
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        `${predicate}.PRIVATE`,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
   it.each(fixedExtendedCsiSuffixes)(
     "admits only fixed extended-CSI identity %s in the existing frame",
     (suffix) => {
