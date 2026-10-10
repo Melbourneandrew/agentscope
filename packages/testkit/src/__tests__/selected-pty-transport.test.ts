@@ -4,7 +4,7 @@ import { performance } from "node:perf_hooks";
 import { runInNewContext } from "node:vm";
 
 import { ScriptTarget, transpileModule } from "typescript";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
 import {
@@ -338,6 +338,45 @@ const request = (
       .digest("hex"),
   };
 };
+describe("fixed ground-control selected transport refusals", () => {
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 28, 29, 30, 31, 127,
+  ])(
+    "preserves rejected control %s from the real emulator through selected transport",
+    async (point) => {
+      // Only the synthetic output seam is substituted; classification and
+      // selected transport settlement execute their production implementations.
+      // Load the actual facade after installing the seam: it captures methods
+      // at initialization to refuse subsequent prototype substitutions.
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke the captured method with its exact emulator receiver
+      const write = Terminal.prototype.write;
+      let inserted = false;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          if (!inserted) {
+            inserted = true;
+            Reflect.apply(write, this, [new Uint8Array([point])]);
+          }
+          Reflect.apply(write, this, [chunk]);
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        await expect(execute(request(), "clean")).rejects.toMatchObject({
+          code: `testkit.pty.transport.semantic-malformed-ground-control-${point}`,
+        });
+        expect(inserted).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+});
 describe("private terminal semantic refusal facts", () => {
   it("retains final state/input facts from the actual synthetic backend", async () => {
     const selected = request({ stdin: new Uint8Array() });

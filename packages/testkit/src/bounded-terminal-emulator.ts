@@ -50,6 +50,33 @@ export type PtyMalformedControlReason =
   | "csi-parameters"
   | "escape"
   | "ground-control"
+  | "ground-control-0"
+  | "ground-control-1"
+  | "ground-control-2"
+  | "ground-control-3"
+  | "ground-control-4"
+  | "ground-control-5"
+  | "ground-control-6"
+  | "ground-control-11"
+  | "ground-control-12"
+  | "ground-control-14"
+  | "ground-control-15"
+  | "ground-control-16"
+  | "ground-control-17"
+  | "ground-control-18"
+  | "ground-control-19"
+  | "ground-control-20"
+  | "ground-control-21"
+  | "ground-control-22"
+  | "ground-control-23"
+  | "ground-control-24"
+  | "ground-control-25"
+  | "ground-control-26"
+  | "ground-control-28"
+  | "ground-control-29"
+  | "ground-control-30"
+  | "ground-control-31"
+  | "ground-control-127"
   | "trailing-control"
   | "utf8";
 
@@ -1320,7 +1347,11 @@ export class BoundedTerminalEmulator {
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
       this.#invalidateChallengeSynchronizedOutputFrame();
-      this.#recordMalformedControl("ground-control");
+      // CR/LF/BS/TAB/BEL returned above; ESC is consumed by the escape parser.
+      // This branch therefore contains only the 27 closed rejected values.
+      this.#recordMalformedControl(
+        `ground-control-${codePoint}` as PtyMalformedControlReason,
+      );
       return;
     }
     if (!trustedSingleCellCharacter(character)) {
