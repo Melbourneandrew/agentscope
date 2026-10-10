@@ -228,7 +228,8 @@ describe("selected-container lifecycle", () => {
       "adopted-zombie-already-absent-persistence",
       "testkit.headless.observer.reap",
     ],
-    ["adopted-zombie-not-ready", "testkit.headless.observer.reap"],
+    // Permanent pending reaches the original shutdown cutoff; its consumer remints the deadline refusal.
+    ["adopted-zombie-not-ready", "testkit.headless.reconciliation.deadline"],
     ["adopted-zombie-reaped-persistence", "testkit.headless.observer.reap"],
     ["adopted-zombie-reap-failure", "testkit.headless.observer.reap"],
     ["adopted-zombie-receipt-malformed", "testkit.headless.observer.reap"],
