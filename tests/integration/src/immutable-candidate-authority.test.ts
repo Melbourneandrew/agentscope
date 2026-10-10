@@ -259,6 +259,52 @@ const semanticFacts = {
   allInputBytesWritten: false,
 };
 const semanticPredicate = "testkit.pty.transport.semantic-incomplete";
+describe("fixed signal guard in the existing diagnostic frame", () => {
+  it.each([false, true])(
+    "remains strict after Number substitution (permissive=%s)",
+    (permissive) => {
+      const predicate = "testkit.pty.transport.exit";
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+        exitSignal: 1,
+      };
+      const guard = Number.isSafeInteger;
+      Number.isSafeInteger = permissive
+        ? () => true
+        : () => {
+            throw new Error("PRIVATE");
+          };
+      try {
+        const frame: string = formatInteractiveChildDiagnostic(
+          predicate,
+          undefined,
+          1,
+        );
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        expect(readInteractiveChildFailureObservation(frame)).toEqual({
+          predicate,
+          exitSignal: 1,
+        });
+        expect(validInstalledPtyFailure(record)).toBe(true);
+        for (const signal of [0, 2, 9, 15, 1.5, 65]) {
+          expect(
+            validInstalledPtyFailure({ ...record, exitSignal: signal }),
+          ).toBe(false);
+          expect(
+            readInteractiveChildFailureObservation(
+              formatInteractiveChildDiagnostic(predicate, undefined, signal),
+            ),
+          ).toEqual({ predicate });
+        }
+      } finally {
+        Number.isSafeInteger = guard;
+      }
+    },
+  );
+});
 describe("unsupported exit signal in the existing diagnostic frame", () => {
   it.each([1, 3, 64])(
     "round-trips unsupported signal %s in the same bounded frame",

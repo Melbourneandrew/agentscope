@@ -43,6 +43,7 @@ type KernelFailure = Readonly<{
 const failures = new WeakMap<object, KernelFailure>();
 const apply = Reflect.apply;
 const freeze = Object.freeze;
+const isSafeInteger = Number.isSafeInteger;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const get = WeakMap.prototype.get;
 // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -165,7 +166,7 @@ export const kernelError = (
       ...(semantic === undefined ? {} : { semanticFailure: semantic }),
       ...(code === "testkit.pty.transport.exit" &&
       typeof exitSignal === "number" &&
-      Number.isSafeInteger(exitSignal) &&
+      isSafeInteger(exitSignal) &&
       exitSignal >= 1 &&
       exitSignal <= 64 &&
       exitSignal !== 2 &&
