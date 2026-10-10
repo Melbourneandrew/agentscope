@@ -338,6 +338,76 @@ const request = (
       .digest("hex"),
   };
 };
+describe("fixed extended-CSI selected transport refusals", () => {
+  const executeWithControl = async (sequence: string) => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
+    const write = Terminal.prototype.write;
+    let inserted = false;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        if (!inserted) {
+          inserted = true;
+          Reflect.apply(write, this, [new TextEncoder().encode(sequence)]);
+        }
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      return await execute(request(), "clean");
+    } finally {
+      expect(inserted).toBe(true);
+      spy.mockRestore();
+    }
+  };
+  it.each([
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
+    45, 46, 47, 66, 67, 69, 80, 95, 1000, 1001, 1002, 1003, 1005, 1006, 1010,
+    1011, 1014, 1015, 1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037,
+    1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051,
+    1052, 1053, 1060, 1061, 2001, 2002, 2003, 2005, 2006,
+  ])(
+    "retains documented rejected mode %s through actual selected transport",
+    async (mode) => {
+      for (const final of ["h", "l"])
+        await expect(
+          executeWithControl(`\u001b[?${mode}${final}`),
+        ).rejects.toMatchObject({
+          code: `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-${mode}`,
+        });
+    },
+  );
+  it.each([
+    ["\u001b[>c", "secondary-device-attributes"],
+    ["\u001b[=c", "tertiary-device-attributes"],
+    ["\u001b[>q", "xterm-version"],
+    ["\u001b[?4g", "key-modifier-query"],
+    ["\u001b[1 p", "intermediate"],
+    ["\u001b[>32u", "keyboard-shape"],
+    ["\u001b[>4;1m", "modifier-shape"],
+  ])(
+    "retains fixed refused family %j through actual selected transport",
+    async (sequence, reason) => {
+      await expect(executeWithControl(sequence)).rejects.toMatchObject({
+        code: `testkit.pty.transport.semantic-unsupported-extended-csi-${reason}`,
+      });
+    },
+  );
+  it("preserves earlier malformed priority and unknown generic refusal", async () => {
+    await expect(
+      executeWithControl("\u0000\u001b[?1000h"),
+    ).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-malformed-ground-control-0",
+    });
+    await expect(executeWithControl("\u001b[>1c")).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-extended-csi",
+    });
+  });
+});
 describe("fixed ground-control selected transport refusals", () => {
   const executeWithControl = async (point: number) => {
     vi.resetModules();

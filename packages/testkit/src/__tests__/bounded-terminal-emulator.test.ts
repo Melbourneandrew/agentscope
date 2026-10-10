@@ -11,6 +11,83 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("fixed rejected extended-CSI identities", () => {
+  it.each([
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
+    45, 46, 47, 66, 67, 69, 80, 95, 1000, 1001, 1002, 1003, 1005, 1006, 1010,
+    1011, 1014, 1015, 1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037,
+    1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051,
+    1052, 1053, 1060, 1061, 2001, 2002, 2003, 2005, 2006,
+  ])(
+    "identifies documented rejected private mode %s without admitting it",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        for (const character of `\u001b[?${mode}${final}`)
+          terminal.write(bytes(character));
+        expect(terminal.unsupportedControlReason()).toBe(
+          `extended-csi-private-mode-${mode}`,
+        );
+        expect(terminal.end().semanticState).not.toBe("completed");
+      }
+    },
+  );
+  it.each([
+    ["\u001b[>c", "secondary-device-attributes"],
+    ["\u001b[>0c", "secondary-device-attributes"],
+    ["\u001b[=c", "tertiary-device-attributes"],
+    ["\u001b[=0c", "tertiary-device-attributes"],
+    ["\u001b[>q", "xterm-version"],
+    ["\u001b[>0q", "xterm-version"],
+    ...[0, 1, 2, 3, 4, 6, 7].map((value) => [
+      `\u001b[?${value}g`,
+      "key-modifier-query",
+    ]),
+    ["\u001b[1 p", "intermediate"],
+    ["\u001b[>32u", "keyboard-shape"],
+    ["\u001b[>4;1m", "modifier-shape"],
+  ])(
+    "identifies refused fixed family %j without accepting it",
+    (sequence, reason) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(sequence));
+      expect(terminal.unsupportedControlReason()).toBe(
+        `extended-csi-${reason}`,
+      );
+      expect(terminal.end().unsupportedControlCount).toBe(1);
+    },
+  );
+  it("preserves the first refused parameter and earlier malformed failure", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?25;1000;1006h\u001b[>q"));
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-1000",
+    );
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+  });
+  it.each([
+    "\u001b[>1c",
+    "\u001b[=1c",
+    "\u001b[>1q",
+    "\u001b[?5g",
+    "\u001b[<3p",
+    "\u001b[?65535h",
+    "\u001b[?9999l",
+  ])("keeps unknown extended control %j generic", (sequence) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.unsupportedControlReason()).toBe("extended-csi");
+  });
+  it("does not reclassify existing supported modes or protocols", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(
+      bytes(
+        "\u001b[?7;12;25;1004;1007;1049;2004;2026h\u001b[?7;12;25;1004;1007;1049;2004;2026l\u001b[>4;0m\u001b[>4;2m\u001b[2 q",
+      ),
+    );
+    expect(terminal.unsupportedControlReason()).toBeNull();
+  });
+});
 describe("G0/G1 designation and GL invocation", () => {
   const frame =
     "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";

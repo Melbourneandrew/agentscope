@@ -21,6 +21,155 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+const fixedExtendedCsiSuffixes = [
+  "private-mode-1",
+  "private-mode-2",
+  "private-mode-3",
+  "private-mode-4",
+  "private-mode-5",
+  "private-mode-6",
+  "private-mode-8",
+  "private-mode-9",
+  "private-mode-10",
+  "private-mode-13",
+  "private-mode-14",
+  "private-mode-18",
+  "private-mode-19",
+  "private-mode-30",
+  "private-mode-35",
+  "private-mode-38",
+  "private-mode-40",
+  "private-mode-41",
+  "private-mode-42",
+  "private-mode-43",
+  "private-mode-44",
+  "private-mode-45",
+  "private-mode-46",
+  "private-mode-47",
+  "private-mode-66",
+  "private-mode-67",
+  "private-mode-69",
+  "private-mode-80",
+  "private-mode-95",
+  "private-mode-1000",
+  "private-mode-1001",
+  "private-mode-1002",
+  "private-mode-1003",
+  "private-mode-1005",
+  "private-mode-1006",
+  "private-mode-1010",
+  "private-mode-1011",
+  "private-mode-1014",
+  "private-mode-1015",
+  "private-mode-1016",
+  "private-mode-1020",
+  "private-mode-1021",
+  "private-mode-1022",
+  "private-mode-1023",
+  "private-mode-1034",
+  "private-mode-1035",
+  "private-mode-1036",
+  "private-mode-1037",
+  "private-mode-1039",
+  "private-mode-1040",
+  "private-mode-1041",
+  "private-mode-1042",
+  "private-mode-1043",
+  "private-mode-1044",
+  "private-mode-1045",
+  "private-mode-1046",
+  "private-mode-1047",
+  "private-mode-1048",
+  "private-mode-1050",
+  "private-mode-1051",
+  "private-mode-1052",
+  "private-mode-1053",
+  "private-mode-1060",
+  "private-mode-1061",
+  "private-mode-2001",
+  "private-mode-2002",
+  "private-mode-2003",
+  "private-mode-2005",
+  "private-mode-2006",
+  "secondary-device-attributes",
+  "tertiary-device-attributes",
+  "xterm-version",
+  "key-modifier-query",
+  "intermediate",
+  "keyboard-shape",
+  "modifier-shape",
+] as const;
+
+describe("fixed extended-CSI refusal wire admission", () => {
+  it.each(fixedExtendedCsiSuffixes)(
+    "admits only fixed extended-CSI identity %s in the existing frame",
+    (suffix) => {
+      const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-${suffix}`;
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+      expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+      };
+      expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+        true,
+      );
+      expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+      expect(
+        validInstalledPtyFailure({
+          ...record,
+          get predicate() {
+            throw new Error("getter must not run");
+          },
+        }),
+      ).toBe(false);
+    },
+  );
+  it.each([
+    "private-mode-7",
+    "private-mode-2026",
+    "private-mode-65535",
+    "private-mode-01000",
+    "private-mode-1000.5",
+    "private-mode--1",
+    "PRIVATE",
+    "private-mode-other",
+    "xterm-version-extra",
+  ])("refuses invented or noncanonical identity %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-${suffix}`;
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it("retains legacy generic extended-CSI records", () => {
+    const predicate = "testkit.pty.transport.semantic-unsupported-extended-csi";
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(predicate),
+      ),
+    ).toBe(predicate);
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(true);
+  });
+});
 describe("fixed ground-control failure wire admission", () => {
   it.each([
     0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
