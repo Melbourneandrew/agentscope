@@ -16,6 +16,26 @@ import { sanitizeFixtureResult } from "./operations.js";
 import { compileInteractivePtyActions } from "./interactive-pty-actions.js";
 import type { CapabilityManifest } from "./manifest.js";
 
+// @ts-expect-error private checksum-bound scenario module has no declaration
+import * as adapterModule from "../fixtures/claude-code-platform-adapter.mjs";
+
+const { claudeCodeInteractiveInvocation } = adapterModule as {
+  claudeCodeInteractiveInvocation: (endpoint: string) => Readonly<{
+    environment: Readonly<Record<string, string>>;
+  }>;
+};
+const assertActualClaudeEndpoint = (
+  endpoint: string,
+  record: (event: string) => void,
+) => {
+  // Real adapter/environment factory; native execution remains synthetic.
+  const invocation = claudeCodeInteractiveInvocation(endpoint);
+  expect(invocation.environment.ANTHROPIC_BASE_URL).toBe(
+    "http://mockserver.agentscope.internal:1080",
+  );
+  record("vendor-start");
+};
+
 const source = readFileSync(
   new URL("../claude-code-scenario.mjs", import.meta.url),
   "utf8",
@@ -340,8 +360,8 @@ const fixture = (
       }
       return Promise.resolve();
     },
-    runClaudeCodeInteractiveTurn: () => {
-      record("vendor-start");
+    runClaudeCodeInteractiveTurn: (endpoint: string) => {
+      assertActualClaudeEndpoint(endpoint, record);
       return new Promise<void>((resolve) => {
         joined = () => {
           record("vendor-joined");

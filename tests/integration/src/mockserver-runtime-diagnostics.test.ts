@@ -72,6 +72,15 @@ const load = (
     ) as RuntimeFunctions,
   };
 };
+const assertPrivateModelAliases = (calls: string[][]) => {
+  const create = calls.find((args) => args[0] === "create");
+  expect(
+    create?.filter((_, index) => create[index - 1] === "--network-alias"),
+  ).toEqual(["mockserver", "mockserver.agentscope.internal"]);
+  expect(
+    create?.slice(create.indexOf("--network"), create.indexOf("--network") + 2),
+  ).toEqual(["--network", "network"]);
+};
 describe("content-free MockServer network refusal observation", () => {
   const plan = {
     runId: "run",
@@ -177,6 +186,7 @@ describe("content-free MockServer network refusal observation", () => {
       value.functions.startMockServer(plan, {}),
     ).resolves.toBeUndefined();
     expect(value.controls.get("run")).toEqual({ host: "172.18.0.2" });
+    assertPrivateModelAliases(value.calls);
     record.NetworkSettings.Networks.network.IPAddress = "";
     const failed = load([record], () => {
       throw Error("PRIVATE_CANARY");
