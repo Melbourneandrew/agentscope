@@ -11,6 +11,49 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("fixed rejected CSI parameter syntax", () => {
+  it.each([
+    ["38:2::1:2:3m", "colon-sgr"],
+    ["1:2u", "colon-keyboard"],
+    ["?1:2h", "colon-other"],
+    ["?2026$p", "mode-query"],
+    ["$p", "mode-query"],
+    ["1!p", "intermediate"],
+    ["65536m", "range"],
+    ["999999999999999999999m", "range"],
+  ])(
+    "localizes refused syntax %j without semantic progress",
+    (control, reason) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `\u001b[${control}`)
+        terminal.write(bytes(character));
+      expect(terminal.malformedControlReason()).toBe(
+        `csi-parameters-${reason}`,
+      );
+      expect(terminal.end()).toMatchObject({
+        semanticState: "malformed-control",
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each(["1?2m", "1:2?m", "1$2p", "??1m", "1:2>x"])(
+    "retains legacy fallback for malformed order %j",
+    (control) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[${control}`));
+      expect(terminal.malformedControlReason()).toBe("csi-parameters");
+    },
+  );
+  it("preserves original numeric edge and earlier malformed priority", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b[65535m"));
+    expect(terminal.malformedControlReason()).toBeNull();
+    terminal.write(bytes("\u0000\u001b[38:2m\u001b[65536m"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+  });
+});
+
 describe("truthful fixed terminal identification", () => {
   const reply = "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\";
   it.each(["\u001b[>q", "\u001b[>0q"])(
@@ -139,7 +182,7 @@ describe("fixed rejected extended-CSI identities", () => {
   it("keeps oversized parameters malformed and first refusal latched", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes("\u001b[?65536h\u001b[?9999l\u001b[?0h"));
-    expect(terminal.malformedControlReason()).toBe("csi-parameters");
+    expect(terminal.malformedControlReason()).toBe("csi-parameters-range");
     expect(terminal.unsupportedControlReason()).toBe(
       "extended-csi-private-mode-unlisted-l-9999",
     );

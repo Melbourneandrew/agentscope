@@ -172,6 +172,56 @@ const fixedExtendedCsiSuffixes = [
 ] as const;
 
 it.each([
+  "colon-sgr",
+  "colon-keyboard",
+  "colon-other",
+  "mode-query",
+  "intermediate",
+  "range",
+])(
+  "retains fixed rejected CSI syntax %s through selector/frame/persisted guards",
+  (reason) => {
+    const predicate = `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBe(predicate);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+    const record = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate,
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+      true,
+    );
+    expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+    expect(
+      validInstalledPtyFailure({
+        ...record,
+        get predicate() {
+          throw Error("must not read getter");
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validInstalledPtyFailure({ ...record, predicate: `${predicate}-extra` }),
+    ).toBe(false);
+    expect(validInstalledPtyFailure({ ...record, raw: "PRIVATE" })).toBe(false);
+  },
+);
+
+it.each([
   ["completion-state", "integration.runner.fixture-failed", true],
   ["completion-state", undefined, true],
   ["completion-state", "integration.fixture.claude-vendor-terminal", false],
