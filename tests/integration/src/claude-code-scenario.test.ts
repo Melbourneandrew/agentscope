@@ -12,6 +12,10 @@ const synthetic = vi.hoisted(() => ({
   fileCalls: [] as unknown[],
   writeError: false,
   modeError: false,
+  commandOutputs: [] as string[],
+  commandFailure: undefined as Error | undefined,
+  failAt: -1,
+  settings: Buffer.alloc(0),
 }));
 vi.mock("node:fs", async () => ({
   constants: (await vi.importActual<{ constants: typeof constants }>("node:fs"))
@@ -37,6 +41,34 @@ vi.mock("node:fs", async () => ({
   closeSync: (descriptor: number) => {
     synthetic.fileCalls.push({ action: "close", descriptor });
   },
+  fstatSync: () => ({
+    isFile: () => true,
+    uid: 1000,
+    nlink: 1,
+    mode: 0o600,
+    size: synthetic.settings.length,
+    dev: 1,
+    ino: 1,
+    mtimeMs: 1,
+    ctimeMs: 1,
+  }),
+  lstatSync: () => ({
+    uid: 1000,
+    nlink: 1,
+    mode: 0o600,
+    size: synthetic.settings.length,
+    dev: 1,
+    ino: 1,
+    mtimeMs: 1,
+    ctimeMs: 1,
+  }),
+  readSync: (
+    _fd: number,
+    bytes: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ) => synthetic.settings.copy(bytes, offset, position, position + length),
 }));
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => {
@@ -50,12 +82,26 @@ vi.mock("node:child_process", () => ({
   ) => {
     synthetic.calls.push({ executable, arguments_, options });
     synthetic.uptime = synthetic.afterCommand;
-    callback(null, { stdout: "synthetic-machine-output" });
+    const index = synthetic.calls.length - 1;
+    callback(
+      index === synthetic.failAt ? (synthetic.commandFailure ?? null) : null,
+      {
+        stdout: synthetic.commandOutputs[index] ?? "synthetic-machine-output",
+      },
+    );
   },
 }));
 
 // @ts-expect-error private checksum-bound scenario module has no declaration
 import * as scenarioModule from "../claude-code-scenario.mjs";
+// @ts-expect-error private checksum-bound lifecycle module has no declaration
+import * as lifecycleModule from "../claude-code-lifecycle.mjs";
+const { prepareClaudeCodePackedCli } = lifecycleModule as {
+  prepareClaudeCodePackedCli: (
+    deadline: number,
+    note?: (phase: string) => void,
+  ) => Promise<{ commands: readonly (readonly string[])[]; settings: Buffer }>;
+};
 
 const {
   claudeCodeLifecycleCommands,
@@ -345,11 +391,156 @@ describe("Claude ordinary packed CLI sequence (source preparation only)", () => 
   });
 });
 
+const resetPackedLifecycleFixture = () => {
+  synthetic.uptime = "1.000 0.000\n";
+  synthetic.afterCommand = synthetic.uptime;
+  synthetic.calls.length = 0;
+  synthetic.commandOutputs = Array<string>(4).fill("unused-output");
+  synthetic.commandOutputs.push(
+    JSON.stringify({
+      command: "agentscope harness status",
+      completion: "complete",
+      records: [
+        {
+          installation: "unchanged",
+          discovery: {
+            harness: "claude-code",
+            version: "2.1.245",
+          },
+        },
+      ],
+    }),
+  );
+  synthetic.commandFailure = undefined;
+  synthetic.failAt = -1;
+  synthetic.writeError = false;
+  const identity = `agentscope-hook-v1-sha256-${"a".repeat(64)}`;
+  synthetic.settings = Buffer.from(
+    JSON.stringify({
+      hooks: Object.fromEntries(
+        ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map((event) => [
+          event,
+          [
+            {
+              agentscope: {
+                event,
+                contractVersion: 1,
+                harnessType: "@agentscope/harness-claude-code",
+                ownershipIdentity: identity,
+              },
+              hooks: [
+                {
+                  type: "command",
+                  command: "/owned/launcher",
+                  args: [],
+                  timeout: 10,
+                },
+              ],
+            },
+          ],
+        ]),
+      ),
+    }),
+  );
+};
+describe("Claude actual packed lifecycle (synthetic CLI and owned settings)", () => {
+  beforeEach(resetPackedLifecycleFixture);
+  it("accepts the actual successful unchanged status and retains strict settings", async () => {
+    const notes: string[] = [];
+    const value = await prepareClaudeCodePackedCli(1500, (phase) =>
+      notes.push(phase),
+    );
+    expect(value.settings.equals(synthetic.settings)).toBe(true);
+    expect(notes).toEqual([
+      "packed-init",
+      "packed-configure",
+      "packed-routing",
+      "packed-hook-install",
+      "packed-status",
+      "packed-settings",
+    ]);
+    expect(synthetic.calls).toHaveLength(5);
+  });
+
+  it.each([
+    [0, "packed-init"],
+    [1, "packed-configure"],
+    [2, "packed-routing"],
+    [3, "packed-hook-install"],
+    [4, "packed-status"],
+  ] as const)(
+    "localizes command %i and rethrows the SAME original rejection",
+    async (index, phase) => {
+      const original = new Error("PRIVATE_CHILD_OUTPUT");
+      synthetic.commandFailure = original;
+      synthetic.failAt = index;
+      const notes: string[] = [];
+      await expect(
+        prepareClaudeCodePackedCli(1500, (phase) => notes.push(phase)),
+      ).rejects.toBe(original);
+      expect(notes.at(-1)).toBe(phase);
+      expect(synthetic.calls).toHaveLength(index + 1);
+    },
+  );
+
+  it("localizes status-parser refusal without weakening the machine envelope", async () => {
+    synthetic.commandOutputs[4] = "PRIVATE_MALFORMED_MACHINE_OUTPUT";
+    const notes: string[] = [];
+    await expect(
+      prepareClaudeCodePackedCli(1500, (phase) => notes.push(phase)),
+    ).rejects.toThrow("integration.codex.cli-output");
+    expect(notes.at(-1)).toBe("packed-status");
+  });
+
+  it("localizes the original settings-reader refusal after strict status", async () => {
+    synthetic.writeError = true;
+    const notes: string[] = [];
+    await expect(
+      prepareClaudeCodePackedCli(1500, (phase) => notes.push(phase)),
+    ).rejects.toThrow("synthetic-existing-path");
+    expect(notes.at(-1)).toBe("packed-settings");
+  });
+
+  it.each([
+    {
+      installation: "installed",
+      discovery: { harness: "claude-code", version: "2.1.245" },
+    },
+    {
+      installation: "ready",
+      discovery: { harness: "claude-code", version: "2.1.245" },
+    },
+    {
+      installation: "unchanged",
+      discovery: { harness: "codex", version: "2.1.245" },
+    },
+    {
+      installation: "unchanged",
+      discovery: { harness: "claude-code", version: "2.1.246" },
+    },
+  ])(
+    "preserves rejection of a substituted installation observation",
+    async (record) => {
+      synthetic.commandOutputs[4] = JSON.stringify({
+        command: "agentscope harness status",
+        completion: "complete",
+        records: [record],
+      });
+      await expect(prepareClaudeCodePackedCli(1500)).rejects.toThrow(
+        "integration.claude-code.install",
+      );
+    },
+  );
+});
+
 describe("Claude ordinary command deadline (mocked child, no native evidence)", () => {
   beforeEach(() => {
     synthetic.uptime = "1.000 0.000\n";
     synthetic.afterCommand = synthetic.uptime;
     synthetic.calls.length = 0;
+    synthetic.commandOutputs = [];
+    synthetic.commandFailure = undefined;
+    synthetic.failAt = -1;
   });
 
   it("passes only the original remaining budget and closed candidate environment", async () => {

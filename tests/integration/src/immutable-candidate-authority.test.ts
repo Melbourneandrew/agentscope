@@ -2488,9 +2488,61 @@ describe("source-defined Claude failure code transport", () => {
 });
 describe("source-defined Claude failure phases", () => {
   it.each([
+    ["packed-init", 240],
+    ["packed-configure", 241],
+    ["packed-routing", 242],
+    ["packed-hook-install", 243],
+    ["packed-status", 244],
+    ["packed-settings", 245],
+  ] as const)(
+    "appends %s at exit %i without changing old assignments",
+    (phase, exit) => {
+      const diagnostic = claudeScenarioFailureDiagnostic(
+        new Error("PRIVATE"),
+        phase,
+      );
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(exit);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exit,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        decodeInteractiveFailureExitCode(246, "claude-interactive-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        decodeInteractiveFailureExitCode(256, "claude-interactive-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(
+          "integration.fixture.claude-phase-result",
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(239);
+    },
+  );
+  it.each([
     "bootstrap",
     "readiness",
     "packed-install",
+    "packed-init",
+    "packed-configure",
+    "packed-routing",
+    "packed-hook-install",
+    "packed-status",
+    "packed-settings",
     "stimulus",
     "model-config",
     "candidate-denial",
@@ -2529,68 +2581,78 @@ describe("source-defined Claude failure phases", () => {
   );
 });
 describe("Claude owned failure marker routing", () => {
-  it("routes the existing owned marker through strict reader/frame/held-scenario selector", () => {
-    const ledger = mkdtempSync(join(tmpdir(), "agentscope-claude-failure-"));
-    const diagnostic = "integration.fixture.claude-model-pair";
-    try {
-      writeFileSync(
-        join(ledger, "interactive-failure.txt"),
-        `${diagnostic}\n`,
-        { flag: "wx", mode: 0o600 },
-      );
-      const retained = readBoundedInteractiveFailureMarker(ledger);
-      const selected = selectInteractiveFailureDiagnostic(
-        retained,
-        undefined,
-        "testkit.pty.transport.semantic-nonzero",
-      );
-      const frame: string = formatInteractiveChildDiagnostic(selected);
-      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
-      const observed = extractInteractiveChildDiagnostic(frame);
-      expect(
-        selectInteractiveExecutionFailurePredicate(
-          observed,
+  it.each([
+    "integration.fixture.claude-model-pair",
+    "integration.fixture.claude-phase-packed-init",
+    "integration.fixture.claude-phase-packed-configure",
+    "integration.fixture.claude-phase-packed-routing",
+    "integration.fixture.claude-phase-packed-hook-install",
+    "integration.fixture.claude-phase-packed-status",
+    "integration.fixture.claude-phase-packed-settings",
+  ])(
+    "routes owned marker %s through strict reader/frame/held-scenario selector",
+    (diagnostic) => {
+      const ledger = mkdtempSync(join(tmpdir(), "agentscope-claude-failure-"));
+      try {
+        writeFileSync(
+          join(ledger, "interactive-failure.txt"),
+          `${diagnostic}\n`,
+          { flag: "wx", mode: 0o600 },
+        );
+        const retained = readBoundedInteractiveFailureMarker(ledger);
+        const selected = selectInteractiveFailureDiagnostic(
+          retained,
           undefined,
-          "claude-interactive-trace-smoke",
-        ),
-      ).toBe(diagnostic);
-      expect(
-        selectInteractiveExecutionFailurePredicate(
-          observed,
-          undefined,
-          "fixture-process-interactive",
-        ),
-      ).toBe("child-failure");
-      expect(
-        extractInteractiveChildDiagnostic(`${frame}${frame}`),
-      ).toBeUndefined();
-      expect(
-        validInstalledPtyFailure({
-          receiptVersion: 1,
-          phase: "pty-execution",
-          predicate: diagnostic,
-          scenarioId: "claude-interactive-trace-smoke",
-        }),
-      ).toBe(true);
-      expect(
-        validInstalledPtyFailure({
-          receiptVersion: 1,
-          phase: "pty-execution",
-          predicate: diagnostic,
-          scenarioId: "codex-tui-trace-smoke",
-        }),
-      ).toBe(false);
-      expect(
-        validInstalledPtyFailure({
-          receiptVersion: 1,
-          phase: "pty-execution",
-          predicate: diagnostic,
-        }),
-      ).toBe(false);
-    } finally {
-      rmSync(ledger, { recursive: true, force: true });
-    }
-  });
+          "testkit.pty.transport.semantic-nonzero",
+        );
+        const frame: string = formatInteractiveChildDiagnostic(selected);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        const observed = extractInteractiveChildDiagnostic(frame);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            observed,
+            undefined,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(diagnostic);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            observed,
+            undefined,
+            "fixture-process-interactive",
+          ),
+        ).toBe("child-failure");
+        expect(
+          extractInteractiveChildDiagnostic(`${frame}${frame}`),
+        ).toBeUndefined();
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            scenarioId: "claude-interactive-trace-smoke",
+          }),
+        ).toBe(true);
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            scenarioId: "codex-tui-trace-smoke",
+          }),
+        ).toBe(false);
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+          }),
+        ).toBe(false);
+      } finally {
+        rmSync(ledger, { recursive: true, force: true });
+      }
+    },
+  );
   it("binds the Claude environment refusal to its exact scenario", () => {
     const diagnostic = "integration.fixture.claude-environment";
     expect(

@@ -56,38 +56,83 @@ const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
 
-it("preserves the original Claude refusal through the actual top-level catch", async () => {
-  const boundary = source.indexOf("if (isClaudeScenarioMain())\n");
-  expect(boundary).toBeGreaterThan(0);
-  const caught = source
-    .slice(boundary)
-    .replace("if (isClaudeScenarioMain())", "");
-  const writes: unknown[][] = [];
-  const stderr: string[] = [];
-  const process = {
-    stderr: { write: (value: string) => stderr.push(value) },
-    exitCode: 0,
-  };
-  const run = runInNewContext(`(async () => { ${caught} })`, {
-    process,
-    claudeScenarioFailureDiagnostic,
-    encodeInteractiveFailureExitCode,
-    claudeFailurePhase: "bootstrap",
-    writeFileSync: (...args: unknown[]) => writes.push(args),
-    runClaudeCodeScenario: () =>
-      Promise.reject(new Error("integration.claude-code.environment")),
-  }) as () => Promise<void>;
-  await run();
-  expect(writes).toEqual([
-    [
-      "/ledger/interactive-failure.txt",
-      "integration.fixture.claude-environment\n",
-      { flag: "wx", mode: 0o600 },
-    ],
-  ]);
-  expect(process.exitCode).toBe(200);
-  expect(stderr).toEqual(["integration.claude-code.scenario\n"]);
-});
+it.each([
+  [
+    "bootstrap",
+    "integration.claude-code.environment",
+    "integration.fixture.claude-environment",
+    200,
+  ],
+  [
+    "packed-init",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-init",
+    240,
+  ],
+  [
+    "packed-configure",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-configure",
+    241,
+  ],
+  [
+    "packed-routing",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-routing",
+    242,
+  ],
+  [
+    "packed-hook-install",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-hook-install",
+    243,
+  ],
+  [
+    "packed-status",
+    "integration.codex.cli-output",
+    "integration.fixture.claude-phase-packed-status",
+    244,
+  ],
+  [
+    "packed-settings",
+    "PRIVATE",
+    "integration.fixture.claude-phase-packed-settings",
+    245,
+  ],
+] as const)(
+  "preserves the Claude refusal at actual fixed phase %s through the top-level catch",
+  async (phase, message, predicate, exit) => {
+    const boundary = source.indexOf("if (isClaudeScenarioMain())\n");
+    expect(boundary).toBeGreaterThan(0);
+    const caught = source
+      .slice(boundary)
+      .replace("if (isClaudeScenarioMain())", "");
+    const writes: unknown[][] = [];
+    const stderr: string[] = [];
+    const process = {
+      stderr: { write: (value: string) => stderr.push(value) },
+      exitCode: 0,
+    };
+    const run = runInNewContext(`(async () => { ${caught} })`, {
+      process,
+      claudeScenarioFailureDiagnostic,
+      encodeInteractiveFailureExitCode,
+      claudeFailurePhase: phase,
+      writeFileSync: (...args: unknown[]) => writes.push(args),
+      runClaudeCodeScenario: () => Promise.reject(new Error(message)),
+    }) as () => Promise<void>;
+    await run();
+    expect(writes).toEqual([
+      [
+        "/ledger/interactive-failure.txt",
+        `${predicate}\n`,
+        { flag: "wx", mode: 0o600 },
+      ],
+    ]);
+    expect(process.exitCode).toBe(exit);
+    expect(stderr).toEqual(["integration.claude-code.scenario\n"]);
+  },
+);
 
 it("keeps failed/conflicting marker publication a refusal without reflecting the error", async () => {
   const boundary = source.indexOf("if (isClaudeScenarioMain())\n");
