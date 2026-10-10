@@ -84,6 +84,112 @@ const caughtFailure = (operation: () => unknown): unknown => {
   return undefined;
 };
 
+type ReapSnapshot = {
+  pid: number;
+  parentPid: number;
+  startIdentity: string;
+  state: string;
+};
+type ReapOperation = (
+  processes: readonly ReapSnapshot[],
+  root: number,
+  deadline: bigint,
+  context: object,
+  runtime: object,
+) => void;
+const createPollingFixture = (input: {
+  source: string;
+  retention: string;
+  reap: ReapOperation;
+  ordered: (
+    processes: readonly ReapSnapshot[],
+    root: number,
+  ) => readonly ReapSnapshot[];
+  identity: ReapSnapshot;
+}) => {
+  const { source, retention, reap, ordered, identity } = input;
+  const loopStart = source.indexOf(
+    "    while (\n      safeReflectApply(performanceNow, performance, []) < graceDeadline",
+  );
+  const residualStart = source.indexOf(
+    "    const residual = currentProcessSet();",
+    loopStart,
+  );
+  const pollingBody = transpileModule(
+    retention + source.slice(loopStart, residualStart),
+    {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    },
+  ).outputText;
+  return async (
+    terminalStatus?: "reaped" | "already-absent",
+    witness = { now: 0, deadlines: [] as bigint[] },
+  ) => {
+    let present = true;
+    const native = {
+      assertNamespaceIdentity: () => undefined,
+      readProcess: () => (present ? identity : undefined),
+      reapAdoptedZombie: (
+        _pid: number,
+        _start: string,
+        _root: number,
+        deadline: bigint,
+      ) => {
+        witness.deadlines.push(deadline);
+        const status =
+          witness.deadlines.length > 1
+            ? (terminalStatus ?? "not-ready")
+            : "not-ready";
+        if (status !== "not-ready") present = false;
+        return {
+          pid: identity.pid,
+          startIdentity: identity.startIdentity,
+          status,
+        };
+      },
+    };
+    const operation = runInNewContext(
+      `(async () => { ${pollingBody}\n return currentProcessSet().length; })()`,
+      {
+        safeReflectApply: Reflect.apply,
+        performanceNow: () => witness.now,
+        performance: {},
+        graceDeadline: 30,
+        processRequest: { monotonicShutdownDeadlineMs: 70 },
+        containerPollMilliseconds: 10,
+        currentProcessSet: () => (present ? [identity] : []),
+        nativeShutdownDeadlineNs: 1000n,
+        child: { pid: 99 },
+        composition: { namespaceIdentity: "owned" },
+        runtime: native,
+        reapDiagnostic: {},
+        reapAdoptedZombies: reap,
+        processesDescendantsFirst: ordered,
+        signals: [],
+        signalExactProcess: () => {
+          throw new Error("unexpected-live-process");
+        },
+        trustedErrorCode,
+        readPtyReconciliationStage,
+        pumpTransport: () => undefined,
+        delay: () => {
+          witness.now += 10;
+          return Promise.resolve();
+        },
+        failAfterHandleSettlement: () => {
+          throw kernelError(code, "reap-not-ready");
+        },
+      },
+      { timeout: 1000 },
+    ) as Promise<number>;
+    return {
+      result: await operation,
+      deadlines: witness.deadlines,
+      now: witness.now,
+    };
+  };
+};
+
 const reapFixture = (() => {
   const identity = { pid: 21, parentPid: 1, startIdentity: "21:1", state: "Z" };
   const source = readInternal("headless-supervisor-backend.ts");
@@ -106,8 +212,8 @@ const reapFixture = (() => {
   const retention = transpileModule(source.slice(retainStart, retainEnd), {
     compilerOptions: { target: ScriptTarget.ES2022 },
   }).outputText;
-  const reap = runInNewContext(
-    `${compiled}\nreapAdoptedZombies;`,
+  const { reap, ordered } = runInNewContext(
+    `${compiled}\n({ reap: reapAdoptedZombies, ordered: processesDescendantsFirst });`,
     {
       safeReflectApply: Reflect.apply,
       objectKeys: Object.keys,
@@ -119,18 +225,19 @@ const reapFixture = (() => {
       failObserverIdentity,
     },
     { timeout: 1000 },
-  ) as (
-    processes: readonly (typeof identity)[],
-    root: number,
-    deadline: bigint,
-    context: object,
-    runtime: object,
-  ) => void;
+  ) as {
+    reap: ReapOperation;
+    ordered: (
+      processes: readonly ReapSnapshot[],
+      root: number,
+    ) => readonly ReapSnapshot[];
+  };
 
   const observe = (
     receipt: unknown,
     after: typeof identity | undefined,
     thrown?: Error,
+    polling = false,
   ) => {
     const diagnostic: { stage?: PtyReconciliationStage } = {};
     let reads = 0;
@@ -147,7 +254,7 @@ const reapFixture = (() => {
         [identity],
         99,
         1000n,
-        { namespaceIdentity: "owned", diagnostic },
+        { namespaceIdentity: "owned", diagnostic, polling },
         runtime,
       );
     });
@@ -163,10 +270,45 @@ const reapFixture = (() => {
     ) as [string | undefined, PtyReconciliationStage | undefined];
     return { error, diagnostic, reads, retained };
   };
-  return { observe, identity };
+  const poll = createPollingFixture({
+    source,
+    retention,
+    reap,
+    ordered,
+    identity,
+  });
+  return { observe, poll, identity };
 })();
 
 const { observe, identity: reapIdentity } = reapFixture;
+describe("same-budget production reap polling", () => {
+  it.each(["reaped", "already-absent"] as const)(
+    "polls exact not-ready until authenticated %s under the same cutoff",
+    async (status) => {
+      const result = await reapFixture.poll(status);
+      expect(result.result).toBe(0);
+      expect(result.deadlines).toEqual([1000n, 1000n]);
+      expect(result.now).toBe(20);
+    },
+  );
+  it("keeps permanent not-ready strict after the existing polling cutoff", async () => {
+    const witness = { now: 0, deadlines: [] as bigint[] };
+    const error = await rejection(reapFixture.poll(undefined, witness));
+    expect(trustedErrorCode(error)).toBe(code);
+    expect(readPtyReconciliationStage(error)).toBe("reap-not-ready");
+    expect(witness.now).toBe(50);
+    expect(witness.deadlines).toEqual(Array<bigint>(6).fill(1000n));
+  });
+  it("does not make a polling not-ready receipt a terminal success", () => {
+    const receipt = { pid: 21, startIdentity: "21:1", status: "not-ready" };
+    expect(
+      observe(receipt, reapIdentity, undefined, true).error,
+    ).toBeUndefined();
+    expect(trustedErrorCode(observe(receipt, reapIdentity).error)).toBe(
+      "testkit.headless.observer.reap",
+    );
+  });
+});
 describe("exact production reap refusal boundaries", () => {
   it.each([
     ["reap-receipt", { ...reapIdentity, status: "foreign" }, undefined],
