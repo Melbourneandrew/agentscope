@@ -56,6 +56,94 @@ const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
 
+describe("actual Claude ledger descriptor setup", () => {
+  const begin = source.indexOf("const protectClaudeLedger =");
+  const body = source.slice(
+    begin,
+    source.indexOf("const childTerminalFailures", begin),
+  );
+  const initial = {
+    dev: 1,
+    ino: 2,
+    uid: 1000,
+    gid: 1000,
+    nlink: 2,
+    mode: 0o755,
+  };
+  const run = (
+    before = initial,
+    changed: Partial<typeof initial> = {},
+    pathChanged: Partial<typeof initial> = {},
+    initialPathChanged: Partial<typeof initial> = {},
+  ) => {
+    const events: unknown[][] = [];
+    let current = { ...before };
+    const secure = runInNewContext(`${body}; protectClaudeLedger`, {
+      constants: { O_RDONLY: 1, O_DIRECTORY: 2, O_NOFOLLOW: 4, O_NONBLOCK: 8 },
+      openSync: (...args: unknown[]) => {
+        events.push(["open", ...args]);
+        return 17;
+      },
+      fstatSync: () => ({ ...current, isDirectory: () => true }),
+      lstatSync: () => ({
+        ...current,
+        ...(current.uid === 0 ? pathChanged : initialPathChanged),
+        isDirectory: () => true,
+      }),
+      fchownSync: (fd: number, uid: number, gid: number) => {
+        events.push(["chown", fd, uid, gid]);
+        current = { ...current, uid, gid };
+      },
+      fchmodSync: (fd: number, mode: number) => {
+        events.push(["chmod", fd, mode]);
+        current = { ...current, mode, ...changed };
+      },
+      closeSync: (fd: number) => events.push(["close", fd]),
+    }) as () => void;
+    return { secure, events, state: () => current };
+  };
+  it("authenticates and protects the same descriptor before candidate access", () => {
+    const input = run();
+    input.secure();
+    expect(input.state()).toMatchObject({ uid: 0, gid: 0, mode: 0o700 });
+    expect(input.events).toEqual([
+      ["open", "/ledger", 15],
+      ["chown", 17, 0, 0],
+      ["chmod", 17, 0o700],
+      ["close", 17],
+    ]);
+  });
+  it.each([{ uid: 0 }, { gid: 0 }, { nlink: 3 }])(
+    "refuses substituted initial authority %j before mutation",
+    (bad) => {
+      const input = run({ ...initial, ...bad });
+      expect(input.secure).toThrow("integration.claude-code.ledger-authority");
+      expect(input.events.map((event) => event[0])).toEqual(["open", "close"]);
+    },
+  );
+  it.each([{ dev: 2 }, { ino: 3 }])(
+    "refuses mismatched initial path %j without mutation",
+    (bad) => {
+      const input = run(initial, {}, {}, bad);
+      expect(input.secure).toThrow("integration.claude-code.ledger-authority");
+      expect(input.events.map((event) => event[0])).toEqual(["open", "close"]);
+    },
+  );
+  it.each([
+    { uid: 1000 },
+    { gid: 1000 },
+    { mode: 0o755 },
+    { ino: 3 },
+    { dev: 2 },
+  ])("refuses failed or replaced post-mutation identity %j", (bad) => {
+    const input = run(initial, bad);
+    expect(input.secure).toThrow("integration.claude-code.ledger-authority");
+    expect(input.events.at(-1)).toEqual(["close", 17]);
+    const replaced = run(initial, {}, bad);
+    expect(replaced.secure).toThrow("integration.claude-code.ledger-authority");
+  });
+});
+
 it.each([
   [1, null, "code;1"],
   [null, "SIGUSR2", "signal;12"],
@@ -574,17 +662,50 @@ const nativeObserver =
       nativeToolUseId: "toolu_agentscope_claude_read_1",
     };
   };
+const assertSharedLedgerDenial = (ledgerOwner: number) => {
+  const dropper = readFileSync(
+    new URL("../codex-candidate-dropper.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = dropper.indexOf("const denied =");
+  runInNewContext(
+    `${dropper.slice(start, dropper.indexOf("// These checks", start))} denied(() => readdirSync('/ledger'), 'EACCES');`,
+    {
+      fail: () => {
+        throw new Error("integration.codex.candidate-principal");
+      },
+      readdirSync: () => {
+        if (ledgerOwner === 0)
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        return [];
+      },
+    },
+  );
+};
+const fixtureModelLedger = () => ({
+  ledgerVersion: 1,
+  scenarioId: "claude-interactive-trace-smoke",
+  entries: Array.from({ length: 2 }, () => ({
+    routeId: "anthropic-messages",
+    provider: "anthropic",
+    method: "POST",
+    path: "/v1/messages",
+    bodyBytes: 20,
+  })),
+});
 const fixture = (
   failure?: string,
   pendingReads = 0,
   deferred = false,
   expired?: "before" | "during",
+  ledgerProof = false,
 ) => {
   const events: string[] = [];
   const writes: Array<{ path: string; text: string; options: unknown }> = [];
   let joined!: () => void;
   let finalResponse!: () => void;
   let clock = 1000;
+  let ledgerOwner = 1000;
   const record = (event: string) => {
     events.push(event);
     if (failure === event) throw new Error(`synthetic-${event}`);
@@ -593,6 +714,9 @@ const fixture = (
     Buffer,
     process: selectedProcess,
     monotonicNow: () => clock,
+    protectClaudeLedger: () => {
+      ledgerOwner = 0;
+    },
     readClaudeCodeReadinessChallenge: () => Promise.resolve("b".repeat(64)),
     prepareClaudeCodePackedCli: () => {
       record("installed-settings");
@@ -634,6 +758,7 @@ const fixture = (
       return Promise.resolve();
     },
     runClaudeCodeInteractiveTurn: (endpoint: string) => {
+      if (ledgerProof) assertSharedLedgerDenial(ledgerOwner);
       assertActualClaudeEndpoint(endpoint, record);
       return new Promise<void>((resolve) => {
         joined = () => {
@@ -665,17 +790,7 @@ const fixture = (
     },
     correlateClaudeModelControl: () => [],
     basename: () => "agentscope-cli.tgz",
-    claudeModelLedger: () => ({
-      ledgerVersion: 1,
-      scenarioId: "claude-interactive-trace-smoke",
-      entries: Array.from({ length: 2 }, () => ({
-        routeId: "anthropic-messages",
-        provider: "anthropic",
-        method: "POST",
-        path: "/v1/messages",
-        bodyBytes: 20,
-      })),
-    }),
+    claudeModelLedger: fixtureModelLedger,
     readFileSync: () => "{}",
     writeFileSync: (path: string, text: string, options: unknown) => {
       record("partial-result");
@@ -696,6 +811,11 @@ const fixture = (
 };
 
 describe("Claude selected scenario native-only orchestration", () => {
+  it("protects the candidate-owned ledger before the actual shared dropper denial", async () => {
+    await expect(
+      fixture(undefined, 0, false, undefined, true).execute(),
+    ).resolves.toBeUndefined();
+  });
   it("matches actual request pair before terminal marker and joins before held native read", async () => {
     const input = fixture();
     await input.execute();
