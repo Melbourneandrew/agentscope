@@ -540,6 +540,31 @@ const executeWithControl = async (
       expect(responseBytes).toBe(expectedResponse);
   }
 };
+describe("fixed rejected CSI parameter transport", () => {
+  it.each([
+    ["38:2::1:2:3m", "colon-sgr"],
+    ["1:2u", "colon-keyboard"],
+    ["?1:2h", "colon-other"],
+    ["?2026$p", "mode-query"],
+    ["1!p", "intermediate"],
+    ["65536m", "range"],
+  ])(
+    "retains rejected CSI syntax %j through actual transport and runner wire",
+    async (control, reason) => {
+      const error = await executeWithControl(`\u001b[${control}`).catch(
+        (failure: unknown) => failure,
+      );
+      const { trustedErrorCode: currentCodeReader } =
+        await import("../internal/kernel-errors.js");
+      const predicate = `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`;
+      expect(currentCodeReader(error)).toBe(predicate);
+      expect(
+        reconciliationRunnerFrame(error, undefined, currentCodeReader),
+      ).toBe(`integration.runner.interactive-diagnostic:${predicate}\n`);
+    },
+  );
+});
+
 describe("fixed extended-CSI selected transport refusals", () => {
   it.each(["\u001b[>q", "\u001b[>0q"])(
     "answers terminal identification through the existing transport %j",

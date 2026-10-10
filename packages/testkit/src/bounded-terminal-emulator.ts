@@ -48,6 +48,12 @@ export type PtyMalformedControlReason =
   | "control-limit"
   | "csi-byte"
   | "csi-parameters"
+  | "csi-parameters-colon-sgr"
+  | "csi-parameters-colon-keyboard"
+  | "csi-parameters-colon-other"
+  | "csi-parameters-mode-query"
+  | "csi-parameters-intermediate"
+  | "csi-parameters-range"
   | "escape"
   | "ground-control"
   | "ground-control-0"
@@ -425,17 +431,36 @@ const validateGeometry = (
   return freezeAuthority({ columns: record.columns, rows: record.rows });
 };
 
+const rejectedCsiParameterShape = (
+  value: string,
+  final: string,
+): PtyMalformedControlReason => {
+  if (final === "p" && /^\??\d*\$$/u.test(value))
+    return "csi-parameters-mode-query";
+  if (/^[<=>?]?\d*(?:;\d*)*[\x20-\x2f]+$/u.test(value))
+    return "csi-parameters-intermediate";
+  if (value.includes(":") && /^[<=>?]?\d*(?:[;:]\d*)*$/u.test(value)) {
+    if (final === "m" && !/^[<=>?]/u.test(value))
+      return "csi-parameters-colon-sgr";
+    return final === "u"
+      ? "csi-parameters-colon-keyboard"
+      : "csi-parameters-colon-other";
+  }
+  return "csi-parameters";
+};
+
 const parseCsiParameters = (
   value: string,
+  final: string,
 ):
   | Readonly<{
       intermediate: "" | " ";
       prefix: "" | "<" | "=" | ">" | "?";
       values: readonly number[];
     }>
-  | undefined => {
+  | PtyMalformedControlReason => {
   const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(value);
-  if (match === null) return undefined;
+  if (match === null) return rejectedCsiParameterShape(value, final);
   const prefix = match[1] as "" | "<" | "=" | ">" | "?";
   const body = match[2]!;
   const intermediate = match[3] as "" | " ";
@@ -443,7 +468,8 @@ const parseCsiParameters = (
   const values: number[] = [];
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index] === "" ? 0 : Number(parts[index]);
-    if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
+    if (!Number.isSafeInteger(part) || part > 65_535)
+      return "csi-parameters-range";
     setOwnIndex(values, index, part);
   }
   return { intermediate, prefix, values };
@@ -1539,9 +1565,9 @@ export class BoundedTerminalEmulator {
   #consumeCsi(character: string): void {
     const code = character.codePointAt(0)!;
     if (code >= 0x40 && code <= 0x7e) {
-      const parameters = parseCsiParameters(this.#control);
-      if (parameters === undefined)
-        this.#recordMalformedControl("csi-parameters");
+      const parameters = parseCsiParameters(this.#control, character);
+      if (typeof parameters === "string")
+        this.#recordMalformedControl(parameters);
       else
         this.#applyCsi(
           character,
