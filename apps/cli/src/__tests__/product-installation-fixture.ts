@@ -17,7 +17,7 @@ import {
   type ClaudeCodePluginInventory,
 } from "@agentscope/harness-claude-code";
 import type { HarnessTargetInspection } from "@agentscope/harnesses-core";
-import { afterEach } from "vitest";
+import { afterAll, afterEach } from "vitest";
 import { createOwnedHookLauncherArtifacts } from "../hook-launcher.js";
 import type { createProductHarnesses } from "../product-harnesses.js";
 import type { createHarnessCliServices } from "../harness-services.js";
@@ -251,11 +251,13 @@ type FixtureClaudeInstallationInput = Extract<
 
 export const createProductInstallationFixtures = () => {
   const roots: string[] = [];
-  afterEach(async () => {
+  const cleanup = async () => {
     await Promise.all(
       roots.splice(0).map((root) => rm(root, { recursive: true })),
     );
-  });
+  };
+  afterEach(cleanup);
+  afterAll(cleanup);
 
   const fixture = async () => {
     const root = await realpath(

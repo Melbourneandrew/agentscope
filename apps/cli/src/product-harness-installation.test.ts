@@ -13,7 +13,7 @@ import {
   inspectHarnessInstallation,
   type HarnessTargetInspection,
 } from "@agentscope/harnesses-core";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
 import {
   createProductInstallationFixtures,
@@ -26,10 +26,16 @@ import {
 const { fixture, withElection } = createProductInstallationFixtures();
 
 describe("actual private installation bundle composition", () => {
-  it("preserves the source Claude plan through the separately bundled factory", async () => {
-    const value = await fixture();
+  let value: Awaited<ReturnType<typeof fixture>>;
+  let installation: Awaited<
+    ReturnType<typeof builtProductInstallationModules>
+  >["installation"];
+  beforeAll(async () => {
+    value = await fixture();
+    ({ installation } = await builtProductInstallationModules(value.root));
+  });
+  it("preserves the source Claude plan through the separately bundled factory", () => {
     const source = createProductHarnessInstallationInput(value.input);
-    const { installation } = await builtProductInstallationModules(value.root);
     const built = installation.createProductHarnessInstallationInput(
       value.input,
     );
@@ -39,7 +45,9 @@ describe("actual private installation bundle composition", () => {
     expect(builtDecision.kind).toBe("replace");
     expect(builtDecision).toEqual(sourceDecision);
   });
+});
 
+describe("observed discovery remains inside the existing dialect contract", () => {
   it.each([
     { version: "2.1.244" },
     { state: "unsupported" },
