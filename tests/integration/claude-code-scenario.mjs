@@ -3,6 +3,9 @@ import {
   closeSync,
   constants,
   fchmodSync,
+  fchownSync,
+  fstatSync,
+  lstatSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -37,6 +40,48 @@ import {
 } from "./claude-code-lifecycle.mjs";
 
 const execute = promisify(execFile);
+const protectClaudeLedger = () => {
+  const descriptor = openSync(
+    "/ledger",
+    constants.O_RDONLY |
+      constants.O_DIRECTORY |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK,
+  );
+  try {
+    const before = fstatSync(descriptor);
+    const pathBefore = lstatSync("/ledger");
+    if (
+      !before.isDirectory() ||
+      !pathBefore.isDirectory() ||
+      before.dev !== pathBefore.dev ||
+      before.ino !== pathBefore.ino ||
+      before.uid !== 1000 ||
+      before.gid !== 1000 ||
+      before.nlink !== 2
+    )
+      throw new Error("integration.claude-code.ledger-authority");
+    fchownSync(descriptor, 0, 0);
+    fchmodSync(descriptor, 0o700);
+    const after = fstatSync(descriptor);
+    const pathAfter = lstatSync("/ledger");
+    if (
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      pathAfter.dev !== before.dev ||
+      pathAfter.ino !== before.ino ||
+      after.uid !== 0 ||
+      after.gid !== 0 ||
+      (after.mode & 0o7777) !== 0o700 ||
+      pathAfter.uid !== 0 ||
+      pathAfter.gid !== 0 ||
+      (pathAfter.mode & 0o7777) !== 0o700
+    )
+      throw new Error("integration.claude-code.ledger-authority");
+  } finally {
+    closeSync(descriptor);
+  }
+};
 const childTerminalFailures = new WeakMap();
 const childSignals = Object.freeze({
   SIGHUP: 1,
@@ -422,6 +467,7 @@ export const runClaudeCodeScenario = async () => {
     process.argv[2] !== "--artifact"
   )
     throw new Error("integration.claude-code.environment");
+  protectClaudeLedger();
   claudeFailurePhase = "readiness";
   const challenge = await readClaudeCodeReadinessChallenge(
     deadline,
