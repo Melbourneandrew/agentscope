@@ -1269,7 +1269,18 @@ const ptySemanticFacts = (value) => {
     ? Object.freeze(fields)
     : undefined;
 };
-export const formatInteractiveChildDiagnostic = (predicate, input) => {
+const unsupportedPtySignal = (value) =>
+  Number.isSafeInteger(value) &&
+  value >= 1 &&
+  value <= 64 &&
+  value !== 2 &&
+  value !== 9 &&
+  value !== 15;
+export const formatInteractiveChildDiagnostic = (
+  predicate,
+  input,
+  exitSignal,
+) => {
   const code = ptyExecutionFailurePredicates.includes(predicate)
     ? predicate
     : "integration.runner.fixture-failed";
@@ -1277,7 +1288,11 @@ export const formatInteractiveChildDiagnostic = (predicate, input) => {
     code === "testkit.pty.transport.semantic-incomplete"
       ? ptySemanticFacts(input)
       : undefined;
-  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? "" : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}\n`;
+  const signal =
+    code === "testkit.pty.transport.exit" && unsupportedPtySignal(exitSignal)
+      ? `;signal;${exitSignal}`
+      : "";
+  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? signal : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}\n`;
 };
 export const readInteractiveChildFailureObservation = (output) => {
   if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
@@ -1289,17 +1304,21 @@ export const readInteractiveChildFailureObservation = (output) => {
   const match = lines[0]
     .slice(prefix.length)
     .match(
-      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01]))?$/u,
+      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01])|;signal;([1-9][0-9]?))?$/u,
     );
   if (
     !match ||
     !ptyExecutionFailurePredicates.includes(match[1]) ||
     (match[2] !== undefined &&
-      match[1] !== "testkit.pty.transport.semantic-incomplete")
+      match[1] !== "testkit.pty.transport.semantic-incomplete") ||
+    (match[6] !== undefined &&
+      (match[1] !== "testkit.pty.transport.exit" ||
+        !unsupportedPtySignal(Number(match[6]))))
   )
     return undefined;
   return Object.freeze({
     predicate: match[1],
+    ...(match[6] === undefined ? {} : { exitSignal: Number(match[6]) }),
     ...(match[2] === undefined
       ? {}
       : {
@@ -1319,6 +1338,13 @@ export const validInstalledPtyFailure = (input) => {
   const old = diagnosticData(input, ["phase", "predicate", "receiptVersion"]);
   const value =
     old ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "exitSignal",
+    ]) ??
     diagnosticData(input, [
       "phase",
       "predicate",
@@ -1349,9 +1375,12 @@ export const validInstalledPtyFailure = (input) => {
   )
     return false;
   return (
-    !Object.hasOwn(value, "semanticFailure") ||
-    (value.predicate === "testkit.pty.transport.semantic-incomplete" &&
-      ptySemanticFacts(value.semanticFailure) !== undefined)
+    (!Object.hasOwn(value, "exitSignal") ||
+      (value.predicate === "testkit.pty.transport.exit" &&
+        unsupportedPtySignal(value.exitSignal))) &&
+    (!Object.hasOwn(value, "semanticFailure") ||
+      (value.predicate === "testkit.pty.transport.semantic-incomplete" &&
+        ptySemanticFacts(value.semanticFailure) !== undefined))
   );
 };
 

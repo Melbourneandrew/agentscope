@@ -10,6 +10,7 @@ import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
 import {
   kernelError,
   readPtySemanticFailure,
+  readPtyExitSignal,
   readPtyReconciliationStage,
   trustedErrorCode,
 } from "../internal/kernel-errors.js";
@@ -268,44 +269,162 @@ describe("private terminal semantic refusal facts", () => {
       throw new Error("expected refusal");
     },
   );
-  it("preserves private facts through the actual production wrapper catch", async () => {
-    const facts = {
-      finalSemanticState: "ready" as const,
-      inputJoined: true,
-      readinessObserved: true,
-      allInputBytesWritten: false,
-    };
+  it.each([false, true])(
+    "preserves private facts through the actual production wrapper catch (exit=%s)",
+    async (exit) => {
+      const facts = {
+        finalSemanticState: "ready" as const,
+        inputJoined: true,
+        readinessObserved: true,
+        allInputBytesWritten: false,
+      };
+      const original = kernelError(
+        exit
+          ? "testkit.pty.transport.exit"
+          : "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        facts,
+        exit ? 1 : undefined,
+      );
+      const source = readFileSync(
+        new URL("../headless-supervisor-kernel.ts", import.meta.url),
+        "utf8",
+      );
+      const start = source.indexOf("export const executeSelectedPtyProcess =");
+      expect(start).toBeGreaterThan(0);
+      const compiled = transpileModule(
+        `${source.slice(start + 7)}; executeSelectedPtyProcess`,
+        { compilerOptions: { target: ScriptTarget.ES2022 } },
+      ).outputText;
+      const execute = runInNewContext(compiled, {
+        executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
+        kernelError,
+        readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+        readPtyReconciliationStage,
+        readPtySemanticFailure,
+        readPtyExitSignal,
+      }) as (...args: unknown[]) => Promise<unknown>;
+      try {
+        await execute({}, {}, {});
+      } catch (error) {
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtySemanticFailure(error)).toEqual(exit ? undefined : facts);
+        expect(readPtyExitSignal(error)).toBe(exit ? 1 : undefined);
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+});
+describe("private unsupported exit signal facts", () => {
+  it("preserves the unsupported signal in the existing backend launch catch", () => {
     const original = kernelError(
-      "testkit.pty.transport.semantic-incomplete",
+      "testkit.pty.transport.exit",
       undefined,
-      facts,
+      undefined,
+      1,
     );
     const source = readFileSync(
-      new URL("../headless-supervisor-kernel.ts", import.meta.url),
+      new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
       "utf8",
     );
-    const start = source.indexOf("export const executeSelectedPtyProcess =");
-    expect(start).toBeGreaterThan(0);
-    const compiled = transpileModule(
-      `${source.slice(start + 7)}; executeSelectedPtyProcess`,
-      { compilerOptions: { target: ScriptTarget.ES2022 } },
-    ).outputText;
-    const execute = runInNewContext(compiled, {
-      executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
-      kernelError,
-      readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+    const entry = source.indexOf(
+      "export const executeSelectedPtyProcessWithCapability =",
+    );
+    const start = source.indexOf("} catch (error: unknown) {", entry);
+    const end = source.indexOf(
+      "\n    }\n    assertPtyReceiptBinding(receipt",
+      start,
+    );
+    expect(entry).toBeGreaterThan(0);
+    expect(start).toBeGreaterThan(entry);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start + "} catch (error: unknown) {".length, end);
+    const reject = runInNewContext(`() => { ${body} }`, {
+      error: original,
+      trustedErrorCode,
       readPtyReconciliationStage,
       readPtySemanticFailure,
-    }) as (...args: unknown[]) => Promise<unknown>;
+      readPtyExitSignal,
+      remaining: () => 1,
+      stableRequest: { process: { monotonicShutdownDeadlineMs: 1 } },
+      fail: (...args: Parameters<typeof kernelError>) => {
+        throw kernelError(...args);
+      },
+    }) as () => unknown;
     try {
-      await execute({}, {}, {});
+      reject();
     } catch (error) {
       expect(trustedErrorCode(error)).toBe(original.code);
-      expect(readPtySemanticFailure(error)).toEqual(facts);
+      expect(readPtyExitSignal(error)).toBe(1);
       return;
     }
     throw new Error("expected refusal");
   });
+  it("retains only genuine unsupported exit signals", () => {
+    const code = "testkit.pty.transport.exit";
+    for (const signal of [1, 3, 64])
+      expect(
+        readPtyExitSignal(kernelError(code, undefined, undefined, signal)),
+      ).toBe(signal);
+    let traps = 0;
+    const forged = Object.defineProperty(new Error(code), "exitSignal", {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(kernelError(code, undefined, undefined, 1), {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const value of [
+      forged,
+      proxy,
+      Object.assign(new Error(code), { exitSignal: 1 }),
+    ])
+      expect(readPtyExitSignal(value)).toBeUndefined();
+    for (const signal of [0, 2, 9, 15, -1, 65, 1.5, NaN])
+      expect(
+        readPtyExitSignal(kernelError(code, undefined, undefined, signal)),
+      ).toBeUndefined();
+    expect(
+      readPtyExitSignal(
+        kernelError("testkit.pty.request", undefined, undefined, 1),
+      ),
+    ).toBeUndefined();
+    expect(traps).toBe(0);
+  });
+  it.each(["sync", "async"])(
+    "preserves the unsupported signal through the %s promise remint",
+    async (kind) => {
+      const original = kernelError(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        1,
+      );
+      const work =
+        kind === "sync"
+          ? () => {
+              throw original;
+            }
+          : () => Promise.reject(original);
+      const error: unknown = await Promise.resolve()
+        .then(() =>
+          boundedInvoke(
+            work,
+            performance.now() + 1000,
+            "testkit.headless.shutdown.deadline",
+          ),
+        )
+        .catch((failure: unknown) => failure);
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtyExitSignal(error)).toBe(1);
+    },
+  );
 });
 describe("private terminal facts reject substituted metadata", () => {
   it("snapshots only exact scalar data and ignores forged error fields", () => {
@@ -586,6 +705,15 @@ describe("selected PTY transport", () => {
       "NoNewPrivs:\t1",
       "",
     ].join("\n"),
+  });
+
+  it("retains the unsupported signal without admitting a completion receipt", async () => {
+    const error: unknown = await executeSelectedPtyTransportForTest(
+      request(),
+      "unsupported-signal",
+    ).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ code: "testkit.pty.transport.exit" });
+    expect(readPtyExitSignal(error)).toBe(1);
   });
   const controllerPrincipalFacts = () => {
     const ordinary = principalFacts();
