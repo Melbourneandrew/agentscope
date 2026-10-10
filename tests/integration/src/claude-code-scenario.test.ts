@@ -18,6 +18,8 @@ const synthetic = vi.hoisted(() => ({
   settings: Buffer.alloc(0),
   nativeBytes: Buffer.alloc(0),
   nativeFailure: "",
+  nativeOwnerSensitive: false,
+  nativeUid: 0,
 }));
 function nativeStatus(descriptor: number, named = false) {
   return {
@@ -26,7 +28,12 @@ function nativeStatus(descriptor: number, named = false) {
       !(named && synthetic.nativeFailure === "target-symlink"),
     isDirectory: () =>
       descriptor !== 44 && synthetic.nativeFailure !== "symlink",
-    uid: synthetic.nativeFailure === "owner" ? 0 : 1000,
+    uid:
+      descriptor === 44 && synthetic.nativeOwnerSensitive
+        ? synthetic.nativeUid
+        : synthetic.nativeFailure === "owner"
+          ? 0
+          : 1000,
     gid: 1000,
     nlink: 1,
     mode:
@@ -93,9 +100,18 @@ vi.mock("node:fs", async () => {
     },
     fchownSync: (descriptor: number, uid: number, gid: number) => {
       synthetic.fileCalls.push({ action: "owner", descriptor, uid, gid });
+      if (descriptor === 44) synthetic.nativeUid = uid;
     },
     fchmodSync: (descriptor: number, mode: number) => {
       synthetic.fileCalls.push({ action: "mode", descriptor, mode });
+      if (
+        descriptor === 44 &&
+        synthetic.nativeOwnerSensitive &&
+        synthetic.nativeUid !== 0
+      )
+        throw Object.assign(new Error("synthetic-owner-without-FOWNER"), {
+          code: "EPERM",
+        });
       if (synthetic.modeError) throw new Error("synthetic-mode-failure");
     },
     closeSync: (descriptor: number) => {
@@ -481,6 +497,8 @@ const resetPackedLifecycleFixture = () => {
   synthetic.failAt = -1;
   synthetic.writeError = false;
   synthetic.nativeFailure = "";
+  synthetic.nativeOwnerSensitive = false;
+  synthetic.nativeUid = 0;
   synthetic.nativeBytes = Buffer.alloc(0);
   const identity = `agentscope-hook-v1-sha256-${"a".repeat(64)}`;
   synthetic.settings = Buffer.from(
@@ -577,6 +595,35 @@ describe("Claude fixed native first-run fixture (synthetic filesystem)", () => {
     await expect(prepareClaudeCodePackedCli(1500)).resolves.toHaveProperty(
       "settings",
     );
+  });
+});
+describe("Claude native fixture ownership handoff (synthetic capability model)", () => {
+  beforeEach(resetPackedLifecycleFixture);
+  it("normalizes mode while root owns the inode without requiring CAP_FOWNER", async () => {
+    synthetic.nativeOwnerSensitive = true;
+    synthetic.fileCalls.length = 0;
+    const value = await prepareClaudeCodePackedCli(1500);
+    expect(value.settings.equals(synthetic.settings)).toBe(true);
+    expect(synthetic.nativeUid).toBe(1000);
+    expect(
+      synthetic.fileCalls.filter(
+        (call) => (call as { descriptor?: number }).descriptor === 44,
+      ),
+    ).toEqual([
+      { action: "mode", descriptor: 44, mode: 0o600 },
+      { action: "owner", descriptor: 44, uid: 1000, gid: 1000 },
+      {
+        action: "write",
+        descriptor: 44,
+        contents: synthetic.nativeBytes.toString("utf8"),
+      },
+      { action: "close", descriptor: 44 },
+    ]);
+    for (const descriptor of [42, 43])
+      expect(synthetic.fileCalls).toContainEqual({
+        action: "close",
+        descriptor,
+      });
   });
 });
 describe("Claude actual packed lifecycle (synthetic CLI and owned settings)", () => {
