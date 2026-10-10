@@ -1215,6 +1215,8 @@ export const codexArmPendingResearchHint = (error) => {
     const message = error instanceof Error ? error.message : undefined;
     const byMessage = {
       "integration.codex.deadline": "arm-deadline",
+      "integration.codex.trace-deadline": "arm-deadline",
+      "integration.codex.session-ledger": "arm-session-ledger",
       "integration.codex.clock": "arm-clock",
       "integration.codex.failure-phase": "arm-phase",
       "integration.codex.hook-log": "arm-hook-log",

@@ -86,7 +86,8 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     interactiveFailurePhase === "verify-gate" &&
     modelControlFailureHint !== undefined
       ? `integration.fixture.codex-gate-research-${modelControlFailureHint}`
-      : interactiveFailurePhase === "model-gate-arm-health-pending"
+      : interactiveFailurePhase === "model-gate-arm-health-pending" ||
+          interactiveFailurePhase === "model-gate-arm-complete"
         ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
         : undefined;
   const ownedDiagnostic =

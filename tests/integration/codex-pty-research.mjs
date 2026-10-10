@@ -173,6 +173,7 @@ export const codexGateResearchHints = Object.freeze([
   "arm-hook-lifecycle",
   "arm-hook-mediation",
   "arm-session-missing",
+  "arm-session-ledger",
   "arm-control",
   "arm-child",
   "arm-filesystem",

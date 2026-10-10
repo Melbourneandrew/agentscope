@@ -22,7 +22,9 @@ const {
   extractUntrustedCodexGateHint,
   readBoundedInteractiveFailureRecord,
   selectInteractiveFailureDiagnostic,
+  codexArmPendingResearchHint,
 } = privateAuthority as {
+  codexArmPendingResearchHint: (error: unknown) => string;
   readBoundedInteractiveFailureRecord: (
     ledger: string,
     runId: string,
@@ -134,6 +136,178 @@ describe("actual retained model research marker channel", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+});
+
+const postCheckpointFailure = (
+  error: unknown,
+  phase = "model-gate-arm-complete",
+  sinkThrows = false,
+) => {
+  const source = readIntegration("codex-pty-scenario.mjs");
+  const start = source.indexOf("process.setUncaughtExceptionCaptureCallback(");
+  const end = source.indexOf("const required =", start);
+  const phasesSource = readIntegration("codex-trace-child-diagnostics.mjs");
+  const phases = runInNewContext(
+    `${phasesSource.slice(phasesSource.indexOf("export const interactivePhases"), phasesSource.indexOf("export const candidateConfigStages")).replace("export const", "const")}\ninteractivePhases;`,
+  ) as readonly string[];
+  const directory = mkdtempSync(join(tmpdir(), "agentscope-post-checkpoint-"));
+  let callback: ((error: unknown) => void) | undefined;
+  let exitCode: number | undefined;
+  try {
+    runInNewContext(
+      source.slice(start, end),
+      {
+        process: {
+          setUncaughtExceptionCaptureCallback: (value: typeof callback) => {
+            callback = value;
+          },
+          stdout: {
+            write: (_text: string, complete: () => void) => {
+              complete();
+            },
+          },
+          exit: (code: number) => {
+            exitCode = code;
+          },
+        },
+        interactiveFailurePhase: phase,
+        interactiveFailurePhaseIndex: phases.indexOf(phase),
+        modelControlFailureHint: undefined,
+        candidateConfigStage: undefined,
+        preCheckpointFailureDiagnostic: undefined,
+        joinDeadlineHookState: undefined,
+        adapterReportedFailure: undefined,
+        postTraceFailureDiagnostic: () => undefined,
+        codexArmPendingResearchHint,
+        ledger: directory,
+        integrationRunId: "0123456789abcdef",
+        terminalCompletionMarker: "AGENTSCOPE_PTY_COMPLETE",
+        encodeInteractiveFailureExitCode,
+        encodeAdapterReportedFailureMarker,
+        writeFileSync: sinkThrows
+          ? () => {
+              throw new Error("private sink");
+            }
+          : writeFileSync,
+        join,
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+      { timeout: 1000 },
+    );
+    expect(callback).toBeDefined();
+    callback!(error);
+    return {
+      exitCode,
+      originalExitCode: 64 + phases.indexOf(phase),
+      marker: readBoundedInteractiveFailureRecord(directory, "0123456789abcdef")
+        ?.predicate,
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+describe("post-checkpoint original failure research", () => {
+  it.each([
+    ["integration.codex.trace-deadline", "arm-deadline"],
+    ["integration.codex.session-ledger", "arm-session-ledger"],
+    ["private synthetic error", "arm-other"],
+  ])(
+    "retains only %s category without replacing the phase",
+    (message, hint) => {
+      const result = postCheckpointFailure(new Error(message));
+      expect(result.exitCode).toBe(result.originalExitCode);
+      expect(result.marker).toBe(
+        `integration.fixture.codex-gate-research-${hint}`,
+      );
+      const runner = readIntegration("runner.mjs");
+      const start = runner.indexOf(
+        'const gatePrefix = "integration.fixture.codex-gate-research-";',
+      );
+      const end = runner.indexOf("const traceHint =", start);
+      const lines: string[] = [];
+      runInNewContext(
+        `(async () => { ${runner.slice(start, end)} })()`,
+        {
+          marker: result.marker,
+          codexGateResearchHints,
+          process: { stdout: { write: (line: string) => lines.push(line) } },
+        },
+        { timeout: 1000 },
+      );
+      const untrustedGateHint = extractUntrustedCodexGateHint(lines.join(""));
+      expect(untrustedGateHint).toBe(hint);
+      const phase = "integration.fixture.codex-model-gate-arm-complete";
+      expect(
+        selectInteractiveFailureDiagnostic(
+          result.marker,
+          phase,
+          "integration.runner.fixture-failed",
+        ),
+      ).toBe(phase);
+      expect(lines.join("")).not.toContain(message);
+      const research = createCodexFailureResearchRecord(
+        { runId: "0123456789abcdef", scenarioId: "codex-tui-trace-smoke" },
+        lines.join(""),
+        undefined,
+        { code: 1 },
+        [
+          () => undefined,
+          extractUntrustedCodexGateHint,
+          () => undefined,
+          projectUntrustedCodexPtyReceipt,
+          extractAdapterReportedFailure,
+          codexFailureExitPair,
+        ],
+      );
+      expect(research.untrustedGateHint).toBe(hint);
+      expect(research.exitPair).toBe("none:1");
+      expect(
+        validCodexResearchDiagnostic(JSON.parse(JSON.stringify(research))),
+      ).toBe(true);
+    },
+  );
+  it("retains unrelated phases and the existing optional sink fallback", () => {
+    const unrelated = postCheckpointFailure(
+      new Error("integration.codex.session-ledger"),
+      "tui-checkpoint",
+    );
+    expect(unrelated.marker).toBe("integration.fixture.codex-tui-checkpoint");
+    expect(unrelated.exitCode).toBe(unrelated.originalExitCode);
+    const sink = postCheckpointFailure(
+      new Error("integration.codex.session-ledger"),
+      "model-gate-arm-complete",
+      true,
+    );
+    expect(sink.marker).toBeUndefined();
+    expect(sink.exitCode).toBe(64);
+  });
+  it("contains hostile and foreign categories without reflecting their content", () => {
+    const hostile = Object.defineProperty(new Error(), "message", {
+      get: () => {
+        throw new Error("private getter");
+      },
+    });
+    for (const value of [
+      null,
+      "integration.codex.session-ledger",
+      { message: "integration.codex.session-ledger" },
+      hostile,
+      new Proxy(new Error(), {
+        get: () => {
+          throw new Error("private proxy");
+        },
+      }),
+    ]) {
+      expect(codexArmPendingResearchHint(value)).toBe("arm-other");
+    }
+    expect(
+      extractUntrustedCodexGateHint(
+        "integration.runner.untrusted-gate-hint:arm-session-ledger-private\n",
+      ),
+    ).toBeUndefined();
   });
 });
 
