@@ -152,6 +152,7 @@ const rejectedPrivateModeReasons = Object.freeze({
   2003: "extended-csi-private-mode-2003",
   2005: "extended-csi-private-mode-2005",
   2006: "extended-csi-private-mode-2006",
+  9001: "extended-csi-private-mode-9001",
 } as const);
 
 export type PtyUnsupportedControlReason =
@@ -1697,6 +1698,8 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (prefix === "?" && (final === "h" || final === "l")) {
+      // Win32 input is never enabled here; this exact reset preserves VT input.
+      if (final === "l" && values.length === 1 && values[0] === 9001) return;
       for (const mode of values) {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";

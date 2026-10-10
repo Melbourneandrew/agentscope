@@ -364,6 +364,21 @@ describe("fixed extended-CSI selected transport refusals", () => {
       spy.mockRestore();
     }
   };
+  it("completes the existing selected transport after exact Win32-input disable", async () => {
+    await expect(executeWithControl("\u001b[?9001l")).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
+  it.each(["\u001b[?9001h", "\u001b[?25;9001l", "\u001b[?9001;25l"])(
+    "retains refused Win32 enable/mixed mode %j",
+    async (sequence) => {
+      await expect(executeWithControl(sequence)).rejects.toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-9001",
+      });
+    },
+  );
   it.each([
     1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
     45, 46, 47, 66, 67, 69, 80, 95, 1000, 1001, 1002, 1003, 1005, 1006, 1010,

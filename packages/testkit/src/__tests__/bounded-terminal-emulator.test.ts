@@ -12,6 +12,36 @@ const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
 describe("fixed rejected extended-CSI identities", () => {
+  it("models only the exact disabled Win32-input reset without changing screen or trust", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("ordinary ASCII"));
+    const before = terminal.snapshot();
+    for (const character of "\u001b[?9001l") terminal.write(bytes(character));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 8,
+    });
+    expect(terminal.unsupportedControlReason()).toBeNull();
+  });
+  it.each(["\u001b[?9001h", "\u001b[?25;9001l", "\u001b[?9001;25l"])(
+    "refuses Win32 enable or mixed reset %j",
+    (sequence) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(sequence));
+      expect(terminal.unsupportedControlReason()).toBe(
+        "extended-csi-private-mode-9001",
+      );
+    },
+  );
+  it("cannot reset earlier failure or manufacture readiness", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[?9001l"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted",
+    );
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
   it.each([
     1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
     45, 46, 47, 66, 67, 69, 80, 95, 1000, 1001, 1002, 1003, 1005, 1006, 1010,
@@ -89,32 +119,32 @@ describe("fixed rejected extended-CSI identities", () => {
     expect(terminal.unsupportedControlReason()).toBeNull();
   });
 });
+const frame =
+  "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";
+const terminalForCharset = () => {
+  const challenge = "a".repeat(64);
+  const terminal = new BoundedTerminalEmulator(
+    { columns: 100, rows: 8 },
+    defaultPtyTerminalEmulatorLimits,
+    {
+      kind: "challenge-styled-text",
+      challenge,
+      text: "›",
+      requiredText: "fixture-model default",
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+      bold: true,
+      dim: false,
+    },
+  );
+  terminal.write(
+    bytes(
+      "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+    ),
+  );
+  terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+  return terminal;
+};
 describe("G0/G1 designation and GL invocation", () => {
-  const frame =
-    "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";
-  const terminalForCharset = () => {
-    const challenge = "a".repeat(64);
-    const terminal = new BoundedTerminalEmulator(
-      { columns: 100, rows: 8 },
-      defaultPtyTerminalEmulatorLimits,
-      {
-        kind: "challenge-styled-text",
-        challenge,
-        text: "›",
-        requiredText: "fixture-model default",
-        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
-        bold: true,
-        dim: false,
-      },
-    );
-    terminal.write(
-      bytes(
-        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
-      ),
-    );
-    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
-    return terminal;
-  };
   it.each([
     ["\u000f", true],
     ["\u001b(B\u000f", true],
@@ -143,6 +173,26 @@ describe("G0/G1 designation and GL invocation", () => {
     terminal.write(bytes(frame));
     expect(terminal.readinessObserved()).toBe(true);
     terminal.write(bytes("\u000f"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("preserves exact styled readiness, cursor and challenge identity across Win32 disable", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    const before = terminal.snapshot();
+    terminal.write(bytes("\u001b[?9001l"));
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 8,
+    });
+  });
+  it("cannot restore revoked styled readiness using Win32 disable", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    terminal.write(bytes("\u000f\u001b[?9001l"));
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes(frame));
     expect(terminal.readinessObserved()).toBe(true);
