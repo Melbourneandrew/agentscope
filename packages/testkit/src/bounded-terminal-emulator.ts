@@ -1774,6 +1774,17 @@ export class BoundedTerminalEmulator {
     prefix: "" | "<" | "=" | ">" | "?",
     values: readonly number[],
   ): boolean {
+    if (
+      prefix === ">" &&
+      final === "q" &&
+      values.length === 1 &&
+      values[0] === 0
+    ) {
+      this.#enqueueTerminalResponse(
+        "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\",
+      );
+      return true;
+    }
     if (final !== "u" || values.length !== 1) return false;
     if (prefix === "?" && values[0] === 0) {
       this.#observeRequiredTerminalProtocolStep(5);

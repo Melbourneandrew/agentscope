@@ -11,6 +11,55 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("truthful fixed terminal identification", () => {
+  const reply = "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\";
+  it.each(["\u001b[>q", "\u001b[>0q"])(
+    "answers fragmented exact version query %j without semantic progress",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary ASCII"));
+      const before = terminal.snapshot();
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      for (const character of query) terminal.write(bytes(character));
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(query).length,
+      });
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(reply);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      expect(terminal.end().semanticState).not.toBe("completed");
+    },
+  );
+  it.each(["\u001b[>1q", "\u001b[>0;0q", "\u001b[?0q", "\u001b[>0 q"])(
+    "preserves refusal for neighboring identification shape %j",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(query));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it("preserves earlier failures and cumulative response bounds across drains", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[>q"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-h-9999",
+    );
+    terminal.takeTerminalResponses();
+    const maximumReplies = Math.floor(4096 / bytes(reply).length);
+    for (let index = 1; index < maximumReplies; index += 1) {
+      terminal.write(bytes("\u001b[>0q"));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(reply);
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[>q"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
 describe("fixed palette theme protocol", () => {
   it("models fragmented subscription without changing screen or sending an initial report", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
@@ -153,8 +202,6 @@ describe("fixed rejected extended-CSI legacy identities", () => {
     ["\u001b[>0c", "secondary-device-attributes"],
     ["\u001b[=c", "tertiary-device-attributes"],
     ["\u001b[=0c", "tertiary-device-attributes"],
-    ["\u001b[>q", "xterm-version"],
-    ["\u001b[>0q", "xterm-version"],
     ...[0, 1, 2, 3, 4, 6, 7].map((value) => [
       `\u001b[?${value}g`,
       "key-modifier-query",
@@ -273,6 +320,44 @@ describe("theme protocol preserves existing challenge authority", () => {
     terminal.write(bytes("\u001b[?2031h\u001b[?996n\u001b[?2031l"));
     expect(terminal.challengedReadinessProgress()).toEqual(before);
     expect(terminal.readinessObserved()).toBe(false);
+  });
+});
+describe("identification query preserves challenge authority", () => {
+  it("does not mutate established styled readiness or recover graphics trust", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[>0q"));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes("\u001b[>0q").length,
+    });
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    terminal.write(bytes("\u001b(0\u001b[>q"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\u001b(B${frame}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("cannot advance the required keyboard handshake", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge: "a".repeat(64),
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    const before = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[>q\u001b[>0q"));
+    expect(terminal.challengedReadinessProgress()).toEqual(before);
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.end().semanticState).not.toBe("completed");
   });
 });
 describe("G0/G1 designation and GL invocation", () => {
