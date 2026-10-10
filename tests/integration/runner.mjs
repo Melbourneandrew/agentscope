@@ -25,6 +25,7 @@ import {
   readPtyReconciliationStage,
   readPtySemanticFailure,
   readPtyExitSignal,
+  trustedErrorCode,
 } from "./testkit/internal/kernel-errors.js";
 import {
   encodeAdapterReportedFailureMarker,
@@ -791,11 +792,24 @@ try {
     )?.[0];
     const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);
     const fixtureFailure = fixtureRecord?.predicate;
-    const diagnostic = selectInteractiveFailureDiagnostic(
+    let diagnostic = selectInteractiveFailureDiagnostic(
       fixtureFailure,
       retainedInteractivePhase(ledger),
       selectedError,
     );
+    if (
+      diagnostic === "testkit.headless.reconciliation.deadline" &&
+      trustedErrorCode(error) === diagnostic
+    ) {
+      const stage = readPtyReconciliationStage(error);
+      if (stage !== undefined)
+        diagnostic =
+          selectInteractiveFailureDiagnostic(
+            undefined,
+            undefined,
+            `${diagnostic}-${stage}`,
+          ) ?? diagnostic;
+    }
     interactiveFailureDiagnostic = diagnostic;
     process.stdout.write(
       formatInteractiveChildDiagnostic(

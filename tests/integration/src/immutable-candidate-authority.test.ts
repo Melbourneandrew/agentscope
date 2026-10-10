@@ -21,6 +21,70 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+const reconciliationStages = [
+  "authority",
+  "observer",
+  "observer-read",
+  "observer-stat",
+  "observer-esrch",
+  "observer-permission",
+  "observer-io",
+  "observer-namespace",
+  "observer-identity",
+  "observer-graph",
+  "observer-root-reuse",
+  "observer-target-reuse",
+  "observer-zombie-before",
+  "observer-zombie-after",
+  "signal",
+  "reap",
+  "residual",
+  "child-join",
+  "output-join",
+  "transport-close",
+  "outer-shutdown",
+] as const;
+
+it.each(reconciliationStages)(
+  "retains only fixed reconciliation stage %s in existing failure wire",
+  (stage) => {
+    const predicate = `testkit.headless.reconciliation.deadline-${stage}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    const record = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate,
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+      true,
+    );
+    expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+    expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+  },
+);
+it.each(["PRIVATE", "output-join.extra", "", "constructor"])(
+  "refuses unknown reconciliation suffix %j",
+  (stage) => {
+    const predicate = `testkit.headless.reconciliation.deadline-${stage}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  },
+);
+
 const fixedExtendedCsiSuffixes = [
   "private-mode-1",
   "private-mode-2",

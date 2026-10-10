@@ -29,6 +29,164 @@ import {
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
+const reconciliationRunnerFrame = (
+  error: unknown,
+  fixture?: string,
+): string => {
+  const source = readFileSync(
+    new URL("../../../../tests/integration/runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const authority = readFileSync(
+    new URL(
+      "../../../../tests/integration/immutable-candidate-authority.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const predicates = authority.indexOf(
+    "export const ptyExecutionFailurePredicates =",
+  );
+  const selector = authority.indexOf(
+    "export const selectInteractiveFailureDiagnostic =",
+  );
+  const formatter = authority.indexOf(
+    "export const formatInteractiveChildDiagnostic =",
+  );
+  const wire = runInNewContext(
+    [
+      authority.slice(predicates, authority.indexOf("]);", predicates) + 3),
+      authority.slice(
+        selector,
+        authority.indexOf(
+          "const codexProjectionFailureDiagnostics =",
+          selector,
+        ),
+      ),
+      authority.slice(
+        formatter,
+        authority.indexOf(
+          "export const readInteractiveChildFailureObservation =",
+          formatter,
+        ),
+      ),
+      "({selectInteractiveFailureDiagnostic, formatInteractiveChildDiagnostic})",
+    ]
+      .join("\n")
+      .replaceAll("export ", ""),
+    {
+      // Unused native Claude codec dependency; the actual deadline roster is read above.
+      claudeFailurePredicates: [],
+      claudeVendorPredicate: "integration.fixture.claude-vendor-terminal",
+    },
+  ) as {
+    selectInteractiveFailureDiagnostic: (
+      ...values: unknown[]
+    ) => string | undefined;
+    formatInteractiveChildDiagnostic: (...values: unknown[]) => string;
+  };
+  const caught = source.indexOf(
+    "\n} catch (error) {\n  emitCodexPtyFailureHint();",
+  );
+  const start = source.indexOf(
+    '  if (scenario.executionMode === "interactive")',
+    caught,
+  );
+  const end = source.indexOf(
+    '  if (\n    scenario.executionMode === "headless"',
+    start,
+  );
+  expect(caught).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const frames: string[] = [];
+  runInNewContext(
+    `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+    {
+      error,
+      scenario: { executionMode: "interactive" },
+      scenarioId: "claude-interactive-trace-smoke",
+      ledger: "/unused",
+      readBoundedInteractiveFailureRecord: () =>
+        fixture === undefined ? undefined : { predicate: fixture },
+      retainedInteractivePhase: () => undefined,
+      ...wire,
+      trustedErrorCode,
+      readPtyReconciliationStage,
+      readPtySemanticFailure,
+      readPtyExitSignal,
+      process: { stdout: { write: (frame: string) => frames.push(frame) } },
+    },
+  );
+  expect(frames).toHaveLength(1);
+  return frames[0]!;
+};
+
+describe("genuine reconciliation stage through public remint and actual runner", () => {
+  it("retains a genuine stage after the actual public wrapper rejects", async () => {
+    const original = kernelError(
+      "testkit.headless.reconciliation.deadline",
+      "output-join",
+    );
+    const source = readFileSync(
+      new URL("../headless-supervisor-kernel.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("export const executeSelectedPtyProcess =");
+    const execute = runInNewContext(
+      transpileModule(`${source.slice(start + 7)}; executeSelectedPtyProcess`, {
+        compilerOptions: { target: ScriptTarget.ES2022 },
+      }).outputText,
+      {
+        executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
+        kernelError,
+        readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+        readPtyReconciliationStage,
+        readPtySemanticFailure,
+        readPtyExitSignal,
+      },
+    ) as (...args: unknown[]) => Promise<unknown>;
+    try {
+      await execute({}, {}, {});
+    } catch (error) {
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtyReconciliationStage(error)).toBe("output-join");
+      expect(reconciliationRunnerFrame(error)).toBe(
+        "integration.runner.interactive-diagnostic:testkit.headless.reconciliation.deadline-output-join\n",
+      );
+      expect(
+        reconciliationRunnerFrame(error, "integration.runner.fixture-result"),
+      ).toBe(
+        "integration.runner.interactive-diagnostic:integration.runner.fixture-result\n",
+      );
+      return;
+    }
+    throw new Error("expected original rejection");
+  });
+  it("keeps missing, substituted and foreign stage fallback without evaluating stage accessors", () => {
+    const predicate = "testkit.headless.reconciliation.deadline";
+    const foreign = new Error(predicate);
+    Object.defineProperty(foreign, "stage", {
+      get: () => {
+        throw new Error("must not read");
+      },
+    });
+    const substituted = kernelError(
+      "testkit.headless.observer.read",
+      "observer-read",
+    );
+    substituted.message = predicate;
+    for (const error of [
+      kernelError(predicate),
+      foreign,
+      new Proxy(foreign, {}),
+      substituted,
+    ])
+      expect(reconciliationRunnerFrame(error)).toBe(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      );
+  });
+});
+
 type CheckpointFacade = {
   releaseFrozenProcessSet: (
     namespace: string,
