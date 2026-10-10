@@ -94,6 +94,39 @@ const isLiteralModuleSpecifier = (value) =>
   value !== undefined &&
   (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value));
 
+// These two test-owned current-source bundles have no fixed runtime URL.
+// No other test, expression, require call, or repeated load gets this exception.
+const privateCliFixtureLoad = (node, file, packageName) => {
+  if (
+    file !== "apps/cli/src/__tests__/product-installation-fixture.ts" ||
+    packageName !== "agentscope-cli" ||
+    node.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+    node.arguments.length !== 1
+  )
+    return undefined;
+  const specifier = node.arguments[0];
+  if (
+    !ts.isPropertyAccessExpression(specifier) ||
+    specifier.questionDotToken ||
+    specifier.name.text !== "href"
+  )
+    return undefined;
+  const conversion = specifier.expression;
+  if (
+    !ts.isCallExpression(conversion) ||
+    conversion.questionDotToken ||
+    !ts.isIdentifier(conversion.expression) ||
+    conversion.expression.text !== "pathToFileURL" ||
+    conversion.arguments.length !== 1
+  )
+    return undefined;
+  const path = conversion.arguments[0];
+  return ts.isIdentifier(path) &&
+    ["privatePath", "productPath"].includes(path.text)
+    ? path.text
+    : undefined;
+};
+
 const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
   if (packageName !== "@agentscope/core")
     for (const restricted of restrictedSpecifiers)
@@ -116,6 +149,7 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
 
 const assertNoComputedModuleLoads = (source, file, packageName) => {
   const computedLoadsAllowed = artifactVerifier.test(file);
+  const fixtureLoads = new Set();
   const parsed = ts.createSourceFile(
     file,
     source,
@@ -150,8 +184,12 @@ const assertNoComputedModuleLoads = (source, file, packageName) => {
           node.expression.text === "require"))
     ) {
       const specifier = node.arguments[0];
-      if (!isLiteralModuleSpecifier(specifier) && !computedLoadsAllowed)
-        throw new Error(`computed module load is forbidden in ${file}`);
+      if (!isLiteralModuleSpecifier(specifier) && !computedLoadsAllowed) {
+        const fixtureLoad = privateCliFixtureLoad(node, file, packageName);
+        if (fixtureLoad === undefined || fixtureLoads.has(fixtureLoad))
+          throw new Error(`computed module load is forbidden in ${file}`);
+        fixtureLoads.add(fixtureLoad);
+      }
       if (isLiteralModuleSpecifier(specifier))
         assertLiteralSpecifierAllowed(specifier.text, file, packageName);
     }
