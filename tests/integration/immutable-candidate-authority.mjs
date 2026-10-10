@@ -242,10 +242,23 @@ const claudeFailurePredicates = Object.freeze([
     (phase) => `integration.fixture.claude-phase-${phase}`,
   ),
 ]);
+const claudeModelPairFailurePredicates = Object.freeze([
+  "integration.fixture.claude-model-pair-empty",
+  "integration.fixture.claude-model-pair-initial-only",
+]);
+const isClaudeFailurePredicate = (diagnostic) =>
+  claudeFailurePredicates.includes(diagnostic) ||
+  claudeModelPairFailurePredicates.includes(diagnostic);
 export const claudeScenarioFailureDiagnostic = (error, phase) => {
   if (!types.isProxy(error) && types.isNativeError(error)) {
     const field = Object.getOwnPropertyDescriptor(error, "message");
     if (field && Object.hasOwn(field, "value")) {
+      if (field.value === "integration.claude-code.model-pair") {
+        if (phase === "model-pair-empty")
+          return "integration.fixture.claude-model-pair-empty";
+        if (phase === "model-pair-initial-only")
+          return "integration.fixture.claude-model-pair-initial-only";
+      }
       const index = claudeFailureCodes.findIndex(
         (code) =>
           field.value ===
@@ -263,6 +276,7 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
 };
 export const ptyExecutionFailurePredicates = Object.freeze([
   ...claudeFailurePredicates,
+  ...claudeModelPairFailurePredicates,
   "child-failure",
   "integration.fixture.codex-bootstrap",
   "integration.fixture.codex-bootstrap-arguments",
@@ -1328,7 +1342,7 @@ export const selectInteractiveExecutionFailurePredicate = (
   const diagnostic = retainedDiagnostic ?? candidate;
   if (typeof diagnostic !== "string") return "child-failure";
   if (
-    claudeFailurePredicates.includes(diagnostic) &&
+    isClaudeFailurePredicate(diagnostic) &&
     scenarioId !== "claude-interactive-trace-smoke"
   )
     return "child-failure";
@@ -1356,6 +1370,8 @@ export const selectInteractiveExecutionFailurePredicate = (
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (claudeModelPairFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke" ? 223 : undefined;
   if (claudeFailurePredicates.includes(diagnostic))
     return scenarioId === "claude-interactive-trace-smoke"
       ? 200 + claudeFailurePredicates.indexOf(diagnostic)
@@ -1593,12 +1609,12 @@ export const validInstalledPtyFailure = (input) => {
       : installedPtyFailurePredicates[value.phase].includes(value.predicate))
   )
     return false;
-  if (old) return !claudeFailurePredicates.includes(value.predicate);
+  if (old) return !isClaudeFailurePredicate(value.predicate);
   if (
     value.phase !== "pty-execution" ||
     (value.scenarioId !== "codex-tui-trace-smoke" &&
       value.scenarioId !== "claude-interactive-trace-smoke") ||
-    (claudeFailurePredicates.includes(value.predicate) &&
+    (isClaudeFailurePredicate(value.predicate) &&
       value.scenarioId !== "claude-interactive-trace-smoke")
   )
     return false;

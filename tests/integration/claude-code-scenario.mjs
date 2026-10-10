@@ -382,8 +382,18 @@ const waitForClaudeModelPair = async (control, turn, deadline) => {
     rows = projectMockServerRequests(response.bytes);
     if (pair !== undefined) break;
     const remaining = deadline - monotonicNow();
-    if (remaining <= 0 || attempt === 4)
+    if (remaining <= 0 || attempt === 4) {
+      const primaryCount = rows.filter(
+        (row) => row.method === "POST" && row.path === "/v1/messages",
+      ).length;
+      claudeFailurePhase =
+        primaryCount === 0
+          ? "model-pair-empty"
+          : primaryCount === 1
+            ? "model-pair-initial-only"
+            : "model-pair";
       throw new Error("integration.claude-code.model-pair");
+    }
     await Promise.race([
       // Divide the original remaining budget across the finite control-row
       // allowance; do not accidentally create a new five-second turn cutoff.

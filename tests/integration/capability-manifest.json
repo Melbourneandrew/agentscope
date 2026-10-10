@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-1954785191f666dafb0d6a9af04b98cb755017760c1b4573f95fd4fddd41a052",
+  "manifestIdentity": "sha256-2e831dbc358a01478ca0396246e525c398a5fa6ae99d2f09748047d386dfbf4a",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -348,7 +348,7 @@
       },
       "scenarioProcess": {
         "path": "claude-code-scenario.mjs",
-        "sha256": "aca74eb070621d5b91306f5895b7a98446889fb171629abe40a58d0a3103d74b"
+        "sha256": "891ab2670ba561321de376328c0434be800f7ac1d7fd17ce6f71076b65a9ef69"
       },
       "runtimeArtifacts": [
         {

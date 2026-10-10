@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,9 @@ import type { CapabilityManifest } from "./manifest.js";
 import * as adapterModule from "../fixtures/claude-code-platform-adapter.mjs";
 // @ts-expect-error private integration authority has no declaration
 import * as authorityModule from "../immutable-candidate-authority.mjs";
+// @ts-expect-error private integration oracle has no declaration
+import * as modelOracle from "../claude-code-platform-oracle.mjs";
+import * as modelControl from "../mockserver-control.mjs";
 
 const { claudeScenarioFailureDiagnostic, encodeInteractiveFailureExitCode } =
   authorityModule as {
@@ -55,6 +59,248 @@ const start = source.indexOf("const waitForClaudeModelPair =");
 const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
+
+const modelStimulus = {
+  path: "/worktree/fixed",
+  prompt: "synthetic controlled Read",
+};
+const modelInitial = () => ({
+  model: "synthetic-model",
+  stream: true,
+  messages: [
+    { role: "user", content: [{ type: "text", text: modelStimulus.prompt }] },
+  ],
+});
+const modelRequest = (body: unknown) => ({
+  method: "POST",
+  path: "/v1/messages",
+  body: JSON.stringify(body),
+});
+const modelPairRows = () => {
+  const initial = modelInitial();
+  return [
+    modelRequest(initial),
+    modelRequest({
+      ...initial,
+      messages: [
+        ...initial.messages,
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_agentscope_claude_read_1",
+              name: "Read",
+              input: { file_path: modelStimulus.path },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_agentscope_claude_read_1",
+              content: "synthetic result",
+            },
+          ],
+        },
+      ],
+    }),
+  ];
+};
+const modelPollFixture = (rows: unknown, projected?: unknown) => {
+  const oracle = modelOracle as {
+    inspectClaudeCodeModelRequests: (
+      bytes: Buffer,
+      stimulus: typeof modelStimulus,
+    ) => unknown;
+  };
+  const control = modelControl as {
+    projectMockServerRequests: (bytes: Buffer) => unknown;
+  };
+  const body = source.slice(
+    start,
+    source.indexOf("// A delivered second request", start),
+  );
+  let clock = 1,
+    requests = 0,
+    waits = 0;
+  const context = {
+    claudeFailurePhase: "model-pair",
+    claudeCodeReadStimulus: modelStimulus,
+    inspectClaudeCodeModelRequests: oracle.inspectClaudeCodeModelRequests,
+    projectMockServerRequests:
+      projected === undefined
+        ? control.projectMockServerRequests
+        : () => projected,
+    monotonicNow: () => clock,
+    setTimeout: (callback: () => void, duration: number) => {
+      waits++;
+      clock += duration;
+      callback();
+    },
+  };
+  const poll = runInNewContext(`${body}; waitForClaudeModelPair`, context) as (
+    control: { requests: () => Promise<{ status: number; bytes: Buffer }> },
+    turn: Promise<void>,
+    deadline: number,
+  ) => Promise<unknown>;
+  return {
+    context,
+    counts: () => ({ requests, waits }),
+    run: () =>
+      poll(
+        {
+          requests: () => {
+            requests++;
+            return Promise.resolve({
+              status: 200,
+              bytes: Buffer.from(JSON.stringify(rows)),
+            });
+          },
+        },
+        new Promise<void>(() => {}),
+        1000,
+      ),
+  };
+};
+const modelFailureWire = authorityModule as {
+  readBoundedInteractiveFailureMarker: (ledger: string) => string | undefined;
+  selectInteractiveFailureDiagnostic: (
+    marker: unknown,
+    phase: unknown,
+    error: unknown,
+  ) => string | undefined;
+  formatInteractiveChildDiagnostic: (predicate: unknown) => string;
+  extractInteractiveChildDiagnostic: (output: string) => string | undefined;
+  selectInteractiveExecutionFailurePredicate: (
+    candidate: unknown,
+    retained: unknown,
+    scenario: string,
+  ) => string;
+  validInstalledPtyFailure: (value: unknown) => boolean;
+};
+
+describe("actual model-pair exhaustion localization (synthetic wire only)", () => {
+  it.each([
+    [[], "empty"],
+    [[modelRequest(modelInitial())], "initial-only"],
+  ] as const)(
+    "retains pending %s through the unchanged refusal and existing marker",
+    async (rows, suffix) => {
+      const input = modelPollFixture(rows);
+      let original: unknown;
+      try {
+        await input.run();
+      } catch (error) {
+        original = error;
+      }
+      expect(original).toHaveProperty(
+        "message",
+        "integration.claude-code.model-pair",
+      );
+      expect(input.counts()).toEqual({ requests: 5, waits: 4 });
+      expect(input.context.claudeFailurePhase).toBe(`model-pair-${suffix}`);
+      const diagnostic = claudeScenarioFailureDiagnostic(
+        original,
+        input.context.claudeFailurePhase,
+      );
+      expect(diagnostic).toBe(
+        `integration.fixture.claude-model-pair-${suffix}`,
+      );
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(223);
+      const ledger = mkdtempSync(join(tmpdir(), "agentscope-model-pending-"));
+      try {
+        writeFileSync(
+          join(ledger, "interactive-failure.txt"),
+          `${diagnostic}\n`,
+          { flag: "wx", mode: 0o600 },
+        );
+        const marker =
+          modelFailureWire.readBoundedInteractiveFailureMarker(ledger);
+        const selected = modelFailureWire.selectInteractiveFailureDiagnostic(
+          marker,
+          "integration.fixture.claude-model-pair",
+          "integration.runner.fixture-failed",
+        );
+        const frame =
+          modelFailureWire.formatInteractiveChildDiagnostic(selected);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        const predicate =
+          modelFailureWire.selectInteractiveExecutionFailurePredicate(
+            modelFailureWire.extractInteractiveChildDiagnostic(frame),
+            undefined,
+            "claude-interactive-trace-smoke",
+          );
+        expect(predicate).toBe(diagnostic);
+        expect(
+          modelFailureWire.validInstalledPtyFailure(
+            JSON.parse(
+              JSON.stringify({
+                receiptVersion: 1,
+                phase: "pty-execution",
+                predicate,
+                scenarioId: "claude-interactive-trace-smoke",
+              }),
+            ),
+          ),
+        ).toBe(true);
+        expect(frame).not.toContain(modelStimulus.prompt);
+        expect(frame).not.toContain(modelStimulus.path);
+      } finally {
+        rmSync(ledger, { recursive: true, force: true });
+      }
+    },
+  );
+  it("returns the actual valid pair without changing the phase or waiting", async () => {
+    const input = modelPollFixture(modelPairRows());
+    await expect(input.run()).resolves.toHaveProperty(
+      "pair.modelRequestBodySha256",
+    );
+    expect(input.counts()).toEqual({ requests: 1, waits: 0 });
+    expect(input.context.claudeFailurePhase).toBe("model-pair");
+  });
+  it.each([
+    [[null], "oracle-model-ledger"],
+    [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+    [
+      [...modelPairRows(), modelRequest(modelInitial())],
+      "oracle-model-primary-count",
+    ],
+  ])("keeps the original strict oracle refusal for %s", async (rows, code) => {
+    const input = modelPollFixture(rows);
+    await expect(input.run()).rejects.toThrow(
+      `integration.claude-code.${code}`,
+    );
+    expect(input.counts()).toEqual({ requests: 1, waits: 0 });
+    expect(input.context.claudeFailurePhase).toBe("model-pair");
+  });
+  it("keeps unexpected projected primary counts generic", async () => {
+    const input = modelPollFixture([], modelPairRows());
+    await expect(input.run()).rejects.toThrow(
+      "integration.claude-code.model-pair",
+    );
+    expect(input.context.claudeFailurePhase).toBe("model-pair");
+  });
+  it("keeps malformed projection metadata an immediate original refusal", async () => {
+    const input = modelPollFixture([
+      {
+        method: "GET",
+        path: "/aux",
+        headers: { "x-agentscope-final-role": ["private"] },
+      },
+    ]);
+    await expect(input.run()).rejects.toThrow("integration.mockserver.control");
+    expect(input.counts()).toEqual({ requests: 1, waits: 0 });
+    expect(input.context.claudeFailurePhase).toBe("model-pair");
+  });
+});
 
 describe("actual Claude ledger descriptor setup", () => {
   const begin = source.indexOf("const protectClaudeLedger =");
