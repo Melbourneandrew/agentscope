@@ -499,32 +499,63 @@ const request = (
       .digest("hex"),
   };
 };
+const executeWithControl = async (
+  sequence: string,
+  expectedResponse?: string,
+) => {
+  vi.resetModules();
+  const { BoundedTerminalEmulator: Terminal } =
+    await import("../bounded-terminal-emulator.js");
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
+  const write = Terminal.prototype.write;
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
+  const takeResponses = Terminal.prototype.takeTerminalResponses;
+  let responseBytes = "";
+  const responses = vi
+    .spyOn(Terminal.prototype, "takeTerminalResponses")
+    .mockImplementation(function (this: BoundedTerminalEmulator) {
+      const result = Reflect.apply(takeResponses, this, []);
+      responseBytes += new TextDecoder().decode(result);
+      return result;
+    });
+  let inserted = false;
+  const spy = vi
+    .spyOn(Terminal.prototype, "write")
+    .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+      if (!inserted) {
+        inserted = true;
+        Reflect.apply(write, this, [new TextEncoder().encode(sequence)]);
+      }
+      Reflect.apply(write, this, [chunk]);
+    });
+  try {
+    const { executeSelectedPtyTransportForTest: execute } =
+      await import("../internal/headless-supervisor-backend.js");
+    return await execute(request(), "clean");
+  } finally {
+    expect(inserted).toBe(true);
+    spy.mockRestore();
+    responses.mockRestore();
+    if (expectedResponse !== undefined)
+      expect(responseBytes).toBe(expectedResponse);
+  }
+};
 describe("fixed extended-CSI selected transport refusals", () => {
-  const executeWithControl = async (sequence: string) => {
-    vi.resetModules();
-    const { BoundedTerminalEmulator: Terminal } =
-      await import("../bounded-terminal-emulator.js");
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
-    const write = Terminal.prototype.write;
-    let inserted = false;
-    const spy = vi
-      .spyOn(Terminal.prototype, "write")
-      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
-        if (!inserted) {
-          inserted = true;
-          Reflect.apply(write, this, [new TextEncoder().encode(sequence)]);
-        }
-        Reflect.apply(write, this, [chunk]);
+  it.each(["\u001b[?2031h", "\u001b[?2031l", "\u001b[?2031h\u001b[?996n"])(
+    "drives documented fixed theme protocol %j",
+    async (sequence) => {
+      await expect(
+        executeWithControl(
+          sequence,
+          sequence.endsWith("996n") ? "\u001b[?997;1n" : "",
+        ),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
       });
-    try {
-      const { executeSelectedPtyTransportForTest: execute } =
-        await import("../internal/headless-supervisor-backend.js");
-      return await execute(request(), "clean");
-    } finally {
-      expect(inserted).toBe(true);
-      spy.mockRestore();
-    }
-  };
+    },
+  );
   it("completes the existing selected transport after exact Win32-input disable", async () => {
     await expect(executeWithControl("\u001b[?9001l")).resolves.toMatchObject({
       outcome: "completed",

@@ -11,6 +11,67 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("fixed palette theme protocol", () => {
+  it("models fragmented subscription without changing screen or sending an initial report", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("ordinary ASCII"));
+    const before = terminal.snapshot();
+    const sequence = "\u001b[?2031h\u001b[?2031l";
+    for (const character of sequence) terminal.write(bytes(character));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes(sequence).length,
+    });
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+  it.each(["", "\u001b[?2031h", "\u001b[?2031h\u001b[?2031l"])(
+    "answers exact theme query after %j",
+    (subscription) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `${subscription}\u001b[?996n`)
+        terminal.write(bytes(character));
+      expect(terminal.snapshot()).toMatchObject({
+        semanticState: "active",
+        malformedControlCount: 0,
+        unsupportedControlCount: 0,
+      });
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        "\u001b[?997;1n",
+      );
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each([
+    "\u001b[?996;1n",
+    "\u001b[?997n",
+    "\u001b[996n",
+    "\u001b[?2031;9999h",
+  ])("retains strict refusal for nearby shape %j", (sequence) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+  it("retains error priority and the cumulative response budget across drains", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[?2031h\u001b[?996n"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-h-9999",
+    );
+    terminal.takeTerminalResponses();
+    for (let index = 1; index < 455; index += 1) {
+      terminal.write(bytes("\u001b[?996n"));
+      terminal.takeTerminalResponses();
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[?996n"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
 describe("fixed rejected extended-CSI identities", () => {
   it.each([0, 9999, 65535])(
     "localizes bounded unlisted mode %s without admitting it",
@@ -169,6 +230,51 @@ const terminalForCharset = () => {
   terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
   return terminal;
 };
+describe("theme protocol preserves existing challenge authority", () => {
+  it("does not mutate established styled readiness or screen identity", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    const sequence = "\u001b[?2031h\u001b[?996n\u001b[?2031l";
+    terminal.write(bytes(sequence));
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes(sequence).length,
+    });
+  });
+  it("cannot recover revoked graphics trust without fresh ASCII frame", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    terminal.write(bytes("\u001b(0\u001b[?2031h\u001b[?996n\u001b[?2031l"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\u001b(B${frame}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("cannot advance an incomplete required protocol handshake", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge: "a".repeat(64),
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    const before = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[?2031h\u001b[?996n\u001b[?2031l"));
+    expect(terminal.challengedReadinessProgress()).toEqual(before);
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+});
 describe("G0/G1 designation and GL invocation", () => {
   it.each([
     ["\u000f", true],

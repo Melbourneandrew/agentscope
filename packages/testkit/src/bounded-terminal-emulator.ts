@@ -1698,13 +1698,24 @@ export class BoundedTerminalEmulator {
       this.#recordUnsupportedControl("extended-csi-intermediate");
       return;
     }
+    if (
+      prefix === "?" &&
+      final === "n" &&
+      values.length === 1 &&
+      values[0] === 996
+    ) {
+      // The existing palette is fixed white-on-black, hence dark.
+      this.#enqueueTerminalResponse("\u001b[?997;1n");
+      return;
+    }
     if (prefix === "?" && (final === "h" || final === "l")) {
       // Win32 input is never enabled here; this exact reset preserves VT input.
       if (final === "l" && values.length === 1 && values[0] === 9001) return;
       for (const mode of values) {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
-        else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
+        // 2031 subscribes to palette changes; this immutable palette never changes.
+        else if (![7, 12, 1004, 1007, 2004, 2026, 2031].includes(mode)) {
           this.#recordUnsupportedControl(
             hasOwn(rejectedPrivateModeReasons, mode)
               ? rejectedPrivateModeReasons[
