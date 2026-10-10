@@ -1,203 +1,109 @@
-import type * as FileSystem from "node:fs";
-import * as fs from "node:fs";
-import { runInNewContext } from "node:vm";
-import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const state = vi.hoisted(() => ({
-  path: "",
-  wrongLength: false,
-  writes: [] as [string, unknown][],
-  directories: [] as string[],
-  rejects: "",
-  markers: [] as string[],
-  sinkFailure: false,
-  primary: undefined as Error | undefined,
-  inventoryFailure: false,
-  failureCategory: "",
-  callbackMode: 0o664,
-  cacheIssue: "",
-  opened: 0,
-  closed: 0,
-  timestamp: 0,
-}));
-function statusFor(path: string, held = false) {
-  const cache = path.endsWith("maven-repository") || path.endsWith("npm-cache");
-  const directory = cache || path === "/supplier";
-  return {
-    isFile: () => !directory || (cache && state.cacheIssue === "file"),
-    isDirectory: () => directory && !(cache && state.cacheIssue === "file"),
-    isSymbolicLink: () => cache && state.cacheIssue === "symlink",
-    dev: cache && state.cacheIssue === "device" ? 2 : 1,
-    ino:
-      path.length + (cache && held && state.cacheIssue === "identity" ? 1 : 0),
-    nlink: 1,
-    size: directory ? 0 : expectedSize(),
-    uid: cache && state.cacheIssue === "owner" ? 1 : 0,
-    gid: cache && state.cacheIssue === "group" ? 1 : 0,
-    mode: directory
-      ? cache && state.cacheIssue === "mode"
-        ? 0o755
-        : 0o700
-      : path.endsWith(".java")
-        ? state.callbackMode
-        : 0o600,
-    mtimeMs: directory ? state.timestamp++ : 0,
-    ctimeMs: directory ? state.timestamp++ : 0,
-  };
-}
-function expectedSize() {
-  if (state.wrongLength) return 8;
-  if (state.path.endsWith("source.tar.gz")) return 31_447_709;
-  if (state.path.endsWith("maven.zip")) return 9_395_475;
-  if (state.path.endsWith("node.tar.gz")) return 54_108_748;
-  if (state.path.endsWith("jdk.tar.gz")) return 193_252_603;
-  return 9101;
-}
-vi.mock("node:fs", async (original) => ({
-  ...(await original<typeof FileSystem>()),
-  openSync: (path: string) => {
-    state.path = path;
-    state.opened++;
-    return 1;
-  },
-  closeSync: () => state.closed++,
-  fstatSync: () => statusFor(state.path, true),
-  lstatSync: (path: string) => {
-    if (state.cacheIssue === "missing" && path.endsWith("npm-cache"))
-      throw Error("synthetic-missing-cache");
-    return statusFor(path);
-  },
-  readSync: (
-    _fd: number,
-    buffer: Buffer,
-    offset: number,
-    length: number,
-    position: number,
-  ) => {
-    const count = Math.min(length, expectedSize() - position);
-    buffer.fill(32, offset, offset + count);
-    return count;
-  },
-  mkdirSync: (path: string) => {
-    if (path === "/out" && state.failureCategory === "output-create")
-      throw state.primary ?? Error("synthetic-output-create");
-    return state.directories.push(path);
-  },
-  writeFileSync: (path: string, bytes: unknown) => {
-    if (
-      path === "/out/material.json" &&
-      state.failureCategory === "output-write"
-    )
-      throw state.primary ?? Error("synthetic-output-write");
-    return state.writes.push([path, bytes]);
-  },
-  copyFileSync: () => {},
-  writeSync: (fd: number, value: string) => {
-    expect(fd).toBe(2);
-    state.markers.push(value);
-    if (state.sinkFailure) throw Error("SINK_CANARY");
-    return value.length;
-  },
-}));
-vi.mock("../mockserver-material/source-archive.mjs", () => ({
-  verifyMockServerSourceArchive: (value: Buffer) => {
-    if (state.rejects === "source") throw state.primary ?? Error("source");
-    return value;
-  },
-}));
-vi.mock("../mockserver-material/build-tool-archive.mjs", () => ({
-  verifyMavenArchiveBytes: (value: Buffer) => {
-    if (state.rejects === "maven") throw Error("maven");
-    return value;
-  },
-}));
-vi.mock("../mockserver-material/bootstrap-archive.mjs", () => ({
-  verifyBootstrapArchive: (kind: string, value: Buffer) => {
-    if (state.rejects === kind) throw Error(kind);
-    return value;
-  },
-}));
-vi.mock("../mockserver-material/callback-patch.mjs", () => ({
-  patchCallbackSource: () => "synthetic-patched",
-}));
-vi.mock("../mockserver-material/supplier-inventory.mjs", () => ({
-  inventoryMockServerSupplier: (
-    _root: string,
-    observe?: (category: string) => void,
-  ) => {
-    if (state.failureCategory.startsWith("inventory-")) {
-      observe?.(state.failureCategory);
-      throw state.primary ?? Error("synthetic-inventory");
-    }
-    if (state.inventoryFailure) throw state.primary ?? new Error("inventory");
-    return Buffer.from("synthetic-inventory");
-  },
-}));
-import { runMockServerSupplierResearch } from "../mockserver-material/supplier-command.mjs";
-import { verifyMockServerSourceArchive } from "../mockserver-material/source-archive.mjs";
-import { verifyMavenArchiveBytes } from "../mockserver-material/build-tool-archive.mjs";
-import { verifyBootstrapArchive } from "../mockserver-material/bootstrap-archive.mjs";
-import { patchCallbackSource } from "../mockserver-material/callback-patch.mjs";
-import { inventoryMockServerSupplier } from "../mockserver-material/supplier-inventory.mjs";
 import {
-  mockServerSupplierBuildPlan,
-  mockServerSupplierLayout,
-  supplierGlobalMavenSettings,
-  supplierMavenSettings,
-} from "../mockserver-material/build-recipe.mjs";
-
-const workerSource = fs.readFileSync(
-  new URL("../mockserver-material/supplier-command.mjs", import.meta.url),
-  "utf8",
-);
-const privateWorker = runInNewContext(
-  `${workerSource.slice(workerSource.indexOf("const environment ="), workerSource.indexOf("export const runMockServerSupplierResearch"))}\nrunSupplier`,
-  {
-    ...fs,
-    Buffer,
-    maximumOutputBytes: 8 * 1024 * 1024,
-    verifyMockServerSourceArchive,
-    verifyMavenArchiveBytes,
-    verifyBootstrapArchive,
-    patchCallbackSource,
-    inventoryMockServerSupplier,
-    mockServerSupplierBuildPlan,
-    mockServerSupplierLayout,
-    supplierGlobalMavenSettings,
-    supplierMavenSettings,
-  },
-) as (
-  run: (file: string, ...args: unknown[]) => Promise<unknown>,
-  phase: string,
-  observe?: boolean,
-) => Promise<void>;
-
-// Run the actual command body with synthetic fixed-input I/O. Neither archive
-// parsing nor any vendor program runs; fixed byte lengths are mocked below.
-beforeEach(() => {
-  state.writes = [];
-  state.directories = [];
-  state.rejects = "";
-  state.wrongLength = false;
-  state.markers = [];
-  state.sinkFailure = false;
-  state.primary = undefined;
-  state.inventoryFailure = false;
-  state.failureCategory = "";
-  state.callbackMode = 0o664;
-  state.cacheIssue = "";
-  state.opened = state.closed = 0;
-  state.timestamp = 0;
+  state,
+  privateWorker,
+  runMockServerSupplierResearch,
+  classifyPackageFailure,
+  supplierMarker,
+  phases,
+} from "./__tests__/fixtures/mockserver-supplier-command.js";
+import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
+import { PassThrough } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
+describe("actual package rejection has only bounded fixed observations", () => {
+  it.each([
+    ["compilation", "[ERROR] COMPILATION ERROR :"],
+    [
+      "resolution",
+      "[ERROR] Failed to execute goal on project mockserver-core: Could not resolve dependencies",
+    ],
+    [
+      "frontend",
+      "[ERROR] Failed to execute goal com.github.eirslett:frontend-maven-plugin:1.15.1:npm (npm build) on project mockserver-netty:",
+    ],
+    ["other", "PRIVATE_CANARY"],
+    ["other", "prefix [ERROR] COMPILATION ERROR :"],
+    [
+      "other",
+      "[ERROR] COMPILATION ERROR :\n[ERROR] Failed to execute goal com.github.eirslett:frontend-maven-plugin:1.15.1:npm ",
+    ],
+    ["other", "accessor"],
+    ["other", "proxy"],
+    ["other", "oversized"],
+  ])("preserves primary identity for %s/%s", async (category, output) => {
+    let reads = 0;
+    const native = Object.assign(new Error("PRIVATE_CANARY"), {
+      stdout: "",
+      stderr: output === "oversized" ? "X".repeat(8 * 1024 * 1024 + 1) : output,
+    });
+    if (output === "accessor")
+      Object.defineProperty(native, "stdout", {
+        get() {
+          reads++;
+          throw Error("PRIVATE_CANARY");
+        },
+      });
+    const primary =
+      output === "proxy"
+        ? new Proxy(native, {
+            getOwnPropertyDescriptor() {
+              reads++;
+              throw Error("PRIVATE_CANARY");
+            },
+          })
+        : native;
+    const run = vi.fn((file: string) =>
+      file.endsWith("/mvn") ? Promise.reject(primary) : Promise.resolve(),
+    );
+    const detail = classifyPackageFailure(primary).join(",");
+    for (const connected of [false, true]) {
+      await expect(
+        connected
+          ? privateWorker(run, "cache-seeding", false)
+          : runMockServerSupplierResearch(run),
+      ).rejects.toBe(primary);
+      expect(state.markers.at(-1)).toBe(
+        supplierMarker(`supplier-package-${category}`, connected, detail),
+      );
+    }
+    expect(reads).toBe(0);
+    expect(state.markers.join("")).not.toContain("CANARY");
+    expect(state.closed).toBe(state.opened);
+    state.sinkFailure = true;
+    await expect(runMockServerSupplierResearch(run)).rejects.toBe(primary);
+  });
 });
-
-const phases = Object.freeze([
-  "supplier-entry",
-  "supplier-extract",
-  "supplier-package",
-  "supplier-inventory",
-]);
-const supplierMarker = (stage: string, connected = false) =>
-  `[agentscope-material:v1 stage=${connected ? stage.replace("supplier-", "supplier-connected-") : stage} family=none]\n`;
+describe("pending package goals are optional entered observations", () => {
+  const header =
+    "[INFO] --- compiler:3.15.0:compile (default-compile) @ mockserver-core ---\n";
+  it("binds actual child streams and finalization after package settlement", async () => {
+    const stdout = new PassThrough(),
+      stderr = new PassThrough();
+    let beforeSettlement: string[] = [];
+    const run = vi.fn((file: string) => {
+      if (!file.endsWith("/mvn")) return Promise.resolve();
+      return Object.assign(
+        new Promise<void>((resolve) => {
+          queueMicrotask(() => {
+            stdout.write(header);
+            beforeSettlement = [...state.markers];
+            resolve();
+          });
+        }),
+        { child: { stdout, stderr } },
+      );
+    });
+    await privateWorker(run, "cache-seeding", false);
+    expect(beforeSettlement.at(-1)).toBe(
+      supplierMarker("supplier-package-goal-a", true),
+    );
+    expect(beforeSettlement.join("")).not.toContain("service-finalization");
+    expect(state.markers.at(-1)).toBe(
+      supplierMarker("supplier-service-finalization", true),
+    );
+    expect(stdout.listenerCount("data") + stderr.listenerCount("data")).toBe(0);
+    expect(state.markers.join("")).not.toContain("maven=");
+  });
+});
 describe("composite build has monotonic connected and offline diagnostics", () => {
   it.each(phases)(
     "retains %s from the actual collector after the connected build",
@@ -227,7 +133,12 @@ describe("composite build has monotonic connected and offline diagnostics", () =
       for (const [index, marker] of state.markers.entries())
         observation.consume(Buffer.from(`#20 ${index}.100 ${marker}`));
       expect(observation.snapshot()).toMatchObject({
-        untrustedBootstrapStage: phase,
+        untrustedBootstrapStage:
+          phase === "supplier-package"
+            ? "supplier-package-other"
+            : phase === "supplier-entry"
+              ? "supplier-cache-npm"
+              : phase,
         untrustedBootstrapFailureFamily: "none",
       });
       expect(state.markers.join("")).not.toContain("CANARY");
@@ -259,6 +170,78 @@ describe("composite build has monotonic connected and offline diagnostics", () =
 });
 
 describe("fresh offline worker adopts only conventional cache roots", () => {
+  it.each(["cache-seeding", "service-offline"])(
+    "builds actual %s inputs without adopting research inventory",
+    async (phase) => {
+      const calls: {
+        file: string;
+        args: string[];
+        options: { env: Record<string, string>; cwd: string };
+      }[] = [];
+      await privateWorker((file, args, options) => {
+        calls.push({
+          file,
+          args: args as string[],
+          options: options as (typeof calls)[number]["options"],
+        });
+        return Promise.resolve();
+      }, phase);
+      expect(calls).toHaveLength(6);
+      expect(calls[0]?.args).toContain("/supplier/inputs/source.tar.gz");
+      expect(calls[0]?.args).toContain("/supplier/source");
+      expect(calls.at(-1)?.args.includes("--offline")).toBe(
+        phase === "service-offline",
+      );
+      expect(calls.at(-1)?.options.env.NPM_CONFIG_OFFLINE).toBe(
+        phase === "service-offline" ? "true" : "false",
+      );
+      expect(calls.at(-1)?.options.cwd).toBe("/supplier/source/mockserver");
+      expect(
+        state.writes
+          .filter(([path]) => path.endsWith(".java"))
+          .map(([path]) => path.split("/").at(-1)),
+      ).toEqual([
+        "CallbackWebSocketServerHandler.java",
+        "JsonBodySerializer.java",
+        "MockServerEventLog.java",
+        "HttpState.java",
+        "RecordedRequestsFileSystemPersistence.java",
+        "LifeCycle.java",
+        "HttpRequestHandler.java",
+        "HttpActionHandler.java",
+        "MockServerLogger.java",
+        "JsonBodyDTOSerializer.java",
+      ]);
+      expect(state.writes.some(([path]) => path.startsWith("/out/"))).toBe(
+        false,
+      );
+      expect(state.closed).toBe(state.opened);
+    },
+  );
+  it.each([
+    "directory",
+    "symlink",
+    "links",
+    "empty",
+    "oversized",
+    "owner",
+    "mode",
+    "identity",
+    "changed",
+  ])(
+    "rejects %s final JAR without research output or leaked descriptors",
+    async (issue) => {
+      state.artifactIssue = issue;
+      for (const phase of ["cache-seeding", "service-offline"])
+        await expect(privateWorker(async () => {}, phase)).rejects.toThrow(
+          "supplier-command",
+        );
+      expect(state.writes.some(([path]) => path.startsWith("/out/"))).toBe(
+        false,
+      );
+      expect(state.closed).toBe(state.opened);
+    },
+  );
   it("reextracts and patches originals before the full offline package goal", async () => {
     const execute = vi.fn(() => Promise.resolve());
     await privateWorker(execute, "offline-build");
@@ -292,80 +275,6 @@ describe("fresh offline worker adopts only conventional cache roots", () => {
     expect(state.writes.at(-1)?.[0]).toBe("/out/material.json");
     expect(state.closed).toBe(state.opened);
     expect(state.timestamp).toBeGreaterThan(0);
-  });
-  it.each([
-    "missing",
-    "file",
-    "symlink",
-    "device",
-    "identity",
-    "owner",
-    "group",
-    "mode",
-  ])(
-    "rejects %s cache before extraction and closes any held descriptors",
-    async (issue) => {
-      state.cacheIssue = issue;
-      const execute = vi.fn(() => Promise.resolve());
-      await expect(privateWorker(execute, "offline-build")).rejects.toThrow();
-      expect(execute).not.toHaveBeenCalled();
-      expect(state.writes).toEqual([]);
-      expect(state.closed).toBe(state.opened);
-    },
-  );
-  it("rejects changed physical cache metadata after package without freezing its content timestamps", async () => {
-    const execute = vi.fn((file) => {
-      if (String(file).endsWith("/mvn")) state.cacheIssue = "mode";
-      return Promise.resolve();
-    });
-    await expect(privateWorker(execute, "offline-build")).rejects.toThrow(
-      "supplier-command",
-    );
-    expect(state.writes.some(([path]) => path === "/out/material.json")).toBe(
-      false,
-    );
-    expect(state.closed).toBe(state.opened);
-  });
-  it("rejects an unknown mode before any filesystem operation", async () => {
-    const execute = vi.fn(() => Promise.resolve());
-    await expect(privateWorker(execute, "other")).rejects.toThrow(
-      "build-recipe",
-    );
-    expect(state.opened).toBe(0);
-    expect(state.directories).toEqual([]);
-    expect(execute).not.toHaveBeenCalled();
-    expect(workerSource).toMatch(
-      /await runSupplier\(\s*execute,\s*process\.argv\[2\],\s*process\.argv\[2\] === "offline-build",?\s*\)/u,
-    );
-    expect(workerSource).toContain(
-      '["dependency-research", "offline-build"].includes(process.argv[2])',
-    );
-  });
-  it.each(["source", "maven", "node", "jdk"])(
-    "reauthenticates %s in offline mode",
-    async (kind) => {
-      state.rejects = kind;
-      const execute = vi.fn(() => Promise.resolve());
-      await expect(privateWorker(execute, "offline-build")).rejects.toThrow(
-        kind,
-      );
-      expect(execute).not.toHaveBeenCalled();
-      expect(state.closed).toBe(state.opened);
-    },
-  );
-  it("preserves offline package failure identity even when the optional sink throws", async () => {
-    state.sinkFailure = true;
-    const primary = new Error("synthetic-offline-primary");
-    const execute = vi.fn((file) =>
-      String(file).endsWith("/mvn")
-        ? Promise.reject(primary)
-        : Promise.resolve(),
-    );
-    await expect(privateWorker(execute, "offline-build")).rejects.toBe(primary);
-    expect(state.writes.some(([path]) => path === "/out/material.json")).toBe(
-      false,
-    );
-    expect(state.closed).toBe(state.opened);
   });
 });
 
@@ -416,6 +325,9 @@ describe("fixed last-entered supplier phases without outcome authority", () => {
         expect(state.markers).toEqual(
           phases
             .slice(0, phases.indexOf(phase) + 1)
+            .concat(
+              phase === "supplier-package" ? ["supplier-package-other"] : [],
+            )
             .map((stage) => supplierMarker(stage, connected)),
         );
         expect(state.markers.join("")).not.toContain("CANARY");
@@ -468,10 +380,9 @@ describe("supplier command extraction/input boundary", () => {
       );
       expect(execute).toHaveBeenCalledTimes(4);
       expect(state.writes).toEqual([]);
-      expect(state.markers).toEqual([
-        "[agentscope-material:v1 stage=supplier-entry family=none]\n",
-        "[agentscope-material:v1 stage=supplier-extract family=none]\n",
-      ]);
+      expect(state.markers).toEqual(
+        phases.slice(0, 2).map((stage) => supplierMarker(stage)),
+      );
     },
   );
   it("rejects wrong input lengths before tools, configuration or inventory", async () => {

@@ -13,12 +13,20 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
-import { promisify } from "node:util";
+import { promisify, types } from "node:util";
+import { deriveIdentityBundle } from "@agentscope/protocol";
+import {
+  completionCopySourceMissingResponseMatches,
+  knownFailureCode,
+  readOtlpObservationFailure,
+} from "./dist/controller-failure-diagnostic.js";
 
 import {
   compileIsolationEvidence,
@@ -30,6 +38,7 @@ import {
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
   mapWithConcurrency,
+  observeSelectedWriterOtlp,
   sanitizeFixtureResult,
   scenarioContainerTerminalWitness,
   SCENARIO_HOME,
@@ -56,6 +65,7 @@ import {
   revalidatePreparedImageAdmission,
   retirePreparedDockerNetwork,
   retirePreparedDockerControlVolume,
+  retirePreparedDockerImage,
 } from "./image-preparation.mjs";
 import {
   inspectPreparedHarnessMaterial,
@@ -65,13 +75,25 @@ import {
 } from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { writeExactRegularFile } from "./exact-file.mjs";
+import { collectorCa } from "./collector-ca.mjs";
 import { codexResearchDependencies } from "./codex-pty-research.mjs";
 import { createCodexFailureResearchRecord } from "./codex-trace-child-diagnostics.mjs";
+import { prepareMockServerService } from "./mockserver-material/prepare-supplier.mjs";
+import {
+  assertMockServerFinalLedger,
+  createMockServerControlMaterial,
+  openMockServerControl,
+  projectMockServerRequests,
+  readMockServerFinalLedger,
+  snapshotMockServerTraffic,
+  verifyMockServerControlBoundary,
+} from "./mockserver-control.mjs";
 import {
   compileImmutableCandidateHandoff,
   decodeInteractiveFailureExitCode,
   decodeInteractivePtyReceipt,
   extractInteractiveChildDiagnostic,
+  readInteractiveChildFailureObservation,
   interactivePtyEnvelopeDeadlineMatches,
   interactivePtyEnvelopeRejectionCode,
   interactivePtyExecutionReserveMilliseconds,
@@ -103,6 +125,7 @@ import {
   requireSubstrateCertificationReplay,
 } from "./dist/controller.js";
 import {
+  leakedChildReadinessIsValid,
   leakedChildReadinessWasObserved,
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./dist/substrate-certification.js";
@@ -112,6 +135,12 @@ const substrateCertificationCase = requireSubstrateCertificationCase();
 const substrateCertificationReplay = requireSubstrateCertificationReplay();
 const canonicalImagePlatform = `${IMAGE_PREPARATION_EXECUTION_POLICY.platform.os}/${IMAGE_PREPARATION_EXECUTION_POLICY.platform.architecture}`;
 
+// PUBLICLY KNOWN NON-AUTHORITATIVE TEST FIXTURE, not a secret or authority.
+// Never copy these literals into candidate/runtime material or retained output.
+const collectorTlsCertificate =
+  "-----BEGIN CERTIFICATE-----\nMIIDWTCCAkGgAwIBAgIJALhPtwb/YwcyMA0GCSqGSIb3DQEBCwUAMC8xLTArBgNV\nBAMMJEFnZW50c2NvcGUgTk9OLUFVVEhPUklUQVRJVkUgVEVTVCBDQTAeFw0yNjEw\nMDgyMjUxMzdaFw00NjEwMDMyMjUxMzdaMBQxEjAQBgNVBAMMCWNvbGxlY3RvcjCC\nASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAOI9QoaxF6zrv+z08vhCl4Wm\nBZ6FRhU6ueRm0wxs0VMMnkfoL48Xoaxsr2Imnw0g0YkHwuXbCwjcfV9KnMrXShE/\nf/FQpx+4NQiT65qGwY8tFI+RRdzL60LVCXo8g6Qn3Csz7lGxSsXY+Lqk4pkHMBE0\njv2NBbHTyj1fM62E4duDVucBqMMEZB4Woti7LB7z85ms7WmqMtXcqSNEVWp+IKkQ\nk+52HM/zzsBiPAs0I1QzUDGcZGHrQFmGxmasZDQJ6U2GFhG92BiR8PBzY6MieE2x\nz+b8APe1XXQmo+1Mn4C/gBwFz5yQdyKuXn2yn11QECqY65hkVATkpw2+rV/ihUMC\nAwEAAaOBkjCBjzAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIFoDATBgNVHSUE\nDDAKBggrBgEFBQcDATAaBgNVHREEEzARggljb2xsZWN0b3KHBH8AAAEwHQYDVR0O\nBBYEFCdZewpLX6ENldAi/+zeXIhxN6fnMB8GA1UdIwQYMBaAFBaQOqAoApslxCmZ\n8ZmT8eHoLTM+MA0GCSqGSIb3DQEBCwUAA4IBAQBO063j/ZT4jn6E5qlgspURADjY\nT0Gu1W+frEMcsP9MOcOmIt15bqDyoTDA6jJrtyDx7t7PIUI0+hPziWgdOTwG9QvJ\nMcURlJ7+eHqkC871vM8Y1FphRknWYoatDOacqlfG7uHRBeob77UnirJRqcjr3AUF\n9RXWYelaTP9/diuftwB8c7bPJlLFesZKEEjRZOix2YMAPRzFEkx2b2hPTL+5Dd5r\nu5+TcaRywxJi0eK12OxTnkOoqEk7ap2fY+qAjS+hnLabRqJt+O9jK2lHK12i67qV\njGcoL7rCQqywLR8fTrxiJr992WzELbGLCTyfJUPU9AKaTFi4lbYuDAfYBmTS\n-----END CERTIFICATE-----\n";
+const collectorTlsKey =
+  "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDiPUKGsRes67/s\n9PL4QpeFpgWehUYVOrnkZtMMbNFTDJ5H6C+PF6GsbK9iJp8NINGJB8Ll2wsI3H1f\nSpzK10oRP3/xUKcfuDUIk+uahsGPLRSPkUXcy+tC1Ql6PIOkJ9wrM+5RsUrF2Pi6\npOKZBzARNI79jQWx08o9XzOthOHbg1bnAajDBGQeFqLYuywe8/OZrO1pqjLV3Kkj\nRFVqfiCpEJPudhzP887AYjwLNCNUM1AxnGRh60BZhsZmrGQ0CelNhhYRvdgYkfDw\nc2OjInhNsc/m/AD3tV10JqPtTJ+Av4AcBc+ckHcirl59sp9dUBAqmOuYZFQE5KcN\nvq1f4oVDAgMBAAECggEAcStxrszBaheXryGstLEi+JDe+Lf0IcR5np4s7mc0opWK\nS7ACslKA5i6L4M4u+7Mx/ZjrTm2u7GTXNiatne3puA0KpBzTLNPJe5v63BaSlltX\nkKV7zAIZkhndHs9Mjn397YKRsT29iJCLg1ndm+zzh3fCG2VCtvyZiu+neyIglNwC\naBSywTix9penTf9LKagrZyYDax9/qr2XGFeG2fElvi3ybvDyJy9zzh/v8HyfZv1G\n3vhPvuKqJ9ywWmqx6e8O46Coss3FF4tZUBMjCBfsPFRXnMSKhuOOhNAkGvjMV2RO\nVnDilLK1HGuTw4Ma/X8oaTGUuyJ6fCLD7m3M4jxIsQKBgQD4EWyrJxNCuV+pCYCU\nA07x/oG85Dvi9gn/6APeYw2BA44Sunqm82eYHNfJ7VVn3Y2GK/D+U3fNQ6QN8Dv3\nsEN1q0TfUBxS8TzbBKJWBbR6JE8TI72gkui+0oobDOhP2g1WXbY3td433rpc+T6V\n2aO1eamFmpInQGYBElX6iBsiiQKBgQDpeSecwXPVtQJVLzgmExtXnnP4265eyZjA\nWK3F1USBcmUda+YmK5+8XrcGw5ovt8zLuvnJcGkmNddJXz8Lo96/JAjos9oyuF01\nQUwi+ncubTmhsjIRPzbbXcEqvzJk39QsTIR7qNbrWYgZy237OCTov5Wyp2fh/Aej\ny0bgLmTmawKBgQCWJ03kp2lUKQrLMbI/ZWVCu2/iWzAYqB7TZKf603AYGIPFuFSH\ne6vH+iVv15WrogKJJU3hU7qfZ4ME4NYbjfi3X+z3UvFiDx1r4Pk2IovkpteqWSbt\n7B6vapcn2n8/3lfWYDDstcwFe27I2iFU6QDb1wGSmkY/Ng7INUYPuJTcKQKBgQCh\nGg6xZfOuFVbkvM57x1dooFfZ8oxhr64Nm6NdDYpV4D/Ri3CmChgQ/TJCIpq0LpnM\nQtq1mzGTQjep02VHfO3o6s6S8/euY/U9GC+XO0kd6hSIdNODfyE1QX5XJtN5M9HO\nN4Z7ZcfXYlI9qlfbr6QYTorXWhieoTAMX+oqKxlIvQKBgBwGaB6Pb5VPsD0VufCy\n4dstz6JGo5+TenHxqW6fTTAXoWMxHb4eAAOjPicmz1ONHJwpL2WHlpqQ0XlPSICl\nvM52c7YcOeXm2KkugEcpg6y3Z6IrChLtjy4yzQG+PB4ymHCGR+tJHSmaURr+UVB8\njySh/x0sD0+Wfhi8e3/kCH1r\n-----END PRIVATE KEY-----\n";
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -198,6 +227,8 @@ const evidenceById = new Map(
   manifest.evidence.map((evidence) => [evidence.evidenceId, evidence]),
 );
 const preparedHarnessMaterials = new Map();
+const mockServerControls = new Map();
+const mockServerBuiltImages = new Map();
 const admissionMaterialRecords = new WeakMap();
 const admissionTerminalRecords = new WeakMap();
 configureRealHarnessAdmissionSources(
@@ -288,13 +319,23 @@ const tmpfsArguments = (limits, ownership = true) =>
     "--tmpfs",
     `${path}:rw,${scenarioTmpfsIsExecutable(path) ? "exec" : "noexec"},nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
+const isNativeTraceScenario = (plan) =>
+  ["codex-tui-trace-smoke", "claude-interactive-trace-smoke"].includes(
+    plan.scenarioId,
+  );
+const isGateCapableMockServer = (scenario) =>
+  scenario.modelRoutes.length === 1 &&
+  ((scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes[0] === "codex-tui-responses") ||
+    (scenario.scenarioId === "claude-interactive-trace-smoke" &&
+      scenario.modelRoutes[0] === "anthropic-messages"));
 const confinementArguments = (plan) => [
   "--network",
   plan.networkName,
   "--read-only",
   "--cap-drop",
   "ALL",
-  ...(plan.scenarioId === "codex-tui-trace-smoke"
+  ...(isNativeTraceScenario(plan)
     ? [
         "--cap-add",
         "CHOWN",
@@ -315,7 +356,7 @@ const confinementArguments = (plan) => [
   "--memory",
   String(ISOLATION_EXECUTOR_LIMITS.containers.scenario.memoryBytes),
   "--user",
-  plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000",
+  isNativeTraceScenario(plan) ? "0:0" : "1000:1000",
   ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.scenario),
 ];
 const sidecarResourceArguments = (limits) => [
@@ -331,26 +372,55 @@ const stageEsmPackageBoundary = (context) => {
   writeExactRegularFile(packageBoundaryPath, packageBoundaryBytes, 0o644);
 };
 
+const scenarioContextRefusals = new Map();
+const contextRefusalSlots = new Set([
+  "scenario-missing",
+  "evidence-missing",
+  "material-association",
+  "source-not-regular",
+  "source-identity",
+  "source-digest",
+  "package-association",
+]);
+const refuseScenarioContext = (plan, slot) => {
+  if (
+    !scenarioContextRefusals.has(plan.runId) &&
+    /^[a-f0-9]{16}$/u.test(plan.runId) &&
+    /^[a-z0-9][a-z0-9-]{0,127}$/u.test(plan.scenarioId) &&
+    contextRefusalSlots.has(slot)
+  )
+    scenarioContextRefusals.set(
+      plan.runId,
+      Object.freeze({ runId: plan.runId, scenarioId: plan.scenarioId, slot }),
+    );
+  throw new Error("integration.isolation.context");
+};
+const publishScenarioContextRefusals = () => {
+  for (const record of scenarioContextRefusals.values()) {
+    try {
+      const output = `integration.isolation.context-diagnostic:${JSON.stringify(record)}\n`;
+      if (Buffer.byteLength(output) <= 512) process.stderr.write(output);
+    } catch {
+      // Optional untrusted observation cannot replace the original failure.
+    }
+  }
+};
+
 // The exact staged inventory and Dockerfile are reviewed as one authority.
 // eslint-disable-next-line max-lines-per-function -- exact staged scenario authority
 const stageBuildContext = (plan) => {
   const runContexts = resolve(artifactsRoot, "contexts", plan.runId);
   const context = resolve(runContexts, "scenario");
-  const mockServerContext = resolve(runContexts, "mockserver");
   rmSync(runContexts, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
   mkdirSync(resolve(context, "runtime"), { recursive: true });
-  mkdirSync(mockServerContext, { recursive: true });
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
-  if (scenario === undefined) throw new Error("integration.isolation.context");
+  if (scenario === undefined) refuseScenarioContext(plan, "scenario-missing");
   const evidence = evidenceById.get(scenario.harnessEvidenceId);
-  if (evidence === undefined) throw new Error("integration.isolation.context");
-  const gateCapableMockServer =
-    scenario.scenarioId === "codex-tui-trace-smoke" &&
-    scenario.modelRoutes.length === 1 &&
-    scenario.modelRoutes[0] === "codex-tui-responses";
+  if (evidence === undefined) refuseScenarioContext(plan, "evidence-missing");
+  const gateCapableMockServer = isGateCapableMockServer(scenario);
   const harnessMaterial = preparedHarnessMaterials.get(
     scenario.harnessEvidenceId,
   );
@@ -358,7 +428,7 @@ const stageBuildContext = (plan) => {
     (evidence.material.kind !== "certification-fixture") !==
     (harnessMaterial !== undefined)
   )
-    throw new Error("integration.isolation.context");
+    refuseScenarioContext(plan, "material-association");
   const sources = [
     ...[
       "runner.mjs",
@@ -368,6 +438,8 @@ const stageBuildContext = (plan) => {
       "codex-pty-research.mjs",
       "codex-trace-child-diagnostics.mjs",
       "selected-runtime-files.mjs",
+      "mockserver-control.mjs",
+      "mockserver-final-ledger.mjs",
     ].map((name) => [name, resolve(integrationRoot, name)]),
     [
       "scenario-process.mjs",
@@ -378,25 +450,19 @@ const stageBuildContext = (plan) => {
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
     ],
-    ["dist/canonical.js", resolve(integrationRoot, "dist/canonical.js")],
-    [
+    ...[
+      "dist/canonical.js",
       "dist/interactive-pty-actions.js",
-      resolve(integrationRoot, "dist/interactive-pty-actions.js"),
-    ],
-    [
       "fixtures/substrate-negative-process.mjs",
-      resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
-    ],
-    [
-      "scenario-oracle.mjs",
-      resolve(integrationRoot, scenario.scenarioOracle.path),
-      scenario.scenarioOracle.sha256,
-    ],
-    [
-      "scenario-adapter.mjs",
-      resolve(integrationRoot, scenario.fixtureAdapter.path),
-      scenario.fixtureAdapter.sha256,
-    ],
+    ].map((name) => [name, resolve(integrationRoot, name)]),
+    ...[
+      ["scenario-oracle.mjs", scenario.scenarioOracle],
+      ["scenario-adapter.mjs", scenario.fixtureAdapter],
+    ].map(([name, source]) => [
+      name,
+      resolve(integrationRoot, source.path),
+      source.sha256,
+    ]),
     [
       "testkit/platform-fixture.js",
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
@@ -405,18 +471,11 @@ const stageBuildContext = (plan) => {
       "capability-manifest.json",
       resolve(integrationRoot, "capability-manifest.json"),
     ],
-    [
-      "current-selection.json",
-      resolve(artifactsRoot, "current-selection.json"),
-    ],
-    [
-      "current-model-routes.json",
-      resolve(artifactsRoot, "current-model-routes.json"),
-    ],
-    [
-      "prepared/current-candidate.json",
-      resolve(artifactsRoot, "current-candidate.json"),
-    ],
+    ...[
+      ["current-selection.json", "current-selection.json"],
+      ["current-model-routes.json", "current-model-routes.json"],
+      ["prepared/current-candidate.json", "current-candidate.json"],
+    ].map(([target, name]) => [target, resolve(artifactsRoot, name)]),
   ];
   for (const file of selectedRuntimeFiles) {
     if (sources.some(([destination]) => destination === file)) continue;
@@ -444,7 +503,7 @@ const stageBuildContext = (plan) => {
   for (const [destination, source, expectedDigest] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
-      throw new Error("integration.isolation.context");
+      refuseScenarioContext(plan, "source-not-regular");
     const target = resolve(context, destination);
     mkdirSync(dirname(target), { recursive: true });
     const descriptor = openSync(
@@ -460,11 +519,14 @@ const stageBuildContext = (plan) => {
         before.dev !== after.dev ||
         before.ino !== after.ino ||
         before.size !== after.size ||
-        before.size !== bytes.byteLength ||
-        (expectedDigest !== undefined &&
-          createHash("sha256").update(bytes).digest("hex") !== expectedDigest)
+        before.size !== bytes.byteLength
       )
-        throw new Error("integration.isolation.context");
+        refuseScenarioContext(plan, "source-identity");
+      if (
+        expectedDigest !== undefined &&
+        createHash("sha256").update(bytes).digest("hex") !== expectedDigest
+      )
+        refuseScenarioContext(plan, "source-digest");
       writeFileSync(target, bytes, {
         flag: "wx",
         mode: before.mode & 0o777,
@@ -473,6 +535,12 @@ const stageBuildContext = (plan) => {
       closeSync(descriptor);
     }
   }
+  if (gateCapableMockServer)
+    writeExactRegularFile(
+      resolve(context, "collector-ca.pem"),
+      Buffer.from(collectorCa, "utf8"),
+      0o444,
+    );
   stageEsmPackageBoundary(context);
   cpSync(
     candidateDirectory,
@@ -496,7 +564,7 @@ const stageBuildContext = (plan) => {
                     entry.version === version,
                 );
                 if (packageAuthority === undefined)
-                  throw new Error("integration.isolation.context");
+                  refuseScenarioContext(plan, "package-association");
                 return [
                   installName,
                   `file:/opt/agentscope/harness-material/${packageAuthority.fileName}`,
@@ -543,13 +611,20 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs codex-trace-child-diagnostics.mjs selected-runtime-files.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs codex-pty-research.mjs codex-trace-child-diagnostics.mjs selected-runtime-files.mjs mockserver-control.mjs mockserver-final-ledger.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       ...(gateCapableMockServer
         ? [
             "COPY --chmod=0555 runtime/codex-candidate-dropper.mjs ./codex-candidate-dropper.mjs",
+            "COPY --chmod=0444 collector-ca.pem ./collector-ca.pem",
           ]
         : []),
       "COPY runtime ./runtime",
+      ...(scenario.scenarioId === "claude-interactive-trace-smoke"
+        ? [
+            "COPY runtime/claude-code-lifecycle.mjs ./claude-code-lifecycle.mjs",
+            "COPY scenario-oracle.mjs ./claude-code-platform-oracle.mjs",
+          ]
+        : []),
       "COPY fixtures ./fixtures",
       "COPY dist ./dist",
       "COPY testkit ./testkit",
@@ -561,59 +636,38 @@ const stageBuildContext = (plan) => {
       "",
     ].join("\n"),
   );
-  if (gateCapableMockServer) {
-    const gateSource = resolve(context, "runtime/gate-mockserver.mjs");
-    const gateStatus = lstatSync(gateSource);
-    if (!gateStatus.isFile() || gateStatus.isSymbolicLink())
-      throw new Error("integration.isolation.context");
-    cpSync(gateSource, resolve(mockServerContext, "gate-mockserver.mjs"), {
-      errorOnExist: true,
-      force: false,
-    });
-    writeFileSync(
-      resolve(mockServerContext, "MockServer.Dockerfile"),
-      [
-        "ARG MOCKSERVER_IMAGE",
-        "FROM ${MOCKSERVER_IMAGE}",
-        "WORKDIR /opt/agentscope",
-        "COPY --chmod=0555 gate-mockserver.mjs ./gate-mockserver.mjs",
-        "USER node",
-        'CMD ["node", "/opt/agentscope/gate-mockserver.mjs"]',
-        "",
-      ].join("\n"),
-    );
-  } else {
-    writeFileSync(
-      resolve(mockServerContext, "mockserver-initialization.json"),
-      `${JSON.stringify(
-        scenario.modelRoutes.map((routeId) => {
-          const index = modelRoutes.routeIds.indexOf(routeId);
-          if (
-            index < 0 ||
-            modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
-            modelRoutes.mockServerInitialization[index] === undefined
-          )
-            throw new Error("integration.isolation.context");
-          return modelRoutes.mockServerInitialization[index];
-        }),
-        undefined,
-        2,
-      )}\n`,
-    );
-    writeFileSync(
-      resolve(mockServerContext, "MockServer.Dockerfile"),
-      [
-        "ARG MOCKSERVER_IMAGE",
-        "FROM ${MOCKSERVER_IMAGE}",
-        "COPY mockserver-initialization.json /config/expectations.json",
-        "",
-      ].join("\n"),
-    );
-  }
   return Object.freeze({
     context,
     requiresHarnessBuildContextBound: harnessMaterial !== undefined,
   });
+};
+
+const prepareMockServerControl = (plan) => {
+  if (mockServerControls.has(plan.runId))
+    throw new Error("integration.isolation.context");
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === plan.scenarioId,
+  );
+  if (scenario === undefined) throw new Error("integration.isolation.context");
+  const gateCapableMockServer = isGateCapableMockServer(scenario);
+  const material = createMockServerControlMaterial(plan.runId);
+  const expectations = Buffer.from(
+    `${JSON.stringify(
+      gateCapableMockServer
+        ? []
+        : scenario.modelRoutes.map((routeId) => {
+            const index = modelRoutes.routeIds.indexOf(routeId);
+            if (
+              index < 0 ||
+              modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+              modelRoutes.mockServerInitialization[index] === undefined
+            )
+              throw new Error("integration.isolation.context");
+            return modelRoutes.mockServerInitialization[index];
+          }),
+    )}\n`,
+  );
+  mockServerControls.set(plan.runId, { material, expectations });
 };
 
 const assertContainer = async (
@@ -649,8 +703,7 @@ const assertContainer = async (
     ? container.Config.Env
     : [];
   const expectedControlVolume =
-    plan.scenarioId === "codex-tui-trace-smoke" &&
-    (name === plan.scenarioName || name === plan.mockServerName)
+    name === plan.scenarioName || name === plan.mockServerName
       ? controlVolumeIdentities.get(plan.runId)
       : undefined;
   const expectedControlMount =
@@ -673,7 +726,7 @@ const assertContainer = async (
   const candidateUserMatches =
     immutableCandidate === undefined ||
     container?.Config?.User ===
-      (plan.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000");
+      (isNativeTraceScenario(plan) ? "0:0" : "1000:1000");
   const candidateEnvironmentMatches =
     immutableCandidate === undefined ||
     environment.includes(
@@ -686,7 +739,7 @@ const assertContainer = async (
     immutableCandidate === undefined ||
     JSON.stringify(container?.HostConfig?.CapAdd ?? []) ===
       JSON.stringify(
-        plan.scenarioId === "codex-tui-trace-smoke"
+        isNativeTraceScenario(plan)
           ? [
               "CAP_CHOWN",
               "CAP_DAC_OVERRIDE",
@@ -789,6 +842,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const fixtureTrafficObservations = new Map();
 const scenarioContainerIdentities = new Map();
 const mockServerContainerIdentities = new Map();
 const controlVolumeIdentities = new Map();
@@ -892,17 +946,21 @@ const captureFixtureResult = (output, plan) => {
   if (resultLine === undefined) return false;
   if (resultLine.length > 1024 * 1024)
     throw new Error("integration.isolation.fixture-result");
+  const decoded = JSON.parse(
+    Buffer.from(
+      resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
+      "base64url",
+    ).toString("utf8"),
+  );
+  const traffic = snapshotMockServerTraffic(
+    decoded.mockServerTraffic,
+    plan.runId,
+  );
+  delete decoded.mockServerTraffic;
+  fixtureTrafficObservations.set(plan.runId, traffic);
   fixtureResults.set(
     plan.runId,
-    sanitizeFixtureResult(
-      JSON.parse(
-        Buffer.from(
-          resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
-          "base64url",
-        ).toString("utf8"),
-      ),
-      plan.scenarioId,
-    ),
+    sanitizeFixtureResult(decoded, plan.scenarioId),
   );
   return true;
 };
@@ -1369,50 +1427,135 @@ const inspectDockerRuntimeIdentity = async (signal) => {
   };
 };
 const buildImage = async (plan, signal) => {
-  await preparedImageFor(plan.baseImage, signal);
-  const { context, requiresHarnessBuildContextBound } = stageBuildContext(plan);
-  return buildPreparedDockerImage(preparedDockerClient, {
-    buildArguments: { BASE_IMAGE: plan.baseImage },
-    context,
-    dockerfile: "Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": plan.runId,
-    },
-    maximumMilliseconds: Math.min(
-      scenarioTimeoutMilliseconds,
-      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
-    ),
-    maximumBuildContextBytes: requiresHarnessBuildContextBound
-      ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
-      : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
-    signal,
-    tag: plan.imageTag,
-  });
+  let failureSlot = "candidate-client";
+  try {
+    requireSettledMockServerClients();
+    failureSlot = "candidate-prepared-image";
+    await preparedImageFor(plan.baseImage, signal);
+    failureSlot = "candidate-context-staging";
+    const { context, requiresHarnessBuildContextBound } =
+      stageBuildContext(plan);
+    failureSlot = "candidate-image-build";
+    return await buildPreparedDockerImage(preparedDockerClient, {
+      buildArguments: { BASE_IMAGE: plan.baseImage },
+      context,
+      dockerfile: "Dockerfile",
+      labels: {
+        "com.agentscope.integration": "true",
+        "com.agentscope.integration.run": plan.runId,
+      },
+      maximumMilliseconds: Math.min(
+        scenarioTimeoutMilliseconds,
+        IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+      ),
+      maximumBuildContextBytes: requiresHarnessBuildContextBound
+        ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
+        : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
+      signal,
+      tag: plan.imageTag,
+    });
+  } catch (error) {
+    publishOperationFailureDiagnostic(failureSlot, error, plan, { signal });
+    throw error;
+  }
+};
+const prepareMockServerImage = async (plan, signal) => {
+  requireSettledMockServerClients();
+  await preparedImageFor(plan.mockServerImage, signal);
+  const control = mockServerControls.get(plan.runId);
+  if (control === undefined || mockServerBuiltImages.has(plan.runId))
+    throw new Error("integration.isolation.context");
+  try {
+    const client = createPreparedDockerClient(preparedImageEvidence, {
+      dockerEnvironment: capability.binding.dockerEnvironment,
+      dockerExecutable: capability.binding.dockerExecutable,
+    });
+    const owned = { client, imageId: undefined };
+    mockServerBuiltImages.set(plan.runId, owned);
+    const built = await prepareMockServerService(
+      {
+        dockerClient: client,
+        privateRoot: capability.binding.privateStorage.root,
+        runId: plan.runId,
+        deadline:
+          performance.now() +
+          remainingIntegrationOperationMilliseconds(
+            Math.min(
+              scenarioTimeoutMilliseconds,
+              IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+            ),
+          ),
+        signal,
+      },
+      {
+        ...control.material,
+        expectations: control.expectations,
+        tag: plan.mockServerImageTag,
+      },
+    );
+    owned.imageId = built.imageId.replace("sha256-", "sha256:");
+    return built.imageId;
+  } catch (error) {
+    // A failed service prefix may have created an image without returning its
+    // exact identity. Preserve all owned clients; do not guess safe retirement.
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
 };
 const buildMockServerImage = async (plan, signal) => {
-  await preparedImageFor(plan.mockServerImage, signal);
-  const mockServerContext = resolve(
-    artifactsRoot,
-    "contexts",
-    plan.runId,
-    "mockserver",
-  );
-  return buildPreparedDockerImage(preparedDockerClient, {
-    buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
-    context: mockServerContext,
-    dockerfile: "MockServer.Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": plan.runId,
-    },
-    maximumMilliseconds: Math.min(
-      scenarioTimeoutMilliseconds,
-      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
-    ),
+  const imageId = mockServerBuiltImages.get(plan.runId)?.imageId;
+  if (imageId === undefined) throw new Error("integration.isolation.context");
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", plan.mockServerImageTag],
     signal,
-    tag: plan.mockServerImageTag,
-  });
+  );
+  const records = JSON.parse(stdout);
+  if (
+    !Array.isArray(records) ||
+    records.length !== 1 ||
+    records[0]?.Id !== imageId ||
+    records[0]?.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId
+  )
+    throw new Error("integration.isolation.image-digest");
+  return imageId.replace("sha256:", "sha256-");
+};
+const mockServerRetirementSignal = (deadline) => {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining <= 0) throw new Error("integration.images.deadline");
+  return AbortSignal.timeout(remaining);
+};
+const requireSettledMockServerClients = () => {
+  if (
+    [...mockServerBuiltImages.values()].some(({ client }) =>
+      preparedDockerClientRequiresOuterHostRetirement(client),
+    )
+  )
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+  if (preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient))
+    throw new Error("integration.controller.unsettled-operation");
+};
+const retireMockServerImage = async (plan, signal, deadline) => {
+  requireSettledMockServerClients();
+  const owned = mockServerBuiltImages.get(plan.runId);
+  if (owned === undefined) return;
+  try {
+    const closeReserve = IMAGE_PREPARATION_LIMITS.maximumTeardownMilliseconds;
+    if (owned.imageId !== undefined)
+      await retirePreparedDockerImage(owned.client, {
+        deadline: deadline - closeReserve,
+        imageId: owned.imageId.replace("sha256:", "sha256-"),
+        signal,
+        tag: plan.mockServerImageTag,
+      });
+    if (performance.now() + closeReserve >= deadline)
+      throw new Error("integration.images.deadline");
+    closePreparedDockerClient(owned.client);
+    mockServerBuiltImages.delete(plan.runId);
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -1473,7 +1616,6 @@ const exactControlVolumePresent = async (name, signal) => {
 const createControlVolume = async (plan, signal) => {
   const name = plan.controlVolumeName;
   if (
-    plan.scenarioId !== "codex-tui-trace-smoke" ||
     name !== `agentscope-int-${plan.runId}-control` ||
     controlVolumeIdentities.has(plan.runId)
   )
@@ -1508,10 +1650,7 @@ const createControlVolume = async (plan, signal) => {
 };
 const assertControlVolumeCurrent = async (plan, signal) => {
   const expected = controlVolumeIdentities.get(plan.runId);
-  if (
-    expected?.name !== plan.controlVolumeName ||
-    plan.scenarioId !== "codex-tui-trace-smoke"
-  )
+  if (expected?.name !== plan.controlVolumeName)
     throw new Error("integration.isolation.control-volume");
   try {
     const current = await inspectControlVolume(expected.name, signal);
@@ -1527,103 +1666,343 @@ const assertControlVolumeCurrent = async (plan, signal) => {
     throw error;
   }
 };
-const startCollector = async (plan, signal) => {
-  await dockerWithSignal(
-    [
-      "create",
-      "--platform",
-      canonicalImagePlatform,
-      "--name",
-      plan.collectorName,
-      ...labelArguments(plan),
-      "--network",
-      plan.networkName,
-      "--network-alias",
-      "collector",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      ...sidecarResourceArguments(
-        ISOLATION_EXECUTOR_LIMITS.containers.collector,
-      ),
-      "--user",
-      "1000:1000",
-      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.collector),
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
-      plan.imageTag,
-      "node",
-      "/opt/agentscope/destination-server.mjs",
-      "ingestion",
-    ],
+const startDestinationSidecar = async (plan, signal, mode) => {
+  if (mode !== "ingestion" && mode !== "retrieval")
+    throw new Error("integration.isolation.context");
+  const kind = mode === "ingestion" ? "collector" : "retrieval";
+  const secureCollector = mode === "ingestion" && isNativeTraceScenario(plan);
+  try {
+    await dockerWithSignal(
+      [
+        "create",
+        "--platform",
+        canonicalImagePlatform,
+        "--name",
+        plan[`${kind}Name`],
+        ...labelArguments(plan),
+        "--network",
+        plan.networkName,
+        "--network-alias",
+        kind,
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        ...sidecarResourceArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
+        "--user",
+        "1000:1000",
+        ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers[kind]),
+        "--env",
+        `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+        "--env",
+        `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
+        ...(secureCollector
+          ? [
+              "--env",
+              `AGENTSCOPE_COLLECTOR_TLS_CERT=${collectorTlsCertificate}`,
+              "--env",
+              `AGENTSCOPE_COLLECTOR_TLS_KEY=${collectorTlsKey}`,
+            ]
+          : []),
+        plan.imageTag,
+        "node",
+        "/opt/agentscope/destination-server.mjs",
+        mode,
+      ],
+      signal,
+      { mutationCapable: true },
+    );
+  } catch (error) {
+    // Native exec errors can carry argv: collapse only this test-key boundary.
+    // dockerWithSignal already preserves uncertain mutation/retirement state.
+    if (secureCollector)
+      // eslint-disable-next-line preserve-caught-error -- native argv contains the public test leaf key; no raw cause crosses diagnostics
+      throw new Error("integration.isolation.collector-create");
+    throw error;
+  }
+  const containerId = await assertContainer(
+    plan,
+    plan[`${kind}Name`],
+    ISOLATION_EXECUTOR_LIMITS.containers[kind],
     signal,
-    { mutationCapable: true },
+    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await assertContainer(
+  if (secureCollector)
+    scenarioContainerIdentities.set(plan.collectorName, containerId);
+  await dockerWithSignal(["start", plan[`${kind}Name`]], signal, {
+    mutationCapable: true,
+  });
+};
+const startCollector = (plan, signal) =>
+  startDestinationSidecar(plan, signal, "ingestion");
+const startRetrieval = (plan, signal) =>
+  startDestinationSidecar(plan, signal, "retrieval");
+const decodeCollectorSnapshot = (output, plan) => {
+  const refuse = () => new Error("integration.isolation.collector-terminal");
+  let observation;
+  try {
+    observation = JSON.parse(output.stdout);
+  } catch {
+    throw refuse();
+  }
+  if (
+    observation?.observationVersion !== 2 ||
+    JSON.stringify(Object.keys(observation).sort()) !==
+      JSON.stringify([
+        "aggregateBytes",
+        "batches",
+        "observationVersion",
+        "scenarioId",
+      ]) ||
+    observation.scenarioId !== plan.scenarioId ||
+    !Array.isArray(observation.batches) ||
+    observation.batches.length === 0 ||
+    observation.batches.length > 8 ||
+    !Number.isSafeInteger(observation.aggregateBytes) ||
+    observation.aggregateBytes <= 0 ||
+    observation.aggregateBytes > 8 * 1024 * 1024
+  )
+    throw refuse();
+  const batches = observation.batches.map((value) => {
+    if (typeof value !== "string" || value.length > 1398104) throw refuse();
+    const bytes = Buffer.from(value, "base64");
+    if (bytes.toString("base64") !== value || bytes.length > 1024 * 1024)
+      throw refuse();
+    return bytes;
+  });
+  if (
+    batches.reduce((bytes, batch) => bytes + batch.length, 0) !==
+    observation.aggregateBytes
+  )
+    throw refuse();
+  return batches;
+};
+const collectorHttpsFailureObservation = (error) => {
+  if (types.isProxy(error) || !types.isNativeError(error)) return null;
+  const own = (key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  };
+  const stderr = own("stderr");
+  if (
+    own("code") !== 1 ||
+    own("stdout") !== "" ||
+    own("signal") !== null ||
+    own("killed") !== false ||
+    typeof stderr !== "string" ||
+    Buffer.byteLength(stderr) > 64
+  )
+    return null;
+  return (
+    ["request-error", "response-error", "http-rejected", "output-bound"].find(
+      (reason) => stderr === `[agentscope-collector-https:v1 ${reason}]\n`,
+    ) ?? null
+  );
+};
+const collectorHttpsErrorObservation = (error) => {
+  let code = "unknown",
+    disposition = "unknown";
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    code = knownFailureCode(error);
+    const own = (key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(error, key);
+      return descriptor && Object.hasOwn(descriptor, "value")
+        ? descriptor.value
+        : undefined;
+    };
+    const exit = own("code"),
+      signal = own("signal"),
+      killed = own("killed");
+    if (exit === "ABORT_ERR") disposition = "native-aborted";
+    else if (killed === true) disposition = "native-killed";
+    else if (typeof signal === "string" && signal.length > 0)
+      disposition = "native-signaled";
+    else if (signal === null && killed === false && exit === 1)
+      disposition = "native-exit-one";
+    else if (
+      signal === null &&
+      killed === false &&
+      Number.isSafeInteger(exit) &&
+      exit >= 0 &&
+      exit <= 255
+    )
+      disposition = "native-nonstandard";
+    else if (code !== "unknown") disposition = "known-refusal";
+  }
+  return Object.freeze({
+    httpsFailure: collectorHttpsFailureObservation(error),
+    code,
+    disposition,
+  });
+};
+const joinCollectorObservations = async (
+  plan,
+  signal,
+  deadline,
+  observePhase,
+) => {
+  const observe = (phase, httpsFailure) => {
+    try {
+      observePhase?.(phase, httpsFailure);
+    } catch {
+      // Optional observation cannot alter collector acceptance or errors.
+    }
+  };
+  observe("held-identity");
+  const refuse = () => new Error("integration.isolation.collector-terminal");
+  const containerId = scenarioContainerIdentities.get(plan.collectorName);
+  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "")) throw refuse();
+  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+  if (remaining <= 0) throw refuse();
+  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+  const current = await assertContainer(
     plan,
     plan.collectorName,
     ISOLATION_EXECUTOR_LIMITS.containers.collector,
-    signal,
+    joinSignal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.collectorName], signal, {
-    mutationCapable: true,
-  });
-};
-const startRetrieval = async (plan, signal) => {
+  if (current !== containerId) throw refuse();
+  let output;
+  observe("https-exec");
+  try {
+    output = await dockerWithSignal(
+      [
+        "exec",
+        containerId,
+        "/usr/local/bin/node",
+        "--input-type=module",
+        "-e",
+        'import {get} from "node:https"; import {readFileSync} from "node:fs"; let failed=false;const fail=reason=>{process.exitCode=1;if(!failed){failed=true;try{process.stderr.write("[agentscope-collector-https:v1 "+reason+"]"+String.fromCharCode(10));}catch{}}};const request=get("https://127.0.0.1:4318/observations",{ca:readFileSync("/opt/agentscope/collector-ca.pem"),agent:false},response=>{let bytes=0;const chunks=[];response.on("data",chunk=>{if(failed)return;bytes+=chunk.length;if(bytes>12*1024*1024){fail("output-bound");request.destroy();}else chunks.push(chunk);});response.once("end",()=>{if(response.statusCode!==200)fail("http-rejected");else if(!failed)process.stdout.write(Buffer.concat(chunks));});response.once("error",()=>{fail("response-error");});});request.once("error",()=>{fail("request-error");});',
+      ],
+      joinSignal,
+      { terminal: true, maxBuffer: 12 * 1024 * 1024 },
+    );
+  } catch (error) {
+    observe("https-exec", collectorHttpsErrorObservation(error));
+    // Native exec errors can contain original received bytes; never propagate
+    // output or cause through the controller's diagnostic error boundary.
+    throw refuse();
+  }
+  observe("snapshot");
+  const batches = decodeCollectorSnapshot(output, plan);
+  observe("terminal-wait");
   await dockerWithSignal(
-    [
-      "create",
-      "--platform",
-      canonicalImagePlatform,
-      "--name",
-      plan.retrievalName,
-      ...labelArguments(plan),
-      "--network",
-      plan.networkName,
-      "--network-alias",
-      "retrieval",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      ...sidecarResourceArguments(
-        ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
-      ),
-      "--user",
-      "1000:1000",
-      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.retrieval),
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
-      plan.imageTag,
-      "node",
-      "/opt/agentscope/destination-server.mjs",
-      "retrieval",
-    ],
-    signal,
-    { mutationCapable: true },
+    ["container", "kill", "--signal", "SIGTERM", containerId],
+    joinSignal,
+    { terminal: true, mutationCapable: true },
   );
-  await assertContainer(
-    plan,
-    plan.retrievalName,
-    ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
-    signal,
-    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
+  const waited = await dockerWithSignal(
+    ["container", "wait", containerId],
+    joinSignal,
+    { terminal: true },
   );
-  await dockerWithSignal(["start", plan.retrievalName], signal, {
-    mutationCapable: true,
-  });
+  observe("terminal-witness");
+  const inspected = JSON.parse(
+    (
+      await dockerWithSignal(
+        ["container", "inspect", containerId],
+        joinSignal,
+        {
+          terminal: true,
+        },
+      )
+    ).stdout,
+  );
+  const terminal =
+    Array.isArray(inspected) && inspected.length === 1
+      ? inspected[0]
+      : undefined;
+  if (
+    waited.stdout !== "0\n" ||
+    terminal?.Id !== containerId ||
+    terminal.Name !== `/${plan.collectorName}` ||
+    terminal.Config?.Labels?.["com.agentscope.integration.run"] !==
+      plan.runId ||
+    terminal.State?.Status !== "exited" ||
+    terminal.State.Running !== false ||
+    terminal.State.OOMKilled !== false ||
+    terminal.State.Paused !== false ||
+    terminal.State.Restarting !== false ||
+    terminal.State.Dead !== false ||
+    terminal.State.ExitCode !== 0 ||
+    terminal.State.Pid !== 0 ||
+    terminal.State.Error !== ""
+  )
+    throw refuse();
+  return batches;
+};
+const mockServerNetworkObservation = (server, network) => {
+  const own = (value, key) =>
+    value !== null && typeof value === "object" && !types.isProxy(value)
+      ? Object.getOwnPropertyDescriptor(value, key)?.value
+      : undefined;
+  const state = own(server, "State");
+  const status = own(state, "Status");
+  const exit = own(state, "ExitCode");
+  const networks = own(own(server, "NetworkSettings"), "Networks");
+  const count =
+    networks && typeof networks === "object" && !types.isProxy(networks)
+      ? Reflect.ownKeys(networks).length
+      : undefined;
+  const boolean = (value) => (typeof value === "boolean" ? value : null);
+  const ip = own(network, "IPAddress");
+  return {
+    diagnosticVersion: 1,
+    trust: "untrusted-diagnostic",
+    stage: "mockserver-network-refusal",
+    status: [
+      "created",
+      "running",
+      "exited",
+      "dead",
+      "paused",
+      "restarting",
+      "removing",
+    ].includes(status)
+      ? status
+      : "unknown",
+    running: boolean(own(state, "Running")),
+    oomKilled: boolean(own(state, "OOMKilled")),
+    exitCode: Number.isInteger(exit) && exit >= 0 && exit <= 255 ? exit : null,
+    networkCount: Number.isInteger(count) && count <= 16 ? count : null,
+    ipPresent: typeof ip === "string" && /^(?:\d{1,3}\.){3}\d{1,3}$/u.test(ip),
+  };
+};
+const mockServerStartupObservation = (output) => {
+  if (typeof output !== "object" || output === null || types.isProxy(output))
+    return "unknown";
+  const streams = ["stdout", "stderr"].map((key) =>
+    Object.getOwnPropertyDescriptor(output, key),
+  );
+  if (
+    streams.some(
+      (value) =>
+        value !== undefined &&
+        (!Object.hasOwn(value, "value") || typeof value.value !== "string"),
+    )
+  )
+    return "unknown";
+  const values = streams.map((value) => value?.value ?? "");
+  if (
+    values.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) > 65536
+  )
+    return "unknown";
+  const phases = ["entry", "directory", "private-key", "jwks", "java-entry"];
+  let count = 0;
+  for (const line of values.join("\n").split("\n")) {
+    if (!line.startsWith("[agentscope-mockserver:")) continue;
+    if (line !== `[agentscope-mockserver:v1 phase=${phases[count]}]`)
+      return "unknown";
+    count += 1;
+  }
+  return phases[count - 1] ?? "unknown";
 };
 const startMockServer = async (plan, signal) => {
-  const gateCapable = plan.scenarioId === "codex-tui-trace-smoke";
-  if (gateCapable) await assertControlVolumeCurrent(plan, signal);
+  await assertControlVolumeCurrent(plan, signal);
   await dockerWithSignal(
     [
       "create",
@@ -1636,28 +2015,33 @@ const startMockServer = async (plan, signal) => {
       plan.networkName,
       "--network-alias",
       "mockserver",
+      "--network-alias",
+      "mockserver.agentscope.internal",
       "--read-only",
       "--cap-drop",
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...(gateCapable
-        ? [
-            "--user",
-            "0:0",
-            "--mount",
-            `type=volume,source=${plan.controlVolumeName},target=/control`,
-          ]
-        : []),
+      "--user",
+      "0:0",
+      "--mount",
+      `type=volume,source=${plan.controlVolumeName},target=/control`,
       ...sidecarResourceArguments(
         ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
       ),
       ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.mockServer, false),
-      "--env",
-      "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
-      "--env",
-      "MOCKSERVER_LOG_LEVEL=WARN",
-      plan.mockServerImageTag,
+      ...[
+        "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
+        "MOCKSERVER_LOG_LEVEL=WARN",
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_REQUIRED=true",
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_JWK_SOURCE=/control/private/control-jwks.json",
+        `MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_EXPECTED_AUDIENCE=agentscope:${plan.runId}`,
+        `MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_MATCHING_CLAIMS=runId=${plan.runId}`,
+        "MOCKSERVER_CONTROL_PLANE_JWT_AUTHENTICATION_REQUIRED_CLAIMS=runId",
+        "MOCKSERVER_PERSIST_RECORDED_REQUESTS_TO_DISK=true",
+        "MOCKSERVER_PERSISTED_RECORDED_REQUESTS_PATH=/control/private/requests.json",
+      ].flatMap((value) => ["--env", value]),
+      mockServerBuiltImages.get(plan.runId)?.imageId,
     ],
     signal,
     { mutationCapable: true },
@@ -1671,29 +2055,665 @@ const startMockServer = async (plan, signal) => {
   await dockerWithSignal(["start", plan.mockServerName], signal, {
     mutationCapable: true,
   });
+  const inspected = JSON.parse(
+    (await dockerWithSignal(["container", "inspect", containerId], signal))
+      .stdout,
+  );
+  const server =
+    Array.isArray(inspected) && inspected.length === 1
+      ? inspected[0]
+      : undefined;
+  if (server?.Image !== mockServerBuiltImages.get(plan.runId)?.imageId)
+    throw new Error("integration.isolation.mockserver-image");
+  const network = server.NetworkSettings?.Networks?.[plan.networkName];
+  if (
+    !/^(?:\d{1,3}\.){3}\d{1,3}$/u.test(network?.IPAddress ?? "") ||
+    Object.keys(server.NetworkSettings.Networks).length !== 1
+  ) {
+    let startupPhase = "unknown";
+    try {
+      startupPhase = mockServerStartupObservation(
+        await dockerWithSignal(["logs", "--tail", "64", containerId], signal, {
+          maxBuffer: 65536,
+        }),
+      );
+    } catch {
+      // A failed optional read cannot replace or weaken the original refusal.
+    }
+    try {
+      console.error(
+        "integration.isolation.mockserver-network-diagnostic:" +
+          JSON.stringify({
+            ...mockServerNetworkObservation(server, network),
+            startupPhase,
+          }),
+      );
+    } catch {
+      // Optional content-free projection never replaces the original refusal.
+    }
+    throw new Error("integration.isolation.mockserver-network");
+  }
+  mockServerControls.get(plan.runId).host = network.IPAddress;
   mockServerContainerIdentities.set(plan.runId, containerId);
 };
-// eslint-disable-next-line complexity -- exact closed container terminal witness
-const joinMockServer = async (plan, signal) => {
-  if (plan.scenarioId !== "codex-tui-trace-smoke") return;
-  const containerId = mockServerContainerIdentities.get(plan.runId);
-  const deadline = mockServerJoinDeadlines.get(plan.runId);
-  if (!/^[a-f0-9]{64}$/u.test(containerId ?? "") || !Number.isFinite(deadline))
-    throw new Error("integration.isolation.mockserver-terminal");
-  const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
-  if (remaining <= 0)
-    throw new Error("integration.isolation.mockserver-terminal");
-  const joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
-  const waited = await dockerWithSignal(
-    ["container", "wait", containerId],
-    joinSignal,
-    { terminal: true },
+const codexCollectorExpectation = (plan, native) => {
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === plan.scenarioId,
   );
-  const inspected = await dockerWithSignal(
-    ["container", "inspect", containerId],
-    joinSignal,
-    { terminal: true },
+  const selected = manifest.evidence.find(
+    (entry) => entry.evidenceId === scenario?.harnessEvidenceId,
   );
+  if (
+    selected?.harnessId !== "codex" ||
+    selected.representativeVersion !== "0.149.1"
+  )
+    throw new Error("integration.isolation.collector-native");
+  const turnIdentity = `codex:${native.nativeTurnId}`;
+  const identity = deriveIdentityBundle({
+    harnessRegistryId: "codex",
+    operationIdScope: "session-global",
+    session: { kind: "boundary-scoped" },
+    boundary: {
+      kind: "hook-invocation",
+      id: turnIdentity,
+      generation: 0,
+      positionKind: "sequence",
+      exclusiveEndPosition: 1,
+    },
+    operations: [
+      {
+        logicalKey: "codex-turn",
+        locator: { kind: "native-operation", nativeId: turnIdentity },
+      },
+      {
+        logicalKey: "codex-llm",
+        parentLogicalKey: "codex-turn",
+        locator: {
+          kind: "native-operation",
+          nativeId: `${turnIdentity}:llm`,
+        },
+      },
+    ],
+  });
+  return {
+    harness: { name: "codex" },
+    sessionId: native.nativeSessionId,
+    modelName: native.nativeModelName,
+    identity: {
+      traceId: identity.traceId,
+      spanIds: [identity.spans["codex-turn"], identity.spans["codex-llm"]],
+    },
+    unavailableContext: [
+      {
+        field: "agentscope.harness.version",
+        source: "process",
+        state: "unavailable",
+        reason: "not-emitted",
+      },
+      ...[
+        "agentscope.git.worktree",
+        "agentscope.git.repository_root",
+        "vcs.ref.head.name",
+        "vcs.ref.head.revision",
+        "vcs.ref.type",
+      ].map((field) => ({
+        field,
+        source: "git",
+        state: "unavailable",
+        reason: "resolution-failed",
+      })),
+      {
+        field: "agentscope.workspace.directory",
+        source: "hook-payload",
+        state: "redacted",
+        reason: "policy-redacted",
+      },
+    ],
+  };
+};
+const completeCodexCollectorFixture = (plan, batches) => {
+  const fixture = fixtureResults.get(plan.runId);
+  const native = fixture?.harnessObservation;
+  if (
+    fixture?.resultStatus !== "partial" ||
+    native?.kind !== "codex-tui-native"
+  )
+    throw new Error("integration.isolation.collector-native");
+  // This selected turn emits one complete canonical unit. Extra batches are
+  // not silently discarded or promoted to a proof of unrelated sessions.
+  if (batches.length !== 1)
+    throw new Error("integration.isolation.collector-native");
+  const expected = codexCollectorExpectation(plan, native);
+  const observed = observeSelectedWriterOtlp(
+    batches[0],
+    ["DUMMY_PUBLIC_KEY", "DUMMY_SECRET_KEY", "/worktree"],
+    expected,
+  );
+  const spans = observed.graph.resourceSpans[0].scopeSpans[0].spans;
+  const root = spans.find((span) => span.parentSpanId === undefined);
+  const model = spans.find((span) => span.parentSpanId === root?.spanId);
+  if (
+    spans.length !== 2 ||
+    root?.name !== "codex.turn" ||
+    model?.name !== "codex.response" ||
+    root.spanId !== expected.identity.spanIds[0] ||
+    model.spanId !== expected.identity.spanIds[1]
+  )
+    throw new Error("integration.isolation.collector-native");
+  fixtureResults.set(
+    plan.runId,
+    sanitizeFixtureResult(
+      {
+        ...fixture,
+        resultStatus: "complete",
+        lifecycle: [
+          "install",
+          "configure",
+          "hook",
+          "execute",
+          "export",
+          "retrieve",
+          "uninstall",
+        ],
+        eventKinds: ["hook", "model", "destination"],
+        harnessObservation: {
+          observationVersion: 1,
+          kind: "codex-tui-trace",
+          canonicalGraphDigest: observed.transport.graphSha256,
+          spanIds: [root.spanId, model.spanId],
+          contextDisposition: "unversioned-workspace-redacted",
+          nativeSessionId: native.nativeSessionId,
+          nativeTurnId: native.nativeTurnId,
+          nativeModelName: native.nativeModelName,
+          ...(native.nativeTranscriptRange === undefined
+            ? {}
+            : { nativeTranscriptRange: native.nativeTranscriptRange }),
+          modelRequestBodySha256: native.modelRequestBodySha256,
+          traceId: expected.identity.traceId,
+          resourceSpanCount: observed.graph.resourceSpans.length,
+          spanNames: [root.name, model.name],
+          parentLinked: model.parentSpanId === root.spanId,
+          doctorErrors: native.doctorErrors,
+          uninstallDisposition: native.uninstallDisposition,
+          sessionStartCommandDurationMilliseconds:
+            native.sessionStartCommandDurationMilliseconds,
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: [
+            {
+              operation: "otlp",
+              method: "POST",
+              path: "/api/public/otel/v1/traces",
+              bodyBytes: batches[0].byteLength,
+              outcome: "accepted",
+            },
+          ],
+          retrieval: [],
+        },
+      },
+      plan.scenarioId,
+    ),
+  );
+};
+const claudeCollectorExpectation = (plan, native) => ({
+  harness: {
+    name: "claude-code",
+  },
+  sessionId: native.nativeSessionId,
+  // The public Claude mapper does not emit a model for these hook graphs.
+  // An optional actual native transcript model remains independent evidence.
+  unavailableContext: [
+    {
+      field: "agentscope.harness.version",
+      source: "process",
+      state: "unavailable",
+      reason: "not-emitted",
+    },
+    ...[
+      "agentscope.git.worktree",
+      "agentscope.git.repository_root",
+      "vcs.ref.head.name",
+      "vcs.ref.head.revision",
+      "vcs.ref.type",
+    ].map((field) => ({
+      field,
+      source: "git",
+      state: "unavailable",
+      reason: "resolution-failed",
+    })),
+    {
+      field: "agentscope.workspace.directory",
+      source: "hook-payload",
+      state: "redacted",
+      reason: "policy-redacted",
+    },
+  ],
+});
+const completeClaudeCollectorFixture = (plan, batches, ledger) => {
+  const fixture = fixtureResults.get(plan.runId);
+  const native = fixture?.harnessObservation;
+  const primary = ledger.filter(
+    (row) =>
+      row.role === "data-plane" &&
+      row.method === "POST" &&
+      row.path === "/v1/messages",
+  );
+  if (
+    fixture?.resultStatus !== "partial" ||
+    native?.kind !== "claude-code-native" ||
+    batches.length !== 4 ||
+    primary.length !== 2 ||
+    primary.some(
+      (row, index) => row.bodySha256 !== native.modelRequestBodySha256[index],
+    )
+  )
+    throw new Error("integration.isolation.collector-native");
+  const hookObservations = batches.map((bytes, index) => {
+    const observed = observeSelectedWriterOtlp(
+      bytes,
+      ["DUMMY_PUBLIC_KEY", "DUMMY_SECRET_KEY", "/worktree"],
+      claudeCollectorExpectation(plan, native),
+    );
+    const spans = observed.graph.resourceSpans[0].scopeSpans[0].spans;
+    const root = spans.find((span) => span.parentSpanId === undefined);
+    const child = spans.find((span) => span.parentSpanId === root?.spanId);
+    const fields = (span) =>
+      new Map(
+        (span?.attributes ?? []).map(({ key, value }) => [
+          key,
+          value.stringValue,
+        ]),
+      );
+    const eventName = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"][
+      index
+    ];
+    if (
+      fields(root).get("openinference.span.kind") !== "AGENT" ||
+      (index === 0
+        ? spans.length !== 1 || root?.name !== "claude.SessionStart"
+        : spans.length !== 2 ||
+          root?.name !== "claude.hook-invocation" ||
+          child?.parentSpanId !== root.spanId ||
+          child.traceId !== root.traceId ||
+          fields(child).get("openinference.span.kind") !==
+            (index === 3 ? "LLM" : "TOOL") ||
+          child.name !== (index === 3 ? "claude.Stop" : "Read") ||
+          (index !== 3 &&
+            (fields(child).get("tool.id") !== native.nativeToolUseId ||
+              fields(child).get("input.mime_type") !== "application/json")) ||
+          (index === 1 &&
+            fields(child).get("output.mime_type") !== undefined) ||
+          (index === 2 &&
+            fields(child).get("output.mime_type") !== "application/json"))
+    )
+      throw new Error("integration.isolation.collector-native");
+    // Graphs are ephemeral. Only reviewed content-free identities/digests and
+    // categorical checks leave this oracle through the existing result shape.
+    return {
+      eventName,
+      traceId: root.traceId,
+      spanIds: index === 0 ? [root.spanId] : [root.spanId, child.spanId],
+      canonicalGraphDigest: observed.transport.graphSha256,
+      contextDisposition: "unversioned-workspace-redacted",
+    };
+  });
+  if (new Set(hookObservations.map((row) => row.traceId)).size !== 4)
+    throw new Error("integration.isolation.collector-native");
+  fixtureResults.set(
+    plan.runId,
+    sanitizeFixtureResult(
+      {
+        ...fixture,
+        resultStatus: "complete",
+        lifecycle: [
+          "install",
+          "configure",
+          "hook",
+          "execute",
+          "export",
+          "retrieve",
+          "uninstall",
+        ],
+        eventKinds: ["hook", "model", "destination"],
+        harnessObservation: {
+          ...native,
+          kind: "claude-code-trace",
+          hookObservations,
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: batches.map((bytes) => ({
+            operation: "otlp",
+            method: "POST",
+            path: "/api/public/otel/v1/traces",
+            bodyBytes: bytes.byteLength,
+            outcome: "accepted",
+          })),
+          retrieval: [],
+        },
+      },
+      plan.scenarioId,
+    ),
+  );
+};
+const operationFailureSlots = new Set([
+  "join-identity",
+  "join-deadline",
+  "join-control-volume",
+  "join-control-open",
+  "join-control-boundary",
+  "join-control-stop",
+  "join-container-wait",
+  "join-container-inspect",
+  "join-terminal-witness",
+  "join-ledger-directory",
+  "join-ledger-requests",
+  "join-ledger-complete",
+  "join-ledger-read",
+  "join-ledger-assert",
+  "join-collector-read",
+  "join-collector-project",
+  "candidate-client",
+  "candidate-prepared-image",
+  "candidate-context-staging",
+  "candidate-image-build",
+  "runtime-original",
+  "cleanup-images",
+  "cleanup-materials",
+  "cleanup-client",
+]);
+const processFailureObservation = (error, context, slot) => {
+  const native = !types.isProxy(error) && types.isNativeError(error);
+  const own = (key) => {
+    if (!native) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    return descriptor && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  };
+  const code = own("code");
+  const signal = own("signal");
+  const killed = own("killed");
+  const observation = {
+    nativeError: native,
+    exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
+    errorCode: new Set([
+      "ABORT_ERR",
+      "ENOENT",
+      "EACCES",
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      "ERR_OUT_OF_RANGE",
+    ]).has(code)
+      ? code
+      : "unknown",
+    signal:
+      signal === null || signal === undefined
+        ? null
+        : new Set(["SIGTERM", "SIGKILL", "SIGINT"]).has(signal)
+          ? signal
+          : "unknown",
+    killed: typeof killed === "boolean" ? killed : null,
+    originalAborted: context.signal.aborted,
+    joinAborted: context.joinSignal?.aborted ?? null,
+    deadline: !Number.isFinite(context.deadline)
+      ? "unavailable"
+      : linuxBootMonotonicMilliseconds() >= context.deadline
+        ? "expired"
+        : "live",
+  };
+  return {
+    ...observation,
+    ...(slot === "join-ledger-complete"
+      ? {
+          completionSourceMissingResponse:
+            completionCopySourceMissingResponseMatches(error, {
+              containerId: context.containerId,
+              originalAborted: observation.originalAborted,
+              joinAborted: observation.joinAborted,
+              deadline: observation.deadline,
+            }),
+        }
+      : {}),
+  };
+};
+const publishOperationFailureDiagnostic = (
+  slot,
+  error,
+  plan,
+  processContext,
+) => {
+  try {
+    if (!operationFailureSlots.has(slot)) return;
+    const runId = plan?.runId ?? null;
+    if (
+      runId !== null &&
+      (typeof runId !== "string" || !/^[a-f0-9]{16}$/u.test(runId))
+    )
+      return;
+    const bytes = Buffer.from(
+      `integration.isolation.operation-diagnostic:${JSON.stringify({
+        slot,
+        runId,
+        code: knownFailureCode(error),
+        ...(slot === "join-collector-project"
+          ? { collectorRefusal: readOtlpObservationFailure(error) }
+          : {}),
+        clientRetirementRequired:
+          preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
+        ...(slot === "join-collector-read" &&
+        [
+          "held-identity",
+          "https-exec",
+          "snapshot",
+          "terminal-wait",
+          "terminal-witness",
+        ].includes(processContext?.collectorPhase)
+          ? {
+              collector: {
+                phase: processContext.collectorPhase,
+                ...(processContext.collectorPhase === "https-exec"
+                  ? {
+                      httpsFailure: [
+                        "request-error",
+                        "response-error",
+                        "http-rejected",
+                        "output-bound",
+                      ].includes(
+                        processContext.collectorHttpsFailure?.httpsFailure,
+                      )
+                        ? processContext.collectorHttpsFailure.httpsFailure
+                        : null,
+                      httpsCode: knownFailureCode(
+                        new Error(
+                          typeof processContext.collectorHttpsFailure?.code ===
+                            "string"
+                            ? processContext.collectorHttpsFailure.code
+                            : "",
+                        ),
+                      ),
+                      httpsDisposition: [
+                        "known-refusal",
+                        "native-aborted",
+                        "native-killed",
+                        "native-signaled",
+                        "native-exit-one",
+                        "native-nonstandard",
+                      ].includes(
+                        processContext.collectorHttpsFailure?.disposition,
+                      )
+                        ? processContext.collectorHttpsFailure.disposition
+                        : "unknown",
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        ...((slot === "join-ledger-complete" ||
+          slot === "candidate-image-build") &&
+        processContext
+          ? { process: processFailureObservation(error, processContext, slot) }
+          : {}),
+        ...(slot === "runtime-original" && processContext?.leakedChild
+          ? {
+              leakedChild: {
+                fixtureCaptured:
+                  processContext.leakedChild.fixtureCaptured === true,
+                complete: processContext.leakedChild.complete === true,
+                readinessValid:
+                  processContext.leakedChild.readinessValid === true,
+                ...(processContext.leakedChild.recovery
+                  ? { recovery: processContext.leakedChild.recovery }
+                  : {}),
+              },
+            }
+          : {}),
+      })}\n`,
+    );
+    if (bytes.length <= 512) writeSync(2, bytes);
+  } catch {
+    // Optional content-free observation cannot replace the original error.
+  }
+};
+const mockServerProducerRefusalObservation = (output) => {
+  try {
+    if (typeof output !== "object" || output === null || types.isProxy(output))
+      return;
+    const values = ["stdout", "stderr"].map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(output, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) return;
+      return typeof descriptor.value === "string"
+        ? descriptor.value
+        : undefined;
+    });
+    if (
+      values.some((value) => value === undefined) ||
+      values.reduce((bytes, text) => bytes + Buffer.byteLength(text), 0) > 65536
+    )
+      return;
+    const prefix = "[agentscope-mockserver-ledger:";
+    const lines = values
+      .join("\n")
+      .split("\n")
+      .filter((line) => line.startsWith(prefix));
+    if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
+    const parts = lines[0].split(" ");
+    if (
+      parts.length !== 7 ||
+      parts[0] !== "[agentscope-mockserver-ledger:v1" ||
+      !["stage=eligibility", "stage=publication"].includes(parts[1])
+    )
+      return;
+    const names = [
+      "terminal",
+      "snapshotAvailable",
+      "persistenceClosed",
+      "persistenceFailed",
+    ];
+    const observation = { stage: parts[1].slice(6) };
+    for (let index = 0; index < names.length; index++) {
+      const name = names[index];
+      const suffix = "";
+      if (
+        ![`${name}=true${suffix}`, `${name}=false${suffix}`].includes(
+          parts[index + 2],
+        )
+      )
+        return;
+      observation[name] = parts[index + 2] === `${name}=true${suffix}`;
+    }
+    const reasons = [
+      "none",
+      "late-publish",
+      "load-generated",
+      "drop",
+      "consumer",
+      "start",
+      "shutdown",
+      "eviction",
+      "truncation",
+      "reset",
+      "clear",
+      "drain",
+      "correlation",
+      "request-type",
+      "correlation-missing",
+      "response-missing",
+      "response-missing-1",
+      "response-missing-2",
+      "response-missing-3",
+      "response-missing-4",
+      "response-missing-5",
+      "response-missing-6",
+      "response-missing-7",
+      "response-missing-8",
+      "response-missing-9",
+      "response-missing-10",
+      "response-missing-11",
+      "response-missing-12",
+      "response-missing-13",
+      "response-missing-14",
+      "response-missing-15",
+      "response-missing-16",
+      "response-duplicate",
+      "response-null",
+      "response-status",
+      "row-count",
+      "serialization",
+      "control-capture",
+    ];
+    const reason = reasons.find((value) => parts[6] === `reason=${value}]`);
+    if (reason === undefined) return;
+    observation.reason = reason;
+    return observation;
+  } catch {
+    // Unavailable diagnostic bytes never establish producer authority.
+  }
+};
+const readProducerRefusal = async (containerId, signal, deadline) => {
+  try {
+    const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+    if (remaining > 0 && !signal.aborted)
+      return mockServerProducerRefusalObservation(
+        await dockerWithSignal(["logs", "--tail", "16", containerId], signal, {
+          terminal: true,
+          maxBuffer: 65536,
+          timeout: remaining,
+        }),
+      );
+  } catch {
+    // Optional read adds bounded work, but cannot renew the original deadline.
+  }
+};
+const publishMockServerProducerRefusalDiagnostic = (plan, observation) => {
+  try {
+    const runId = plan.runId;
+    if (typeof runId !== "string" || !/^[a-f0-9]{16}$/u.test(runId)) return;
+    const bytes = Buffer.from(
+      `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify({
+        runId,
+        stage: observation?.stage ?? "unknown",
+        terminal: observation?.terminal ?? null,
+        snapshotAvailable: observation?.snapshotAvailable ?? null,
+        persistenceClosed: observation?.persistenceClosed ?? null,
+        persistenceFailed: observation?.persistenceFailed ?? null,
+        reason: observation?.reason ?? null,
+      })}\n`,
+    );
+    if (bytes.length <= 256) writeSync(2, bytes);
+  } catch {
+    // Optional bounded sink cannot replace the original join failure.
+  }
+};
+/* eslint-disable complexity -- exact closed container terminal witness */
+const assertJoinedMockServerTerminal = (
+  plan,
+  containerId,
+  waited,
+  inspected,
+) => {
   let records;
   try {
     records = JSON.parse(inspected.stdout);
@@ -1725,6 +2745,134 @@ const joinMockServer = async (plan, signal) => {
     )
   )
     throw new Error("integration.isolation.mockserver-terminal");
+};
+/* eslint-enable complexity */
+const createFinalMockServerLedgerDirectory = (plan) => {
+  const directory = resolve(
+    artifactsRoot,
+    "contexts",
+    plan.runId,
+    "final-ledger",
+  );
+  mkdirSync(directory, { mode: 0o700 });
+  return directory;
+};
+const joinMockServer = async (plan, signal) => {
+  let failureSlot = "join-identity";
+  let deadline, joinSignal, containerId, refusal;
+  let collectorPhase, collectorHttpsFailure;
+  try {
+    containerId = mockServerContainerIdentities.get(plan.runId);
+    deadline = mockServerJoinDeadlines.get(plan.runId);
+    if (
+      !/^[a-f0-9]{64}$/u.test(containerId ?? "") ||
+      !Number.isFinite(deadline)
+    )
+      throw new Error("integration.isolation.mockserver-terminal");
+    failureSlot = "join-deadline";
+    const remaining = Math.floor(deadline - linuxBootMonotonicMilliseconds());
+    if (remaining <= 0)
+      throw new Error("integration.isolation.mockserver-terminal");
+    joinSignal = AbortSignal.any([signal, AbortSignal.timeout(remaining)]);
+    failureSlot = "join-control-volume";
+    await assertControlVolumeCurrent(plan, joinSignal);
+    failureSlot = "join-control-open";
+    const authority = mockServerControls.get(plan.runId);
+    const control = openMockServerControl({
+      runId: plan.runId,
+      host: authority?.host,
+      deadline,
+      now: linuxBootMonotonicMilliseconds,
+      material: authority?.material,
+    });
+    failureSlot = "join-control-boundary";
+    await verifyMockServerControlBoundary(control);
+    failureSlot = "join-control-stop";
+    if ((await control.stop()).status !== 200)
+      throw new Error("integration.isolation.mockserver-terminal");
+    failureSlot = "join-container-wait";
+    const waited = await dockerWithSignal(
+      ["container", "wait", containerId],
+      joinSignal,
+      { terminal: true },
+    );
+    failureSlot = "join-container-inspect";
+    const inspected = await dockerWithSignal(
+      ["container", "inspect", containerId],
+      joinSignal,
+      { terminal: true },
+    );
+    failureSlot = "join-terminal-witness";
+    assertJoinedMockServerTerminal(plan, containerId, waited, inspected);
+    refusal = await readProducerRefusal(containerId, joinSignal, deadline);
+    failureSlot = "join-ledger-directory";
+    const ledgerDirectory = createFinalMockServerLedgerDirectory(plan);
+    for (const name of ["requests.json", "requests.complete"]) {
+      failureSlot =
+        name === "requests.json"
+          ? "join-ledger-requests"
+          : "join-ledger-complete";
+      await dockerWithSignal(
+        [
+          "cp",
+          `${containerId}:/control/private/${name}`,
+          resolve(ledgerDirectory, name),
+        ],
+        joinSignal,
+        { terminal: true, mutationCapable: true },
+      );
+    }
+    failureSlot = "join-ledger-read";
+    const ledger = projectMockServerRequests(
+      readMockServerFinalLedger({
+        directory: ledgerDirectory,
+        deadline,
+        now: linuxBootMonotonicMilliseconds,
+      }),
+    );
+    failureSlot = "join-ledger-assert";
+    assertMockServerFinalLedger(
+      ledger,
+      fixtureResults.get(plan.runId),
+      modelRoutes,
+      manifest.scenarios.find((entry) => entry.scenarioId === plan.scenarioId),
+      {
+        traffic: {
+          runId: plan.runId,
+          entries: [
+            ...(fixtureTrafficObservations.get(plan.runId)?.entries ?? []),
+            ...control.snapshot().entries,
+          ],
+        },
+        runId: plan.runId,
+      },
+    );
+    const read = joinCollectorObservations;
+    const note = (phase, httpsFailure) => {
+      collectorPhase = phase;
+      collectorHttpsFailure = httpsFailure;
+    };
+    if (plan.scenarioId === "codex-tui-trace-smoke") {
+      failureSlot = "join-collector-read";
+      const batches = await read(plan, joinSignal, deadline, note);
+      failureSlot = "join-collector-project";
+      completeCodexCollectorFixture(plan, batches);
+    }
+    if (plan.scenarioId === "claude-interactive-trace-smoke") {
+      failureSlot = "join-collector-read";
+      const batches = await read(plan, joinSignal, deadline, note);
+      failureSlot = "join-collector-project";
+      completeClaudeCollectorFixture(plan, batches, ledger);
+    }
+  } catch (error) {
+    const context = { containerId, signal, joinSignal, deadline };
+    context.collectorPhase = collectorPhase;
+    context.collectorHttpsFailure = collectorHttpsFailure;
+    publishOperationFailureDiagnostic(failureSlot, error, plan, context);
+    if (failureSlot === "join-ledger-complete")
+      publishMockServerProducerRefusalDiagnostic(plan, refusal);
+    throw error;
+  }
 };
 const createScenarioContainer = async (
   plan,
@@ -1760,36 +2908,23 @@ const createScenarioContainer = async (
             "--mount",
             `type=volume,source=${plan.controlVolumeName},target=/control`,
           ]),
-      "--env",
-      `HOME=${SCENARIO_HOME}`,
-      "--env",
-      "XDG_CONFIG_HOME=/harness-home",
-      "--env",
-      "HARNESS_HOME=/harness-home",
-      "--env",
-      "AGENTSCOPE_HOME=/agentscope-home",
-      "--env",
-      "AGENTSCOPE_WORKTREE=/worktree",
-      "--env",
-      "AGENTSCOPE_LEDGER=/ledger",
-      "--env",
-      "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
-      "--env",
-      "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_INGESTION_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
-      "--env",
-      "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
-      "--env",
-      `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
-      "--env",
-      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ...[
+        `HOME=${SCENARIO_HOME}`,
+        "XDG_CONFIG_HOME=/harness-home",
+        "HARNESS_HOME=/harness-home",
+        "AGENTSCOPE_HOME=/agentscope-home",
+        "AGENTSCOPE_WORKTREE=/worktree",
+        "AGENTSCOPE_LEDGER=/ledger",
+        "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
+        "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
+        "AGENTSCOPE_INGESTION_URL=http://collector:4318",
+        "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
+        "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
+        `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+        `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
+        `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
+        `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ].flatMap((value) => ["--env", value]),
       ...testModeArguments,
       ...certificationArguments,
       plan.imageTag,
@@ -1890,10 +3025,39 @@ const recordInteractiveExecutionFailure = (
     retainedDiagnostic,
     plan.scenarioId,
   );
+  const observed = readInteractiveChildFailureObservation(output);
+  const prior = installedPtyFailures.get(plan.runId);
+  if (
+    (predicate === "integration.runner.fixture-failed" ||
+      predicate === "child-failure") &&
+    prior?.phase === "pty-receipt" &&
+    prior.predicate !== "receipt-rejected"
+  )
+    return predicate;
   installedPtyFailures.set(plan.runId, {
     receiptVersion: 1,
     phase: "pty-execution",
     predicate,
+    ...(plan.scenarioId === "codex-tui-trace-smoke" ||
+    plan.scenarioId === "claude-interactive-trace-smoke"
+      ? {
+          scenarioId: plan.scenarioId,
+          ...(observed?.predicate === predicate &&
+          observed.semanticFailure !== undefined
+            ? { semanticFailure: observed.semanticFailure }
+            : {}),
+          ...(observed?.predicate === predicate &&
+          observed.exitSignal !== undefined
+            ? { exitSignal: observed.exitSignal }
+            : {}),
+          ...(plan.scenarioId === "claude-interactive-trace-smoke" &&
+          predicate === "integration.fixture.claude-vendor-terminal" &&
+          observed?.predicate === predicate &&
+          observed.childTerminal !== undefined
+            ? { childTerminal: observed.childTerminal }
+            : {}),
+        }
+      : {}),
   });
   return predicate;
 };
@@ -1925,7 +3089,7 @@ const captureFailedScenarioReceipt = (
           true,
         )
       : captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
-  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured, output);
   registerScenarioReceipt(plan, receipt);
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
   return receipt;
@@ -1945,7 +3109,79 @@ const captureAvailableFailedScenarioReceipt = (
         fixtureCaptured,
       )
     : undefined;
-const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
+const retainedRecoveryObservation = (output, runId, receipt) => {
+  try {
+    if (typeof output !== "string") return;
+    const prefix = "AGENTSCOPE_RETAINED_RECOVERY=";
+    const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+    if (lines.length !== 1 || Buffer.byteLength(lines[0]) > 256) return;
+    const value = JSON.parse(lines[0].slice(prefix.length));
+    const keys = ["recoveryAttempted", "recoverySucceeded", "runId"];
+    if (Object.hasOwn(value ?? {}, "recoveryStage")) keys.push("recoveryStage");
+    if (
+      !value ||
+      JSON.stringify(Object.keys(value).sort()) !==
+        JSON.stringify(keys.sort()) ||
+      value.runId !== runId ||
+      typeof value.recoveryAttempted !== "boolean" ||
+      typeof value.recoverySucceeded !== "boolean" ||
+      (value.recoverySucceeded && !value.recoveryAttempted) ||
+      (Object.hasOwn(value, "recoveryStage") &&
+        value.recoveryStage !== null &&
+        (!value.recoveryAttempted ||
+          value.recoverySucceeded ||
+          !new Set([
+            "open",
+            "status",
+            "read",
+            "identity",
+            "envelope",
+            "unknown",
+          ]).has(value.recoveryStage)))
+    )
+      return;
+    return {
+      attempted: value.recoveryAttempted,
+      succeeded: value.recoverySucceeded,
+      ...(Object.hasOwn(value, "recoveryStage")
+        ? { stage: value.recoveryStage }
+        : {}),
+      exitCode:
+        Number.isInteger(receipt.exitCode) &&
+        receipt.exitCode >= 0 &&
+        receipt.exitCode <= 255
+          ? receipt.exitCode
+          : null,
+      outcome: new Set([
+        "exited",
+        "timed-out",
+        "output-limit",
+        "cleanup-failed",
+      ]).has(receipt.outcome)
+        ? receipt.outcome
+        : "unknown",
+      termRequested:
+        typeof receipt.termRequested === "boolean"
+          ? receipt.termRequested
+          : null,
+      killRequested:
+        typeof receipt.killRequested === "boolean"
+          ? receipt.killRequested
+          : null,
+      cleanup: new Set(["clean", "residual", "uncertain"]).has(receipt.cleanup)
+        ? receipt.cleanup
+        : "unknown",
+    };
+  } catch {
+    // Unavailable or malformed optional observations remain unknown.
+  }
+};
+const observeNegativeScenarioReceipt = (
+  plan,
+  receipt,
+  fixtureCaptured,
+  output,
+) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
   let observed;
@@ -1980,7 +3216,26 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
     default:
       return;
   }
-  if (!observed) throw new Error("integration.certification.predicate");
+  if (!observed) {
+    const error = new Error("integration.certification.predicate");
+    if (substrateCertificationCase === "leaked-child") {
+      try {
+        publishOperationFailureDiagnostic("runtime-original", error, plan, {
+          leakedChild: {
+            fixtureCaptured: fixtureCaptured === true,
+            complete: result?.resultStatus === "complete",
+            readinessValid: leakedChildReadinessIsValid(
+              result?.certificationReadiness,
+            ),
+            recovery: retainedRecoveryObservation(output, plan.runId, receipt),
+          },
+        });
+      } catch {
+        // Optional projection cannot replace the original predicate refusal.
+      }
+    }
+    throw error;
+  }
   observeSubstrateCertificationPredicate(
     plan.runId,
     SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
@@ -2047,7 +3302,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
     throw new Error("integration.isolation.headless-authority");
   const outerMonotonicDeadline =
     linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
-  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline);
+  mockServerJoinDeadlines.set(plan.runId, outerMonotonicDeadline + 10_000);
   const immutableCandidate = await createImmutableCandidateHandoff(
     plan,
     signal,
@@ -2077,6 +3332,11 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           cause: error,
         });
       const output = `${error?.stdout ?? ""}`;
+      if (
+        substrateCertificationCase === "mixed-artifact-digest" &&
+        plan.executionMode === "headless"
+      )
+        captureHeadlessReceipt(output, plan, { outerMonotonicDeadline });
       const fixtureCaptured = captureFixtureResult(output, plan);
       const receipt = captureAvailableFailedScenarioReceipt(
         output,
@@ -2132,7 +3392,7 @@ const runScenario = async (plan, signal, scenarioDeadline) => {
           outerMonotonicDeadline,
         });
   const fixtureCaptured = captureFixtureResult(stdout, plan);
-  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
+  observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured, stdout);
   registerScenarioReceipt(plan, receipt);
   if (plan.executionMode === "interactive") {
     const predicate = interactiveReceiptFailurePredicate(
@@ -2159,10 +3419,18 @@ const recordEvidence = async (evidence) => {
     mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
   });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
+  const admission = admissionByRunId.get(verifiedEvidence.runId);
+  const retainedEvidence =
+    admission === undefined
+      ? verifiedEvidence
+      : {
+          ...verifiedEvidence,
+          preparedHarnessMaterial: admission.preparedHarnessMaterial,
+        };
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     resolve(directory, "evidence.json"),
-    `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
+    `${JSON.stringify(retainedEvidence, undefined, 2)}\n`,
   );
   scenarioOutcomes.set(verifiedEvidence.runId, verifiedEvidence.outcome);
   const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
@@ -2173,8 +3441,11 @@ const recordEvidence = async (evidence) => {
       { flag: "wx", mode: 0o600 },
     );
   const result = fixtureResults.get(verifiedEvidence.runId);
-  if (
+  const successful =
     verifiedEvidence.outcome === "passed" &&
+    verifiedEvidence.cleanup.outcome === "complete";
+  if (
+    successful &&
     (result === undefined || result.resultStatus !== "complete")
   )
     throw new Error("integration.isolation.fixture-result");
@@ -2211,8 +3482,7 @@ const recordEvidence = async (evidence) => {
     if (result.certificationReadiness === null)
       fixtureResults.delete(verifiedEvidence.runId);
   }
-  const admission = admissionByRunId.get(verifiedEvidence.runId);
-  if (admission !== undefined) {
+  if (admission !== undefined && successful) {
     if (
       result === undefined ||
       result.resultStatus !== "complete" ||
@@ -2257,6 +3527,7 @@ const recordEvidence = async (evidence) => {
           mockServerImageIdentity: verifiedEvidence.mockServerImageIdentity,
           receipt,
           scenarioId: verifiedEvidence.scenarioId,
+          preparedHarnessMaterial: admission.preparedHarnessMaterial,
         },
       },
       outcome: verifiedEvidence.outcome,
@@ -2378,8 +3649,8 @@ const publishControllerFailureManifest = (identities) => {
     certificationCase: substrateCertificationCase ?? null,
     preparedAuthorityDigests: {
       buildkitImage: diagnosticDigest({
-        configDigest: buildkit.configDigest,
         image: buildkit.image,
+        configDigest: buildkit.configDigest,
       }),
       buildkitPlatform: diagnosticDigest(buildkit.platform),
       daemon: diagnosticDigest(preparedImageEvidence.dockerDaemon),
@@ -2458,8 +3729,11 @@ const countDockerResources = async (kind, plan, signal) => {
 const createDriver = (plan) => {
   const scenarioDeadline = performance.now() + scenarioTimeoutMilliseconds;
   let removalSignal;
+  let removalDeadline;
   let runtimeIdentity;
   const boundedRemovalSignal = () => {
+    removalDeadline ??=
+      performance.now() + ISOLATION_EXECUTOR_LIMITS.cleanup.removalMilliseconds;
     removalSignal ??= AbortSignal.timeout(
       ISOLATION_EXECUTOR_LIMITS.cleanup.removalMilliseconds,
     );
@@ -2545,7 +3819,20 @@ const createDriver = (plan) => {
       }
     },
     removeImage: (tag) =>
-      ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
+      tag === plan.mockServerImageTag
+        ? retireMockServerImage(
+            plan,
+            boundedRemovalSignal(),
+            Math.min(
+              removalDeadline,
+              performance.now() +
+                remainingIntegrationOperationMilliseconds(30_000, true),
+            ),
+          )
+        : ignoreMissing(
+            ["image", "rm", "--force", tag],
+            boundedRemovalSignal(),
+          ),
     removeContext: async (runId) => {
       if (!/^[a-f\d]{16}$/u.test(runId))
         throw new Error("integration.isolation.context");
@@ -2619,6 +3906,47 @@ const plans = scenarios.map((scenario) =>
 );
 registerIntegrationRunIds(plans.map(({ runId }) => runId));
 const admissionByRunId = new Map();
+const readAdmissionComponentFixture = (evidence) => {
+  let descriptor;
+  try {
+    const artifact = evidence.admission.component.fixture;
+    const path = resolve(workspaceRoot, artifact.path);
+    if (!path.startsWith(`${workspaceRoot}/`))
+      throw new Error("integration.harness-scenario-admission.invalid");
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const status = fstatSync(descriptor);
+    if (!status.isFile() || status.size < 1 || status.size > 16_777_216)
+      throw new Error("integration.harness-scenario-admission.invalid");
+    const buffer = Buffer.alloc(status.size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(
+        descriptor,
+        buffer,
+        length,
+        buffer.length - length,
+        null,
+      );
+      if (read === 0) break;
+      length += read;
+    }
+    const bytes = buffer.subarray(0, length);
+    if (
+      bytes.length !== status.size ||
+      createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+    )
+      throw new Error("integration.harness-scenario-admission.invalid");
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    // Filesystem/native parser errors must not disclose fixture content or paths.
+    throw new Error("integration.harness-scenario-admission.invalid");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
 const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
@@ -2676,8 +4004,10 @@ try {
     admissionByRunId.set(plan.runId, {
       evidence,
       materialIdentity: materialAuthority.materialIdentity,
+      preparedHarnessMaterial: materialAuthority,
       seed: {
         candidateDigest: candidate.bundleIdentity,
+        componentFixture: readAdmissionComponentFixture(evidence),
         destinationCombinationIdentity: admissionDigest({
           destinations: [...scenario.destinations].sort(),
           modelRoutes: [...scenario.modelRoutes].sort(),
@@ -2694,6 +4024,10 @@ try {
       },
       scenario,
     });
+  }
+  for (const plan of plans) {
+    prepareMockServerControl(plan);
+    await prepareMockServerImage(plan, integrationStageSignal());
   }
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
@@ -2749,6 +4083,14 @@ try {
   }
   terminalEvidence = evidence;
 } catch (error) {
+  publishOperationFailureDiagnostic("runtime-original", error);
+  publishScenarioContextRefusals();
+  if (
+    [...mockServerBuiltImages.values()].some(({ client }) =>
+      preparedDockerClientRequiresOuterHostRetirement(client),
+    )
+  )
+    markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
   if (
     preparedDockerClient !== undefined &&
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
@@ -2773,16 +4115,34 @@ try {
   process.removeListener("SIGTERM", abort);
   let cleanupError;
   try {
+    requireSettledMockServerClients();
+    if (mockServerBuiltImages.size > 0) {
+      const deadline =
+        performance.now() +
+        remainingIntegrationOperationMilliseconds(30_000, true);
+      const signal = mockServerRetirementSignal(deadline);
+      for (const plan of plans)
+        await retireMockServerImage(plan, signal, deadline);
+    }
+  } catch (error) {
+    publishOperationFailureDiagnostic("cleanup-images", error);
+    retirementRequired = true;
+    cleanupError = error;
+    primaryError ??= error;
+  }
+  try {
     for (const material of preparedHarnessMaterials.values())
       retirePreparedHarnessMaterial(material);
   } catch (error) {
-    cleanupError = error;
+    publishOperationFailureDiagnostic("cleanup-materials", error);
+    cleanupError ??= error;
     primaryError ??= error;
   }
   if (preparedDockerClient !== undefined && !retirementRequired) {
     try {
       closePreparedDockerClient(preparedDockerClient);
     } catch (error) {
+      publishOperationFailureDiagnostic("cleanup-client", error);
       cleanupError ??= error;
       primaryError ??= error;
     }
@@ -2794,7 +4154,10 @@ try {
         finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
       );
       publishControllerFailureManifest(identities);
-      for (const plan of plans) fixtureResults.delete(plan.runId);
+      for (const plan of plans) {
+        fixtureResults.delete(plan.runId);
+        fixtureTrafficObservations.delete(plan.runId);
+      }
     } catch {
       // The original controller failure remains primary. The workflow's
       // always-run exact verifier independently fails if evidence is absent.

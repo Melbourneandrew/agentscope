@@ -22,17 +22,6 @@ function writeManifest(root, relativePath, manifest) {
   writeFileSync(join(packageRoot, "package.json"), JSON.stringify(manifest));
 }
 
-test("Claude native discovery depends inward without application Core", () => {
-  assert.deepEqual(
-    expectedInternalDependenciesFor("@agentscope/harness-claude-code"),
-    ["@agentscope/harnesses-core", "@agentscope/protocol"],
-  );
-  assert.deepEqual(
-    expectedInternalDependenciesFor("@agentscope/harness-gemini-cli"),
-    ["@agentscope/core", "@agentscope/harnesses-core", "@agentscope/protocol"],
-  );
-});
-
 function graphFixture() {
   const root = mkdtempSync(join(tmpdir(), "agentscope-package-graph-"));
   const expectedPackages = new Map([

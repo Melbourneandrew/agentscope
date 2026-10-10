@@ -15,14 +15,12 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { Agent, request as httpRequest } from "node:http";
-import { createConnection } from "node:net";
 import { basename, join } from "node:path";
+import { encodeAdapterReportedFailureMarker } from "./codex-pty-research.mjs";
 import {
-  createCodexModelControlRequest,
-  encodeAdapterReportedFailureMarker,
-} from "./codex-pty-research.mjs";
-import { classifyCodexCollectedChildFailure } from "./codex-trace-child-diagnostics.mjs";
+  interactivePhases,
+  classifyCodexCollectedChildFailure,
+} from "./codex-trace-child-diagnostics.mjs";
 import {
   codexArmPendingResearchHint,
   codexProjectionFailureDiagnostic,
@@ -31,9 +29,14 @@ import {
   decodeCodexJoinDeadlineExitCode,
   encodeCodexJoinDeadlineExitCode,
   encodeInteractiveFailureExitCode,
-  gateReceiptResearchRejection,
   parseCodexMachineOutput as parseMachine,
 } from "./immutable-candidate-authority.mjs";
+
+import {
+  openMockServerControl,
+  projectMockServerRequests,
+  snapshotMockServerTraffic,
+} from "./mockserver-control.mjs";
 
 let ledger;
 let terminalCompletionMarker = "AGENTSCOPE_PTY_COMPLETE";
@@ -41,8 +44,8 @@ let interactiveFailurePhase = "bootstrap";
 let interactiveFailurePhaseIndex = 0;
 let preCheckpointFailureDiagnostic;
 let candidateConfigStage;
-let gateResearchHint;
 let adapterReportedFailure;
+let modelControlFailureHint;
 const candidateConfigStages = Object.freeze([
   "closed-marker",
   "render",
@@ -53,83 +56,6 @@ const candidateConfigStages = Object.freeze([
 ]);
 let uninstallVerificationStep = "cli";
 let joinDeadlineHookState;
-const interactivePhases = Object.freeze([
-  "bootstrap",
-  "bootstrap-arguments",
-  "bootstrap-deadline",
-  "bootstrap-readiness",
-  "bootstrap-environment",
-  "bootstrap-modules",
-  "bootstrap-artifact",
-  "bootstrap-pty",
-  "init",
-  "destination",
-  "routing",
-  "install",
-  "model-gate-start",
-  "model-gate-configured",
-  "control-plane-closed",
-  "tui-readiness-challenge-published",
-  "tui-start",
-  "tui-run-created",
-  "tui-checkpoint",
-  "model-gate-arm-start",
-  "model-gate-arm-health-pending",
-  "model-gate-arm-session-start",
-  "tui-exit-before-arm",
-  "model-gate-arm-complete",
-  "model-request-observed",
-  "model-request",
-  "trace-terminal",
-  "tui-exit-published",
-  "tui-join-deadline",
-  "tui-child-rejected",
-  "tui-joined",
-  "trace-settlement",
-  "trace-search",
-  "hook-command-timeout",
-  "hook-command-spawn-error",
-  "hook-command-stdin-error",
-  "hook-command-wait-error",
-  "hook-command-missing",
-  "hook-command-completed-before-budget-boundary",
-  "hook-command-completed-near-budget-boundary",
-  "hook-no-operational-state-subsecond",
-  "hook-no-operational-state-low-latency",
-  "hook-no-operational-state-mid-latency",
-  "hook-no-operational-state-high-latency",
-  "hook-no-operational-state-near-deadline",
-  "hook-start-suppressed",
-  "hook-start-deadline",
-  "hook-capture-suppressed",
-  "hook-capture-deadline",
-  "hook-redaction-suppressed",
-  "hook-redaction-deadline",
-  "hook-routing-no-route",
-  "hook-delivery-rejected",
-  "hook-delivery-unavailable",
-  "hook-delivery-deadline",
-  "hook-delivery-unknown",
-  "hook-accepted-without-trace",
-  "hook-operational-unclassified",
-  "trace-search-record-count",
-  "trace-search-shape",
-  "trace-search-ambiguous",
-  "trace-search-harness",
-  "trace-search-locator",
-  "trace-reporter-settled",
-  "trace-search-result",
-  "verify",
-  "verify-config",
-  "verify-gate",
-  "verify-trace-get",
-  "verify-correlation",
-  "verify-doctor",
-  "verify-uninstall",
-  "verify-status",
-  "verify-projection",
-  "verify-evidence",
-]);
 const advanceInteractivePhase = (phase) => {
   const phaseIndex = interactivePhases.indexOf(phase);
   if (phaseIndex <= interactiveFailurePhaseIndex)
@@ -147,8 +73,6 @@ const postTraceFailureDiagnostic = (error) => {
       codexUninstallFailureDiagnostic(error?.message) ??
       codexUninstallUnclassifiedStageDiagnostic(uninstallVerificationStep)
     );
-  if (interactiveFailurePhase === "verify-trace-get")
-    return `integration.fixture.codex-verify-trace-get-${classifyCodexTraceGetFailure(error?.message)}`;
   return undefined;
 };
 process.setUncaughtExceptionCaptureCallback((error) => {
@@ -159,9 +83,11 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       ? `integration.fixture.codex-candidate-config-${candidateConfigStage}`
       : undefined;
   const gateResearchDiagnostic =
-    interactiveFailurePhase === "verify-gate" && gateResearchHint !== undefined
-      ? `integration.fixture.codex-gate-research-${gateResearchHint}`
-      : interactiveFailurePhase === "model-gate-arm-health-pending"
+    interactiveFailurePhase === "verify-gate" &&
+    modelControlFailureHint !== undefined
+      ? `integration.fixture.codex-gate-research-${modelControlFailureHint}`
+      : interactiveFailurePhase === "model-gate-arm-health-pending" ||
+          interactiveFailurePhase === "model-gate-arm-complete"
         ? `integration.fixture.codex-gate-research-${codexArmPendingResearchHint(error)}`
         : undefined;
   const ownedDiagnostic =
@@ -182,11 +108,6 @@ process.setUncaughtExceptionCaptureCallback((error) => {
     if (diagnosticCode !== undefined) exitCode = diagnosticCode;
   }
   try {
-    const traceFailure = [
-      "trace-search",
-      "hook-command-completed-before-budget-boundary",
-      "hook-command-completed-near-budget-boundary",
-    ].includes(interactiveFailurePhase);
     const diagnostic =
       preCheckpointFailureDiagnostic ??
       ownedDiagnostic ??
@@ -194,15 +115,7 @@ process.setUncaughtExceptionCaptureCallback((error) => {
       (interactiveFailurePhase === "tui-join-deadline"
         ? (decodeCodexJoinDeadlineExitCode(exitCode) ??
           "integration.fixture.codex-tui-join-deadline")
-        : traceFailure
-          ? `integration.fixture.codex-trace-await-${classifyCodexTraceFailureHint(
-              {
-                errorMessage: error?.message,
-                hookCompleted: traceWaitHookCompleted,
-                reporterSettled: traceWaitReporterSettled,
-              },
-            )}`
-          : `integration.fixture.codex-${interactiveFailurePhase}`);
+        : `integration.fixture.codex-${interactiveFailurePhase}`);
     if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)
       writeFileSync(
         join(ledger, "interactive-failure.txt"),
@@ -436,22 +349,10 @@ const run = (executable, arguments_, options = {}) => {
       if (timer !== undefined) clearTimeout(timer);
       try {
         remaining();
-        const traceUnavailable =
-          options.acceptTraceSearchUnavailable === true &&
-          codexTraceSearchUnavailable({ code, signal, stderr, stdout });
-        const traceTimedOut =
-          options.acceptTraceSearchUnavailable === true &&
-          codexTraceSearchTimedOut({
-            code,
-            deadlineExpired,
-            signal,
-            stderr,
-            stdout,
-          });
         if (
-          (!traceUnavailable &&
-            !traceTimedOut &&
-            (deadlineExpired || code !== 0 || signal !== null)) ||
+          deadlineExpired ||
+          code !== 0 ||
+          signal !== null ||
           stdout.length > maximumOutput ||
           stderr.length > maximumOutput
         ) {
@@ -474,7 +375,7 @@ const run = (executable, arguments_, options = {}) => {
             adapterReportedFailure = selected.adapterReportedFailure;
           return reject(new Error(selected.message));
         }
-        resolve({ stderr, stdout, traceTimedOut, traceUnavailable });
+        resolve({ stderr, stdout });
       } catch (error) {
         reject(error);
       }
@@ -552,13 +453,7 @@ const homeDescriptor = openSync(
     constants.O_NOFOLLOW |
     constants.O_NONBLOCK,
 );
-let localSqliteLifecycleDescriptor;
-let operationalStateHealthDescriptor;
-let operationalStateBaseline;
 let codexDiagnosticLogDirectoryDescriptor;
-let sessionStartBeforeFirstModelRequestAdmission;
-let traceWaitHookCompleted = false;
-let traceWaitReporterSettled = false;
 const recordInteractivePhase = (phase) => {
   advanceInteractivePhase(phase);
   writeFileSync(
@@ -591,31 +486,6 @@ const recordPreCheckpointFailure = (kind) => {
     { flag: "wx", mode: 0o600 },
   );
 };
-const recordModelGateArmFailure = (predicate) => {
-  if (
-    ![
-      "control",
-      "hook-log",
-      "hook-mediation",
-      "session-start-missing",
-    ].includes(predicate)
-  )
-    throw new Error("integration.codex.model-gate-arm-diagnostic");
-  writeFileSync(
-    join(ledger, "interactive-failure.txt"),
-    `integration.fixture.codex-model-gate-arm-${predicate}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
-};
-const codexStopHookCommandFailure = (outcome) => {
-  let phase;
-  if (outcome === "timeout") phase = "hook-command-timeout";
-  else if (outcome === "spawn_error") phase = "hook-command-spawn-error";
-  else if (outcome === "stdin_error") phase = "hook-command-stdin-error";
-  else if (outcome === "wait_error") phase = "hook-command-wait-error";
-  else throw new Error("integration.codex.hook-command-outcome");
-  return { error: `integration.codex.hook-command-${outcome}`, phase };
-};
 advanceInteractivePhase("bootstrap-modules");
 const [configurationModule, evidenceModule, oracleModule, adapterModule] =
   await Promise.all([
@@ -629,37 +499,20 @@ const {
   boundedRequestLedger,
   classifyCodexShutdownAtJoinDeadline,
   codexStopHookReadyForExit,
-  classifyLocalSqliteOutcomeAfterBaseline,
-  classifyMissingOperationalStateByHookDuration,
-  classifyCodexSettledTraceObservation,
-  classifyCodexTraceFailureHint,
-  classifyCodexTraceGetFailure,
-  codexTraceSearchAttemptDeadlines,
-  codexTraceSearchUnavailable,
-  codexTraceSearchTimedOut,
-  codexSessionStartCheckpointMatchesLifecycle,
   inspectCodexRootHookLifecycle,
-  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
-  inspectCodexStopHookCommand,
-  classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
+  projectCodexPostJoinTranscript,
   codexTurnTerminalIdAfterBaseline,
   codexTurnTerminalObservedAfterBaseline,
-  localSqliteReporterSettled,
-  localSqliteAcceptanceBaseline,
-  openLocalSqliteLifecycle,
-  openOperationalStateHealth,
   inspectDiagnosticBeforeDeadline,
   publishTerminalCompletionBeforeDeadline,
   recordTerminalObservationBeforeDeadline,
   readCodexSessionLedgerRecords,
   terminalObservationBeforeDeadline,
-  traceSummaryBeforeDeadline,
-  waitForModelRequestBeforeDeadline,
   waitWithinObservationDeadline,
 } = evidenceModule;
-const { correlateCodexPlatformObservations } = oracleModule;
-const { translateCodexPlatformObservations } = adapterModule;
+const { correlateCodexNativeObservations } = oracleModule;
+const { translateCodexNativeObservations } = adapterModule;
 
 advanceInteractivePhase("bootstrap-artifact");
 const artifactStatus = lstatSync(artifactPath);
@@ -673,7 +526,16 @@ const cli = async (arguments_, command, options) => {
   const { stdout } = await run(
     agentscope,
     [...arguments_, "--output", "json"],
-    { ...options, candidatePrincipal: true },
+    {
+      ...options,
+      env: {
+        ...process.env,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
+      },
+      candidatePrincipal: true,
+    },
   );
   const monotonicDeadline = options?.monotonicDeadline;
   if (
@@ -741,89 +603,87 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const modelControlSocket = "/control/private/gate.sock";
-const assertPrivateControlSocket = () => {
-  const directory = lstatSync("/control/private");
-  const socket = lstatSync(modelControlSocket);
-  if (
-    process.getuid() !== 0 ||
-    !directory.isDirectory() ||
-    directory.isSymbolicLink() ||
-    directory.uid !== 0 ||
-    (directory.mode & 0o777) !== 0o700 ||
-    !socket.isSocket() ||
-    socket.isSymbolicLink() ||
-    socket.uid !== 0 ||
-    (socket.mode & 0o777) !== 0o600
-  )
-    throw new Error("integration.codex.model-gate-control-identity");
-};
-const modelControlAgent = new Agent({ keepAlive: true, maxSockets: 1 });
-let modelGateCutoff;
-let modelControlFailureHint;
-const gateHeaders = Object.freeze({
-  authorization: `Bearer ${readinessChallenge}`,
-  "content-type": "application/json",
-});
-const controlRequest = createCodexModelControlRequest({
-  httpRequest,
-  agent: modelControlAgent,
-  headers: gateHeaders,
-  socketPath: modelControlSocket,
-  deadline: () => deadline,
-  gateCutoff: () => modelGateCutoff,
-  now: bootNow,
-  observe: (hint) => {
-    modelControlFailureHint = hint;
-  },
-});
-const readModelRequests = async (signal) => {
-  const value = await controlRequest("/requests", "PUT", {}, signal);
-  if (!exactKeys(value, ["ledger"]))
-    throw new Error("integration.codex.model-gate");
-  return boundedRequestLedger(value.ledger);
-};
-const inspectSessionStartBeforeFirstModelRequestAdmission = () => {
-  sessionStartBeforeFirstModelRequestAdmission =
-    inspectCodexSessionStartBeforeFirstModelRequestAdmission({
-      directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
-      directoryPath: codexDiagnosticLogDirectory,
-    });
-  return sessionStartBeforeFirstModelRequestAdmission;
-};
-const gateRequest = (path, value, signal) =>
-  controlRequest(path, "POST", value, signal);
-const proveControlPlaneClosed = async () => {
-  const endpoint = new URL(modelEndpoint);
-  if (endpoint.protocol !== "http:" || endpoint.pathname !== "/")
-    throw new Error("integration.codex.model-gate");
-  endpoint.port = "1081";
-  await new Promise((resolve, reject) => {
-    const socket = createConnection({
-      host: endpoint.hostname,
-      port: Number(endpoint.port),
-    });
-    const timer = setTimeout(
-      () => {
-        socket.destroy();
-        reject(new Error("integration.codex.model-gate-control-open"));
-      },
-      Math.min(250, remaining()),
-    );
-    socket.once("connect", () => {
-      clearTimeout(timer);
-      socket.destroy();
-      reject(new Error("integration.codex.model-gate-control-open"));
-    });
-    socket.once("error", () => {
-      clearTimeout(timer);
-      resolve();
-    });
+let upstreamControl;
+let candidateTraffic;
+let upstreamTraffic;
+const readModelRequests = async () => {
+  // Compare the current configuration, candidate denials and controller
+  // retrievals without changing the existing controller-call ceiling.
+  if (upstreamControl.snapshot().entries.length >= 7) {
+    modelControlFailureHint ??= "model-budget";
+    throw new Error("integration.codex.model-control");
+  }
+  const response = await upstreamControl.requests();
+  if (response.status !== 200) {
+    modelControlFailureHint ??= "model-http-status";
+    throw new Error("integration.codex.model-control");
+  }
+  let observed;
+  try {
+    observed = projectMockServerRequests(response.bytes, promptSha256);
+  } catch (error) {
+    modelControlFailureHint ??= "model-projection";
+    throw error;
+  }
+  const sent = upstreamControl.snapshot().entries;
+  const controls = [sent[0], ...candidateTraffic.entries, ...sent.slice(1)];
+  let controlIndex = 0;
+  const entries = observed.map((row) => {
+    if (row.role === undefined || row.role === "data-plane")
+      return {
+        method: row.method,
+        path: row.path,
+        role: "data-plane",
+        status: 200,
+        bodyBytes: row.bodyBytes,
+        bodySha256: row.bodySha256,
+      };
+    const client = controls[controlIndex++];
+    if (
+      client === undefined ||
+      ["method", "path", "role", "status", "bodyBytes", "bodySha256"].some(
+        (key) => row[key] !== client[key],
+      )
+    ) {
+      modelControlFailureHint ??= "model-control-order";
+      throw new Error("integration.codex.model-control");
+    }
+    return client;
   });
+  if (controlIndex !== controls.length) {
+    modelControlFailureHint ??= "model-control-count";
+    throw new Error("integration.codex.model-control");
+  }
+  upstreamTraffic = snapshotMockServerTraffic(
+    { runId: integrationRunId, entries },
+    integrationRunId,
+  );
+  try {
+    return boundedRequestLedger(
+      observed.filter(
+        (row) => row.role === undefined || row.role === "data-plane",
+      ),
+    );
+  } catch (error) {
+    modelControlFailureHint ??= "model-ledger";
+    throw error;
+  }
 };
-const configureModelGate = async (modelAdmissionCutoff) => {
-  modelGateCutoff = modelAdmissionCutoff;
-  assertPrivateControlSocket();
+const configureModelGate = async (preparationCutoff, traceDeadline) => {
+  const endpoint = new URL(modelEndpoint);
+  if (
+    endpoint.protocol !== "http:" ||
+    endpoint.hostname !== "mockserver" ||
+    endpoint.port !== "1080" ||
+    endpoint.pathname !== "/"
+  )
+    throw new Error("integration.codex.model-control");
+  upstreamControl = openMockServerControl({
+    runId: integrationRunId,
+    host: "mockserver",
+    deadline: traceDeadline,
+    now: bootNow,
+  });
   const routeAuthority = JSON.parse(
     readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
   );
@@ -832,6 +692,7 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     Number.isInteger(routeIndex) && routeIndex >= 0
       ? routeAuthority.routes?.[routeIndex]
       : undefined;
+  const expectation = routeAuthority.mockServerInitialization?.[routeIndex];
   const body = route?.responseBodyText;
   if (
     routeAuthority.routeIds?.lastIndexOf("codex-tui-responses") !==
@@ -840,130 +701,52 @@ const configureModelGate = async (modelAdmissionCutoff) => {
     route?.path !== "/v1/responses" ||
     typeof body !== "string" ||
     body.split("AGENTSCOPE_PTY_COMPLETE").length !== 2 ||
-    body.includes(expectedAssistantMessage)
+    body.includes(expectedAssistantMessage) ||
+    expectation?.httpRequest?.method !== "POST" ||
+    expectation.httpRequest.path !== "/v1/responses" ||
+    expectation?.httpResponse?.body !== body
   )
-    throw new Error("integration.codex.model-gate");
-  const response = await controlRequest(
-    "/configure",
-    "POST",
+    throw new Error("integration.codex.model-control");
+  const response = await upstreamControl.configure(
     {
-      challenge: readinessChallenge,
-      cutoff: modelAdmissionCutoff,
-      promptSha256,
-      responseText: body.replace(
-        "AGENTSCOPE_PTY_COMPLETE",
-        expectedAssistantMessage,
-      ),
-      runId: integrationRunId,
+      ...expectation,
+      httpResponse: {
+        ...expectation.httpResponse,
+        body: body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage),
+      },
     },
-    AbortSignal.timeout(Math.min(1_000, remaining())),
+    preparationCutoff,
   );
-  if (
-    !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== integrationRunId ||
-    response.state !== "pending"
-  )
-    throw new Error("integration.codex.model-gate");
+  if (response.status !== 201 || bootNow() >= preparationCutoff)
+    throw new Error("integration.codex.model-control");
+  const candidate = await run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { probeMockServerCandidate, readMockServerBootClock as now } from "/opt/agentscope/mockserver-control.mjs";
+console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(integrationRunId)},host:"mockserver",deadline:${preparationCutoff},now})));`,
+    ],
+    { candidatePrincipal: true, monotonicDeadline: preparationCutoff },
+  );
+  candidateTraffic = snapshotMockServerTraffic(
+    JSON.parse(candidate.stdout.toString("utf8")),
+    integrationRunId,
+  );
 };
-const armModelGate = async (modelAdmissionCutoff) => {
-  let observedPendingHealth = false;
-  while (bootNow() < modelAdmissionCutoff) {
-    let checkpoint;
-    try {
-      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      recordModelGateArmFailure(
-        message === "integration.codex.hook-mediation"
-          ? "hook-mediation"
-          : "hook-log",
-      );
-      throw error;
-    }
-    if (checkpoint !== undefined) {
-      recordInteractivePhase("model-gate-arm-session-start");
-      let response;
-      try {
-        response = await gateRequest("/arm", {
-          runId: integrationRunId,
-          sessionStartSpanSha256: checkpoint.spanSha256,
-        });
-      } catch (error) {
-        recordModelGateArmFailure("control");
-        throw error;
-      }
-      if (
-        !exactKeys(response, [
-          "challengeSha256",
-          "generation",
-          "runId",
-          "state",
-        ]) ||
-        response.challengeSha256 !==
-          createHash("sha256").update(readinessChallenge).digest("hex") ||
-        typeof response.generation !== "string" ||
-        !/^[a-f0-9]{64}$/u.test(response.generation) ||
-        response.runId !== integrationRunId ||
-        response.state !== "awaiting-ack"
-      ) {
-        recordModelGateArmFailure("control");
-        throw new Error("integration.codex.model-gate");
-      }
-      const acknowledged = await gateRequest("/ack", {
-        challengeSha256: response.challengeSha256,
-        generation: response.generation,
-        runId: integrationRunId,
-      });
-      if (
-        !exactKeys(acknowledged, ["generation", "runId", "state"]) ||
-        acknowledged.generation !== response.generation ||
-        acknowledged.runId !== integrationRunId ||
-        acknowledged.state !== "armed"
-      ) {
-        recordModelGateArmFailure("control");
-        throw new Error("integration.codex.model-gate");
-      }
-      return checkpoint;
-    }
-    let health;
-    try {
-      health = await controlRequest(
-        "/health",
-        "GET",
-        undefined,
-        AbortSignal.timeout(Math.min(250, remaining())),
-      );
-    } catch (error) {
-      recordModelGateArmFailure("control");
-      throw error;
-    }
-    if (!exactKeys(health, ["state"]) || typeof health.state !== "string") {
-      recordModelGateArmFailure("control");
-      throw new Error("integration.codex.model-gate");
-    }
-    if (health.state === "denied") {
-      recordInteractivePhase("model-request-observed");
-      throw new Error("integration.codex.model-request-before-session-start");
-    }
-    if (health.state !== "pending") {
-      recordModelGateArmFailure("control");
-      throw new Error("integration.codex.model-gate");
-    }
-    if (!observedPendingHealth) {
-      recordInteractivePhase("model-gate-arm-health-pending");
-      observedPendingHealth = true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  recordModelGateArmFailure("session-start-missing");
-  throw new Error("integration.codex.hook-session-start-missing");
-};
-const releaseModelResponse = async () => {
-  codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);
-  if (codexLedgerBaseline.length !== 1)
+const recordModelBaseline = (records) => {
+  if (records.length !== 1) throw new Error("integration.codex.session-ledger");
+  codexSessionId = codexSessionIdentity(records);
+  const newline = records[0].content.indexOf("\n");
+  if (newline < 0) throw new Error("integration.codex.session-ledger");
+  const prefix = records[0].content.slice(0, newline + 1);
+  if (JSON.parse(prefix).type !== "session_meta")
     throw new Error("integration.codex.session-ledger");
-  codexSessionId = codexSessionIdentity(codexLedgerBaseline);
+  // Actual byte-zero metadata prefix of a newly created authenticated inode;
+  // not a claim that this sample preceded the model request.
+  codexLedgerBaseline = [{ ...records[0], content: prefix }];
   if (
+    codexSessionIdentity(codexLedgerBaseline) !== codexSessionId ||
     codexTurnTerminalObservedAfterBaseline(
       codexLedgerBaseline,
       codexLedgerBaseline,
@@ -971,96 +754,10 @@ const releaseModelResponse = async () => {
     )
   )
     throw new Error("integration.codex.session-ledger");
-  const response = await gateRequest("/release", { runId: integrationRunId });
-  if (
-    !exactKeys(response, ["runId", "state"]) ||
-    response.runId !== integrationRunId ||
-    (response.state !== "admitted" && response.state !== "draining")
-  )
-    throw new Error("integration.codex.model-gate");
 };
-const sealRequestFailureHint = (error) =>
-  modelControlFailureHint ??
-  (error?.message === "integration.codex.model-gate-deadline"
-    ? "seal-deadline"
-    : "seal-request");
-const sealModelGate = async (checkpoint) => {
-  let value;
-  try {
-    value = await gateRequest("/seal", { runId: integrationRunId });
-  } catch (error) {
-    gateResearchHint = sealRequestFailureHint(error);
-    throw error;
-  }
-  if (!exactKeys(value, ["ledger", "receipt"])) {
-    gateResearchHint = "response-shape";
-    throw new Error("integration.codex.model-gate");
-  }
-  const receipt = value.receipt;
-  if (
-    !exactKeys(receipt, [
-      "challengeSha256",
-      "connectionCount",
-      "connections",
-      "cutoffUnsettled",
-      "ledgerCount",
-      "mutationGeneration",
-      "parserFailures",
-      "runId",
-      "sessionStartSpanSha256",
-      "state",
-    ]) ||
-    receipt.challengeSha256 !==
-      createHash("sha256").update(readinessChallenge).digest("hex") ||
-    receipt.connectionCount !== 1 ||
-    receipt.cutoffUnsettled !== false ||
-    !Array.isArray(receipt.connections) ||
-    receipt.connections.length !== 1 ||
-    !exactKeys(receipt.connections[0], [
-      "admission",
-      "closed",
-      "eof",
-      "generation",
-      "parserOutcome",
-      "parserTransportClosed",
-      "rawForwardedBytes",
-      "rawRejectedBytes",
-      "responseBytes",
-    ]) ||
-    receipt.connections[0].admission !== "admitted" ||
-    receipt.connections[0].closed !== true ||
-    receipt.connections[0].generation !== 1 ||
-    receipt.connections[0].parserOutcome !== "accepted" ||
-    receipt.connections[0].parserTransportClosed !== true ||
-    !Number.isSafeInteger(receipt.connections[0].rawForwardedBytes) ||
-    receipt.connections[0].rawForwardedBytes <= 0 ||
-    receipt.connections[0].rawRejectedBytes !== 0 ||
-    !Number.isSafeInteger(receipt.connections[0].responseBytes) ||
-    receipt.connections[0].responseBytes <= 0 ||
-    receipt.ledgerCount !== 1 ||
-    !Number.isSafeInteger(receipt.mutationGeneration) ||
-    receipt.mutationGeneration < 1 ||
-    receipt.parserFailures !== 0 ||
-    receipt.runId !== integrationRunId ||
-    receipt.sessionStartSpanSha256 !== checkpoint.spanSha256 ||
-    receipt.state !== "draining"
-  ) {
-    gateResearchHint = gateReceiptResearchRejection(receipt, {
-      challengeSha256: createHash("sha256")
-        .update(readinessChallenge)
-        .digest("hex"),
-      runId: integrationRunId,
-      sessionStartSpanSha256: checkpoint.spanSha256,
-    });
-    throw new Error("integration.codex.model-gate");
-  }
-  try {
-    return boundedRequestLedger(value.ledger);
-  } catch (error) {
-    gateResearchHint = "ledger-shape";
-    throw error;
-  }
-};
+// Retrieval is provisional. The outer controller accepts the full ledger only
+// after the original stop barrier and exact container join.
+const readTerminalModelRequests = async () => readModelRequests();
 const projectHarnessStatus = (
   records,
   installation,
@@ -1138,111 +835,26 @@ const projectUninstall = (records) => {
     targetCount: 3,
   };
 };
-const projectTraceGraph = (graph, traceId) => {
-  if (!Array.isArray(graph?.resourceSpans) || graph.resourceSpans.length < 1)
-    throw new Error("integration.codex.trace-get");
-  const spans = graph.resourceSpans.flatMap((resource) =>
-    Array.isArray(resource?.scopeSpans)
-      ? resource.scopeSpans.flatMap((scope) =>
-          Array.isArray(scope?.spans) ? scope.spans : [],
-        )
-      : [],
-  );
-  const root = spans.find(({ name }) => name === "codex.turn");
-  const model = spans.find(({ name }) => name === "codex.response");
-  const stringAttribute = (span, key) => {
-    const matches = Array.isArray(span?.attributes)
-      ? span.attributes.filter((attribute) => attribute?.key === key)
-      : [];
-    return matches.length === 1 &&
-      typeof matches[0]?.value?.stringValue === "string"
-      ? matches[0].value.stringValue
-      : null;
-  };
-  if (
-    spans.length !== 2 ||
-    root?.traceId !== traceId ||
-    model?.traceId !== traceId ||
-    typeof root.spanId !== "string" ||
-    root.spanId.length !== 16 ||
-    model?.parentSpanId !== root.spanId ||
-    (root.parentSpanId !== undefined && root.parentSpanId !== "")
-  )
-    throw new Error("integration.codex.trace-get");
-  return {
-    resourceSpanCount: graph.resourceSpans.length,
-    spanNames: [root.name, model.name],
-    parentLinked: true,
-    sessionId: stringAttribute(root, "session.id"),
-    modelName: stringAttribute(model, "llm.model_name"),
-  };
-};
-const readTraceSummary = async ({
-  attemptDeadline,
-  childDeadline,
-  observationDeadline,
-}) => {
-  if (codexSessionId === undefined)
-    throw new Error("integration.codex.session-ledger");
-  const { stdout, traceTimedOut, traceUnavailable } = await run(
-    agentscope,
-    [
-      "traces",
-      "search",
-      "--destination",
-      "local",
-      "--harness",
-      "codex",
-      "--limit",
-      "50",
-      "--output",
-      "json",
-    ],
-    {
-      acceptTraceSearchUnavailable: true,
-      monotonicDeadline: childDeadline,
-    },
-  );
-  if (traceTimedOut) {
-    if (
-      !terminalObservationBeforeDeadline({
-        observed: true,
-        deadline: observationDeadline,
-        now: bootNow,
-      })
-    )
-      throw new Error("integration.codex.trace-deadline");
-    return null;
-  }
-  if (
-    !terminalObservationBeforeDeadline({
-      observed: true,
-      deadline: attemptDeadline,
-      now: bootNow,
-    })
-  )
-    throw new Error("integration.codex.trace-deadline");
-  if (traceUnavailable) return null;
-  const records = parseMachine(stdout, "agentscope traces search");
-  return classifyTraceSearchRecordsBeforeDeadline({
-    records,
-    deadline: attemptDeadline,
-    now: bootNow,
-    record: recordInteractivePhase,
-  });
-};
 const waitForCodexTurnTerminal = async (traceDeadline) => {
-  if (codexLedgerBaseline === undefined)
-    throw new Error("integration.codex.session-ledger");
   while (true) {
     if (bootNow() >= traceDeadline)
       throw new Error("integration.codex.trace-deadline");
     const records = readCodexSessionLedgerRecords(homeDescriptor);
-    const turnId = codexTurnTerminalIdAfterBaseline(
-      records,
-      codexLedgerBaseline,
-      expectedAssistantMessage,
-    );
+    // A fresh Codex rollout is materialized by the first submitted turn,
+    // not by idle readiness or the process-topology checkpoint. Bind its
+    // actual byte-zero metadata only inside this existing observation path.
+    // An authenticated empty observation can precede first materialization.
+    // Once bound, disappearance still goes through strict evolution checks.
+    if (codexLedgerBaseline === undefined && records.length !== 0)
+      recordModelBaseline(records);
+    const turnId =
+      codexLedgerBaseline === undefined
+        ? null
+        : codexTurnTerminalIdAfterBaseline(
+            records,
+            codexLedgerBaseline,
+            expectedAssistantMessage,
+          );
     if (
       terminalObservationBeforeDeadline({
         observed: turnId !== null,
@@ -1280,161 +892,41 @@ const waitForCodexStopBeforeExit = async (traceDeadline) => {
     remaining();
   }
 };
-const waitForTraceObservation = (traceDeadline) =>
-  waitWithinObservationDeadline({
-    deadline: traceDeadline,
-    maximumWaitMilliseconds: 20,
-    now: bootNow,
-    wait: (milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  });
-const recordCompletedHookDuration = (observation) => {
-  if (observation === undefined) return;
-  recordInteractivePhase(
-    observation.durationMilliseconds >= 4_900
-      ? "hook-command-completed-near-budget-boundary"
-      : "hook-command-completed-before-budget-boundary",
-  );
-};
-const waitForTraceObservationOrRecord = async (deadline, observation) => {
-  try {
-    await waitForTraceObservation(deadline);
-  } catch (error) {
-    recordCompletedHookDuration(observation);
-    throw error;
-  }
-};
-const waitForTraceSummary = async (traceDeadline) => {
-  if (bootNow() >= traceDeadline)
-    throw new Error("integration.codex.trace-deadline");
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-search"),
-  });
-  let summary;
-  let lastCompletedHookCommand;
-  while (summary === undefined) {
-    const hookCommandObservation = inspectDiagnosticBeforeDeadline({
-      deadline: traceDeadline,
-      now: bootNow,
-      inspect: () =>
-        inspectCodexStopHookCommand({
-          directoryDescriptor: codexDiagnosticLogDirectoryDescriptor,
-          directoryPath: codexDiagnosticLogDirectory,
-        }),
-    });
-    if (hookCommandObservation?.outcome === "completed")
-      lastCompletedHookCommand = hookCommandObservation;
-    traceWaitHookCompleted = hookCommandObservation?.outcome === "completed";
-    if (
-      hookCommandObservation !== undefined &&
-      hookCommandObservation.outcome !== "completed"
-    ) {
-      const failure = codexStopHookCommandFailure(
-        hookCommandObservation.outcome,
-      );
-      recordTerminalObservationBeforeDeadline({
-        deadline: traceDeadline,
-        now: bootNow,
-        record: () => recordInteractivePhase(failure.phase),
-      });
-      throw new Error(failure.error);
-    }
-    const reporterSettled = localSqliteReporterSettled(
-      localSqliteLifecycleDescriptor,
-    );
-    traceWaitReporterSettled = traceWaitHookCompleted && reporterSettled;
-    if (hookCommandObservation?.outcome !== "completed" || !reporterSettled) {
-      await waitForTraceObservationOrRecord(
-        traceDeadline,
-        lastCompletedHookCommand,
-      );
-      continue;
-    }
-    const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({
-      now: bootNow(),
-      observationDeadline: traceDeadline,
-    });
-    const observationClosed = traceSearchDeadlines === null;
-    const candidate = traceSummaryBeforeDeadline({
-      summary:
-        traceSearchDeadlines === null
-          ? null
-          : await readTraceSummary(traceSearchDeadlines),
-      deadline: traceDeadline,
-      now: bootNow,
-    });
-    const terminalCut = classifyCodexSettledTraceObservation({
-      hookCompleted: true,
-      observationClosed,
-      reporterSettled: true,
-      tracePresent: candidate !== null,
-    });
-    if (terminalCut === "accepted") {
-      summary = candidate;
-      break;
-    }
-    if (terminalCut === "missing") {
-      const operationalPhase = classifyLocalSqliteOutcomeAfterBaseline(
-        operationalStateHealthDescriptor,
-        operationalStateBaseline,
-      );
-      if (operationalPhase === "pending") {
-        await waitForTraceObservationOrRecord(
-          traceDeadline,
-          lastCompletedHookCommand,
-        );
-        continue;
-      }
-      const phase =
-        operationalPhase === "no-operational-state"
-          ? classifyMissingOperationalStateByHookDuration(
-              hookCommandObservation.durationMilliseconds,
-            )
-          : operationalPhase;
-      recordTerminalObservationBeforeDeadline({
-        deadline: traceDeadline,
-        now: bootNow,
-        record: () => recordInteractivePhase(phase),
-      });
-      throw new Error(`integration.codex.${phase}`);
-    }
-    await waitWithinObservationDeadline({
-      deadline: traceDeadline,
-      maximumWaitMilliseconds: 100,
-      now: bootNow,
-      wait: (milliseconds) =>
-        new Promise((resolve) => setTimeout(resolve, milliseconds)),
-    });
-    remaining();
-  }
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-reporter-settled"),
-  });
-  recordTerminalObservationBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    record: () => recordInteractivePhase("trace-search-result"),
-  });
-  return summary;
-};
-
 let completed = false;
 let codexLedgerBaseline;
+let codexTerminalLedger;
 let codexSessionId;
+let codexTurnId;
 try {
   recordInteractivePhase("init");
   await cli(["init", "--yes"], "agentscope init");
   recordInteractivePhase("destination");
   await cli(
-    ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
+    [
+      "destination",
+      "configure",
+      "langfuse",
+      "--name",
+      "collector",
+      "--yes",
+      "--settings",
+      JSON.stringify({ endpoint: "https://collector:4318" }),
+      "--credential-env",
+      "public-key=AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "secret-key=AGENTSCOPE_LANGFUSE_SECRET_KEY",
+    ],
     "agentscope destination configure",
+    {
+      env: {
+        ...process.env,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
+      },
+    },
   );
   recordInteractivePhase("routing");
-  await cli(["routing", "set", "local"], "agentscope routing set");
+  await cli(["routing", "set", "collector"], "agentscope routing set");
   recordInteractivePhase("install");
   await cli(["install", "codex", "--yes"], "agentscope install");
   const codexHomeStatus = lstatSync(codexHome);
@@ -1471,11 +963,6 @@ try {
     (launcherStatus.mode & 0o7777) !== 0o700
   )
     throw new Error("integration.codex.hook-configuration");
-  localSqliteLifecycleDescriptor = openLocalSqliteLifecycle(homeDescriptor);
-  operationalStateHealthDescriptor = openOperationalStateHealth(homeDescriptor);
-  operationalStateBaseline = localSqliteAcceptanceBaseline(
-    operationalStateHealthDescriptor,
-  );
   const { stdout: installedStatusOutput } = await run(
     agentscope,
     ["harness", "status", "codex", "--output", "json"],
@@ -1517,15 +1004,15 @@ try {
   )
     throw new Error("integration.codex.candidate-home");
   recordInteractivePhase("model-gate-start");
-  const modelAdmissionCutoff = Math.floor(deadline - 5_000);
+  const preparationCutoff = Math.floor(deadline - 5_000);
+  const traceDeadline = deadline - 3_000;
   if (
-    !Number.isSafeInteger(modelAdmissionCutoff) ||
-    modelAdmissionCutoff <= bootNow()
+    !Number.isSafeInteger(preparationCutoff) ||
+    preparationCutoff <= bootNow()
   )
     throw new Error("integration.codex.model-gate");
-  await configureModelGate(modelAdmissionCutoff);
+  await configureModelGate(preparationCutoff, traceDeadline);
   recordInteractivePhase("model-gate-configured");
-  await proveControlPlaneClosed();
   recordCandidateConfigStage("closed-marker");
   recordInteractivePhase("control-plane-closed");
   recordCandidateConfigStage("render");
@@ -1579,7 +1066,6 @@ try {
     closeSync(configurationDescriptor);
   }
   recordCandidateConfigStage("publish");
-  const traceDeadline = deadline - 3_000;
   await new Promise((resolve, reject) => {
     process.stdout.write(
       `AGENTSCOPE_PTY_READY:${readinessChallenge}\r\n`,
@@ -1590,6 +1076,8 @@ try {
   candidateConfigStage = undefined;
   recordInteractivePhase("tui-readiness-challenge-published");
   recordInteractivePhase("tui-start");
+  if (readCodexSessionLedgerRecords(homeDescriptor).length !== 0)
+    throw new Error("integration.codex.session-ledger");
   const codexRun = run(
     "/usr/local/bin/node",
     ["/opt/agentscope/codex-candidate-dropper.mjs"],
@@ -1602,6 +1090,9 @@ try {
         TERM: "xterm-256color",
         XDG_CONFIG_HOME: "/harness-home",
         AGENTSCOPE_HOME: agentscopeHome,
+        AGENTSCOPE_LANGFUSE_PUBLIC_KEY: "DUMMY_PUBLIC_KEY",
+        AGENTSCOPE_LANGFUSE_SECRET_KEY: "DUMMY_SECRET_KEY",
+        NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",
         CODEX_HOME: codexHome,
         // The pinned Codex source emits the command authority span from this
         // exact module target. Select it directly: accepting a broader crate
@@ -1645,28 +1136,14 @@ try {
   recordInteractivePhase("tui-checkpoint");
   preArmExitPhase = "tui-exit-before-arm";
   recordInteractivePhase("model-gate-arm-start");
-  const gateArm = armModelGate(modelAdmissionCutoff);
-  sessionStartBeforeFirstModelRequestAdmission = await Promise.race([
-    gateArm,
-    earlyCodexExit,
-  ]);
   armPending = false;
   recordInteractivePhase("model-gate-arm-complete");
-  await waitForModelRequestBeforeDeadline({
-    deadline: traceDeadline,
-    now: bootNow,
-    request: readModelRequests,
-    wait: (milliseconds) =>
-      new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  });
-  recordInteractivePhase("model-request-observed");
-  recordInteractivePhase("model-request");
-  await releaseModelResponse();
   // Codex 0.149.1 deliberately excludes transient hook lifecycle events from
   // its rollout. Prove the installed hook through the durable trace and exact
   // rollout session identity below, after the sole challenged turn completes
   // and Testkit joins Codex so its vendor Stop hook has run.
-  await waitForCodexTurnTerminal(traceDeadline);
+  ({ turnId: codexTurnId, records: codexTerminalLedger } =
+    await waitForCodexTurnTerminal(traceDeadline));
   recordInteractivePhase("trace-terminal");
   // The rollout can record a completed turn while Codex is still executing
   // its Stop hook. Releasing /exit at that point can race the TUI composer.
@@ -1706,6 +1183,20 @@ try {
     throw error;
   }
   recordInteractivePhase("tui-joined");
+  const nativeTranscriptRange = inspectDiagnosticBeforeDeadline({
+    deadline: traceDeadline,
+    now: bootNow,
+    inspect: () =>
+      projectCodexPostJoinTranscript({
+        records: readCodexSessionLedgerRecords(homeDescriptor),
+        baseline: codexLedgerBaseline,
+        observedRecords: codexTerminalLedger,
+        expectedMessage: expectedAssistantMessage,
+        sessionId: codexSessionId,
+        turnId: codexTurnId,
+        modelName: "fixture-model",
+      }),
+  });
   const rootHookLifecycle = inspectDiagnosticBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1719,13 +1210,6 @@ try {
     recordInteractivePhase("hook-command-missing");
     throw new Error("integration.codex.hook-command-missing");
   }
-  if (
-    !codexSessionStartCheckpointMatchesLifecycle(
-      sessionStartBeforeFirstModelRequestAdmission,
-      rootHookLifecycle,
-    )
-  )
-    throw new Error("integration.codex.hook-lifecycle");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1733,7 +1217,6 @@ try {
   });
   const sessionStartCommandDurationMilliseconds =
     rootHookLifecycle.sessionStartDurationMilliseconds;
-  const summary = await waitForTraceSummary(traceDeadline);
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1743,33 +1226,7 @@ try {
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
   recordInteractivePhase("verify-gate");
-  const modelRequests = await sealModelGate(
-    sessionStartBeforeFirstModelRequestAdmission,
-  );
-  recordInteractivePhase("verify-trace-get");
-  const traceId = summary?.locator?.traceId;
-  if (summary?.harness !== "codex" || typeof traceId !== "string")
-    throw new Error("integration.codex.trace-get-locator-input");
-  const getRecords = await cli(
-    [
-      "traces",
-      "get",
-      "--destination",
-      "local",
-      "--trace-ref",
-      JSON.stringify(summary.locator),
-    ],
-    "agentscope traces get",
-    { monotonicDeadline: traceDeadline, traceGetDiagnostic: true },
-  );
-  if (getRecords.length !== 1)
-    throw new Error("integration.codex.trace-get-record-count");
-  if (getRecords[0]?.locator?.traceId !== traceId)
-    throw new Error("integration.codex.trace-get-locator-result");
-  recordInteractivePhase("verify-correlation");
-  const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
-  if (codexSessionId === undefined || traceGraph.sessionId !== codexSessionId)
-    throw new Error("integration.codex.trace-correlation");
+  const modelRequests = await readTerminalModelRequests();
   recordInteractivePhase("verify-doctor");
   const doctor = projectDoctor(
     await cli(["doctor"], "agentscope doctor", {
@@ -1795,22 +1252,17 @@ try {
     1,
   );
   recordInteractivePhase("verify-projection");
-  const translated = translateCodexPlatformObservations({
+  const translated = translateCodexNativeObservations({
     scenarioId,
     prompt,
     promptSha256,
     mediation: { sessionStartCommandDurationMilliseconds },
     modelRequests,
-    search: {
-      completion: "complete",
-      harness: summary.harness,
-      spanCount: summary.spanCount,
-      traceId,
-    },
-    retrieval: {
-      completion: "complete",
-      ...traceGraph,
-      traceId,
+    native: {
+      sessionId: codexSessionId,
+      turnId: codexTurnId,
+      modelName: "fixture-model",
+      nativeTranscriptRange,
     },
     doctor: { completion: "complete", ...doctor },
     uninstall: {
@@ -1820,15 +1272,15 @@ try {
       uninstalledStatus,
     },
   });
-  const evidence = correlateCodexPlatformObservations(translated, {
+  const evidence = correlateCodexNativeObservations(translated, {
     artifactFileName: basename(artifactPath),
     expectedPromptSha256: promptSha256,
     scenarioId,
   });
   recordInteractivePhase("verify-evidence");
-  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
-    "base64url",
-  );
+  const encodedEvidence = Buffer.from(
+    JSON.stringify({ ...evidence, mockServerTraffic: upstreamTraffic }),
+  ).toString("base64url");
   recordTerminalObservationBeforeDeadline({
     deadline: traceDeadline,
     now: bootNow,
@@ -1841,25 +1293,8 @@ try {
   });
   completed = true;
 } finally {
-  if (!completed) {
-    try {
-      await gateRequest(
-        "/deny",
-        { runId: integrationRunId },
-        AbortSignal.timeout(Math.min(1_000, Math.max(1, deadline - bootNow()))),
-      );
-    } catch {
-      // The outer controller retains the causal failure and retires the exact
-      // sidecar when the in-container denial receipt cannot be completed.
-    }
-  }
-  modelControlAgent.destroy();
-  if (localSqliteLifecycleDescriptor !== undefined)
-    closeSync(localSqliteLifecycleDescriptor);
   if (codexDiagnosticLogDirectoryDescriptor !== undefined)
     closeSync(codexDiagnosticLogDirectoryDescriptor);
-  if (operationalStateHealthDescriptor !== undefined)
-    closeSync(operationalStateHealthDescriptor);
   closeSync(homeDescriptor);
   if (!completed) {
     try {

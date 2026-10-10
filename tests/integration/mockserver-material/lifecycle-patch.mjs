@@ -1,0 +1,581 @@
+/** Pinned stop/capture patch and source-style observations; no control authority. */
+import { createHash } from "node:crypto";
+import { types } from "node:util";
+
+const root = "mockserver";
+export const lifecycleSourcePins = Object.freeze([
+  Object.freeze({
+    name: "jsonBody",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/serialization/serializers/body/JsonBodySerializer.java`,
+    bytes: 4270,
+    sha256: "07d52a98c4e54c89084c588b5312926335f05fc8054fc90b336af43be6db6591",
+  }),
+  Object.freeze({
+    name: "eventLog",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/log/MockServerEventLog.java`,
+    bytes: 101942,
+    sha256: "61b3ad7dcfd16d547542a12516aeb14cf08b431b3b4ba79121dc62e986a94e1d",
+  }),
+  Object.freeze({
+    name: "httpState",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/mock/HttpState.java`,
+    bytes: 474129,
+    sha256: "0a67190f4417a7223b7dcb9a49f88bd66bf1ca2913dab9791a96fc6b0ffe25e3",
+  }),
+  Object.freeze({
+    name: "persistence",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/persistence/RecordedRequestsFileSystemPersistence.java`,
+    bytes: 6900,
+    sha256: "4e6a448f9942826f68db142b5ff154f861e2f55dc4113c6e359ef781d97929cd",
+  }),
+  Object.freeze({
+    name: "lifeCycle",
+    path: `${root}/mockserver-netty/src/main/java/org/mockserver/lifecycle/LifeCycle.java`,
+    bytes: 41382,
+    sha256: "1b9983604701707089fdd6dffc0e66e37ecbb9ae7fa79c04e15605943b685dbf",
+  }),
+  Object.freeze({
+    name: "requestHandler",
+    path: `${root}/mockserver-netty/src/main/java/org/mockserver/netty/HttpRequestHandler.java`,
+    bytes: 53826,
+    sha256: "f8953a1c8405fe31d9956e47dc9f9fe4efefbf9dc1d449ebbb83ad9ff1d4e7a6",
+  }),
+  Object.freeze({
+    name: "actionHandler",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/mock/action/http/HttpActionHandler.java`,
+    bytes: 273335,
+    sha256: "8542f1614e484b64127b8c8d11fdfbe236870b91821f3b1c79fd3ff6ef38ed6b",
+  }),
+  Object.freeze({
+    name: "logger",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/logging/MockServerLogger.java`,
+    bytes: 12584,
+    sha256: "d69533a68139ba799d3213bd7e78379c888aec3013c2cba4be77f7bbee74052e",
+  }),
+  Object.freeze({
+    name: "jsonBodyDTO",
+    path: `${root}/mockserver-core/src/main/java/org/mockserver/serialization/serializers/body/JsonBodyDTOSerializer.java`,
+    bytes: 4397,
+    sha256: "99cf1f853c1cbca2158703988c693522f8dd169af0a32f3d7573e75f23d11768",
+  }),
+]);
+// Pinned checkstyle.xml rule types, not configured instance counts. The two
+// RegexpSingleline instances share one type ordinal; messages never escape.
+export const supplierCheckstyleRules = Object.freeze([
+  "FileTabCharacter",
+  "RegexpSingleline",
+  "RedundantImport",
+  "UnusedImports",
+  "CustomImportOrder",
+  "PackageName",
+  "StaticVariableName",
+  "MemberName",
+  "MethodName",
+  "LeftCurly",
+  "RightCurly",
+  "NeedBraces",
+  "UpperEll",
+  "EmptyCatchBlock",
+  "RegexpSinglelineJava",
+  "FallThrough",
+  "WhitespaceAround",
+  "WhitespaceAfter",
+  "NoWhitespaceAfter",
+  "NoWhitespaceBefore",
+  "ParenPad",
+]);
+export const supplierSourceUnit = (file) =>
+  lifecycleSourcePins.findIndex((pin) => pin.path.endsWith(`/${file}`)) + 1;
+/** First supported observation, not first overall or an exhaustive violation set. */
+export const firstSupplierCheckstyleObservation = (text) => {
+  for (const match of text.matchAll(
+    /^(?:\[INFO\] )?\[ERROR\] \/[^\r\n]*\/([A-Za-z]+\.java):([1-9][0-9]{0,5})(?::(0|[1-9][0-9]{0,5}))?: [^\r\n]* \[([A-Za-z]+)\]$/gmu,
+  )) {
+    const [, file, line, column, rule] = match;
+    const unit = supplierSourceUnit(file);
+    const reason = supplierCheckstyleRules.indexOf(rule) + 1;
+    if (unit && reason && Number(line) > 0)
+      return Object.freeze([unit, Number(line), Number(column ?? 0), reason]);
+  }
+  return Object.freeze([0, 0, 0, 0]);
+};
+const fail = () => {
+  throw new Error("integration.mockserver-material.lifecycle-preimage");
+};
+const once = (source, before, after) => {
+  const offset = source.indexOf(before);
+  if (offset < 0 || source.indexOf(before, offset + before.length) >= 0) fail();
+  return source.slice(0, offset) + after + source.slice(offset + before.length);
+};
+const finalLedgerCapture = `
+    public void recordFinalControlObservation(HttpRequest request, String role, int status) {
+        try {
+            if (!java.util.Set.of("allowed", "forbidden", "unauthenticated", "readiness").contains(role)
+                || status < 100 || status > 599) {
+                throw new IllegalStateException();
+            }
+            byte[] body = request.getBodyAsOriginalRawBytes();
+            if (body == null || body.length > 1024 * 1024) {
+                throw new IllegalStateException();
+            }
+            HttpRequest observed = new HttpRequest().withMethod(request.getMethod().getValue()).withPath(request.getPath().getValue())
+                .withHeader("x-agentscope-final-role", role)
+                .withHeader("x-agentscope-final-status", String.valueOf(status))
+                .withHeader("x-agentscope-final-bytes", String.valueOf(body.length))
+                .withHeader("x-agentscope-final-sha256", java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(body)));
+            // The fresh request has no caller headers, body, JWT or authorization material.
+            add(new LogEntry().setType(RECEIVED_REQUEST).setLogLevel(org.slf4j.event.Level.INFO).setHttpRequest(observed)
+                .setMessageFormat("agentscope-final-control"));
+        } catch (Throwable throwable) {
+            finalLedgerFailure = true;
+            observeFinalLedgerFailure("control-capture");
+        }
+    }
+
+    private RequestDefinition finalLedgerRequest(LogEntry received, int ordinal) {
+        if (!(received.getHttpRequest() instanceof HttpRequest)) {
+            observeFinalLedgerFailure("request-type");
+            throw new IllegalStateException();
+        }
+        HttpRequest request = (HttpRequest) received.getHttpRequest();
+        if ("agentscope-final-control".equals(received.getMessageFormat())) {
+            return request;
+        }
+        String correlation = received.getCorrelationId();
+        if (correlation == null || correlation.isEmpty()) {
+            observeFinalLedgerFailure("correlation-missing");
+            throw new IllegalStateException();
+        }
+        List<LogEntry> responses = eventLog.stream().filter(requestResponseLogPredicate)
+            .filter(entry -> correlation.equals(entry.getCorrelationId())).collect(Collectors.toList());
+        if (responses.size() != 1 || responses.get(0).getHttpResponse() == null) {
+            observeFinalLedgerFailure(responses.size() == 0 ? ordinal >= 1 && ordinal <= 16 ? "response-missing-" + ordinal : "response-missing"
+                : responses.size() != 1 ? "response-duplicate" : "response-null");
+            throw new IllegalStateException();
+        }
+        Integer status = responses.get(0).getHttpResponse().getStatusCode();
+        if (status == null || status < 100 || status > 599) {
+            observeFinalLedgerFailure("response-status");
+            throw new IllegalStateException();
+        }
+        return request.clone().withBody(request.getBodyAsOriginalRawBytes())
+            .withHeader("x-agentscope-final-role", "data-plane")
+            .withHeader("x-agentscope-final-status", String.valueOf(status));
+    }
+`;
+const finalLedgerFields = `    private Consumer<LogEntry> recordedRequestConsumer;
+    private volatile boolean finalLedgerFailure;
+    private boolean finalLedgerStopped;
+    private volatile String finalRecordedRequests;
+    private final java.util.concurrent.atomic.AtomicReference<String> finalLedgerRefusalReason = new java.util.concurrent.atomic.AtomicReference<>("none");
+
+    private void observeFinalLedgerFailure(String reason) {
+        // First observed fixed source reason only; this cannot change ledger eligibility.
+        finalLedgerRefusalReason.compareAndSet("none", reason);
+    }
+
+    public String finalLedgerRefusalReason() {
+        return finalLedgerRefusalReason.get();
+    }
+
+    public String finalRecordedRequests() {
+        return finalLedgerFailure ? null : finalRecordedRequests;
+    }
+${finalLedgerCapture}`;
+const eventLog = (source) => {
+  source = once(
+    source,
+    "    private Consumer<LogEntry> recordedRequestConsumer;",
+    finalLedgerFields,
+  );
+  source = once(
+    source,
+    "    public void add(LogEntry logEntry) {",
+    `    public synchronized void add(LogEntry logEntry) {
+        if (finalLedgerStopped) {
+            finalLedgerFailure = true;
+            observeFinalLedgerFailure("late-publish");
+            return;
+        }`,
+  );
+  source = once(
+    source,
+    "    public void stop() {\n        try {",
+    `    public void stop() {
+        // Close the existing publisher before joining its consumer. A publisher
+        // already inside add finishes before this flag; later publication fails closed.
+        synchronized (this) {
+            finalLedgerStopped = true;
+        }
+        String finalLedgerStep = "shutdown";
+        try {`,
+  );
+  source = once(
+    source,
+    "        if (isLoadGenerated(logEntry)) {",
+    '        if (isLoadGenerated(logEntry)) {\n            finalLedgerFailure = true;\n            observeFinalLedgerFailure("load-generated");',
+  );
+  for (const [before, reason] of [
+    ["                droppedLogEvents.incrementAndGet();", "drop"],
+    [
+      '                logger.error("exception handling log entry in log ring buffer, for log entry: " + logEntry, ex);',
+      "consumer",
+    ],
+    [
+      '                logger.error("exception starting log ring buffer", ex);',
+      "start",
+    ],
+    [
+      '                logger.error("exception during shutdown of log ring buffer", ex);',
+      "shutdown",
+    ],
+  ])
+    source = once(
+      source,
+      before,
+      `            finalLedgerFailure = true;\n            observeFinalLedgerFailure("${reason}");\n` +
+        before,
+    );
+  source = once(
+    source,
+    "        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {",
+    '        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {\n            finalLedgerFailure = true;\n            observeFinalLedgerFailure("eviction");',
+  );
+  const truncation =
+    "            if (body != null && body.length > maxLoggedBodyBytes) {";
+  if (source.split(truncation).length - 1 !== 2) fail();
+  source = source
+    .split(truncation)
+    .join(
+      truncation +
+        '\n                finalLedgerFailure = true;\n                observeFinalLedgerFailure("truncation");',
+    );
+  source = once(
+    source,
+    "            eventLog.clear();\n            disruptor.shutdown(2, SECONDS);",
+    `            // The existing bounded shutdown drains and joins the sole consumer.
+            // Snapshot ALL received requests, including unmatched traffic, before clear.
+            finalLedgerStep = "drain";
+            disruptor.shutdown(2, SECONDS);
+            finalLedgerStep = "correlation";
+            if (!finalLedgerFailure && droppedLogEvents.get() == 0 && eventLog.getEvictedCount() == 0) {
+                int[] receivedOrdinal = {0};
+                List<RequestDefinition> requests = eventLog.stream()
+                    .filter(entry -> entry.getType() == RECEIVED_REQUEST)
+                    .map(entry -> finalLedgerRequest(entry, receivedOrdinal[0] < 16 ? ++receivedOrdinal[0] : 17)).collect(Collectors.toList());
+                if (requests.size() > 16) {
+                    finalLedgerFailure = true;
+                    observeFinalLedgerFailure("row-count");
+                } else {
+                    finalLedgerStep = "serialization";
+                    finalRecordedRequests = requestDefinitionSerializer.serializeRecordedRequests(false, requests);
+                }
+            }
+            finalLedgerStep = "clear";
+            eventLog.clear();`,
+  );
+  source = once(
+    source,
+    "            if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {",
+    "            finalLedgerFailure = true;\n            observeFinalLedgerFailure(finalLedgerStep);\n            if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {",
+  );
+  source = once(
+    source,
+    "    public void reset() {",
+    '    public void reset() {\n        finalLedgerFailure = true;\n        observeFinalLedgerFailure("reset");',
+  );
+  return once(
+    source,
+    "    public void clear(RequestDefinition requestDefinition) {",
+    '    public void clear(RequestDefinition requestDefinition) {\n        finalLedgerFailure = true;\n        observeFinalLedgerFailure("clear");',
+  );
+};
+const persistenceCompletion = `
+    private void observeFinalLedgerRefusal(boolean publication, boolean terminal, boolean snapshotAvailable, String reason) {
+        try {
+            System.err.printf("[agentscope-mockserver-ledger:v1 stage=%s terminal=%b snapshotAvailable=%b persistenceClosed=%b persistenceFailed=%b reason=%s]\\n",
+                publication ? "publication" : "eligibility", terminal, snapshotAvailable,
+                recordedPersistenceClosed, recordedPersistenceFailed, reason);
+        } catch (Throwable ignored) {
+            // Optional fixed observation cannot change persistence or completion.
+        }
+    }
+
+    public void completeFinalLedger(String snapshot, boolean terminal, String reason) {
+        writeOrderLock.lock();
+        try {
+            if (!terminal || recordedPersistenceFailed || !recordedPersistenceClosed || snapshot == null
+                || filePath == null || !filePath.toString().equals("/control/private/requests.json")) {
+                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);
+                return;
+            }
+            byte[] bytes = (snapshot + "\\n").getBytes(UTF_8);
+            if (bytes.length > 1024 * 1024) {
+                observeFinalLedgerRefusal(false, terminal, snapshot != null, reason);
+                return;
+            }
+            Path complete = filePath.resolveSibling("requests.complete");
+            Path temporary = filePath.resolveSibling("requests.complete.tmp");
+            // Both final snapshot and receipt writers close before the receipt is published.
+            Files.write(filePath, bytes, java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+            try (Writer receipt = Files.newBufferedWriter(temporary, UTF_8,
+                java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                receipt.write("complete\\n");
+                receipt.flush();
+            }
+            Files.move(temporary, complete, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (Throwable throwable) {
+            recordedPersistenceFailed = true;
+            observeFinalLedgerRefusal(true, terminal, snapshot != null, reason);
+        } finally {
+            writeOrderLock.unlock();
+        }
+    }
+`;
+const persistence = (source) => {
+  source = once(
+    source,
+    "    private final Writer writer;",
+    "    private final Writer writer;\n    private volatile boolean recordedPersistenceFailed;\n    private volatile boolean recordedPersistenceClosed;",
+  );
+  if (source.split("catch (Throwable throwable) {").length - 1 !== 3) fail();
+  source = source
+    .split("catch (Throwable throwable) {")
+    .join(
+      "catch (Throwable throwable) {\n            recordedPersistenceFailed = true;",
+    );
+  source = once(
+    source,
+    "        writeOrderLock.lock();\n        try {\n            // use the redaction-aware",
+    "        writeOrderLock.lock();\n        try {\n            if (recordedPersistenceClosed) {\n                recordedPersistenceFailed = true;\n                return;\n            }\n            // use the redaction-aware",
+  );
+  source = once(
+    source,
+    "            writer.flush();\n            writer.close();",
+    `            Throwable firstFailure = null;
+            try {
+                writer.flush();
+            } catch (Throwable throwable) {
+                firstFailure = throwable;
+            }
+            try {
+                writer.close();
+            } catch (Throwable throwable) {
+                if (firstFailure == null) {
+                    firstFailure = throwable;
+                }
+            }
+            if (firstFailure != null) {
+                throw firstFailure;
+            }
+            recordedPersistenceClosed = true;`,
+  );
+  return once(
+    source,
+    "    public void stop() {",
+    persistenceCompletion + "\n    public void stop() {",
+  );
+};
+const httpState = (source) => {
+  const before =
+    "        if (recordedRequestsFileSystemPersistence != null) {\n            recordedRequestsFileSystemPersistence.stop();\n        }\n";
+  source = once(source, before, "");
+  source = once(
+    source,
+    "        getMockServerLog().stop();",
+    "        getMockServerLog().stop();\n" + before,
+  );
+  source = once(
+    source,
+    "    public void stop() {",
+    `    private volatile boolean finalControlCaptureFailed;
+
+    public void recordFinalControlObservation(HttpRequest request, String role, int status) {
+        try {
+            getMockServerLog().recordFinalControlObservation(request, role, status);
+        } catch (Throwable throwable) {
+            finalControlCaptureFailed = true;
+        }
+    }
+
+    private ControlPlaneAuthDecision finalControlDecision(HttpRequest request, ControlPlaneAuthDecision decision) {
+        try {
+            String role = decision.isAllowed() ? "allowed"
+                : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? "forbidden" : "unauthenticated";
+            int status = decision.isAllowed()
+                ? request.getPath().getValue().equals("/_mockserver_callback_websocket") ? 101
+                    : request.getPath().getValue().equals("/mockserver/expectation") ? 201 : 200
+                : decision.outcome() == ControlPlaneAuthOutcome.FORBIDDEN ? 403 : 401;
+            recordFinalControlObservation(request, role, status);
+        } catch (Throwable throwable) {
+            finalControlCaptureFailed = true;
+        }
+        return decision;
+    }
+
+    public void completeRecordedLedger(boolean terminal) {
+        if (recordedRequestsFileSystemPersistence != null) {
+            recordedRequestsFileSystemPersistence.completeFinalLedger(
+                getMockServerLog().finalRecordedRequests(), terminal && !finalControlCaptureFailed,
+                getMockServerLog().finalLedgerRefusalReason());
+        }
+    }
+
+    public void stop() {`,
+  );
+  for (const expression of [
+    "ControlPlaneAuthDecision.FORBIDDEN",
+    "ControlPlaneAuthDecision.ALLOWED",
+    "new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, authenticationException.getMessage())",
+  ])
+    source = once(
+      source,
+      `return ${expression};`,
+      `return finalControlDecision(request, ${expression});`,
+    );
+  const unauthenticated =
+    "return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);";
+  if (source.split(unauthenticated).length - 1 !== 2) fail();
+  return source
+    .split(unauthenticated)
+    .join(
+      "return finalControlDecision(request, new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null));",
+    );
+};
+const lifeCycle = (source) => {
+  source = once(
+    source,
+    '            new Scheduler.SchedulerThreadFactory("Stop").newThread(() -> {',
+    '            new Scheduler.SchedulerThreadFactory("Stop", false).newThread(() -> {',
+  );
+  source = once(
+    source,
+    "    public void requestProcessingStarted() {",
+    "    private volatile boolean finalLedgerFailure;\n\n    public void requestProcessingStarted() {",
+  );
+  for (const before of [
+    "                            // best-effort cleanup during shutdown - log and continue",
+    "                    // best-effort cleanup during shutdown - log and continue",
+  ])
+    source = once(
+      source,
+      "\n" + before,
+      "\n                    finalLedgerFailure = true;\n" + before,
+    );
+  source = once(
+    source,
+    "        int remaining = requestsInFlight.get();",
+    "        int remaining = requestsInFlight.get();\n        if (remaining > 0) {\n            finalLedgerFailure = true;\n        }",
+  );
+  return once(
+    source,
+    "                stopFuture.complete(message);",
+    "                httpState.completeRecordedLedger(!finalLedgerFailure && requestsInFlight.get() == 0);\n                stopFuture.complete(message);",
+  );
+};
+const jsonBody = (source) =>
+  once(
+    once(source, "import java.util.Arrays;\n", ""),
+    "            && jsonBody.getRawBytes() != null\n            && !Arrays.equals(jsonBody.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));",
+    "            && jsonBody.getRawBytes() != null;",
+  );
+const jsonBodyDTO = (source) =>
+  once(
+    once(source, "import java.util.Arrays;\n", ""),
+    "            && jsonBodyDTO.getRawBytes() != null\n            && !Arrays.equals(jsonBodyDTO.getRawBytes(), OBJECT_MAPPER.writeValueAsBytes(jsonNode));",
+    "            && jsonBodyDTO.getRawBytes() != null;",
+  );
+const requestHandler = (source) => {
+  for (const [condition, status] of [
+    ["                    if (httpState.isInitializationComplete()) {", 200],
+    [
+      '                    } else {\n                        responseWriter.writeResponse(request, SERVICE_UNAVAILABLE, "{\\"status\\":\\"NOT_READY\\"}", "application/json");',
+      503,
+    ],
+  ]) {
+    const replacement =
+      status === 200
+        ? `${condition}\n                        httpState.recordFinalControlObservation(request, "readiness", 200);`
+        : condition.replace(
+            "                        responseWriter.writeResponse",
+            '                        httpState.recordFinalControlObservation(request, "readiness", 503);\n                        responseWriter.writeResponse',
+          );
+    source = once(source, condition, replacement);
+  }
+  const statusResponse =
+    '                    responseWriter.writeResponse(request, OK, portBindingSerializer.serialize(portBinding(server.getLocalPorts())), "application/json");';
+  return once(
+    source,
+    statusResponse,
+    "                    if (!httpState.controlPlaneRequestAuthenticated(request, responseWriter)) {\n                        return;\n                    }\n" +
+      statusResponse,
+  );
+};
+const actionHandler = (source) => {
+  // The ordinary final ledger includes unmatched traffic. Console severity must
+  // not suppress the response half of an otherwise retained received request.
+  for (const [message, arguments_] of [
+    [
+      "NO_MATCH_RESPONSE_ERROR_MESSAGE_FORMAT",
+      "error, request, notFoundResponse()",
+    ],
+    [
+      "NO_MATCH_RESPONSE_NO_EXPECTATION_MESSAGE_FORMAT",
+      "request, notFoundResponse()",
+    ],
+  ]) {
+    const before = `            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(NO_MATCH_RESPONSE)
+                        .setLogLevel(Level.INFO)
+                        .setCorrelationId(request.getLogCorrelationId())
+                        .setHttpRequest(request)
+                        .setHttpResponse(notFoundResponse())
+                        .setMessageFormat(${message})
+                        .setArguments(${arguments_})
+                );
+            }`;
+    source = once(
+      source,
+      before,
+      before
+        .split("\n")
+        .slice(1, -1)
+        .map((line) => line.slice(4))
+        .join("\n"),
+    );
+  }
+  return source;
+};
+const logger = (source) =>
+  once(
+    source,
+    "            || logEntry.getType() == EXPECTATION_RESPONSE\n            || logEntry.isAlwaysLog()",
+    "            || logEntry.getType() == EXPECTATION_RESPONSE\n            || logEntry.getType() == NO_MATCH_RESPONSE\n            || logEntry.isAlwaysLog()",
+  );
+const patches = Object.freeze({
+  eventLog,
+  persistence,
+  httpState,
+  lifeCycle,
+  jsonBody,
+  jsonBodyDTO,
+  requestHandler,
+  actionHandler,
+  logger,
+});
+export const patchMockServerLifecycleSource = (name, input) => {
+  const pin = lifecycleSourcePins.find((entry) => entry.name === name);
+  if (pin === undefined || !types.isUint8Array(input)) fail();
+  const bytes = Buffer.copyBytesFrom(input, 0, pin.bytes + 1);
+  if (
+    bytes.length !== pin.bytes ||
+    createHash("sha256").update(bytes).digest("hex") !== pin.sha256
+  )
+    fail();
+  return patches[pin.name](bytes.toString("utf8"));
+};

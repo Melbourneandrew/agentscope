@@ -13,16 +13,92 @@ import {
   inspectHarnessInstallation,
   type HarnessTargetInspection,
 } from "@agentscope/harnesses-core";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
 import {
   createProductInstallationFixtures,
   digest,
   encode,
   directoryProofInNode,
+  builtProductInstallationModules,
 } from "./__tests__/product-installation-fixture.js";
 
 const { fixture, withElection } = createProductInstallationFixtures();
+
+describe("actual private installation bundle composition", () => {
+  let value: Awaited<ReturnType<typeof fixture>>;
+  let installation: Awaited<
+    ReturnType<typeof builtProductInstallationModules>
+  >["installation"];
+  beforeAll(async () => {
+    value = await fixture();
+    ({ installation } = await builtProductInstallationModules(value.root));
+  });
+  it("preserves the source Claude plan through the separately bundled factory", () => {
+    const source = createProductHarnessInstallationInput(value.input);
+    const built = installation.createProductHarnessInstallationInput(
+      value.input,
+    );
+    const sourceDecision = source.planner(value.configurationInspected, []);
+    expect(sourceDecision.kind).toBe("replace");
+    const builtDecision = built.planner(value.configurationInspected, []);
+    expect(builtDecision.kind).toBe("replace");
+    expect(builtDecision).toEqual(sourceDecision);
+  });
+});
+
+describe("observed discovery remains inside the existing dialect contract", () => {
+  it.each([
+    { version: "2.1.244" },
+    { state: "unsupported" },
+    { state: "absent" },
+    { reason: "unavailable" },
+    { harnessType: "@agentscope/harness-codex" },
+    { configurationLocations: [] },
+    { extra: true },
+  ])(
+    "rejects discovery outside the existing dialect contract (%j)",
+    async (invalid) => {
+      const value = await fixture();
+      const observedDiscovery = {
+        ...value.input.observedDiscovery,
+        ...invalid,
+      };
+      expect(() =>
+        createProductHarnessInstallationInput({
+          ...value.input,
+          observedDiscovery:
+            observedDiscovery as typeof value.input.observedDiscovery,
+        }),
+      ).toThrow("cli.launcher.unsupported");
+    },
+  );
+
+  it("does not invoke hostile discovery accessors or Proxy traps", async () => {
+    const value = await fixture();
+    let reads = 0;
+    const accessor = { ...value.input.observedDiscovery };
+    Object.defineProperty(accessor, "version", {
+      get() {
+        reads++;
+        return "2.1.245";
+      },
+    });
+    const proxy = new Proxy(value.input.observedDiscovery, {
+      getOwnPropertyDescriptor() {
+        reads++;
+        throw new Error("fixture.trap");
+      },
+    });
+    for (const observedDiscovery of [accessor, proxy])
+      expect(() =>
+        Reflect.apply(createProductHarnessInstallationInput, undefined, [
+          { ...value.input, observedDiscovery },
+        ]),
+      ).toThrow("cli.launcher.unsupported");
+    expect(reads).toBe(0);
+  });
+});
 
 const absentMetadataTarget = (targetPath: string): HarnessTargetInspection => ({
   targetPath,

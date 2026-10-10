@@ -21,6 +21,28 @@ import {
 
 const root = resolve(import.meta.dirname, "../..");
 
+test("every integration action uses the reviewed immutable same-version closure", () => {
+  const workflow = parse(
+    readFileSync(join(root, ".github/workflows/integration.yml"), "utf8"),
+  );
+  const admitted = new Set([
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
+    "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  ]);
+  const references = Object.values(workflow.jobs).flatMap((job) =>
+    job.steps
+      .filter((step) => typeof step.uses === "string")
+      .map((step) => step.uses),
+  );
+  assert.equal(references.length, 26);
+  for (const reference of references)
+    assert.ok(admitted.has(reference), reference);
+  assert.deepEqual(new Set(references), admitted);
+});
+
 test("native PR selection skips only explicit irrelevant paths", () => {
   const irrelevant = [
     "apps/docs/content/docs/index.mdx",
@@ -117,7 +139,7 @@ test("rename and deletion observations remain visible and malformed diffs fail",
     assert.throws(() => parseChangedPaths(value), /native-ci-paths-invalid/u);
 });
 
-test("workflow preserves parallel fresh native candidate authority and only caches frozen dependencies", () => {
+test("alpha workflow always proves fresh packed absence without claiming native execution", () => {
   const source = readFileSync(
     join(root, ".github/workflows/pr-validation.yml"),
     "utf8",
@@ -140,7 +162,7 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     "${{ github.event.pull_request.head.sha || github.sha }}",
   );
   assert.match(
-    workflow.jobs.native.steps.find((step) => step.id === "selection").run,
+    workflow.jobs.native.steps.find((step) => step.env?.NATIVE_HEAD_SHA).run,
     /git rev-parse HEAD.+NATIVE_HEAD_SHA/su,
   );
   const workflowActionReferences = Object.values(workflow.jobs).flatMap((job) =>
@@ -168,10 +190,21 @@ test("workflow preserves parallel fresh native candidate authority and only cach
     source,
     /actions\/cache|restore-keys|AGENTSCOPE_NATIVE_MATERIAL_CACHE/u,
   );
-  assert.match(
-    source,
-    /Run fresh non-admitting native candidate verification/u,
+  assert.equal(workflow.jobs.native.if, undefined);
+  assert.ok(workflow.jobs.native.steps.every((step) => step.if === undefined));
+  assert.deepEqual(
+    workflow.jobs.native.steps
+      .filter((step) => step.run)
+      .map((step) => step.run),
+    [
+      'test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA"',
+      "pnpm install --frozen-lockfile",
+      "pnpm nx build agentscope-cli --skip-nx-cache",
+      "pnpm verify:cli-artifact",
+      'echo "Local SQLite not admitted"',
+    ],
   );
+  assert.doesNotMatch(source, /native-ci-selection|verify:native-candidate/u);
   const evidenceManifest = JSON.parse(
     readFileSync(
       join(
@@ -192,7 +225,10 @@ test("workflow preserves parallel fresh native candidate authority and only cach
   );
   assert.match(
     releaseSource,
-    /--prune-irrelevant[\s\S]+pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+Run fresh non-admitting native candidate verification[\s\S]+pnpm verify:native-candidate/u,
+    /pnpm nx build agentscope-cli --skip-nx-cache[\s\S]+pnpm verify:cli-artifact[\s\S]+node scripts\/verify-release-candidate.mjs[\s\S]+echo "Local SQLite not admitted"/u,
   );
-  assert.match(source, /--prune-irrelevant/u);
+  assert.doesNotMatch(
+    releaseSource,
+    /native-ci-selection|verify:native-candidate/u,
+  );
 });

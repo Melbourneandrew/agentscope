@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { types } from "node:util";
 
 import { z } from "zod";
 
@@ -1252,10 +1253,7 @@ export const createIsolationPlan = (input: {
     imageTag: `${prefix}:candidate`,
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
-    controlVolumeName:
-      input.scenario.scenarioId === "codex-tui-trace-smoke"
-        ? `${prefix}-control`
-        : null,
+    controlVolumeName: `${prefix}-control`,
     collectorName: `${prefix}-collector`,
     retrievalName: `${prefix}-retrieval`,
     mockServerName: `${prefix}-mockserver`,
@@ -1285,7 +1283,34 @@ type CleanupResult = Readonly<{
   failureCount: number;
   firstFailure: string | null;
   firstFailureCause: unknown;
+  failures: readonly Readonly<{ operation: string; reason: string }>[];
 }>;
+
+const cleanupFailureReason = (error: unknown): string => {
+  if (types.isProxy(error) || !types.isNativeError(error)) return "unknown";
+  const message: unknown = Object.getOwnPropertyDescriptor(
+    error,
+    "message",
+  )?.value;
+  switch (message) {
+    case "integration.mockserver.control":
+      return "mockserver-control";
+    case "integration.isolation.mockserver-terminal":
+      return "mockserver-terminal";
+    case "integration.isolation.cleanup-network-remove":
+      return "network-remove";
+    case "integration.isolation.cleanup-control-volume":
+      return "control-volume-identity";
+    case "integration.images.docker-client":
+      return "docker-client";
+    case "integration.images.containment":
+      return "containment";
+    case "integration.images.deadline":
+      return "deadline";
+    default:
+      return "unknown";
+  }
+};
 
 const cleanup = async (
   plan: IsolationPlan,
@@ -1316,11 +1341,13 @@ const cleanup = async (
   let failureCount = 0;
   let firstFailure: string | null = null;
   let firstFailureCause: unknown;
+  const failures: { operation: string; reason: string }[] = [];
   for (const [name, operation] of operations) {
     try {
       await operation();
     } catch (error) {
       failureCount += 1;
+      failures.push({ operation: name, reason: cleanupFailureReason(error) });
       const classified =
         name === "network" &&
         error instanceof Error &&
@@ -1333,17 +1360,22 @@ const cleanup = async (
       }
     }
   }
-  return { failureCount, firstFailure, firstFailureCause };
+  return { failureCount, firstFailure, firstFailureCause, failures };
 };
 
 const failCleanup = (
   cleanup: IsolationEvidence["cleanup"],
   result: CleanupResult,
   workFailure: unknown,
+  originalWorkPhase: string | null,
 ): never => {
-  process.stderr.write(
-    `integration.isolation.cleanup-diagnostic:${JSON.stringify(cleanup)}\n`,
-  );
+  try {
+    process.stderr.write(
+      `integration.isolation.cleanup-diagnostic:${JSON.stringify({ ...cleanup, originalWorkPhase, originalWorkFailureReason: originalWorkPhase === null ? null : cleanupFailureReason(workFailure), failedRemovals: result.failures })}\n`,
+    );
+  } catch {
+    // Optional content-free output cannot replace the original cleanup failure.
+  }
   throw new Error(
     result.firstFailure === null
       ? cleanup.remaining === null
@@ -1367,15 +1399,18 @@ export const executeIsolationPlan = async (
   let headlessTerminalReceipt: HeadlessTerminalReceipt | null = null;
   let ptyTerminalReceipt: PtyTerminalReceipt | null = null;
   let workOutcome: IsolationEvidence["outcome"];
+  let originalWorkPhase = "inspect-policy";
   try {
     executionPolicy = compileIsolationExecutionPolicy(
       await driver.inspectExecutionPolicy(plan, signal),
     );
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
+    originalWorkPhase = "build-candidate";
     const builtImageDigest = await driver.buildImage(plan, signal);
     if (!digest.safeParse(builtImageDigest).success)
       throw new Error("integration.isolation.image-digest");
     imageDigest = builtImageDigest;
+    originalWorkPhase = "build-mock";
     const builtMockServerImageDigest = await driver.buildMockServerImage(
       plan,
       signal,
@@ -1384,14 +1419,22 @@ export const executeIsolationPlan = async (
       throw new Error("integration.isolation.image-digest");
     mockServerImageDigest = builtMockServerImageDigest;
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
+    originalWorkPhase = "create-network";
     await driver.createNetwork(plan, signal);
+    originalWorkPhase = "create-control";
     if (plan.controlVolumeName !== null)
       await driver.createControlVolume(plan, signal);
+    originalWorkPhase = "start-collector";
     await driver.startCollector(plan, signal);
+    originalWorkPhase = "start-retrieval";
     await driver.startRetrieval(plan, signal);
+    originalWorkPhase = "start-mock";
     await driver.startMockServer(plan, signal);
+    originalWorkPhase = "run-scenario";
     const scenarioResult = await driver.runScenario(plan, signal);
+    originalWorkPhase = "join-mock";
     await driver.joinMockServer(plan, signal);
+    originalWorkPhase = "receipt-validation";
     if (plan.executionMode === "interactive")
       ptyTerminalReceipt = ptyTerminalReceiptSchema.parse(
         scenarioResult.receipt,
@@ -1469,7 +1512,12 @@ export const executeIsolationPlan = async (
   );
   await driver.recordEvidence(evidence);
   if (cleanupOutcome !== "complete")
-    failCleanup(evidence.cleanup, cleanupResult, failure);
+    failCleanup(
+      evidence.cleanup,
+      cleanupResult,
+      failure,
+      workOutcome === "passed" ? null : originalWorkPhase,
+    );
   if (failure !== undefined) {
     if (workOutcome === "interrupted")
       throw new Error("integration.isolation.interrupted");

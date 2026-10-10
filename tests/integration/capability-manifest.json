@@ -1,7 +1,11 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-4dab76f890720284c2e1ccfaefb92e6c7a4bb1aa4bef292a93645e9a61a53d8d",
-  "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
+  "manifestIdentity": "sha256-696006f46f16e37a877e73c7efef7d850af272f97399f5ac3743ebcbe3e1740b",
+  "requiredRepresentativeIds": [
+    "fixture-process-v1",
+    "codex-0-149-1",
+    "claude-code-2-1-245"
+  ],
   "evidence": [
     {
       "evidenceId": "codex-0-149-1",
@@ -11,6 +15,29 @@
       "descriptorArtifact": {
         "path": "fixtures/codex-harness-evidence.json",
         "sha256": "25f8b98a211d7d0ae2943c26bd606bc2974b5a6641e2e6015e6683e77c5ab917"
+      },
+      "admission": {
+        "evidenceSlot": "codex-0-149-1",
+        "eligibleRange": {
+          "minimumInclusive": "0.149.1",
+          "maximumExclusive": "0.149.2"
+        },
+        "distributionReference": "npm:@openai/codex@0.149.1",
+        "component": {
+          "fixture": {
+            "path": "packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+            "sha256": "fe2b9351d3c48507c38a30d6b1409795d4e998df373fb9f29d27ca9afb88afab"
+          },
+          "adapterArtifact": {
+            "path": "packages/harnesses/codex/src/testing.ts",
+            "sha256": "c7756553fafa3f094de85d9f52b3fb5b4fa3c181b679e811379cbefa7e19218f"
+          },
+          "mappingArtifact": {
+            "path": "packages/harnesses/codex/src/mapping.ts",
+            "sha256": "262a503c2aea864fc75eeacfffffdca2d140dffac8ad8181815257d0617692c6"
+          },
+          "componentEvidenceDigest": "component-sha256-96d535c382f18c5286129d804c10c9fc349b3b94cd2f480ef29f28f556714ab9"
+        }
       },
       "material": {
         "kind": "npm",
@@ -68,6 +95,83 @@
       "material": {
         "kind": "certification-fixture"
       }
+    },
+    {
+      "evidenceId": "claude-code-2-1-245",
+      "harnessId": "claude-code",
+      "harnessPackage": "@agentscope/harness-claude-code",
+      "representativeVersion": "2.1.245",
+      "descriptorArtifact": {
+        "path": "fixtures/claude-code-harness-evidence.json",
+        "sha256": "a773433cf57151c5e4d6499a9dfad2dfc34237e0be125a76763ad4936c1a6b46"
+      },
+      "admission": {
+        "evidenceSlot": "claude-code-2-1-245-component",
+        "eligibleRange": {
+          "minimumInclusive": "2.1.245",
+          "maximumExclusive": "2.1.246"
+        },
+        "distributionReference": "signed-manifest:claude-code@2.1.245#linux-x64",
+        "component": {
+          "fixture": {
+            "path": "packages/harnesses/claude-code/fixtures/native/claude-code-lifecycle-v1.json",
+            "sha256": "e8cd2889ac4b12d2766a488b6c9fc31aff8d121ac6169109fb65cf1bae20a4db"
+          },
+          "adapterArtifact": {
+            "path": "packages/harnesses/claude-code/src/testing.ts",
+            "sha256": "435277c25b97ec727bd2bbde2448ea116a37d633f3bdf57f09dec388c2f2a0a9"
+          },
+          "mappingArtifact": {
+            "path": "packages/harnesses/claude-code/src/mapping.ts",
+            "sha256": "30e4a34411b39924585a7a6ab59142d72d85e9d65a25fbbece5ac93ed075a793"
+          },
+          "componentEvidenceDigest": "component-sha256-54ebb26b8013bc16f0b94728da53a2cf6350b60223184cf1d7430ff511a12d02"
+        }
+      },
+      "material": {
+        "kind": "signed-release-manifest",
+        "distributionId": "claude-code",
+        "version": "2.1.245",
+        "platform": "linux-x64",
+        "platformIdentity": "sha256-9d99a75171aea000c711b34c0e5e3f28d3d537dd99d110eafbfbc2bd8e52c2bf",
+        "verifierImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+        "binary": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/linux-x64/claude",
+          "bytes": 391948592,
+          "sha256": "16ad2b94deaf7b29abed966d981c9991a47af0420f5be8ed4a3f83bea9f678bc",
+          "executableName": "claude"
+        },
+        "manifest": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/manifest.json",
+          "bytes": 1872,
+          "sha256": "642d03ec5e076bed814e2e4a6ba1a731c02ea18cf43108b115280ea558ba4988"
+        },
+        "signature": {
+          "url": "https://downloads.claude.ai/claude-code-releases/2.1.245/manifest.json.sig",
+          "bytes": 833,
+          "sha256": "91abc594fe328361b5d1646f91d785d0b8e0dcd861ebdcf07548a377ffebb442"
+        },
+        "signingKey": {
+          "url": "https://downloads.claude.ai/keys/claude-code.asc",
+          "bytes": 1688,
+          "sha256": "bd70a5e4a268002704024ceba7f8446024114e94f3f0bdd11c23a9e592be81c6",
+          "fingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+          "signerFingerprint": "31DDDE24DDFAB679F42D7BD2BAA929FF1A7ECACE",
+          "signatureHashAlgorithm": "sha512",
+          "uid": "Anthropic Claude Code Release Signing <security@anthropic.com>"
+        },
+        "platformPackage": {
+          "packageName": "@anthropic-ai/claude-code-linux-x64",
+          "version": "2.1.245",
+          "tarballUrl": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.245.tgz",
+          "bytes": 121422431,
+          "sha256": "310c8bb769c6699458807d25c389dd74bb10c335f17ae1fb7ced73d41fa268a7",
+          "integrity": "sha512-SRO5w2f9iHKZmREp389kPKxWAr6qEODxggdhhS7zF16OMwaUHjV5Yu7Oq8jSMD57gQiBjOfvFp/SJg3CdfHCtA==",
+          "memberName": "package/claude",
+          "memberBytes": 391948592,
+          "memberSha256": "16ad2b94deaf7b29abed966d981c9991a47af0420f5be8ed4a3f83bea9f678bc"
+        }
+      }
     }
   ],
   "scenarios": [
@@ -77,7 +181,7 @@
       "executionMode": "headless",
       "outputContract": "jsonl",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -96,7 +200,7 @@
       },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
+        "sha256": "0aba8a8fb2a4dcf3ec6e71fa8a90dfa9bf4340e9d0d8ead246affa7c9d242b99"
       },
       "runtimeArtifacts": [],
       "terminalInputBase64": "AA==",
@@ -113,7 +217,7 @@
       "executionMode": "interactive",
       "outputContract": "semantic-pty",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
         "openai-responses",
         "openai-chat-completions",
@@ -132,7 +236,7 @@
       },
       "scenarioProcess": {
         "path": "platform-fixture.mjs",
-        "sha256": "399056eff331968ef5461b0ec9b59d99427544e0dae1c0f33dad95b226f90740"
+        "sha256": "0aba8a8fb2a4dcf3ec6e71fa8a90dfa9bf4340e9d0d8ead246affa7c9d242b99"
       },
       "runtimeArtifacts": [],
       "terminalInputBase64": "cnVuCg==",
@@ -154,18 +258,18 @@
       "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": ["codex-tui-responses"],
       "tags": ["codex", "interactive", "pr"],
-      "destinations": ["local-sqlite"],
+      "destinations": ["langfuse"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "11a84cfc30b1396e58c0fc95c04d88955d9198075cb31377bee50dd1282d601f"
+        "sha256": "418be7110a443454c112b93cbca6ec293aff0c364616fc29613e463b2a4dd9dc"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "120adf5211485e9a8af63db214c9be6bfd7681e1abcd2ab5a7af23b2941bc966"
+        "sha256": "bdbce0c17dea279ed12dd401fe435bf1806d05685674db01f645ee3e719ff3bb"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "73c120ef164dc77f4801d80f3c05fb4db2bb518b981a385350aa17cfa60950d8"
+        "sha256": "57c1a2768de6f1ef50ec946090115058583e26188a21332e497290c1481dc8e5"
       },
       "runtimeArtifacts": [
         {
@@ -174,15 +278,7 @@
             "path": "codex-candidate-dropper.mjs"
           },
           "destination": "codex-candidate-dropper.mjs",
-          "sha256": "e9356e7b92527233af5456c50839b64d1dd18a5161e56387603533f60b300a13"
-        },
-        {
-          "source": {
-            "kind": "integration",
-            "path": "gate-mockserver.mjs"
-          },
-          "destination": "gate-mockserver.mjs",
-          "sha256": "497b084d9831fc964c8aa4c1f611095e970497cd55e6ea64780859f1bfb96246"
+          "sha256": "9a6893c67b8d439e486fa5f57a8b5f62e76caeba6f5a2b419e4bd826983a7c56"
         },
         {
           "source": {
@@ -190,7 +286,7 @@
             "path": "codex-runtime-evidence.mjs"
           },
           "destination": "codex-runtime-evidence.mjs",
-          "sha256": "9cf29df9daf40920d177b56999aa30c48ff5c616c9f6952ae4d099e048017b2a"
+          "sha256": "783dacb67846c45dc9f5a994569509a684f76431edb6ed7343e1c3ae412082d5"
         },
         {
           "source": {
@@ -207,6 +303,14 @@
           },
           "destination": "codex-configuration.js",
           "sha256": "c81b1960868e946b1d66fdaa6edf1058d00f5f85d3d65104dc0e4e3ebf7c2165"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "collector-ca.mjs"
+          },
+          "destination": "collector-ca.mjs",
+          "sha256": "840b00ae1203b84d834652b22b203b4cc90e8bc35d54b2686aa7b237f30516c5"
         }
       ],
       "terminalInputBase64": "G1syMDB+UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLhtbMjAxfhtbMTN1G1syMDB+L2V4aXQbWzIwMX4bWzEzdQ==",
@@ -223,6 +327,64 @@
       },
       "resourceClass": "medium",
       "shardWeight": 220
+    },
+    {
+      "scenarioId": "claude-interactive-trace-smoke",
+      "harnessEvidenceId": "claude-code-2-1-245",
+      "executionMode": "interactive",
+      "outputContract": "semantic-pty",
+      "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+      "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+      "modelRoutes": ["anthropic-messages"],
+      "tags": ["claude-code", "interactive", "pr"],
+      "destinations": ["langfuse"],
+      "fixtureAdapter": {
+        "path": "dist/claude-code-platform-adapter.mjs",
+        "sha256": "b498121ac7b3caf6fb63f93cc0a11c62dd2f60e2b5e34250cee3d33892172ef1"
+      },
+      "scenarioOracle": {
+        "path": "claude-code-platform-oracle.mjs",
+        "sha256": "3854d3d77dd260883361402e8ea8a3f5f9a15a8d3623cf465636a575dabacd97"
+      },
+      "scenarioProcess": {
+        "path": "claude-code-scenario.mjs",
+        "sha256": "6fce727e14d8ea9e1688f11eafc417d9cad03b4d7ad78549954fd000a338a2d8"
+      },
+      "runtimeArtifacts": [
+        {
+          "source": {
+            "kind": "integration",
+            "path": "codex-candidate-dropper.mjs"
+          },
+          "destination": "codex-candidate-dropper.mjs",
+          "sha256": "9a6893c67b8d439e486fa5f57a8b5f62e76caeba6f5a2b419e4bd826983a7c56"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "claude-code-lifecycle.mjs"
+          },
+          "destination": "claude-code-lifecycle.mjs",
+          "sha256": "fca21272ec5523e2cd995076c64c85e6e45ddee893d764f5a2c6c969dbd8770a"
+        },
+        {
+          "source": {
+            "kind": "integration",
+            "path": "collector-ca.mjs"
+          },
+          "destination": "collector-ca.mjs",
+          "sha256": "840b00ae1203b84d834652b22b203b4cc90e8bc35d54b2686aa7b237f30516c5"
+        }
+      ],
+      "terminalInputBase64": "L2V4aXQN",
+      "postCompletionInputByteLength": 6,
+      "postCompletionControl": "none",
+      "waitForSemanticCompletionBeforeTerminalAction": true,
+      "nativeReadiness": {
+        "kind": "challenge-marker"
+      },
+      "resourceClass": "medium",
+      "shardWeight": 240
     }
   ]
 }

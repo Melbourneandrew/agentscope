@@ -9,6 +9,7 @@ import {
   readSync,
 } from "node:fs";
 import { join } from "node:path";
+import { types } from "node:util";
 import {
   decodeAdapterReportedFailureMarker,
   validCodexResearchDiagnostic,
@@ -61,17 +62,38 @@ export const readBoundedInteractiveFailureRecord = (ledger, runId) => {
     )
       return undefined;
     const content = bytes.subarray(0, count).toString("utf8");
-    const predicate = /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
-      ? content.trim()
-      : content.startsWith(
-            "integration.fixture.codex-verify-trace-get-child-invoke-get|",
-          )
-        ? "integration.fixture.codex-verify-trace-get-child-invoke-get"
-        : undefined;
+    const claudeTerminal = content.match(
+      /^integration\.fixture\.claude-vendor-terminal\|(code|signal);([1-9][0-9]{0,2})\n$/u,
+    );
+    const predicate = content.startsWith(
+      "integration.fixture.claude-vendor-terminal|",
+    )
+      ? "integration.fixture.claude-vendor-terminal"
+      : /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+        ? content.trim()
+        : content.startsWith(
+              "integration.fixture.codex-verify-trace-get-child-invoke-get|",
+            )
+          ? "integration.fixture.codex-verify-trace-get-child-invoke-get"
+          : undefined;
     return predicate === undefined
       ? undefined
       : {
           predicate,
+          ...(claudeTerminal === null
+            ? {}
+            : {
+                childTerminal: validChildTerminal({
+                  exitCode:
+                    claudeTerminal[1] === "code"
+                      ? Number(claudeTerminal[2])
+                      : null,
+                  exitSignal:
+                    claudeTerminal[1] === "signal"
+                      ? Number(claudeTerminal[2])
+                      : null,
+                }),
+              }),
           adapterReportedFailure: decodeAdapterReportedFailureMarker(
             content,
             runId,
@@ -106,7 +128,155 @@ export const readRetainedInteractivePhase = (ledger) => {
   }
   return retained;
 };
+const claudeFailureCodes = Object.freeze([
+  "environment",
+  "clock",
+  "deadline",
+  "destination-settings",
+  "doctor",
+  "install",
+  "readiness",
+  "settings",
+  "uninstall",
+  "model-control",
+  "model-route",
+  "native-content",
+  "native-directory",
+  "native-file",
+  "native-identity",
+  "native-inventory",
+  "native-jsonl",
+  "native-model",
+  "native-record",
+  "native-tool",
+  "native-tool-result",
+  "native-turn",
+  "early-exit",
+  "model-pair",
+  "native-early-exit",
+  "native-final-turn",
+  "pty",
+  "response-model",
+  "vendor-terminal",
+  "internal-endpoint",
+]);
+const claudePackedInstallDiagnostics = Object.freeze([
+  ["packed-hook-absent", "harness.absent", "not-found", 3],
+  ["packed-hook-adapter-missing", "harness.adapter-missing", "not-found", 3],
+  [
+    "packed-hook-discovery-indeterminate",
+    "harness.discovery-indeterminate",
+    "unavailable",
+    5,
+  ],
+  [
+    "packed-hook-installation-unsupported",
+    "harness.installation-unsupported",
+    "unavailable",
+    5,
+  ],
+  ["packed-hook-overlap-conflict", "harness.overlap-conflict", "conflict", 4],
+  ["packed-hook-plan-invalid", "harness.plan-invalid", "unavailable", 5],
+  ["packed-hook-recovery-required", "harness.recovery-required", "conflict", 4],
+  ["packed-hook-unavailable", "harness.unavailable", "unavailable", 5],
+  [
+    "packed-hook-version-unsupported",
+    "harness.version-unsupported",
+    "unavailable",
+    5,
+  ],
+  ["packed-hook-internal", "cli.internal", "internal-error", 70],
+]);
+export const claudePackedInstallFailurePhase = (error) => {
+  const fallback = "packed-hook-install";
+  if (types.isProxy(error) || !types.isNativeError(error)) return fallback;
+  const fields = ["code", "stderr", "signal", "killed"].map((key) =>
+    Object.getOwnPropertyDescriptor(error, key),
+  );
+  if (fields.some((field) => !field || !Object.hasOwn(field, "value")))
+    return fallback;
+  const [exit, stderr, signal, killed] = fields.map((field) => field.value);
+  if (
+    typeof stderr !== "string" ||
+    Buffer.byteLength(stderr, "utf8") > 512 ||
+    signal !== null ||
+    killed !== false
+  )
+    return fallback;
+  return (
+    claudePackedInstallDiagnostics.find(
+      ([, code, category, expectedExit]) =>
+        exit === expectedExit &&
+        stderr ===
+          `${JSON.stringify({
+            category,
+            code,
+            command: "agentscope install",
+            schema: "agentscope.cli.diagnostic.v1",
+          })}\n`,
+    )?.[0] ?? fallback
+  );
+};
+const claudeFailurePhases = Object.freeze([
+  "bootstrap",
+  "readiness",
+  "packed-install",
+  "stimulus",
+  "model-config",
+  "candidate-denial",
+  "model-pair",
+  "native-final",
+  "retirement",
+  "result",
+  "packed-init",
+  "packed-configure",
+  "packed-routing",
+  "packed-hook-install",
+  "packed-status",
+  "packed-settings",
+  ...claudePackedInstallDiagnostics.map(([phase]) => phase),
+]);
+const claudeFailurePredicates = Object.freeze([
+  ...claudeFailureCodes.map((code) => `integration.fixture.claude-${code}`),
+  ...claudeFailurePhases.map(
+    (phase) => `integration.fixture.claude-phase-${phase}`,
+  ),
+]);
+const claudeModelPairFailurePredicates = Object.freeze([
+  "integration.fixture.claude-model-pair-empty",
+  "integration.fixture.claude-model-pair-initial-only",
+]);
+const isClaudeFailurePredicate = (diagnostic) =>
+  claudeFailurePredicates.includes(diagnostic) ||
+  claudeModelPairFailurePredicates.includes(diagnostic);
+export const claudeScenarioFailureDiagnostic = (error, phase) => {
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    const field = Object.getOwnPropertyDescriptor(error, "message");
+    if (field && Object.hasOwn(field, "value")) {
+      if (field.value === "integration.claude-code.model-pair") {
+        if (phase === "model-pair-empty")
+          return "integration.fixture.claude-model-pair-empty";
+        if (phase === "model-pair-initial-only")
+          return "integration.fixture.claude-model-pair-initial-only";
+      }
+      const index = claudeFailureCodes.findIndex(
+        (code) =>
+          field.value ===
+          (code === "internal-endpoint"
+            ? "claude-code.execution.internal-endpoint"
+            : `integration.claude-code.${code}`),
+      );
+      if (index >= 0) return claudeFailurePredicates[index];
+    }
+  }
+  const index = claudeFailurePhases.indexOf(phase);
+  return claudeFailurePredicates[
+    claudeFailureCodes.length + Math.max(0, index)
+  ];
+};
 export const ptyExecutionFailurePredicates = Object.freeze([
+  ...claudeFailurePredicates,
+  ...claudeModelPairFailurePredicates,
   "child-failure",
   "integration.fixture.codex-bootstrap",
   "integration.fixture.codex-bootstrap-arguments",
@@ -221,6 +391,32 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.runner.fixture-result",
   "integration.runner.pty-authority",
   "testkit.headless.kernel.failure",
+  "testkit.headless.reconciliation.deadline",
+  "testkit.headless.reconciliation.deadline-authority",
+  "testkit.headless.reconciliation.deadline-observer",
+  "testkit.headless.reconciliation.deadline-observer-read",
+  "testkit.headless.reconciliation.deadline-observer-stat",
+  "testkit.headless.reconciliation.deadline-observer-esrch",
+  "testkit.headless.reconciliation.deadline-observer-permission",
+  "testkit.headless.reconciliation.deadline-observer-io",
+  "testkit.headless.reconciliation.deadline-observer-namespace",
+  "testkit.headless.reconciliation.deadline-observer-identity",
+  "testkit.headless.reconciliation.deadline-observer-graph",
+  "testkit.headless.reconciliation.deadline-observer-root-reuse",
+  "testkit.headless.reconciliation.deadline-observer-target-reuse",
+  "testkit.headless.reconciliation.deadline-observer-zombie-before",
+  "testkit.headless.reconciliation.deadline-observer-zombie-after",
+  "testkit.headless.reconciliation.deadline-signal",
+  "testkit.headless.reconciliation.deadline-reap",
+  "testkit.headless.reconciliation.deadline-reap-call",
+  "testkit.headless.reconciliation.deadline-reap-receipt",
+  "testkit.headless.reconciliation.deadline-reap-not-ready",
+  "testkit.headless.reconciliation.deadline-reap-persisted",
+  "testkit.headless.reconciliation.deadline-residual",
+  "testkit.headless.reconciliation.deadline-child-join",
+  "testkit.headless.reconciliation.deadline-output-join",
+  "testkit.headless.reconciliation.deadline-transport-close",
+  "testkit.headless.reconciliation.deadline-outer-shutdown",
   "testkit.pty.geometry",
   "testkit.pty.immutable-candidate",
   "testkit.pty.receipt-completion-state",
@@ -248,8 +444,41 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-malformed-control-limit",
   "testkit.pty.transport.semantic-malformed-csi-byte",
   "testkit.pty.transport.semantic-malformed-csi-parameters",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-colon-sgr",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-colon-keyboard",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-colon-other",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-mode-query",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-intermediate",
+  "testkit.pty.transport.semantic-malformed-csi-parameters-range",
   "testkit.pty.transport.semantic-malformed-escape",
   "testkit.pty.transport.semantic-malformed-ground-control",
+  "testkit.pty.transport.semantic-malformed-ground-control-0",
+  "testkit.pty.transport.semantic-malformed-ground-control-1",
+  "testkit.pty.transport.semantic-malformed-ground-control-2",
+  "testkit.pty.transport.semantic-malformed-ground-control-3",
+  "testkit.pty.transport.semantic-malformed-ground-control-4",
+  "testkit.pty.transport.semantic-malformed-ground-control-5",
+  "testkit.pty.transport.semantic-malformed-ground-control-6",
+  "testkit.pty.transport.semantic-malformed-ground-control-11",
+  "testkit.pty.transport.semantic-malformed-ground-control-12",
+  "testkit.pty.transport.semantic-malformed-ground-control-14",
+  "testkit.pty.transport.semantic-malformed-ground-control-15",
+  "testkit.pty.transport.semantic-malformed-ground-control-16",
+  "testkit.pty.transport.semantic-malformed-ground-control-17",
+  "testkit.pty.transport.semantic-malformed-ground-control-18",
+  "testkit.pty.transport.semantic-malformed-ground-control-19",
+  "testkit.pty.transport.semantic-malformed-ground-control-20",
+  "testkit.pty.transport.semantic-malformed-ground-control-21",
+  "testkit.pty.transport.semantic-malformed-ground-control-22",
+  "testkit.pty.transport.semantic-malformed-ground-control-23",
+  "testkit.pty.transport.semantic-malformed-ground-control-24",
+  "testkit.pty.transport.semantic-malformed-ground-control-25",
+  "testkit.pty.transport.semantic-malformed-ground-control-26",
+  "testkit.pty.transport.semantic-malformed-ground-control-28",
+  "testkit.pty.transport.semantic-malformed-ground-control-29",
+  "testkit.pty.transport.semantic-malformed-ground-control-30",
+  "testkit.pty.transport.semantic-malformed-ground-control-31",
+  "testkit.pty.transport.semantic-malformed-ground-control-127",
   "testkit.pty.transport.semantic-malformed-trailing-control",
   "testkit.pty.transport.semantic-malformed-unknown",
   "testkit.pty.transport.semantic-malformed-utf8",
@@ -259,6 +488,85 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-nonzero",
   "testkit.pty.transport.semantic-unsupported-csi",
   "testkit.pty.transport.semantic-unsupported-extended-csi",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-residual-shape",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-3",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-4",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-5",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-6",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-8",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-9",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-10",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-13",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-14",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-18",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-19",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-30",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-35",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-38",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-40",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-41",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-42",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-43",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-44",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-45",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-46",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-47",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-66",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-67",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-69",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-80",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-95",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1000",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1001",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1002",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1003",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1005",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1006",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1010",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1011",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1014",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1015",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1016",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1020",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1021",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1022",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1023",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1034",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1035",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1036",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1037",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1039",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1040",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1041",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1042",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1043",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1044",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1045",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1046",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1047",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1048",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1050",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1051",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1052",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1053",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1060",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-1061",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2001",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2002",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2003",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2005",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-2006",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-9001",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-secondary-device-attributes",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-tertiary-device-attributes",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-xterm-version",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-key-modifier-query",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-intermediate",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-keyboard-shape",
+  "testkit.pty.transport.semantic-unsupported-extended-csi-modifier-shape",
   "testkit.pty.transport.semantic-unsupported-osc",
   "testkit.pty.transport.semantic-unsupported-unknown",
   "integration.fixture.codex-tui-exit-before-checkpoint",
@@ -278,6 +586,25 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-trace-get-child-invoke-get",
 ]);
 
+const unlistedModeNumber = Number;
+const unlistedModeSafeInteger = Number.isSafeInteger;
+const unlistedModePattern =
+  /^testkit\.pty\.transport\.semantic-unsupported-extended-csi-private-mode-unlisted-[hl]-(0|[1-9][0-9]{0,4})$/u;
+const unlistedModeMatch = RegExp.prototype.exec;
+const unlistedModeApply = Reflect.apply;
+const validPtyExecutionFailurePredicate = (value) => {
+  if (typeof value !== "string") return false;
+  if (ptyExecutionFailurePredicates.includes(value)) return true;
+  const match = unlistedModeApply(unlistedModeMatch, unlistedModePattern, [
+    value,
+  ]);
+  return (
+    match !== null &&
+    unlistedModeSafeInteger(unlistedModeNumber(match[1])) &&
+    unlistedModeNumber(match[1]) <= 65535
+  );
+};
+
 export const selectInteractiveFailureDiagnostic = (
   fixtureFailure,
   retainedPhase,
@@ -286,7 +613,7 @@ export const selectInteractiveFailureDiagnostic = (
   [fixtureFailure, retainedPhase, selectedError].find(
     (value) =>
       typeof value === "string" &&
-      ptyExecutionFailurePredicates.includes(value) &&
+      validPtyExecutionFailurePredicate(value) &&
       value !== "integration.fixture.codex-tui-exit-before-checkpoint" &&
       value !== "integration.fixture.codex-tui-checkpoint-not-witnessed" &&
       !value.startsWith("integration.fixture.codex-candidate-config-") &&
@@ -902,6 +1229,8 @@ export const codexArmPendingResearchHint = (error) => {
     const message = error instanceof Error ? error.message : undefined;
     const byMessage = {
       "integration.codex.deadline": "arm-deadline",
+      "integration.codex.trace-deadline": "arm-deadline",
+      "integration.codex.session-ledger": "arm-session-ledger",
       "integration.codex.clock": "arm-clock",
       "integration.codex.failure-phase": "arm-phase",
       "integration.codex.hook-log": "arm-hook-log",
@@ -1013,6 +1342,11 @@ export const selectInteractiveExecutionFailurePredicate = (
   const diagnostic = retainedDiagnostic ?? candidate;
   if (typeof diagnostic !== "string") return "child-failure";
   if (
+    isClaudeFailurePredicate(diagnostic) &&
+    scenarioId !== "claude-interactive-trace-smoke"
+  )
+    return "child-failure";
+  if (
     diagnostic.startsWith("integration.fixture.codex-tui-join-deadline-") &&
     (scenarioId !== "codex-tui-trace-smoke" ||
       retainedDiagnostic !== diagnostic)
@@ -1030,12 +1364,18 @@ export const selectInteractiveExecutionFailurePredicate = (
       retainedDiagnostic !== diagnostic)
   )
     return "child-failure";
-  return ptyExecutionFailurePredicates.includes(diagnostic)
+  return validPtyExecutionFailurePredicate(diagnostic)
     ? diagnostic
     : "child-failure";
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (claudeModelPairFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke" ? 223 : undefined;
+  if (claudeFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke"
+      ? 200 + claudeFailurePredicates.indexOf(diagnostic)
+      : undefined;
   if (scenarioId === "codex-tui-trace-smoke") {
     if (diagnostic === "integration.fixture.codex-tui-exit-before-checkpoint")
       return 139;
@@ -1068,6 +1408,8 @@ export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
 
 export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
+  if (scenarioId === "claude-interactive-trace-smoke" && exitCode >= 200)
+    return claudeFailurePredicates[exitCode - 200];
   if (scenarioId === "codex-tui-trace-smoke") {
     if (exitCode === 139)
       return "integration.fixture.codex-tui-exit-before-checkpoint";
@@ -1090,20 +1432,204 @@ export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   ];
 };
 
-export const extractInteractiveChildDiagnostic = (output) => {
+const diagnosticData = (value, keys) => {
+  if (
+    types.isProxy(value) ||
+    !plainRecord(value) ||
+    Reflect.ownKeys(value).length !== keys.length
+  )
+    return undefined;
+  const fields = Object.getOwnPropertyDescriptors(value);
+  if (
+    keys.some(
+      (key) =>
+        !Object.hasOwn(fields, key) || !Object.hasOwn(fields[key], "value"),
+    )
+  )
+    return undefined;
+  return Object.fromEntries(keys.map((key) => [key, fields[key].value]));
+};
+const ptySemanticFacts = (value) => {
+  const fields = diagnosticData(value, [
+    "finalSemanticState",
+    "inputJoined",
+    "readinessObserved",
+    "allInputBytesWritten",
+  ]);
+  return fields &&
+    (fields.finalSemanticState === "active" ||
+      fields.finalSemanticState === "ready") &&
+    typeof fields.inputJoined === "boolean" &&
+    typeof fields.readinessObserved === "boolean" &&
+    typeof fields.allInputBytesWritten === "boolean"
+    ? Object.freeze(fields)
+    : undefined;
+};
+const ptySignalIsSafeInteger = Number.isSafeInteger;
+const claudeVendorPredicate = "integration.fixture.claude-vendor-terminal";
+const validChildTerminal = (input) => {
+  const value = diagnosticData(input, ["exitCode", "exitSignal"]);
+  if (!value) return undefined;
+  return (value.exitSignal === null &&
+    ptySignalIsSafeInteger(value.exitCode) &&
+    value.exitCode >= 1 &&
+    value.exitCode <= 255) ||
+    (value.exitCode === null &&
+      ptySignalIsSafeInteger(value.exitSignal) &&
+      value.exitSignal >= 1 &&
+      value.exitSignal <= 64)
+    ? Object.freeze(value)
+    : undefined;
+};
+const unsupportedPtySignal = (value) =>
+  ptySignalIsSafeInteger(value) &&
+  value >= 1 &&
+  value <= 64 &&
+  value !== 2 &&
+  value !== 9 &&
+  value !== 15;
+export const formatInteractiveChildDiagnostic = (
+  predicate,
+  input,
+  exitSignal,
+  childTerminal,
+) => {
+  const code = validPtyExecutionFailurePredicate(predicate)
+    ? predicate
+    : "integration.runner.fixture-failed";
+  const semantic =
+    code === "testkit.pty.transport.semantic-incomplete"
+      ? ptySemanticFacts(input)
+      : undefined;
+  const signal =
+    code === "testkit.pty.transport.exit" && unsupportedPtySignal(exitSignal)
+      ? `;signal;${exitSignal}`
+      : "";
+  const child =
+    code === claudeVendorPredicate
+      ? validChildTerminal(childTerminal)
+      : undefined;
+  const suffix =
+    child === undefined
+      ? ""
+      : `;child-${child.exitCode === null ? "signal" : "code"};${child.exitCode ?? child.exitSignal}`;
+  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? signal : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}${suffix}\n`;
+};
+export const readInteractiveChildFailureObservation = (output) => {
   if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
     return undefined;
-  const matches = [
-    ...output.matchAll(
-      /^integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})$/gmu,
-    ),
-  ];
-  if (matches.length !== 1) return undefined;
-  const diagnostic = matches[0]?.[1];
-  return diagnostic !== undefined &&
-    ptyExecutionFailurePredicates.includes(diagnostic)
-    ? diagnostic
-    : undefined;
+  const prefix = "integration.runner.interactive-diagnostic:";
+  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1 || Buffer.byteLength(lines[0]) + 1 > 256)
+    return undefined;
+  const match = lines[0]
+    .slice(prefix.length)
+    .match(
+      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01])|;signal;([1-9][0-9]?)|;child-(code|signal);([1-9][0-9]{0,2}))?$/u,
+    );
+  if (
+    !match ||
+    !validPtyExecutionFailurePredicate(match[1]) ||
+    (match[2] !== undefined &&
+      match[1] !== "testkit.pty.transport.semantic-incomplete") ||
+    (match[6] !== undefined &&
+      (match[1] !== "testkit.pty.transport.exit" ||
+        !unsupportedPtySignal(Number(match[6])))) ||
+    (match?.[7] !== undefined &&
+      (match[1] !== claudeVendorPredicate ||
+        validChildTerminal({
+          exitCode: match[7] === "code" ? Number(match[8]) : null,
+          exitSignal: match[7] === "signal" ? Number(match[8]) : null,
+        }) === undefined))
+  )
+    return undefined;
+  return Object.freeze({
+    predicate: match[1],
+    ...(match[7] === undefined
+      ? {}
+      : {
+          childTerminal: validChildTerminal({
+            exitCode: match[7] === "code" ? Number(match[8]) : null,
+            exitSignal: match[7] === "signal" ? Number(match[8]) : null,
+          }),
+        }),
+    ...(match[6] === undefined ? {} : { exitSignal: Number(match[6]) }),
+    ...(match[2] === undefined
+      ? {}
+      : {
+          semanticFailure: Object.freeze({
+            finalSemanticState: match[2],
+            inputJoined: match[3] === "1",
+            readinessObserved: match[4] === "1",
+            allInputBytesWritten: match[5] === "1",
+          }),
+        }),
+  });
+};
+export const extractInteractiveChildDiagnostic = (output) =>
+  readInteractiveChildFailureObservation(output)?.predicate;
+export const validInstalledPtyFailure = (input) => {
+  if (input === null) return true;
+  const old = diagnosticData(input, ["phase", "predicate", "receiptVersion"]);
+  const value =
+    old ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "childTerminal",
+    ]) ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "exitSignal",
+    ]) ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "semanticFailure",
+    ]) ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+    ]);
+  if (
+    !value ||
+    value.receiptVersion !== 1 ||
+    !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
+    !(value.phase === "pty-execution"
+      ? validPtyExecutionFailurePredicate(value.predicate)
+      : installedPtyFailurePredicates[value.phase].includes(value.predicate))
+  )
+    return false;
+  if (old) return !isClaudeFailurePredicate(value.predicate);
+  if (
+    value.phase !== "pty-execution" ||
+    (value.scenarioId !== "codex-tui-trace-smoke" &&
+      value.scenarioId !== "claude-interactive-trace-smoke") ||
+    (isClaudeFailurePredicate(value.predicate) &&
+      value.scenarioId !== "claude-interactive-trace-smoke")
+  )
+    return false;
+  return (
+    (!Object.hasOwn(value, "childTerminal") ||
+      (value.scenarioId === "claude-interactive-trace-smoke" &&
+        value.predicate === claudeVendorPredicate &&
+        validChildTerminal(value.childTerminal) !== undefined)) &&
+    (!Object.hasOwn(value, "exitSignal") ||
+      (value.predicate === "testkit.pty.transport.exit" &&
+        unsupportedPtySignal(value.exitSignal))) &&
+    (!Object.hasOwn(value, "semanticFailure") ||
+      (value.predicate === "testkit.pty.transport.semantic-incomplete" &&
+        ptySemanticFacts(value.semanticFailure) !== undefined))
+  );
 };
 
 export const decodeInteractivePtyReceipt = (output) => {
@@ -1305,8 +1831,6 @@ export const decodeImmutableCandidateHandoff = (encoded, expected) => {
 
 const selectedControlMountMatches = (container, controlVolume, handoff) => {
   if (!Array.isArray(container?.Mounts)) return false;
-  if (handoff.scenarioId !== "codex-tui-trace-smoke")
-    return container.Mounts.length === 0 && controlVolume === undefined;
   const mount = container.Mounts[0];
   return (
     controlVolume?.name === `agentscope-int-${handoff.runId}-control` &&
@@ -1319,6 +1843,12 @@ const selectedControlMountMatches = (container, controlVolume, handoff) => {
     mount.RW === true
   );
 };
+const nativeControllerHandoff = (handoff) =>
+  plainRecord(handoff) &&
+  ["codex-tui-trace-smoke", "claude-interactive-trace-smoke"].includes(
+    handoff.scenarioId,
+  );
+
 export const validateImmutableScenarioContainer = ({
   container,
   controlVolume,
@@ -1327,6 +1857,7 @@ export const validateImmutableScenarioContainer = ({
   networkName,
   tmpfs,
 }) => {
+  const nativeController = nativeControllerHandoff(handoff);
   if (
     !plainRecord(container) ||
     !plainRecord(handoff) ||
@@ -1334,8 +1865,7 @@ export const validateImmutableScenarioContainer = ({
     image.Id !== handoff.imageId ||
     sha256(JSON.stringify(image.Config)) !== handoff.imageConfigSha256 ||
     container.Image !== handoff.imageId ||
-    container.Config?.User !==
-      (handoff.scenarioId === "codex-tui-trace-smoke" ? "0:0" : "1000:1000") ||
+    container.Config?.User !== (nativeController ? "0:0" : "1000:1000") ||
     !Array.isArray(container.Config?.Env) ||
     !container.Config.Env.includes(
       `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${handoff.encoded}`,
@@ -1345,7 +1875,7 @@ export const validateImmutableScenarioContainer = ({
     JSON.stringify(container.HostConfig?.CapDrop) !== JSON.stringify(["ALL"]) ||
     JSON.stringify(container.HostConfig?.CapAdd ?? []) !==
       JSON.stringify(
-        handoff.scenarioId === "codex-tui-trace-smoke"
+        nativeController
           ? [
               "CAP_CHOWN",
               "CAP_DAC_OVERRIDE",

@@ -48,12 +48,134 @@ export type PtyMalformedControlReason =
   | "control-limit"
   | "csi-byte"
   | "csi-parameters"
+  | "csi-parameters-colon-sgr"
+  | "csi-parameters-colon-keyboard"
+  | "csi-parameters-colon-other"
+  | "csi-parameters-mode-query"
+  | "csi-parameters-intermediate"
+  | "csi-parameters-range"
   | "escape"
   | "ground-control"
+  | "ground-control-0"
+  | "ground-control-1"
+  | "ground-control-2"
+  | "ground-control-3"
+  | "ground-control-4"
+  | "ground-control-5"
+  | "ground-control-6"
+  | "ground-control-11"
+  | "ground-control-12"
+  | "ground-control-14"
+  | "ground-control-15"
+  | "ground-control-16"
+  | "ground-control-17"
+  | "ground-control-18"
+  | "ground-control-19"
+  | "ground-control-20"
+  | "ground-control-21"
+  | "ground-control-22"
+  | "ground-control-23"
+  | "ground-control-24"
+  | "ground-control-25"
+  | "ground-control-26"
+  | "ground-control-28"
+  | "ground-control-29"
+  | "ground-control-30"
+  | "ground-control-31"
+  | "ground-control-127"
   | "trailing-control"
   | "utf8";
 
-export type PtyUnsupportedControlReason = "csi" | "extended-csi" | "osc";
+const hasOwn = Object.hasOwn;
+// Documented DECSET/DECRST identities are diagnostic only; none is admitted here.
+const rejectedPrivateModeReasons = Object.freeze({
+  1: "extended-csi-private-mode-1",
+  2: "extended-csi-private-mode-2",
+  3: "extended-csi-private-mode-3",
+  4: "extended-csi-private-mode-4",
+  5: "extended-csi-private-mode-5",
+  6: "extended-csi-private-mode-6",
+  8: "extended-csi-private-mode-8",
+  9: "extended-csi-private-mode-9",
+  10: "extended-csi-private-mode-10",
+  13: "extended-csi-private-mode-13",
+  14: "extended-csi-private-mode-14",
+  18: "extended-csi-private-mode-18",
+  19: "extended-csi-private-mode-19",
+  30: "extended-csi-private-mode-30",
+  35: "extended-csi-private-mode-35",
+  38: "extended-csi-private-mode-38",
+  40: "extended-csi-private-mode-40",
+  41: "extended-csi-private-mode-41",
+  42: "extended-csi-private-mode-42",
+  43: "extended-csi-private-mode-43",
+  44: "extended-csi-private-mode-44",
+  45: "extended-csi-private-mode-45",
+  46: "extended-csi-private-mode-46",
+  47: "extended-csi-private-mode-47",
+  66: "extended-csi-private-mode-66",
+  67: "extended-csi-private-mode-67",
+  69: "extended-csi-private-mode-69",
+  80: "extended-csi-private-mode-80",
+  95: "extended-csi-private-mode-95",
+  1000: "extended-csi-private-mode-1000",
+  1001: "extended-csi-private-mode-1001",
+  1002: "extended-csi-private-mode-1002",
+  1003: "extended-csi-private-mode-1003",
+  1005: "extended-csi-private-mode-1005",
+  1006: "extended-csi-private-mode-1006",
+  1010: "extended-csi-private-mode-1010",
+  1011: "extended-csi-private-mode-1011",
+  1014: "extended-csi-private-mode-1014",
+  1015: "extended-csi-private-mode-1015",
+  1016: "extended-csi-private-mode-1016",
+  1020: "extended-csi-private-mode-1020",
+  1021: "extended-csi-private-mode-1021",
+  1022: "extended-csi-private-mode-1022",
+  1023: "extended-csi-private-mode-1023",
+  1034: "extended-csi-private-mode-1034",
+  1035: "extended-csi-private-mode-1035",
+  1036: "extended-csi-private-mode-1036",
+  1037: "extended-csi-private-mode-1037",
+  1039: "extended-csi-private-mode-1039",
+  1040: "extended-csi-private-mode-1040",
+  1041: "extended-csi-private-mode-1041",
+  1042: "extended-csi-private-mode-1042",
+  1043: "extended-csi-private-mode-1043",
+  1044: "extended-csi-private-mode-1044",
+  1045: "extended-csi-private-mode-1045",
+  1046: "extended-csi-private-mode-1046",
+  1047: "extended-csi-private-mode-1047",
+  1048: "extended-csi-private-mode-1048",
+  1050: "extended-csi-private-mode-1050",
+  1051: "extended-csi-private-mode-1051",
+  1052: "extended-csi-private-mode-1052",
+  1053: "extended-csi-private-mode-1053",
+  1060: "extended-csi-private-mode-1060",
+  1061: "extended-csi-private-mode-1061",
+  2001: "extended-csi-private-mode-2001",
+  2002: "extended-csi-private-mode-2002",
+  2003: "extended-csi-private-mode-2003",
+  2005: "extended-csi-private-mode-2005",
+  2006: "extended-csi-private-mode-2006",
+  9001: "extended-csi-private-mode-9001",
+} as const);
+
+export type PtyUnsupportedControlReason =
+  | "csi"
+  | "extended-csi"
+  | "extended-csi-private-mode-unlisted"
+  | `extended-csi-private-mode-unlisted-${"h" | "l"}-${number}`
+  | "extended-csi-residual-shape"
+  | "osc"
+  | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
+  | "extended-csi-secondary-device-attributes"
+  | "extended-csi-tertiary-device-attributes"
+  | "extended-csi-xterm-version"
+  | "extended-csi-key-modifier-query"
+  | "extended-csi-intermediate"
+  | "extended-csi-keyboard-shape"
+  | "extended-csi-modifier-shape";
 
 type ChallengeScreenRevocationKind =
   | "combined-sync"
@@ -309,25 +431,48 @@ const validateGeometry = (
   return freezeAuthority({ columns: record.columns, rows: record.rows });
 };
 
+const rejectedCsiParameterShape = (
+  value: string,
+  final: string,
+): PtyMalformedControlReason => {
+  if (final === "p" && /^\??\d*\$$/u.test(value))
+    return "csi-parameters-mode-query";
+  if (/^[<=>?]?\d*(?:;\d*)*[\x20-\x2f]+$/u.test(value))
+    return "csi-parameters-intermediate";
+  if (value.includes(":") && /^[<=>?]?\d*(?:[;:]\d*)*$/u.test(value)) {
+    if (final === "m" && !/^[<=>?]/u.test(value))
+      return "csi-parameters-colon-sgr";
+    return final === "u"
+      ? "csi-parameters-colon-keyboard"
+      : "csi-parameters-colon-other";
+  }
+  return "csi-parameters";
+};
+
 const parseCsiParameters = (
   value: string,
+  final: string,
 ):
   | Readonly<{
-      intermediate: "" | " ";
+      intermediate: "" | " " | "$";
       prefix: "" | "<" | "=" | ">" | "?";
       values: readonly number[];
     }>
-  | undefined => {
-  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(value);
-  if (match === null) return undefined;
+  | PtyMalformedControlReason => {
+  const modeQuery = final === "p" && /^\??\d*\$$/u.test(value);
+  const match = /^([<=>?]?)(\d*(?:;\d*)*)( ?)$/u.exec(
+    modeQuery ? value.slice(0, -1) : value,
+  );
+  if (match === null) return rejectedCsiParameterShape(value, final);
   const prefix = match[1] as "" | "<" | "=" | ">" | "?";
   const body = match[2]!;
-  const intermediate = match[3] as "" | " ";
+  const intermediate = modeQuery ? "$" : (match[3] as "" | " ");
   const parts = body.split(";");
   const values: number[] = [];
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index] === "" ? 0 : Number(parts[index]);
-    if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
+    if (!Number.isSafeInteger(part) || part > 65_535)
+      return "csi-parameters-range";
     setOwnIndex(values, index, part);
   }
   return { intermediate, prefix, values };
@@ -538,16 +683,21 @@ export class BoundedTerminalEmulator {
   #scrollRegionTop = 0;
   #scrollRegionBottom: number;
   #cursorVisible = true;
+  #synchronizedOutputModeEnabled = false;
+  #paletteNotificationModeEnabled = false;
   #savedColumn = 0;
   #savedRow = 0;
   #savedBold = false;
   #savedDim = false;
-  #savedCharacterSetTrusted = true;
+  #savedG0Ascii = true;
+  #savedG1Ascii = false;
+  #savedGlCharacterSet: 0 | 1 = 0;
   #savedRenditionTrusted = true;
   #savedAutoWrapEnabled = true;
   #savedCursorPositionTrusted = true;
   #state: ParserState = "ground";
   #control = "";
+  #controlStartedAfterSubmission = false;
   #outputBytes = 0;
   #malformedControlCount = 0;
   #malformedControlReason: PtyMalformedControlReason | null = null;
@@ -588,6 +738,9 @@ export class BoundedTerminalEmulator {
   #bold = false;
   #dim = false;
   #characterSetTarget: "(" | ")" | null = null;
+  #g0Ascii = true;
+  #g1Ascii = false;
+  #glCharacterSet: 0 | 1 = 0;
   #characterSetTrusted = true;
   #renditionTrusted = true;
   #credentialPromptObserved = false;
@@ -838,6 +991,10 @@ export class BoundedTerminalEmulator {
 
   /** Package-private: arm only after the selected turn-submission input. */
   public armPostSubmissionIdleObservation(): void {
+    if (this.#readinessMatcher.kind === "challenge-marker") {
+      this.#postSubmissionIdleObservationArmed = true;
+      return;
+    }
     if (this.#readinessMatcher.kind !== "challenge-styled-text") return;
     this.#postSubmissionIdleObservationArmed = true;
     this.#postSubmissionIdleFrameEligible = false;
@@ -1172,6 +1329,8 @@ export class BoundedTerminalEmulator {
   #consume(character: string): void {
     if (this.#state === "ground") {
       if (character === "\u001b") {
+        this.#controlStartedAfterSubmission =
+          this.#readinessObserved && this.#postSubmissionIdleObservationArmed;
         this.#resetChallengeRequiredTextOutputTail();
         this.#state = "escape";
         return;
@@ -1193,7 +1352,9 @@ export class BoundedTerminalEmulator {
         this.#savedColumn = this.#column;
         this.#savedBold = this.#bold;
         this.#savedDim = this.#dim;
-        this.#savedCharacterSetTrusted = this.#characterSetTrusted;
+        this.#savedG0Ascii = this.#g0Ascii;
+        this.#savedG1Ascii = this.#g1Ascii;
+        this.#savedGlCharacterSet = this.#glCharacterSet;
         this.#savedRenditionTrusted = this.#renditionTrusted;
         this.#savedAutoWrapEnabled = this.#autoWrapEnabled;
         this.#savedCursorPositionTrusted = this.#cursorPositionTrusted;
@@ -1204,7 +1365,10 @@ export class BoundedTerminalEmulator {
         this.#column = this.#savedColumn;
         this.#bold = this.#savedBold;
         this.#dim = this.#savedDim;
-        this.#characterSetTrusted = this.#savedCharacterSetTrusted;
+        this.#g0Ascii = this.#savedG0Ascii;
+        this.#g1Ascii = this.#savedG1Ascii;
+        this.#glCharacterSet = this.#savedGlCharacterSet;
+        this.#refreshCharacterSetTrust();
         this.#renditionTrusted = this.#savedRenditionTrusted;
         this.#autoWrapEnabled = this.#savedAutoWrapEnabled;
         this.#cursorPositionTrusted = this.#savedCursorPositionTrusted;
@@ -1252,9 +1416,10 @@ export class BoundedTerminalEmulator {
     if (this.#state === "charset") {
       if (character !== "0" && character !== "A" && character !== "B")
         this.#recordMalformedControl("escape");
-      this.#characterSetTrusted =
-        this.#characterSetTarget === "(" && character === "B";
+      if (this.#characterSetTarget === "(") this.#g0Ascii = character === "B";
+      else this.#g1Ascii = character === "B";
       this.#characterSetTarget = null;
+      this.#refreshCharacterSetTrust();
       this.#revokeChallengeScreenAuthority("charset");
       this.#state = "ground";
       return;
@@ -1279,6 +1444,13 @@ export class BoundedTerminalEmulator {
 
   // eslint-disable-next-line complexity -- response witness is parsed beside the bounded terminal character
   #consumeGround(character: string): void {
+    if (character === "\u000f" || character === "\u000e") {
+      // SI/LS0 and SO/LS1 invoke the independently designated G0/G1 slot.
+      this.#glCharacterSet = character === "\u000f" ? 0 : 1;
+      this.#refreshCharacterSetTrust();
+      this.#revokeChallengeScreenAuthority("charset");
+      return;
+    }
     if (character === "\r") {
       if (this.#challengeSynchronizedOutputFrameActive)
         this.#resetChallengeOutputObservation();
@@ -1313,7 +1485,11 @@ export class BoundedTerminalEmulator {
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
       this.#invalidateChallengeSynchronizedOutputFrame();
-      this.#recordMalformedControl("ground-control");
+      // CR/LF/BS/TAB/BEL/SI/SO returned above; ESC uses the escape parser.
+      // This branch therefore contains only the 25 closed rejected values.
+      this.#recordMalformedControl(
+        `ground-control-${codePoint}` as PtyMalformedControlReason,
+      );
       return;
     }
     if (!trustedSingleCellCharacter(character)) {
@@ -1324,8 +1500,9 @@ export class BoundedTerminalEmulator {
     this.#cells[cellIndex] = character;
     this.#cellBold[cellIndex] = this.#bold;
     this.#cellDim[cellIndex] = this.#dim;
-    this.#appendRecent(character);
+    if (this.#characterSetTrusted) this.#appendRecent(character);
     if (
+      this.#characterSetTrusted &&
       this.#readinessMatcher.kind === "challenge-styled-text" &&
       this.#readinessMatcher.postSubmissionResponseText !== undefined &&
       this.#postSubmissionIdleObservationArmed &&
@@ -1346,29 +1523,31 @@ export class BoundedTerminalEmulator {
       }
     }
     this.#observeChallengePrintableOutput(character, cellIndex);
-    const expectedReadinessMarker =
+    const readinessMarker =
       this.#readinessMatcher.kind === "challenge-marker" ||
       this.#readinessMatcher.kind === "challenge-styled-text"
         ? `${readyMarker}:${this.#readinessMatcher.challenge}`
         : readyMarker;
-    this.#readinessTail = `${this.#readinessTail}${character}`.slice(
-      -expectedReadinessMarker.length,
-    );
+    if (this.#characterSetTrusted)
+      this.#readinessTail = `${this.#readinessTail}${character}`.slice(
+        -readinessMarker.length,
+      );
     if (
       this.#readinessMatcher.kind === "semantic-marker" ||
       this.#readinessMatcher.kind === "challenge-marker"
     )
-      this.#readinessObserved ||=
-        this.#readinessTail === expectedReadinessMarker;
+      this.#readinessObserved ||= this.#readinessTail === readinessMarker;
     if (this.#readinessMatcher.kind === "challenge-styled-text")
       this.#readinessChallengeObserved ||=
-        this.#readinessTail === expectedReadinessMarker;
-    this.#completionTail = `${this.#completionTail}${character}`.slice(
-      -completedMarker.length,
-    );
+        this.#readinessTail === readinessMarker;
+    if (this.#characterSetTrusted)
+      this.#completionTail = `${this.#completionTail}${character}`.slice(
+        -completedMarker.length,
+      );
     this.#completionObserved ||= this.#completionTail === completedMarker;
     if (
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
+      this.#characterSetTrusted &&
       character === this.#readinessMatcher.text &&
       this.#completionObserved &&
       this.#bold === this.#readinessMatcher.bold &&
@@ -1391,9 +1570,13 @@ export class BoundedTerminalEmulator {
   #consumeCsi(character: string): void {
     const code = character.codePointAt(0)!;
     if (code >= 0x40 && code <= 0x7e) {
-      const parameters = parseCsiParameters(this.#control);
-      if (parameters === undefined)
-        this.#recordMalformedControl("csi-parameters");
+      const parameters = parseCsiParameters(this.#control, character);
+      if (typeof parameters === "string")
+        this.#recordMalformedControl(parameters);
+      else if (parameters.intermediate === "$")
+        this.#enqueueTerminalResponse(
+          `\u001b[${parameters.prefix}${parameters.values[0]};${parameters.prefix === "?" ? this.#privateModeQueryStatus(parameters.values[0]!) : 0}$y`,
+        );
       else
         this.#applyCsi(
           character,
@@ -1482,6 +1665,18 @@ export class BoundedTerminalEmulator {
     } else this.#recordUnsupportedControl("csi");
   }
 
+  #privateModeQueryStatus(mode: number): 0 | 1 | 2 | 4 {
+    if (mode === 9001) return 4;
+    let enabled: boolean;
+    if (mode === 7) enabled = this.#autoWrapEnabled;
+    else if (mode === 25) enabled = this.#cursorVisible;
+    else if (mode === 1049) enabled = this.#alternateScreen;
+    else if (mode === 2026) enabled = this.#synchronizedOutputModeEnabled;
+    else if (mode === 2031) enabled = this.#paletteNotificationModeEnabled;
+    else return 0;
+    return enabled ? 1 : 2;
+  }
+
   #applyScrollRegionCsi(values: readonly number[]): void {
     if (!passiveCsiIsSupported("r", values, this.#geometry.rows)) {
       this.#recordUnsupportedControl("csi");
@@ -1547,18 +1742,41 @@ export class BoundedTerminalEmulator {
   ): void {
     if (intermediate === " " && prefix === "" && final === "q") return;
     if (intermediate !== "") {
-      this.#recordUnsupportedControl("extended-csi");
+      this.#recordUnsupportedControl("extended-csi-intermediate");
+      return;
+    }
+    if (
+      prefix === "?" &&
+      final === "n" &&
+      values.length === 1 &&
+      values[0] === 996
+    ) {
+      // The existing palette is fixed white-on-black, hence dark.
+      this.#enqueueTerminalResponse("\u001b[?997;1n");
       return;
     }
     if (prefix === "?" && (final === "h" || final === "l")) {
+      // Win32 input is never enabled here; this exact reset preserves VT input.
+      if (final === "l" && values.length === 1 && values[0] === 9001) return;
       for (const mode of values) {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
-        else if (![7, 12, 1004, 1007, 2004, 2026].includes(mode)) {
-          this.#recordUnsupportedControl("extended-csi");
+        // 2031 subscribes to palette changes; this immutable palette never changes.
+        else if (![7, 12, 1004, 1007, 2004, 2026, 2031].includes(mode)) {
+          this.#recordUnsupportedControl(
+            hasOwn(rejectedPrivateModeReasons, mode)
+              ? rejectedPrivateModeReasons[
+                  mode as keyof typeof rejectedPrivateModeReasons
+                ]
+              : `extended-csi-private-mode-unlisted-${final}-${mode}`,
+          );
           return;
         }
       }
+      if (values.includes(2026))
+        this.#synchronizedOutputModeEnabled = final === "h";
+      if (values.includes(2031))
+        this.#paletteNotificationModeEnabled = final === "h";
       return;
     }
     if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
@@ -1570,7 +1788,36 @@ export class BoundedTerminalEmulator {
       (values[1] === 0 || values[1] === 2)
     )
       return;
-    this.#recordUnsupportedControl("extended-csi");
+    this.#recordUnsupportedControl(
+      this.#extendedCsiRefusalReason(final, prefix, values),
+    );
+  }
+
+  #extendedCsiRefusalReason(
+    final: string,
+    prefix: "" | "<" | "=" | ">" | "?",
+    values: readonly number[],
+  ): PtyUnsupportedControlReason {
+    const zero = values.length === 1 && values[0] === 0;
+    let reason: PtyUnsupportedControlReason = "extended-csi-residual-shape";
+    if (prefix === ">" && final === "c" && zero)
+      reason = "extended-csi-secondary-device-attributes";
+    else if (prefix === "=" && final === "c" && zero)
+      reason = "extended-csi-tertiary-device-attributes";
+    else if (prefix === ">" && final === "q" && zero)
+      reason = "extended-csi-xterm-version";
+    else if (
+      prefix === "?" &&
+      final === "g" &&
+      values.length === 1 &&
+      [0, 1, 2, 3, 4, 6, 7].includes(values[0]!)
+    )
+      reason = "extended-csi-key-modifier-query";
+    else if (final === "u" && prefix !== "")
+      reason = "extended-csi-keyboard-shape";
+    else if (prefix === ">" && final === "m")
+      reason = "extended-csi-modifier-shape";
+    return reason;
   }
 
   #applyRequiredTerminalProtocolCsi(
@@ -1578,6 +1825,17 @@ export class BoundedTerminalEmulator {
     prefix: "" | "<" | "=" | ">" | "?",
     values: readonly number[],
   ): boolean {
+    if (
+      prefix === ">" &&
+      final === "q" &&
+      values.length === 1 &&
+      values[0] === 0
+    ) {
+      this.#enqueueTerminalResponse(
+        "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\",
+      );
+      return true;
+    }
     if (final !== "u" || values.length !== 1) return false;
     if (prefix === "?" && values[0] === 0) {
       this.#observeRequiredTerminalProtocolStep(5);
@@ -1606,6 +1864,18 @@ export class BoundedTerminalEmulator {
       this.#control = "";
       this.#state = "ground";
     }
+  }
+
+  #refreshCharacterSetTrust(): void {
+    this.#characterSetTrusted =
+      this.#glCharacterSet === 0 ? this.#g0Ascii : this.#g1Ascii;
+    // Designation/invocation cannot join marker fragments across character
+    // sets or promote old graphics bytes when ASCII is selected later.
+    this.#readinessTail = "";
+    this.#completionTail = "";
+    this.#postSubmissionResponseTail = "";
+    this.#recentCodePoints.length = 0;
+    this.#recentStart = 0;
   }
 
   #recordMalformedControl(reason: PtyMalformedControlReason): void {
@@ -1673,6 +1943,21 @@ export class BoundedTerminalEmulator {
       this.#enqueueTerminalResponse("\u001b]11;rgb:0000/0000/0000\u001b\\");
     } else if (selector === "0" || selector === "2") {
       this.#titleSha256 = hash(title);
+      if (
+        this.#readinessMatcher.kind === "challenge-marker" &&
+        containsText(title, completedMarker)
+      ) {
+        if (
+          selector !== "2" ||
+          !this.#readinessObserved ||
+          !this.#postSubmissionIdleObservationArmed ||
+          !this.#controlStartedAfterSubmission ||
+          this.#completionObserved ||
+          title !== `${completedMarker}:${this.#readinessMatcher.challenge}`
+        )
+          this.#recordUnsupportedControl("osc");
+        else this.#completionObserved = true;
+      }
       // The selected Codex fixture publishes its challenge-bound completion
       // as a title update so it cannot overwrite the already-proved live
       // composer. This is only semantic completion, never input readiness.

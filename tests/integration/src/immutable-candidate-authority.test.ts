@@ -21,7 +21,714 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+const reconciliationStages = [
+  "authority",
+  "observer",
+  "observer-read",
+  "observer-stat",
+  "observer-esrch",
+  "observer-permission",
+  "observer-io",
+  "observer-namespace",
+  "observer-identity",
+  "observer-graph",
+  "observer-root-reuse",
+  "observer-target-reuse",
+  "observer-zombie-before",
+  "observer-zombie-after",
+  "signal",
+  "reap",
+  "reap-call",
+  "reap-receipt",
+  "reap-not-ready",
+  "reap-persisted",
+  "residual",
+  "child-join",
+  "output-join",
+  "transport-close",
+  "outer-shutdown",
+] as const;
+
+it.each(reconciliationStages)(
+  "retains only fixed reconciliation stage %s in existing failure wire",
+  (stage) => {
+    const predicate = `testkit.headless.reconciliation.deadline-${stage}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    const record = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate,
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+      true,
+    );
+    expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+    expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+  },
+);
+it.each(["PRIVATE", "output-join.extra", "", "constructor"])(
+  "refuses unknown reconciliation suffix %j",
+  (stage) => {
+    const predicate = `testkit.headless.reconciliation.deadline-${stage}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  },
+);
+
+const fixedExtendedCsiSuffixes = [
+  "private-mode-1",
+  "private-mode-2",
+  "private-mode-3",
+  "private-mode-4",
+  "private-mode-5",
+  "private-mode-6",
+  "private-mode-8",
+  "private-mode-9",
+  "private-mode-10",
+  "private-mode-13",
+  "private-mode-14",
+  "private-mode-18",
+  "private-mode-19",
+  "private-mode-30",
+  "private-mode-35",
+  "private-mode-38",
+  "private-mode-40",
+  "private-mode-41",
+  "private-mode-42",
+  "private-mode-43",
+  "private-mode-44",
+  "private-mode-45",
+  "private-mode-46",
+  "private-mode-47",
+  "private-mode-66",
+  "private-mode-67",
+  "private-mode-69",
+  "private-mode-80",
+  "private-mode-95",
+  "private-mode-1000",
+  "private-mode-1001",
+  "private-mode-1002",
+  "private-mode-1003",
+  "private-mode-1005",
+  "private-mode-1006",
+  "private-mode-1010",
+  "private-mode-1011",
+  "private-mode-1014",
+  "private-mode-1015",
+  "private-mode-1016",
+  "private-mode-1020",
+  "private-mode-1021",
+  "private-mode-1022",
+  "private-mode-1023",
+  "private-mode-1034",
+  "private-mode-1035",
+  "private-mode-1036",
+  "private-mode-1037",
+  "private-mode-1039",
+  "private-mode-1040",
+  "private-mode-1041",
+  "private-mode-1042",
+  "private-mode-1043",
+  "private-mode-1044",
+  "private-mode-1045",
+  "private-mode-1046",
+  "private-mode-1047",
+  "private-mode-1048",
+  "private-mode-1050",
+  "private-mode-1051",
+  "private-mode-1052",
+  "private-mode-1053",
+  "private-mode-1060",
+  "private-mode-1061",
+  "private-mode-2001",
+  "private-mode-2002",
+  "private-mode-2003",
+  "private-mode-2005",
+  "private-mode-2006",
+  "private-mode-9001",
+  "secondary-device-attributes",
+  "tertiary-device-attributes",
+  "xterm-version",
+  "key-modifier-query",
+  "intermediate",
+  "keyboard-shape",
+  "modifier-shape",
+  "private-mode-unlisted",
+  "residual-shape",
+] as const;
+
+it.each([
+  "colon-sgr",
+  "colon-keyboard",
+  "colon-other",
+  "mode-query",
+  "intermediate",
+  "range",
+])(
+  "retains fixed rejected CSI syntax %s through selector/frame/persisted guards",
+  (reason) => {
+    const predicate = `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBe(predicate);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+    const record = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate,
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+      true,
+    );
+    expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+    expect(
+      validInstalledPtyFailure({
+        ...record,
+        get predicate() {
+          throw Error("must not read getter");
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validInstalledPtyFailure({ ...record, predicate: `${predicate}-extra` }),
+    ).toBe(false);
+    expect(validInstalledPtyFailure({ ...record, raw: "PRIVATE" })).toBe(false);
+  },
+);
+
+it.each([
+  ["completion-state", "integration.runner.fixture-failed", true],
+  ["completion-state", undefined, true],
+  ["completion-state", "integration.fixture.claude-vendor-terminal", false],
+  ["completion-state", "testkit.pty.transport.semantic-incomplete", false],
+  ["receipt-rejected", "integration.runner.fixture-failed", false],
+])(
+  "keeps specific receipt %s over only generic child %s",
+  (prior, child, keep) => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const interactiveReceiptFailurePredicate =");
+    const failures = new Map();
+    const record = runInNewContext(
+      `${source.slice(start, source.indexOf("const retainCodexResearchDiagnostic =", start))}; ({ recordInteractiveReceiptFailure, recordInteractiveExecutionFailure })`,
+      {
+        installedPtyFailures: failures,
+        readInteractiveChildFailureObservation,
+        selectInteractiveExecutionFailurePredicate,
+        contentFreeChildFailureCode: () => child ?? "child-failure",
+      },
+    );
+    const plan = {
+      executionMode: "interactive",
+      scenarioId: "claude-interactive-trace-smoke",
+      runId: "a".repeat(16),
+    };
+    record.recordInteractiveReceiptFailure(
+      plan,
+      prior === "receipt-rejected"
+        ? undefined
+        : { outcome: "input-incomplete" },
+      false,
+    );
+    const receipt = failures.get(plan.runId);
+    record.recordInteractiveExecutionFailure(
+      plan,
+      new Error("PRIVATE"),
+      child === undefined ? "" : formatInteractiveChildDiagnostic(child),
+      child === "integration.fixture.claude-vendor-terminal"
+        ? child
+        : undefined,
+    );
+    expect(failures.get(plan.runId) === receipt).toBe(keep);
+    expect(
+      validInstalledPtyFailure(
+        JSON.parse(JSON.stringify(failures.get(plan.runId))),
+      ),
+    ).toBe(true);
+  },
+);
+
+describe("fixed extended-CSI refusal wire admission", () => {
+  it("captures new numeric and regexp guards against post-initialization substitution", () => {
+    const source = readIntegration("immutable-candidate-authority.mjs");
+    const start = source.indexOf("const unlistedModeNumber =");
+    const end = source.indexOf(
+      "export const selectInteractiveFailureDiagnostic =",
+      start,
+    );
+    const result = runInNewContext(
+      `${source.slice(start, end)}
+      Number.isSafeInteger = () => true;
+      Number = () => 0;
+      RegExp.prototype.exec = () => ["forged", "0"];
+      Reflect.apply = () => ["forged", "0"];
+      [validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-65535"), validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-65536"), validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-1.5")];`,
+      { ptyExecutionFailurePredicates: [] },
+    );
+    expect(result).toEqual([true, false, false]);
+  });
+  it("preserves legacy refusal and decoded precedence over normalized mode", () => {
+    const legacy =
+      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted";
+    const normalized = `${legacy}-h-9999`;
+    expect(
+      selectInteractiveFailureDiagnostic(legacy, undefined, normalized),
+    ).toBe(legacy);
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(legacy),
+      ),
+    ).toBe(legacy);
+    expect(
+      selectInteractiveFailureDiagnostic(
+        undefined,
+        "integration.runner.fixture-failed",
+        normalized,
+      ),
+    ).toBe("integration.runner.fixture-failed");
+  });
+  it.each([0, 9999, 65535])(
+    "retains bounded unlisted identity %s through every wire guard",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${final}-${mode}`;
+        expect(
+          selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+        ).toBe(predicate);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            predicate,
+            undefined,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(predicate);
+        const frame: string = formatInteractiveChildDiagnostic(predicate);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+        expect(
+          extractInteractiveChildDiagnostic(frame + frame),
+        ).toBeUndefined();
+        const record = {
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+        };
+        expect(
+          validInstalledPtyFailure(JSON.parse(JSON.stringify(record))),
+        ).toBe(true);
+        expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+        expect(
+          validInstalledPtyFailure({
+            ...record,
+            get predicate() {
+              throw Error("getter must not run");
+            },
+          }),
+        ).toBe(false);
+      }
+    },
+  );
+});
+
+describe("noncanonical unlisted-mode wire refusal", () => {
+  it.each([
+    "h-65536",
+    "h--1",
+    "h-01",
+    "h-1.5",
+    "h-1e3",
+    "h-+1",
+    "H-1",
+    "x-1",
+    "h-1-extra",
+    "h- 1",
+  ])("rejects noncanonical unlisted identity %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${suffix}`;
+    expect(
+      selectInteractiveFailureDiagnostic(undefined, undefined, predicate),
+    ).toBeUndefined();
+    expect(formatInteractiveChildDiagnostic(predicate)).toContain(
+      "integration.runner.fixture-failed",
+    );
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it("preserves the existing reconciliation deadline refusal through selector/frame/persisted record", () => {
+    const predicate = "testkit.headless.reconciliation.deadline";
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(predicate);
+    const frame: string = formatInteractiveChildDiagnostic(predicate);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+    expect(
+      validInstalledPtyFailure(
+        JSON.parse(
+          JSON.stringify({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate,
+            scenarioId: "claude-interactive-trace-smoke",
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        `${predicate}.PRIVATE`,
+        undefined,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
+});
+
+describe("legacy fixed extended-CSI refusal wire admission", () => {
+  it.each(fixedExtendedCsiSuffixes)(
+    "admits only fixed extended-CSI identity %s in the existing frame",
+    (suffix) => {
+      const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-${suffix}`;
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+      expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+      };
+      expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+        true,
+      );
+      expect(validInstalledPtyFailure(new Proxy(record, {}))).toBe(false);
+      expect(
+        validInstalledPtyFailure({
+          ...record,
+          get predicate() {
+            throw new Error("getter must not run");
+          },
+        }),
+      ).toBe(false);
+    },
+  );
+  it.each([
+    "private-mode-7",
+    "private-mode-2026",
+    "private-mode-65535",
+    "private-mode-01000",
+    "private-mode-1000.5",
+    "private-mode--1",
+    "PRIVATE",
+    "private-mode-other",
+    "xterm-version-extra",
+  ])("refuses invented or noncanonical identity %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-${suffix}`;
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it("retains legacy generic extended-CSI records", () => {
+    const predicate = "testkit.pty.transport.semantic-unsupported-extended-csi";
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(predicate),
+      ),
+    ).toBe(predicate);
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(true);
+  });
+});
+describe("fixed ground-control failure wire admission", () => {
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 28, 29, 30, 31, 127,
+  ])(
+    "preserves rejected control %s through the existing strict frame and held record",
+    (point) => {
+      const predicate = `testkit.pty.transport.semantic-malformed-ground-control-${point}`;
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      const observed = extractInteractiveChildDiagnostic(frame);
+      expect(observed).toBe(predicate);
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          observed,
+          undefined,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(predicate);
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+        }),
+      ).toBe(true);
+      expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+    },
+  );
+  it.each([
+    "7",
+    "8",
+    "9",
+    "10",
+    "13",
+    "27",
+    "32",
+    "126",
+    "128",
+    "-1",
+    "01",
+    "1.5",
+    "PRIVATE",
+  ])("refuses out-of-list or noncanonical control suffix %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-malformed-ground-control-${suffix}`;
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it("keeps legacy generic ground-control admission", () => {
+    const predicate = "testkit.pty.transport.semantic-malformed-ground-control";
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(predicate),
+      ),
+    ).toBe(predicate);
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(true);
+  });
+});
+
+it("preserves a refused Claude child close through the existing frame", () => {
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  const frame = formatInteractiveChildDiagnostic(
+    predicate,
+    undefined,
+    undefined,
+    { exitCode: 1, exitSignal: null },
+  );
+  expect(
+    immutableAuthority.readInteractiveChildFailureObservation(frame),
+  ).toEqual({ predicate, childTerminal: { exitCode: 1, exitSignal: null } });
+});
+
+it("keeps Claude close facts bounded and bound to the held scenario", () => {
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  const base = {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate,
+    scenarioId: "claude-interactive-trace-smoke",
+  };
+  for (const childTerminal of [
+    { exitCode: 255, exitSignal: null },
+    { exitCode: null, exitSignal: 12 },
+    { exitCode: null, exitSignal: 64 },
+  ]) {
+    const frame = formatInteractiveChildDiagnostic(
+      predicate,
+      undefined,
+      undefined,
+      childTerminal,
+    );
+    expect(
+      readInteractiveChildFailureObservation(frame)?.childTerminal,
+    ).toEqual(childTerminal);
+    expect(validInstalledPtyFailure({ ...base, childTerminal })).toBe(true);
+    expect(
+      validInstalledPtyFailure({
+        ...base,
+        scenarioId: "codex-tui-trace-smoke",
+        childTerminal,
+      }),
+    ).toBe(false);
+    expect(
+      validInstalledPtyFailure({
+        ...base,
+        predicate: "testkit.pty.request",
+        childTerminal,
+      }),
+    ).toBe(false);
+  }
+  let reads = 0;
+  for (const childTerminal of [
+    { exitCode: 0, exitSignal: null },
+    { exitCode: 256, exitSignal: null },
+    { exitCode: 1.5, exitSignal: null },
+    { exitCode: 1, exitSignal: 12 },
+    { exitCode: null, exitSignal: 65 },
+    { exitCode: null, exitSignal: null },
+    {
+      get exitCode() {
+        reads++;
+        return 1;
+      },
+      exitSignal: null,
+    },
+    new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      },
+    ),
+  ]) {
+    expect(validInstalledPtyFailure({ ...base, childTerminal })).toBe(false);
+    expect(
+      readInteractiveChildFailureObservation(
+        formatInteractiveChildDiagnostic(
+          predicate,
+          undefined,
+          undefined,
+          childTerminal,
+        ),
+      ),
+    ).toEqual({ predicate });
+  }
+  expect(reads).toBe(0);
+  expect(
+    readInteractiveChildFailureObservation(
+      `integration.runner.interactive-diagnostic:${predicate};child-code;01\n`,
+    ),
+  ).toBeUndefined();
+});
+
+it("joins the owned Claude marker into the held parent failure without promotion", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-child-terminal-"));
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  try {
+    writeFileSync(
+      join(root, "interactive-failure.txt"),
+      `${predicate}|signal;12\n`,
+      { mode: 0o600 },
+    );
+    const retained =
+      immutableAuthority.readBoundedInteractiveFailureRecord(root);
+    expect(retained.childTerminal).toEqual({ exitCode: null, exitSignal: 12 });
+    const frame = formatInteractiveChildDiagnostic(
+      retained.predicate,
+      undefined,
+      undefined,
+      retained.childTerminal,
+    );
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const recordInteractiveExecutionFailure =");
+    const failures = new Map();
+    const record = runInNewContext(
+      `${source.slice(start, source.indexOf("const retainCodexResearchDiagnostic =", start))}; recordInteractiveExecutionFailure`,
+      {
+        installedPtyFailures: failures,
+        readInteractiveChildFailureObservation,
+        selectInteractiveExecutionFailurePredicate: () => predicate,
+        contentFreeChildFailureCode: () => predicate,
+      },
+    );
+    const plan = {
+      runId: "a".repeat(16),
+      executionMode: "interactive",
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    record(plan, new Error("PRIVATE"), frame, retained.predicate);
+    const persisted = JSON.parse(JSON.stringify(failures.get(plan.runId)));
+    expect(persisted.childTerminal).toEqual(retained.childTerminal);
+    expect(validInstalledPtyFailure(persisted)).toBe(true);
+    for (const suffix of [
+      "signal;65",
+      "code;01",
+      "code;1;signal;12",
+      "PRIVATE",
+    ]) {
+      writeFileSync(
+        join(root, "interactive-failure.txt"),
+        `${predicate}|${suffix}\n`,
+      );
+      expect(
+        immutableAuthority.readBoundedInteractiveFailureRecord(root)?.predicate,
+      ).toBe(predicate);
+      expect(
+        immutableAuthority.readBoundedInteractiveFailureRecord(root)
+          ?.childTerminal,
+      ).toBeUndefined();
+    }
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 const {
+  claudePackedInstallFailurePhase,
+  claudeScenarioFailureDiagnostic,
   codexArmPendingResearchHint,
   codexArmPtyResearchHint,
   codexFailureExitPair,
@@ -37,6 +744,9 @@ const {
   encodeInteractiveFailureExitCode,
   encodeCodexJoinDeadlineExitCode,
   extractInteractiveChildDiagnostic,
+  formatInteractiveChildDiagnostic,
+  readInteractiveChildFailureObservation,
+  validInstalledPtyFailure,
   extractUntrustedCodexConfigHint,
   extractUntrustedCodexGateHint,
   extractUntrustedCodexPtyHint,
@@ -66,6 +776,633 @@ const {
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
 } = immutableAuthority;
+
+const packedInstallError = () =>
+  Object.assign(new Error("PRIVATE_NOT_RETAINED"), {
+    code: 5,
+    signal: null,
+    killed: false,
+    stderr:
+      '{"category":"unavailable","code":"harness.unavailable","command":"agentscope install","schema":"agentscope.cli.diagnostic.v1"}\n',
+  });
+
+describe("exact existing Claude install diagnostic envelopes", () => {
+  it.each([
+    ["packed-hook-absent", "harness.absent", "not-found", 3, 246],
+    [
+      "packed-hook-adapter-missing",
+      "harness.adapter-missing",
+      "not-found",
+      3,
+      247,
+    ],
+    [
+      "packed-hook-discovery-indeterminate",
+      "harness.discovery-indeterminate",
+      "unavailable",
+      5,
+      248,
+    ],
+    [
+      "packed-hook-installation-unsupported",
+      "harness.installation-unsupported",
+      "unavailable",
+      5,
+      249,
+    ],
+    [
+      "packed-hook-overlap-conflict",
+      "harness.overlap-conflict",
+      "conflict",
+      4,
+      250,
+    ],
+    ["packed-hook-plan-invalid", "harness.plan-invalid", "unavailable", 5, 251],
+    [
+      "packed-hook-recovery-required",
+      "harness.recovery-required",
+      "conflict",
+      4,
+      252,
+    ],
+    ["packed-hook-unavailable", "harness.unavailable", "unavailable", 5, 253],
+    [
+      "packed-hook-version-unsupported",
+      "harness.version-unsupported",
+      "unavailable",
+      5,
+      254,
+    ],
+    ["packed-hook-internal", "cli.internal", "internal-error", 70, 255],
+  ] as const)(
+    "maps exact %s at appended exit %i",
+    (phase, code, category, nativeExit, exit) => {
+      const error = Object.assign(packedInstallError(), {
+        code: nativeExit,
+        stderr: `${JSON.stringify({ category, code, command: "agentscope install", schema: "agentscope.cli.diagnostic.v1" })}\n`,
+      });
+      expect(claudePackedInstallFailurePhase(error)).toBe(phase);
+      const diagnostic = claudeScenarioFailureDiagnostic(error, phase);
+      expect(diagnostic).toBe(`integration.fixture.claude-phase-${phase}`);
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(exit);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exit,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+    },
+  );
+});
+describe("malformed existing Claude install diagnostic envelopes", () => {
+  it.each([
+    { code: 3 },
+    { code: "5" },
+    { signal: "SIGTERM" },
+    { killed: true },
+    { signal: undefined },
+    { killed: undefined },
+    { stderr: Buffer.from("private") },
+    { stderr: "x".repeat(513) },
+    { stderr: "😀".repeat(129) },
+    { stderr: "" },
+  ])("keeps malformed native error metadata a fixed fallback", (patch) => {
+    expect(
+      claudePackedInstallFailurePhase(
+        Object.assign(packedInstallError(), patch),
+      ),
+    ).toBe("packed-hook-install");
+  });
+
+  it("rejects every noncanonical or expanded existing diagnostic envelope", () => {
+    const original = packedInstallError().stderr;
+    for (const stderr of [
+      ` ${original}`,
+      `${original}\n`,
+      `${original}${original}`,
+      original.trimEnd(),
+      original.replace('"code":', '"code":"harness.unavailable","code":'),
+      original.replace("agentscope install", "agentscope uninstall"),
+      original.replace("agentscope.cli.diagnostic.v1", "foreign.v1"),
+      original.replace("harness.unavailable", "harness.private-content"),
+      original.replace('"unavailable"', '"conflict"'),
+      original.replace('"schema":', '"facts":{"private":true},"schema":'),
+      original.replace(
+        '"category":"unavailable","code":"harness.unavailable"',
+        '"code":"harness.unavailable","category":"unavailable"',
+      ),
+    ])
+      expect(
+        claudePackedInstallFailurePhase(
+          Object.assign(packedInstallError(), { stderr }),
+        ),
+      ).toBe("packed-hook-install");
+  });
+});
+describe("hostile existing Claude install error metadata", () => {
+  it("never evaluates forged/accessor/Proxy or unrelated error content", () => {
+    const trap = () => {
+      throw new Error("PRIVATE_TRAP");
+    };
+    const original = packedInstallError();
+    for (const key of ["stdout", "message", "cause", "facts"])
+      Object.defineProperty(original, key, { get: trap });
+    expect(claudePackedInstallFailurePhase(original)).toBe(
+      "packed-hook-unavailable",
+    );
+    for (const key of ["code", "stderr", "signal", "killed"]) {
+      const error = packedInstallError();
+      Object.defineProperty(error, key, { get: trap });
+      expect(claudePackedInstallFailurePhase(error)).toBe(
+        "packed-hook-install",
+      );
+      const missing = packedInstallError();
+      Reflect.deleteProperty(missing, key);
+      expect(claudePackedInstallFailurePhase(missing)).toBe(
+        "packed-hook-install",
+      );
+    }
+    expect(claudePackedInstallFailurePhase({ ...packedInstallError() })).toBe(
+      "packed-hook-install",
+    );
+    expect(
+      claudePackedInstallFailurePhase(
+        new Proxy(packedInstallError(), {
+          get: trap,
+          getOwnPropertyDescriptor: trap,
+          getPrototypeOf: trap,
+        }),
+      ),
+    ).toBe("packed-hook-install");
+    expect(
+      decodeInteractiveFailureExitCode(256, "claude-interactive-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      encodeInteractiveFailureExitCode(
+        "integration.fixture.claude-phase-packed-settings",
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(245);
+  });
+});
+
+const semanticFacts = {
+  finalSemanticState: "ready",
+  inputJoined: false,
+  readinessObserved: true,
+  allInputBytesWritten: false,
+};
+const semanticPredicate = "testkit.pty.transport.semantic-incomplete";
+describe("fixed signal guard in the existing diagnostic frame", () => {
+  it.each([false, true])(
+    "remains strict after Number substitution (permissive=%s)",
+    (permissive) => {
+      const predicate = "testkit.pty.transport.exit";
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+        exitSignal: 1,
+      };
+      const guard = Number.isSafeInteger;
+      Number.isSafeInteger = permissive
+        ? () => true
+        : () => {
+            throw new Error("PRIVATE");
+          };
+      try {
+        const frame: string = formatInteractiveChildDiagnostic(
+          predicate,
+          undefined,
+          1,
+        );
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        expect(readInteractiveChildFailureObservation(frame)).toEqual({
+          predicate,
+          exitSignal: 1,
+        });
+        expect(validInstalledPtyFailure(record)).toBe(true);
+        for (const signal of [0, 2, 9, 15, 1.5, 65]) {
+          expect(
+            validInstalledPtyFailure({ ...record, exitSignal: signal }),
+          ).toBe(false);
+          expect(
+            readInteractiveChildFailureObservation(
+              formatInteractiveChildDiagnostic(predicate, undefined, signal),
+            ),
+          ).toEqual({ predicate });
+        }
+      } finally {
+        Number.isSafeInteger = guard;
+      }
+    },
+  );
+});
+describe("unsupported exit signal in the existing diagnostic frame", () => {
+  it.each([1, 3, 64])(
+    "round-trips unsupported signal %s in the same bounded frame",
+    (signal) => {
+      const predicate = "testkit.pty.transport.exit";
+      const frame: string = formatInteractiveChildDiagnostic(
+        predicate,
+        undefined,
+        signal,
+      );
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(readInteractiveChildFailureObservation(frame)).toEqual({
+        predicate,
+        exitSignal: signal,
+      });
+      expect(
+        readInteractiveChildFailureObservation(frame + frame),
+      ).toBeUndefined();
+      expect(
+        readInteractiveChildFailureObservation(
+          frame.replace(predicate, semanticPredicate),
+        ),
+      ).toBeUndefined();
+      const record = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+        exitSignal: signal,
+      };
+      expect(validInstalledPtyFailure(JSON.parse(JSON.stringify(record)))).toBe(
+        true,
+      );
+      expect(
+        validInstalledPtyFailure({
+          ...record,
+          scenarioId: "fixture-process-smoke",
+        }),
+      ).toBe(false);
+      expect(
+        validInstalledPtyFailure({ ...record, predicate: semanticPredicate }),
+      ).toBe(false);
+      let traps = 0;
+      expect(
+        validInstalledPtyFailure(
+          Object.defineProperty({ ...record }, "exitSignal", {
+            get() {
+              traps++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ),
+      ).toBe(false);
+      expect(
+        validInstalledPtyFailure(
+          new Proxy(record, {
+            getPrototypeOf() {
+              traps++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ),
+      ).toBe(false);
+      expect(traps).toBe(0);
+    },
+  );
+  it.each(["0", "2", "9", "15", "65", "-1", "1.5", "01", "PRIVATE"])(
+    "rejects contradictory/malformed exit signal %s",
+    (signal) => {
+      const predicate = "testkit.pty.transport.exit";
+      expect(
+        readInteractiveChildFailureObservation(
+          `integration.runner.interactive-diagnostic:${predicate};signal;${signal}\n`,
+        ),
+      ).toBeUndefined();
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+          exitSignal: Number(signal),
+        }),
+      ).toBe(signal === "01");
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+          exitSignal: signal,
+        }),
+      ).toBe(false);
+    },
+  );
+});
+describe("bounded existing PTY diagnostic frame", () => {
+  it.each(["active", "ready"])(
+    "round-trips settled %s facts without admission authority",
+    (state) => {
+      const facts = { ...semanticFacts, finalSemanticState: state };
+      const frame: string = formatInteractiveChildDiagnostic(
+        semanticPredicate,
+        facts,
+      );
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(readInteractiveChildFailureObservation(frame)).toEqual({
+        predicate: semanticPredicate,
+        semanticFailure: facts,
+      });
+      expect(extractInteractiveChildDiagnostic(frame)).toBe(semanticPredicate);
+      expect(
+        readInteractiveChildFailureObservation(
+          formatInteractiveChildDiagnostic(semanticPredicate),
+        ),
+      ).toEqual({ predicate: semanticPredicate });
+    },
+  );
+  it.each([
+    ";completed;1;1;1",
+    ";ready;true;1;1",
+    ";ready;1;1",
+    ";ready;1;1;1;PRIVATE",
+    ";ready;1;1;1;claude-interactive-trace-smoke",
+    ";ready;1;1;1\r",
+  ])("rejects foreign/malformed scalar suffix %s", (suffix) => {
+    const frame = `integration.runner.interactive-diagnostic:${semanticPredicate}${suffix}\n`;
+    expect(readInteractiveChildFailureObservation(frame)).toBeUndefined();
+  });
+  it("rejects duplicates, other predicates and excessive frames", () => {
+    const frame = formatInteractiveChildDiagnostic(
+      semanticPredicate,
+      semanticFacts,
+    );
+    expect(
+      readInteractiveChildFailureObservation(frame + frame),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        frame + "integration.runner.interactive-diagnostic:PRIVATE\n",
+      ),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        frame.replace(semanticPredicate, "testkit.pty.request"),
+      ),
+    ).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation(
+        `integration.runner.interactive-diagnostic:${"x".repeat(256)}\n`,
+      ),
+    ).toBeUndefined();
+    expect(readInteractiveChildFailureObservation({})).toBeUndefined();
+    expect(
+      readInteractiveChildFailureObservation("x".repeat(16 * 1024 * 1024 + 1)),
+    ).toBeUndefined();
+    expect(formatInteractiveChildDiagnostic("PRIVATE")).not.toContain(
+      "PRIVATE",
+    );
+  });
+});
+describe("content-free installed PTY diagnostic validator", () => {
+  const original = {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate: semanticPredicate,
+  };
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "validates held-plan scenario %s only",
+    (scenarioId) => {
+      expect(
+        validInstalledPtyFailure({
+          ...original,
+          scenarioId,
+          semanticFailure: semanticFacts,
+        }),
+      ).toBe(true);
+      expect(validInstalledPtyFailure({ ...original, scenarioId })).toBe(true);
+      expect(validInstalledPtyFailure(original)).toBe(true);
+      expect(validInstalledPtyFailure(null)).toBe(true);
+    },
+  );
+  it("refuses forged/accessor/proxy and malformed field projections without reading content", () => {
+    let traps = 0;
+    const accessor = Object.defineProperty(
+      { ...semanticFacts },
+      "inputJoined",
+      {
+        get() {
+          traps++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    const proxy = new Proxy(semanticFacts, {
+      ownKeys() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const semanticFailure of [
+      accessor,
+      proxy,
+      { ...semanticFacts, extra: true },
+      { ...semanticFacts, inputJoined: 1 },
+      { ...semanticFacts, readinessObserved: 1 },
+      { ...semanticFacts, allInputBytesWritten: 1 },
+      { ...semanticFacts, finalSemanticState: "completed" },
+    ]) {
+      expect(
+        validInstalledPtyFailure({
+          ...original,
+          scenarioId: "codex-tui-trace-smoke",
+          semanticFailure,
+        }),
+      ).toBe(false);
+      expect(
+        readInteractiveChildFailureObservation(
+          formatInteractiveChildDiagnostic(semanticPredicate, semanticFailure),
+        ),
+      ).toEqual({ predicate: semanticPredicate });
+    }
+    for (const value of [
+      undefined,
+      [],
+      { ...original, scenarioId: "PRIVATE" },
+      {
+        ...original,
+        phase: "pty-receipt",
+        scenarioId: "codex-tui-trace-smoke",
+      },
+      {
+        ...original,
+        scenarioId: "codex-tui-trace-smoke",
+        predicate: "testkit.pty.request",
+        semanticFailure: semanticFacts,
+      },
+      { ...original, extra: true },
+      new Proxy(original, {
+        getPrototypeOf() {
+          traps++;
+          throw new Error("PRIVATE");
+        },
+      }),
+    ])
+      expect(validInstalledPtyFailure(value)).toBe(false);
+    expect(traps).toBe(0);
+  });
+});
+describe("actual held-plan parent PTY failure projection", () => {
+  it.each([
+    ["codex-tui-trace-smoke", false],
+    ["claude-interactive-trace-smoke", false],
+    ["codex-tui-trace-smoke", true],
+    ["claude-interactive-trace-smoke", true],
+  ] as const)(
+    "binds the existing parent record to held %s plan, never child metadata (exit=%s)",
+    (scenarioId, exit) => {
+      const predicate = exit ? "testkit.pty.transport.exit" : semanticPredicate;
+      const frame = formatInteractiveChildDiagnostic(
+        predicate,
+        exit ? undefined : semanticFacts,
+        exit ? 1 : undefined,
+      );
+      const original = {
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      };
+      const source = readIntegration("run-scenarios.mjs");
+      const start = source.indexOf("const recordInteractiveExecutionFailure ="),
+        end = source.indexOf("const retainCodexResearchDiagnostic =", start);
+      const failures = new Map();
+      const record = runInNewContext(
+        `${source.slice(start, end)}; recordInteractiveExecutionFailure`,
+        {
+          installedPtyFailures: failures,
+          readInteractiveChildFailureObservation,
+          selectInteractiveExecutionFailurePredicate: () => predicate,
+          contentFreeChildFailureCode: () => predicate,
+        },
+      );
+      const plan = {
+        runId: "a".repeat(16),
+        executionMode: "interactive",
+        scenarioId,
+      };
+      const originalError = new Error("PRIVATE");
+      expect(record(plan, originalError, frame, undefined)).toBe(predicate);
+      expect(failures.get(plan.runId)).toEqual({
+        ...original,
+        scenarioId: plan.scenarioId,
+        ...(exit ? { exitSignal: 1 } : { semanticFailure: semanticFacts }),
+      });
+      expect(
+        validInstalledPtyFailure(
+          JSON.parse(JSON.stringify(failures.get(plan.runId))),
+        ),
+      ).toBe(true);
+      const generic = { ...plan, scenarioId: "fixture-process-smoke" };
+      expect(record(generic, originalError, frame, undefined)).toBe(predicate);
+      expect(failures.get(generic.runId)).toEqual(original);
+      // The persisted consumer reads ordinary JSON, not the VM's foreign realm.
+      expect(
+        validInstalledPtyFailure(
+          JSON.parse(JSON.stringify(failures.get(generic.runId))),
+        ),
+      ).toBe(true);
+      record(
+        plan,
+        originalError,
+        `${frame.trim()};claude-interactive-trace-smoke\n`,
+        undefined,
+      );
+      expect(failures.get(plan.runId)).toEqual({
+        ...original,
+        scenarioId: plan.scenarioId,
+      });
+      record(
+        plan,
+        originalError,
+        formatInteractiveChildDiagnostic(
+          exit ? semanticPredicate : "testkit.pty.transport.exit",
+          exit ? semanticFacts : undefined,
+          exit ? undefined : 1,
+        ),
+        undefined,
+      );
+      expect(failures.get(plan.runId)).toEqual({ ...original, scenarioId });
+    },
+  );
+});
+describe("actual runner caught-failure diagnostic routing", () => {
+  it.each([false, true])(
+    "uses the existing private reader on the same caught error and preserves the predicate (exit=%s)",
+    (exit) => {
+      const predicate = exit ? "testkit.pty.transport.exit" : semanticPredicate;
+      const source = readIntegration("runner.mjs");
+      const caught = source.indexOf(
+        "} catch (error) {\n  emitCodexPtyFailureHint();",
+      );
+      const start = source.indexOf(
+        '  if (scenario.executionMode === "interactive")',
+        caught,
+      );
+      const end = source.indexOf(
+        '  if (\n    scenario.executionMode === "headless"',
+        start,
+      );
+      expect(caught).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const error = new Error(predicate),
+        frames: string[] = [];
+      runInNewContext(
+        `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+        {
+          scenario: { executionMode: "interactive" },
+          scenarioId: "codex-tui-trace-smoke",
+          error,
+          ledger: "/synthetic",
+          readBoundedInteractiveFailureRecord: () => undefined,
+          retainedInteractivePhase: () => undefined,
+          selectInteractiveFailureDiagnostic: (
+            _fixture: unknown,
+            _phase: unknown,
+            code: unknown,
+          ) => code,
+          readPtySemanticFailure: (caughtError: unknown) => {
+            expect(caughtError).toBe(error);
+            return exit ? undefined : semanticFacts;
+          },
+          readPtyExitSignal: (caughtError: unknown) => {
+            expect(caughtError).toBe(error);
+            return exit ? 1 : undefined;
+          },
+          formatInteractiveChildDiagnostic,
+          process: { stdout: { write: (frame: string) => frames.push(frame) } },
+        },
+      );
+      expect(frames).toEqual([
+        formatInteractiveChildDiagnostic(
+          predicate,
+          exit ? undefined : semanticFacts,
+          exit ? 1 : undefined,
+        ),
+      ]);
+      expect(readInteractiveChildFailureObservation(frames[0])).toEqual({
+        predicate,
+        ...(exit ? { exitSignal: 1 } : { semanticFailure: semanticFacts }),
+      });
+    },
+  );
+});
 
 const hex = (character: string): string => character.repeat(64);
 
@@ -1248,6 +2585,10 @@ const expected = () => ({
   candidateRoot: "/opt/agentscope/prepared",
   ...plan(),
 });
+const controlVolume = (handoff: ReturnType<typeof compiled>) => ({
+  name: `agentscope-int-${handoff.runId}-control`,
+  mountpoint: "/var/lib/docker/volumes/control/_data",
+});
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const container = (handoff: ReturnType<typeof compiled>): any => ({
   Image: handoff.imageId,
@@ -1262,7 +2603,15 @@ const container = (handoff: ReturnType<typeof compiled>): any => ({
     SecurityOpt: ["no-new-privileges"],
     Tmpfs: { "/tmp": "rw,noexec,nosuid,nodev,size=1024" },
   },
-  Mounts: [],
+  Mounts: [
+    {
+      Type: "volume",
+      Name: controlVolume(handoff).name,
+      Source: controlVolume(handoff).mountpoint,
+      Destination: "/control",
+      RW: true,
+    },
+  ],
 });
 // eslint-disable-next-line max-lines-per-function -- one closed handoff and container adversarial matrix
 describe("immutable candidate authority", () => {
@@ -1309,6 +2658,7 @@ describe("immutable candidate authority", () => {
     expect(
       validateImmutableScenarioContainer({
         container: container(handoff),
+        controlVolume: controlVolume(handoff),
         handoff,
         image: image(),
         networkName: "selected-network",
@@ -1317,65 +2667,83 @@ describe("immutable candidate authority", () => {
     ).toBe(true);
   });
 
-  it("binds the Codex controller profile without admitting a substitute capability", () => {
-    const handoff = compileImmutableCandidateHandoff({
-      candidate: candidate(),
-      image: image(),
-      plan: { ...plan(), scenarioId: "codex-tui-trace-smoke" },
-    });
-    const selected = container(handoff);
-    selected.Config.User = "0:0";
-    selected.HostConfig.CapAdd = [
-      "CAP_CHOWN",
-      "CAP_DAC_OVERRIDE",
-      "CAP_KILL",
-      "CAP_SETGID",
-      "CAP_SETUID",
-    ];
-    const controlVolume = {
-      name: `agentscope-int-${handoff.runId}-control`,
-      mountpoint: "/var/lib/docker/volumes/control/_data",
-    };
-    selected.Mounts = [
-      {
-        Type: "volume",
-        Name: controlVolume.name,
-        Source: controlVolume.mountpoint,
-        Destination: "/control",
-        RW: true,
-      },
-    ];
-    const input = {
-      container: selected,
-      controlVolume,
-      handoff,
-      image: image(),
-      networkName: "selected-network",
-      tmpfs: selected.HostConfig.Tmpfs,
-    };
-    expect(validateImmutableScenarioContainer(input)).toBe(true);
-    expect(() =>
-      validateImmutableScenarioContainer({
-        ...input,
-        container: {
-          ...selected,
-          HostConfig: {
-            ...selected.HostConfig,
-            CapAdd: ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "binds the exact %s controller profile without admitting a substitute capability",
+    (scenarioId) => {
+      const handoff = compileImmutableCandidateHandoff({
+        candidate: candidate(),
+        image: image(),
+        plan: { ...plan(), scenarioId },
+      });
+      const selected = container(handoff);
+      selected.Config.User = "0:0";
+      selected.HostConfig.CapAdd = [
+        "CAP_CHOWN",
+        "CAP_DAC_OVERRIDE",
+        "CAP_KILL",
+        "CAP_SETGID",
+        "CAP_SETUID",
+      ];
+      const controlVolume = {
+        name: `agentscope-int-${handoff.runId}-control`,
+        mountpoint: "/var/lib/docker/volumes/control/_data",
+      };
+      selected.Mounts = [
+        {
+          Type: "volume",
+          Name: controlVolume.name,
+          Source: controlVolume.mountpoint,
+          Destination: "/control",
+          RW: true,
+        },
+      ];
+      const input = {
+        container: selected,
+        controlVolume,
+        handoff,
+        image: image(),
+        networkName: "selected-network",
+        tmpfs: selected.HostConfig.Tmpfs,
+      };
+      expect(validateImmutableScenarioContainer(input)).toBe(true);
+      const foreign = compileImmutableCandidateHandoff({
+        candidate: candidate(),
+        image: image(),
+        plan: { ...plan(), scenarioId: "claude-foreign-trace-smoke" },
+      });
+      const foreignContainer = container(foreign);
+      foreignContainer.Config.User = "0:0";
+      foreignContainer.HostConfig.CapAdd = selected.HostConfig.CapAdd;
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: foreignContainer,
+          handoff: foreign,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: {
+            ...selected,
+            HostConfig: {
+              ...selected.HostConfig,
+              CapAdd: ["CHOWN", "DAC_OVERRIDE", "KILL", "SETGID", "SETUID"],
+            },
           },
-        },
-      }),
-    ).toThrow("integration.immutable-candidate.authority");
-    expect(() =>
-      validateImmutableScenarioContainer({
-        ...input,
-        container: {
-          ...selected,
-          HostConfig: { ...selected.HostConfig, CapAdd: ["SETUID"] },
-        },
-      }),
-    ).toThrow("integration.immutable-candidate.authority");
-  });
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+      expect(() =>
+        validateImmutableScenarioContainer({
+          ...input,
+          container: {
+            ...selected,
+            HostConfig: { ...selected.HostConfig, CapAdd: ["SETUID"] },
+          },
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+    },
+  );
 
   it("rejects duplicate and non-closed candidate inventory entries", () => {
     const duplicate = candidate();
@@ -1442,6 +2810,7 @@ describe("immutable candidate authority", () => {
     expect(() =>
       validateImmutableScenarioContainer({
         container: selected,
+        controlVolume: controlVolume(handoff),
         handoff,
         image: selectedImage,
         networkName: "selected-network",
@@ -1960,8 +3329,10 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
       ),
     ).toBe(128);
     const source = readIntegration("codex-pty-scenario.mjs");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
+    expect(source).toContain('from "./codex-trace-child-diagnostics.mjs"');
     const phases =
-      source
+      diagnostic
         .split("const interactivePhases = Object.freeze([", 2)[1]
         ?.split("]);", 1)[0] ?? "";
     const names = [...phases.matchAll(/"([a-z-]+)"/gu)].map(
@@ -1969,59 +3340,34 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
     );
     expect(names.indexOf("verify-trace-get")).toBe(68);
     expect(source).toContain("64 + interactiveFailurePhaseIndex");
-    expect(source).toContain('interactiveFailurePhase === "verify-trace-get"');
-    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
+    expect(source).not.toContain(
+      'interactiveFailurePhase === "verify-trace-get"',
+    );
+    expect(source).not.toContain(
+      "classifyCodexTraceGetFailure(error?.message)",
+    );
   });
 
-  it("executes the production get predicate unchanged for positive, count and locator cases", async () => {
+  it("keeps Local retrieval out of production while retaining legacy locator categories", () => {
     const source = readIntegration("codex-pty-scenario.mjs");
-    const start = source.indexOf('recordInteractivePhase("verify-trace-get");');
-    const end = source.indexOf(
-      'recordInteractivePhase("verify-correlation");',
-      start,
-    );
-    const block = source.slice(start, end);
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    const invoke = (summary: unknown, records: unknown[]) => {
-      const calls: unknown[][] = [];
-      const result: Promise<unknown> = runInNewContext(
-        `(async () => { ${block} return getRecords; })()`,
-        {
-          summary,
-          traceDeadline: 12345,
-          recordInteractivePhase: () => undefined,
-          cli: (...args: unknown[]) => {
-            calls.push(args);
-            return Promise.resolve(records);
-          },
-        },
-      );
-      return { calls, result };
-    };
-    const summary = { harness: "codex", locator: { traceId: "synthetic" } };
-    const valid = [{ locator: { traceId: "synthetic" } }];
-    const positive = invoke(summary, valid);
-    await expect(positive.result).resolves.toEqual(valid);
-    expect(positive.calls).toHaveLength(1);
-    expect(positive.calls[0]?.[2]).toEqual({
-      monotonicDeadline: 12345,
-      traceGetDiagnostic: true,
-    });
-    for (const [input, records, category] of [
-      [{ harness: "other" }, valid, "locator-input"],
-      [summary, [], "record-count"],
-      [summary, [...valid, ...valid], "record-count"],
-      [summary, [{ locator: { traceId: "other" } }], "locator-result"],
-    ] as const) {
-      try {
-        await invoke(input, [...records]).result;
-        expect.fail("expected a trace-get rejection");
-      } catch (error) {
-        const message = (error as Error).message;
-        expect(classifyCodexTraceGetFailure(message)).toBe(category);
-      }
+    expect(source).not.toContain('recordInteractivePhase("verify-trace-get");');
+    expect(source).not.toContain('["traces", "get"');
+    expect(source).not.toContain("local-sqlite");
+    expect(source).toContain("native: {");
+    expect(source).toContain("sessionId: codexSessionId");
+    expect(source).toContain("turnId: codexTurnId");
+    for (const category of [
+      "locator-input",
+      "record-count",
+      "locator-result",
+    ]) {
+      expect(
+        classifyCodexTraceGetFailure(`integration.codex.trace-get-${category}`),
+      ).toBe(category);
     }
+    expect(classifyCodexTraceGetFailure("arbitrary-private-body")).toBe(
+      "unclassified",
+    );
   });
 
   it("executes the production CLI parser and both original deadline checks", async () => {
@@ -2033,6 +3379,7 @@ describe("Codex trace-get failure-only diagnostic transport", () => {
       const cli = runInNewContext(`${declaration}; cli`, {
         run: () => Promise.resolve({ stdout }),
         agentscope: "synthetic-cli",
+        process: { env: {} },
         terminalObservationBeforeDeadline: () => terminalChecks.shift(),
         bootNow: () => 123,
         parseMachine: parseCodexMachineOutput,
@@ -2127,6 +3474,353 @@ describe("Codex production get-child diagnostic wiring", () => {
   );
 });
 
+describe("source-defined Claude failure code transport", () => {
+  it.each([
+    "environment",
+    "clock",
+    "deadline",
+    "destination-settings",
+    "doctor",
+    "install",
+    "readiness",
+    "settings",
+    "uninstall",
+    "model-control",
+    "model-route",
+    "native-content",
+    "native-directory",
+    "native-file",
+    "native-identity",
+    "native-inventory",
+    "native-jsonl",
+    "native-model",
+    "native-record",
+    "native-tool",
+    "native-tool-result",
+    "native-turn",
+    "early-exit",
+    "model-pair",
+    "native-early-exit",
+    "native-final-turn",
+    "pty",
+    "response-model",
+    "vendor-terminal",
+    "internal-endpoint",
+  ])("transports only the exact source-defined Claude refusal %s", (code) => {
+    const message =
+      code === "internal-endpoint"
+        ? "claude-code.execution.internal-endpoint"
+        : `integration.claude-code.${code}`;
+    const diagnostic = claudeScenarioFailureDiagnostic(
+      new Error(message),
+      "bootstrap",
+    );
+    expect(diagnostic).toBe(`integration.fixture.claude-${code}`);
+    const exit = encodeInteractiveFailureExitCode(
+      diagnostic,
+      "claude-interactive-trace-smoke",
+    );
+    expect(exit).toBeGreaterThanOrEqual(200);
+    expect(exit).toBeLessThanOrEqual(255);
+    expect(
+      decodeInteractiveFailureExitCode(exit, "claude-interactive-trace-smoke"),
+    ).toBe(diagnostic);
+    expect(
+      decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        diagnostic,
+        undefined,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
+});
+describe("source-defined Claude failure phases", () => {
+  it.each([
+    ["packed-init", 240],
+    ["packed-configure", 241],
+    ["packed-routing", 242],
+    ["packed-hook-install", 243],
+    ["packed-status", 244],
+    ["packed-settings", 245],
+  ] as const)(
+    "appends %s at exit %i without changing old assignments",
+    (phase, exit) => {
+      const diagnostic = claudeScenarioFailureDiagnostic(
+        new Error("PRIVATE"),
+        phase,
+      );
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(exit);
+      expect(
+        decodeInteractiveFailureExitCode(
+          exit,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        decodeInteractiveFailureExitCode(246, "claude-interactive-trace-smoke"),
+      ).toBe("integration.fixture.claude-phase-packed-hook-absent");
+      expect(
+        decodeInteractiveFailureExitCode(256, "claude-interactive-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        encodeInteractiveFailureExitCode(
+          "integration.fixture.claude-phase-result",
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(239);
+    },
+  );
+  it.each([
+    "bootstrap",
+    "readiness",
+    "packed-install",
+    "packed-init",
+    "packed-configure",
+    "packed-routing",
+    "packed-hook-install",
+    "packed-status",
+    "packed-settings",
+    "stimulus",
+    "model-config",
+    "candidate-denial",
+    "model-pair",
+    "native-final",
+    "retirement",
+    "result",
+  ])(
+    "retains only actual fixed phase %s for unknown/reflected values",
+    (phase) => {
+      const trap = () => {
+        throw Error("must-not-read");
+      };
+      const accessor = new Error();
+      Object.defineProperty(accessor, "message", { get: trap });
+      for (const error of [
+        new Error("PRIVATE_CANARY"),
+        { message: "integration.claude-code.environment" },
+        accessor,
+        new Proxy(new Error(), { get: trap, getOwnPropertyDescriptor: trap }),
+      ]) {
+        const diagnostic = claudeScenarioFailureDiagnostic(error, phase);
+        expect(diagnostic).toBe(`integration.fixture.claude-phase-${phase}`);
+        const exit = encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        );
+        expect(
+          decodeInteractiveFailureExitCode(
+            exit,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(diagnostic);
+      }
+    },
+  );
+});
+describe("Claude model-pair alias compatibility", () => {
+  it("rejects unknown pending aliases rather than reflecting their suffix", () => {
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate: "integration.fixture.claude-model-pair-empty-private",
+        scenarioId: "claude-interactive-trace-smoke",
+      }),
+    ).toBe(false);
+  });
+  it.each(["empty", "initial-only"])(
+    "preserves generic223 and binds pending alias %s to held Claude",
+    (suffix) => {
+      const diagnostic = `integration.fixture.claude-model-pair-${suffix}`;
+      const phase = `model-pair-${suffix}`;
+      expect(
+        claudeScenarioFailureDiagnostic(
+          new Error("integration.claude-code.model-pair"),
+          phase,
+        ),
+      ).toBe(diagnostic);
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(223);
+      expect(
+        decodeInteractiveFailureExitCode(223, "claude-interactive-trace-smoke"),
+      ).toBe("integration.fixture.claude-model-pair");
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          diagnostic,
+          undefined,
+          "fixture-process-interactive",
+        ),
+      ).toBe("child-failure");
+      for (const scenarioId of [
+        undefined,
+        "codex-tui-trace-smoke",
+        "claude-interactive-trace-smoke",
+      ]) {
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            ...(scenarioId === undefined ? {} : { scenarioId }),
+          }),
+        ).toBe(scenarioId === "claude-interactive-trace-smoke");
+      }
+      for (const error of [
+        new Error("private"),
+        { message: "integration.claude-code.model-pair" },
+        new Proxy(new Error("integration.claude-code.model-pair"), {}),
+        Object.defineProperty(new Error(), "message", {
+          get() {
+            throw new Error("private getter");
+          },
+        }),
+      ]) {
+        expect(claudeScenarioFailureDiagnostic(error, phase)).toBe(
+          "integration.fixture.claude-phase-bootstrap",
+        );
+      }
+      expect(
+        claudeScenarioFailureDiagnostic(
+          new Error("integration.claude-code.model-pair"),
+          "model-pair-empty-private",
+        ),
+      ).toBe("integration.fixture.claude-model-pair");
+      expect(
+        selectInteractiveFailureDiagnostic(
+          undefined,
+          decodeInteractiveFailureExitCode(
+            223,
+            "claude-interactive-trace-smoke",
+          ),
+          "integration.runner.fixture-failed",
+        ),
+      ).toBe("integration.fixture.claude-model-pair");
+    },
+  );
+});
+describe("Claude owned failure marker routing", () => {
+  it.each([
+    "integration.fixture.claude-model-pair",
+    "integration.fixture.claude-phase-packed-init",
+    "integration.fixture.claude-phase-packed-configure",
+    "integration.fixture.claude-phase-packed-routing",
+    "integration.fixture.claude-phase-packed-hook-install",
+    "integration.fixture.claude-phase-packed-status",
+    "integration.fixture.claude-phase-packed-settings",
+    "integration.fixture.claude-phase-packed-hook-absent",
+    "integration.fixture.claude-phase-packed-hook-adapter-missing",
+    "integration.fixture.claude-phase-packed-hook-discovery-indeterminate",
+    "integration.fixture.claude-phase-packed-hook-installation-unsupported",
+    "integration.fixture.claude-phase-packed-hook-overlap-conflict",
+    "integration.fixture.claude-phase-packed-hook-plan-invalid",
+    "integration.fixture.claude-phase-packed-hook-recovery-required",
+    "integration.fixture.claude-phase-packed-hook-unavailable",
+    "integration.fixture.claude-phase-packed-hook-version-unsupported",
+    "integration.fixture.claude-phase-packed-hook-internal",
+  ])(
+    "routes owned marker %s through strict reader/frame/held-scenario selector",
+    (diagnostic) => {
+      const ledger = mkdtempSync(join(tmpdir(), "agentscope-claude-failure-"));
+      try {
+        writeFileSync(
+          join(ledger, "interactive-failure.txt"),
+          `${diagnostic}\n`,
+          { flag: "wx", mode: 0o600 },
+        );
+        const retained = readBoundedInteractiveFailureMarker(ledger);
+        const selected = selectInteractiveFailureDiagnostic(
+          retained,
+          undefined,
+          "testkit.pty.transport.semantic-nonzero",
+        );
+        const frame: string = formatInteractiveChildDiagnostic(selected);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        const observed = extractInteractiveChildDiagnostic(frame);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            observed,
+            undefined,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(diagnostic);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            observed,
+            undefined,
+            "fixture-process-interactive",
+          ),
+        ).toBe("child-failure");
+        expect(
+          extractInteractiveChildDiagnostic(`${frame}${frame}`),
+        ).toBeUndefined();
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            scenarioId: "claude-interactive-trace-smoke",
+          }),
+        ).toBe(true);
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            scenarioId: "codex-tui-trace-smoke",
+          }),
+        ).toBe(false);
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+          }),
+        ).toBe(false);
+      } finally {
+        rmSync(ledger, { recursive: true, force: true });
+      }
+    },
+  );
+  it("binds the Claude environment refusal to its exact scenario", () => {
+    const diagnostic = "integration.fixture.claude-environment";
+    expect(
+      encodeInteractiveFailureExitCode(
+        diagnostic,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(200);
+    expect(
+      decodeInteractiveFailureExitCode(200, "claude-interactive-trace-smoke"),
+    ).toBe(diagnostic);
+    expect(
+      decodeInteractiveFailureExitCode(200, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+  });
+});
 describe("interactive PTY failure exit-code transport", () => {
   it.each([
     [

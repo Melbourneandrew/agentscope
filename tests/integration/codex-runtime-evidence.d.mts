@@ -140,17 +140,6 @@ export function codexStopHookReadyForExit(
     | "session-end-completed",
 ): boolean;
 
-export function inspectCodexSessionStartBeforeFirstModelRequestAdmission(input: {
-  afterRead?: () => void;
-  directoryDescriptor: number;
-  directoryPath: string;
-}):
-  | Readonly<{
-      durationMilliseconds: number;
-      spanSha256: string;
-    }>
-  | undefined;
-
 export function classifyCodexSessionStartAtFailedPty(input: {
   afterRead?: () => void;
   directoryDescriptor: number;
@@ -167,23 +156,12 @@ export function inspectCodexRootHookLifecycle(input: {
   directoryPath: string;
 }):
   | Readonly<{
-      sessionStartDurationMilliseconds: number;
-      sessionStartSpanSha256: string;
+      sessionStartDurationMilliseconds: number | null;
+      sessionStartSpanSha256: string | null;
       stopDurationMilliseconds: number;
       sessionEndDurationMilliseconds: number;
     }>
   | undefined;
-
-export function codexSessionStartCheckpointMatchesLifecycle(
-  checkpoint:
-    Readonly<{ durationMilliseconds: number; spanSha256: string }> | undefined,
-  lifecycle:
-    | Readonly<{
-        sessionStartDurationMilliseconds: number;
-        sessionStartSpanSha256: string;
-      }>
-    | undefined,
-): boolean;
 
 export function inspectCodexStopHookCommand(input: {
   afterRead?: () => void;
@@ -227,6 +205,26 @@ export function codexTurnTerminalIdAfterBaseline(
 export function codexSessionIdentity(
   ledgers: readonly CodexSessionLedgerRecord[],
 ): string;
+
+export function projectCodexPostJoinTranscript(input: {
+  records: readonly CodexSessionLedgerRecord[];
+  baseline: readonly CodexSessionLedgerRecord[];
+  observedRecords: readonly CodexSessionLedgerRecord[];
+  expectedMessage: string;
+  sessionId: string;
+  turnId: string;
+  modelName: string;
+}): Readonly<{
+  nativeFormat: "codex-0.149.1-rollout-jsonl";
+  boundaryKind: "transcript-range";
+  positionKind: "line";
+  availableStartPosition: 0;
+  exclusiveEndPosition: number;
+  sessionMetaPosition: number;
+  turnContextPosition: number;
+  taskCompletePosition: number;
+  sourceGeneration: null;
+}>;
 
 export interface CodexSessionLedgerRecord {
   readonly relativePath: string;

@@ -7,6 +7,7 @@ import {
   readdirSync,
 } from "node:fs";
 import { createConnection } from "node:net";
+import { get } from "node:https";
 
 const fail = () => {
   throw new Error("integration.codex.candidate-principal");
@@ -25,17 +26,43 @@ if (
 
 const runId = process.env.AGENTSCOPE_CANDIDATE_RUN_ID;
 const controllerPid = process.ppid;
-const candidateEnvironmentKeys = [
-  "AGENTSCOPE_CANDIDATE_RUN_ID",
-  "AGENTSCOPE_HOME",
-  "CODEX_HOME",
-  "HOME",
-  "LANG",
-  "PATH",
-  "RUST_LOG",
-  "TERM",
-  "XDG_CONFIG_HOME",
-];
+const claudeSelected =
+  process.env.AGENTSCOPE_CANDIDATE_HARNESS === "claude-code";
+if (process.env.AGENTSCOPE_CANDIDATE_HARNESS !== undefined && !claudeSelected)
+  fail();
+const candidateEnvironmentKeys = claudeSelected
+  ? [
+      "AGENTSCOPE_CANDIDATE_HARNESS",
+      "AGENTSCOPE_CANDIDATE_RUN_ID",
+      "AGENTSCOPE_HOME",
+      "AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "AGENTSCOPE_LANGFUSE_SECRET_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+      "CLAUDE_CODE_DISABLE_TERMINAL_TITLE",
+      "CLAUDE_CONFIG_DIR",
+      "DISABLE_UPDATES",
+      "HOME",
+      "LANG",
+      "NODE_EXTRA_CA_CERTS",
+      "PATH",
+      "TERM",
+    ]
+  : [
+      "AGENTSCOPE_CANDIDATE_RUN_ID",
+      "AGENTSCOPE_HOME",
+      "AGENTSCOPE_LANGFUSE_PUBLIC_KEY",
+      "AGENTSCOPE_LANGFUSE_SECRET_KEY",
+      "CODEX_HOME",
+      "HOME",
+      "LANG",
+      "NODE_EXTRA_CA_CERTS",
+      "PATH",
+      "RUST_LOG",
+      "TERM",
+      "XDG_CONFIG_HOME",
+    ];
 if (
   !/^[a-f0-9]{16}$/u.test(runId ?? "") ||
   controllerPid < 2 ||
@@ -43,7 +70,10 @@ if (
     candidateEnvironmentKeys.join("\0") ||
   candidateEnvironmentKeys.some(
     (key) => !/^[\x20-\x7e]{1,1024}$/u.test(process.env[key] ?? ""),
-  )
+  ) ||
+  process.env.AGENTSCOPE_LANGFUSE_PUBLIC_KEY !== "DUMMY_PUBLIC_KEY" ||
+  process.env.AGENTSCOPE_LANGFUSE_SECRET_KEY !== "DUMMY_SECRET_KEY" ||
+  process.env.NODE_EXTRA_CA_CERTS !== "/opt/agentscope/collector-ca.pem"
 )
   fail();
 
@@ -125,6 +155,54 @@ await new Promise((resolve, reject) => {
   });
 });
 
+// This request originates in the candidate namespace after its principal drop.
+// A denial must not close the independently owned collector ingress.
+await new Promise((resolve, reject) => {
+  const request = get("https://collector:4318/observations", (response) => {
+    let bytes = 0;
+    response.on("data", (chunk) => {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > 4096) request.destroy();
+    });
+    response.once("end", () => {
+      if (response.statusCode === 403 && bytes <= 4096) resolve();
+      else reject(new Error("integration.codex.candidate-principal"));
+    });
+    response.once("error", () =>
+      reject(new Error("integration.codex.candidate-principal")),
+    );
+  });
+  request.once("error", () =>
+    reject(new Error("integration.codex.candidate-principal")),
+  );
+});
+
+if (claudeSelected) {
+  // Native transcript creation inherits this private mode, not the image's
+  // ambient umask. The held observer refuses broader file permissions.
+  process.umask(0o077);
+  // The selected checksum-bound public adapter is the sole owner of provider
+  // endpoint validation and fixed native argv. The same principal probes above
+  // apply before either family executes; no supplementary group is inherited.
+  const { claudeCodeInteractiveInvocation } =
+    await import("./scenario-adapter.mjs");
+  const invocation = claudeCodeInteractiveInvocation(
+    process.env.ANTHROPIC_BASE_URL,
+  );
+  if (
+    Object.entries(invocation.environment).some(
+      ([key, value]) => process.env[key] !== value,
+    )
+  )
+    fail();
+  process.execve(
+    invocation.executable,
+    [invocation.executable, ...invocation.arguments],
+    invocation.environment,
+  );
+  fail();
+}
+
 process.execve(
   "/usr/local/bin/node",
   [
@@ -148,6 +226,9 @@ process.execve(
     AGENTSCOPE_HOME: process.env.AGENTSCOPE_HOME,
     CODEX_HOME: process.env.CODEX_HOME,
     RUST_LOG: process.env.RUST_LOG,
+    AGENTSCOPE_LANGFUSE_PUBLIC_KEY: process.env.AGENTSCOPE_LANGFUSE_PUBLIC_KEY,
+    AGENTSCOPE_LANGFUSE_SECRET_KEY: process.env.AGENTSCOPE_LANGFUSE_SECRET_KEY,
+    NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS,
   },
 );
 fail();

@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   inspectClaudeCodePluginOverlap,
-  createClaudeCodeDialectAuthority,
   claudeCodeDescriptor,
 } from "@agentscope/harness-claude-code";
 
@@ -64,20 +63,16 @@ describe("selected cached marketplace observations", () => {
         guard.targetPath.startsWith(`${unused}/`),
       ),
     ).toBe(false);
-    const authority = createClaudeCodeDialectAuthority(
-      {
-        configurationLocations: [{ locationIndex: 0, present: true }],
-        harnessType: claudeCodeDescriptor.harnessType,
-        state: "installed",
-        reason: "compatible",
-        version: "2.1.245",
-      },
-      "posix",
-    );
-    if (authority === undefined) throw new Error("fixture.authority");
+    const observedDiscovery = {
+      configurationLocations: [{ locationIndex: 0, present: true }],
+      harnessType: claudeCodeDescriptor.harnessType,
+      state: "installed",
+      reason: "compatible",
+      version: "2.1.245",
+    } as const;
     const input = createProductHarnessInstallationInput({
       harness: "claude-code",
-      dialectAuthority: authority,
+      observedDiscovery,
       ...context,
       agentscopeHome: value.root,
       hookConfigurationPath: join(value.home, ".claude", "settings.json"),

@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { types } from "node:util";
+import { EventEmitter } from "node:events";
+import { ScriptTarget, transpileModule } from "typescript";
 import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-preparation.mjs";
 import {
   createPullOperation,
@@ -9,7 +12,12 @@ import {
   recordUnexpectedEngineStatus,
 } from "../image-preparation/preparation.mjs";
 import {
+  completionCopySourceMissingResponseMatches,
   formatControllerFailureDiagnostic,
+  knownFailureCode,
+  createOtlpObservationFailure,
+  readOtlpObservationFailure,
+  rethrowOtlpObservationFailure,
   readControllerFailureDiagnostic,
 } from "./controller-failure-diagnostic.js";
 import {
@@ -18,6 +26,1395 @@ import {
   settleAbortableOperation,
 } from "./controller.js";
 import type { IntegrationStageDependencies } from "./controller.js";
+import { SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES } from "./substrate-certification.js";
+// @ts-expect-error private transport diagnostic has no public declaration
+import * as requestDiagnosticModule from "../image-preparation/boundary.mjs";
+import {
+  buildPhaseFailure,
+  settledBuildFailure,
+} from "../image-preparation/build-policy.mjs";
+const { fixedError } = requestDiagnosticModule as {
+  fixedError: (code: string, timedOut?: boolean) => Error & { code?: string };
+};
+const { readImageRequestDiagnostic, recordImageRequestDiagnostic } =
+  requestDiagnosticModule as {
+    readImageRequestDiagnostic: (error: unknown) => unknown;
+    recordImageRequestDiagnostic: <ErrorType>(
+      error: ErrorType,
+      phase: string,
+      outcome: string,
+      status?: number,
+    ) => ErrorType;
+  };
+
+const completionContainerId = "c".repeat(64);
+describe("private selected-writer refusal projection", () => {
+  it.each([
+    ["record", [null], "record-shape"],
+    ["exact", [{ unexpected: true }, []], "record-keys"],
+    ["list", [[], 1], "list-bound"],
+    ["attributes", [[{ key: 1, value: {} }], 1], "attribute-key"],
+    ["textValue", [{ stringValue: 1 }], "text-value"],
+    ["numberValue", [{ stringValue: "01" }, 10], "number-value"],
+  ])(
+    "locates existing scalar guard %s without copying its input",
+    (name, args, reason) => {
+      const source = readFileSync(
+        new URL("./selected-otlp-observation.ts", import.meta.url),
+        "utf8",
+      );
+      const start = source.indexOf("const record ="),
+        end = source.indexOf("const digest =", start);
+      expect(end).toBeGreaterThan(start);
+      const compiled = transpileModule(
+        `${source.slice(start, end)}; ({record,exact,list,attributes,textValue,numberValue})`,
+        {
+          compilerOptions: { target: ScriptTarget.ES2022 },
+        },
+      ).outputText;
+      const helpers = runInNewContext(compiled, {
+        refuse: (code: string) => {
+          throw createOtlpObservationFailure(code);
+        },
+      }) as Record<string, (...args: unknown[]) => unknown>;
+      try {
+        helpers[name]!(...(args as unknown[]));
+      } catch (error) {
+        expect(readOtlpObservationFailure(error)).toBe(reason);
+        expect(JSON.stringify(error)).not.toContain("unexpected");
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+  it("preserves the same refusal and rejects foreign error metadata", () => {
+    const error = createOtlpObservationFailure("identity");
+    expect(knownFailureCode(error)).toBe(
+      "integration.operations.otlp-observation",
+    );
+    expect(readOtlpObservationFailure(error)).toBe("identity");
+    try {
+      rethrowOtlpObservationFailure(error);
+    } catch (caught) {
+      expect(caught).toBe(error);
+    }
+    const forged = Object.assign(new Error(error.message), {
+      reason: "identity",
+    });
+    const accessor = Object.defineProperty(new Error(error.message), "reason", {
+      get() {
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(error, {
+      get() {
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const foreign of [forged, accessor, proxy, null, "PRIVATE"]) {
+      expect(readOtlpObservationFailure(foreign)).toBeNull();
+      try {
+        rethrowOtlpObservationFailure(foreign);
+      } catch (caught) {
+        expect(readOtlpObservationFailure(caught)).toBe("projection-exception");
+        expect((caught as Error).message).toBe(error.message);
+      }
+    }
+    expect(
+      readOtlpObservationFailure(createOtlpObservationFailure("PRIVATE")),
+    ).toBe("projection-exception");
+  });
+});
+const collectorPhases = [
+  "held-identity",
+  "https-exec",
+  "snapshot",
+  "terminal-wait",
+  "terminal-witness",
+] as const;
+const collectorTerminal = {
+  Id: completionContainerId,
+  Name: "/owned",
+  Config: { Labels: { "com.agentscope.integration.run": "a".repeat(16) } },
+  State: {
+    Status: "exited",
+    Running: false,
+    OOMKilled: false,
+    Paused: false,
+    Restarting: false,
+    Dead: false,
+    ExitCode: 0,
+    Pid: 0,
+    Error: "",
+  },
+};
+type CollectorFunctions = {
+  collectorHttpsErrorObservation: (error: unknown) => Readonly<{
+    httpsFailure: string | null;
+    code: string;
+    disposition: string;
+  }>;
+  joinCollectorObservations: (
+    plan: object,
+    signal: AbortSignal,
+    deadline: number,
+    observe: (phase: string) => void,
+  ) => Promise<Buffer[]>;
+  joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+  publishOperationFailureDiagnostic: (
+    slot: string,
+    error: unknown,
+    plan: object,
+    context: object,
+  ) => void;
+};
+const collectorTestSource = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const collectorStart = source.indexOf("const decodeCollectorSnapshot =");
+  const collectorEnd = source.indexOf(
+    "const mockServerNetworkObservation =",
+    collectorStart,
+  );
+  const diagnosticStart = source.indexOf("const operationFailureSlots =");
+  const diagnosticEnd = source.indexOf(
+    "/* eslint-disable complexity",
+    diagnosticStart,
+  );
+  const joinStart = source.indexOf("const joinMockServer =");
+  const joinEnd = source.indexOf("const createScenarioContainer =", joinStart);
+  expect(collectorEnd).toBeGreaterThan(collectorStart);
+  expect(diagnosticEnd).toBeGreaterThan(diagnosticStart);
+  expect(joinEnd).toBeGreaterThan(joinStart);
+  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({collectorHttpsErrorObservation:typeof collectorHttpsErrorObservation === "undefined" ? undefined : collectorHttpsErrorObservation,joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
+};
+const diagnosticBuffer = (diagnosticBytes?: number) =>
+  diagnosticBytes === undefined
+    ? Buffer
+    : {
+        byteLength: (value: string) => Buffer.byteLength(value),
+        from: (value: string, encoding?: BufferEncoding) => {
+          const bytes = Buffer.from(value, encoding);
+          return value.startsWith("integration.isolation.operation-diagnostic:")
+            ? Buffer.concat([
+                bytes,
+                Buffer.alloc(diagnosticBytes - bytes.length, 32),
+              ])
+            : bytes;
+        },
+      };
+const collectorPlan = () => ({
+  runId: "a".repeat(16),
+  collectorName: "owned",
+  scenarioId: "codex-tui-trace-smoke",
+});
+const collectorSnapshotOutput = (failure: string, scenarioId: string) => ({
+  stdout:
+    failure === "snapshot"
+      ? "PRIVATE INVALID"
+      : JSON.stringify({
+          observationVersion: 2,
+          scenarioId,
+          batches: ["e30="],
+          aggregateBytes: 2,
+        }),
+});
+const assertCollectorExec = (args: string[], options: unknown) => {
+  expect(args.slice(0, 5)).toEqual([
+    "exec",
+    completionContainerId,
+    "/usr/local/bin/node",
+    "--input-type=module",
+    "-e",
+  ]);
+  expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
+};
+const actualCollectorObservation = (
+  failure: string,
+  sinkFails = false,
+  execError?: Error,
+  diagnosticBytes?: number,
+  deferredExec?: {
+    result: Promise<{ stdout: string }>;
+    entered(): void;
+  },
+) => {
+  const plan = collectorPlan();
+  const output: string[] = [],
+    calls: string[][] = [];
+  const original = new Error("PRIVATE PROCESS FAILURE");
+  let phase: string | undefined,
+    now = 0;
+  const functions = runInNewContext(collectorTestSource(), {
+    Buffer: diagnosticBuffer(diagnosticBytes),
+    AbortSignal,
+    types,
+    knownFailureCode,
+    readOtlpObservationFailure,
+    preparedDockerClient: {},
+    preparedDockerClientRequiresOuterHostRetirement: () => false,
+    linuxBootMonotonicMilliseconds: () => now,
+    scenarioContainerIdentities: new Map([["owned", completionContainerId]]),
+    mockServerContainerIdentities: new Map([[plan.runId, "b".repeat(64)]]),
+    mockServerJoinDeadlines: new Map([[plan.runId, 1000]]),
+    mockServerControls: new Map([[plan.runId, {}]]),
+    assertControlVolumeCurrent: () => {},
+    openMockServerControl: () => ({
+      stop: () => ({ status: 200 }),
+      snapshot: () => ({ entries: [] }),
+    }),
+    verifyMockServerControlBoundary: () => {},
+    assertJoinedMockServerTerminal: () => {},
+    createFinalMockServerLedgerDirectory: () => "/synthetic",
+    resolve: (_root: string, name: string) => `/synthetic/${name}`,
+    readMockServerFinalLedger: () => Buffer.from("[]"),
+    projectMockServerRequests: () => [],
+    assertMockServerFinalLedger: () => {},
+    fixtureResults: new Map(),
+    fixtureTrafficObservations: new Map(),
+    modelRoutes: {},
+    manifest: { scenarios: [plan] },
+    ISOLATION_EXECUTOR_LIMITS: {
+      containers: { collector: {} },
+      requests: { destinationServerMaximumBytes: 1048576 },
+    },
+    assertContainer: () =>
+      failure === "held-identity" ? "d".repeat(64) : completionContainerId,
+    writeSync: (_fd: number, bytes: Buffer) => {
+      if (sinkFails) throw Error("PRIVATE SINK");
+      output.push(bytes.toString());
+    },
+    dockerWithSignal: (
+      args: string[],
+      signal: AbortSignal,
+      options: unknown,
+    ) => {
+      calls.push(args);
+      expect(signal.aborted).toBe(false);
+      expect(options).toMatchObject({ terminal: true });
+      if (
+        args[0] === "logs" ||
+        args[0] === "cp" ||
+        args.includes("b".repeat(64))
+      )
+        return { stdout: "", stderr: "" };
+      if (args[0] === "exec") {
+        assertCollectorExec(args, options);
+        if (deferredExec) {
+          deferredExec.entered();
+          return deferredExec.result;
+        }
+        if (failure === "https-exec")
+          return Promise.reject(execError ?? original);
+        if (failure === "expired") now = 1000;
+        return collectorSnapshotOutput(failure, plan.scenarioId);
+      }
+      if (args[1] === "wait") {
+        if (failure === "terminal-wait") throw original;
+        if (failure === "expired") throw original;
+        return { stdout: "0\n" };
+      }
+      if (args[1] === "kill") {
+        expect(args).toEqual([
+          "container",
+          "kill",
+          "--signal",
+          "SIGTERM",
+          completionContainerId,
+        ]);
+        expect(options).toMatchObject({
+          terminal: true,
+          mutationCapable: true,
+        });
+        if (failure === "shutdown" || failure === "expired") throw original;
+        return { stdout: `${completionContainerId}\n` };
+      }
+      if (failure === "terminal-witness") return { stdout: "[]" };
+      return { stdout: JSON.stringify([collectorTerminal]) };
+    },
+  }) as CollectorFunctions;
+  return {
+    functions,
+    plan,
+    original,
+    output,
+    calls,
+    phase: () => phase,
+    observe: (value: string) => {
+      phase = value;
+    },
+  };
+};
+const nativeHttpsError = (properties: object) =>
+  Object.assign(new Error("PRIVATE NATIVE FAILURE"), properties);
+describe("collector reader terminal before producer shutdown", () => {
+  it.each(["https-exec", "snapshot"])(
+    "does not request normal shutdown after %s failure",
+    async (failure) => {
+      const f = actualCollectorObservation(failure);
+      await expect(
+        f.functions.joinCollectorObservations(
+          f.plan,
+          new AbortController().signal,
+          1000,
+          f.observe,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.calls.some((args) => args[1] === "kill")).toBe(false);
+    },
+  );
+  it("preserves failed shutdown and refuses to continue to terminal success", async () => {
+    const f = actualCollectorObservation("shutdown");
+    await expect(
+      f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        f.observe,
+      ),
+    ).rejects.toBe(f.original);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "kill"]);
+  });
+  it("does not signal while the exec reader is live and orders shutdown after validation", async () => {
+    let release!: (output: { stdout: string }) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const result = new Promise<{ stdout: string }>((resolve) => {
+      release = resolve;
+    });
+    const f = actualCollectorObservation(
+      "success",
+      false,
+      undefined,
+      undefined,
+      { result, entered },
+    );
+    const joined = f.functions.joinCollectorObservations(
+      f.plan,
+      new AbortController().signal,
+      1000,
+      f.observe,
+    );
+    await started;
+    expect(f.calls.map((args) => args[0])).toEqual(["exec"]);
+    release({
+      stdout: JSON.stringify({
+        observationVersion: 2,
+        scenarioId: f.plan.scenarioId,
+        batches: ["e30="],
+        aggregateBytes: 2,
+      }),
+    });
+    expect(await joined).toEqual([Buffer.from("{}")]);
+    expect(f.calls[1]).toEqual([
+      "container",
+      "kill",
+      "--signal",
+      "SIGTERM",
+      completionContainerId,
+    ]);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "kill", "wait", "inspect"]);
+  });
+});
+describe("actual collector HTTPS native disposition", () => {
+  it.each([
+    [
+      new Error("integration.images.docker-client"),
+      "known-refusal",
+      "integration.images.docker-client",
+    ],
+    [
+      nativeHttpsError({ code: 1, signal: null, killed: false }),
+      "native-exit-one",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ code: 2, signal: null, killed: false }),
+      "native-nonstandard",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ code: "ABORT_ERR", killed: true }),
+      "native-aborted",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ killed: true, signal: "PRIVATE SIGNAL" }),
+      "native-killed",
+      "unknown",
+    ],
+    [
+      nativeHttpsError({ signal: "PRIVATE SIGNAL" }),
+      "native-signaled",
+      "unknown",
+    ],
+    [new Error("PRIVATE UNKNOWN"), "unknown", "unknown"],
+  ] as const)(
+    "projects closed %s disposition without inferring child origin",
+    async (error, disposition, code) => {
+      const f = actualCollectorObservation("https-exec", false, error);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      const row = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      ) as {
+        collector: object;
+      };
+      expect(row.collector).toEqual({
+        phase: "https-exec",
+        httpsFailure: null,
+        httpsCode: code,
+        httpsDisposition: disposition,
+      });
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    },
+  );
+});
+describe("actual collector HTTPS native disposition privacy and bounds", () => {
+  it("keeps owned observation immutable and refuses hostile or inherited shapes", () => {
+    const f = actualCollectorObservation("success");
+    let traps = 0;
+    const accessor = new Error("PRIVATE MESSAGE");
+    for (const key of [
+      "message",
+      "code",
+      "signal",
+      "killed",
+      "stdout",
+      "stderr",
+    ])
+      Object.defineProperty(accessor, key, {
+        get: () => {
+          traps++;
+          throw new Error("PRIVATE GETTER");
+        },
+      });
+    const inherited = new Error("PRIVATE MESSAGE");
+    Object.setPrototypeOf(inherited, {
+      code: 1,
+      signal: null,
+      killed: false,
+      stdout: "",
+      stderr: "[agentscope-collector-https:v1 request-error]\n",
+    });
+    const proxy = new Proxy(new Error("PRIVATE MESSAGE"), {
+      getOwnPropertyDescriptor: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+    });
+    const revoked = Proxy.revocable(new Error("PRIVATE MESSAGE"), {});
+    revoked.revoke();
+    for (const error of [
+      accessor,
+      inherited,
+      proxy,
+      revoked.proxy,
+      { code: 1 },
+      null,
+    ]) {
+      const observation = f.functions.collectorHttpsErrorObservation(error);
+      expect(observation).toEqual({
+        httpsFailure: null,
+        code: "unknown",
+        disposition: "unknown",
+      });
+      expect(Object.isFrozen(observation)).toBe(true);
+    }
+    expect(traps).toBe(0);
+  });
+  it("bounds the longest actual canonical code and exact 512/513 guard", async () => {
+    const source = readFileSync(
+      new URL("./controller-failure-diagnostic.ts", import.meta.url),
+      "utf8",
+    );
+    const codes = [...source.matchAll(/"(integration\.[A-Za-z0-9.-]+)"/gu)]
+      .map((match) => knownFailureCode(new Error(match[1])))
+      .filter((code) => code !== "unknown")
+      .sort((left, right) => right.length - left.length);
+    const worst = codes[0]!;
+    expect(worst).not.toBe("unknown");
+    const error = new Error(worst);
+    const actual = actualCollectorObservation("https-exec", false, error);
+    await expect(
+      actual.functions.joinMockServer(
+        actual.plan,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: "integration.isolation.collector-terminal",
+    });
+    expect(actual.output).toHaveLength(1);
+    expect(Buffer.byteLength(actual.output[0]!)).toBeLessThanOrEqual(512);
+    expect(actual.output[0]).toContain(`"httpsCode":"${worst}"`);
+    for (const length of [512, 513]) {
+      const f = actualCollectorObservation("https-exec", false, error, length);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(length === 512 ? 1 : 0);
+      if (length === 512) expect(Buffer.byteLength(f.output[0]!)).toBe(512);
+    }
+  });
+});
+describe("actual collector HTTPS marker projection", () => {
+  it.each(["request-error", "response-error", "http-rejected", "output-bound"])(
+    "projects only the exact native %s HTTPS marker through the existing line",
+    async (reason) => {
+      const native = Object.assign(new Error("PRIVATE TRANSPORT"), {
+        stderr: `[agentscope-collector-https:v1 ${reason}]\n`,
+        stdout: "",
+        code: 1,
+        signal: null,
+        killed: false,
+      });
+      const f = actualCollectorObservation("https-exec", false, native);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      expect(f.output[0]).toContain(
+        `"collector":{"phase":"https-exec","httpsFailure":"${reason}","httpsCode":"unknown","httpsDisposition":"native-exit-one"}`,
+      );
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain(completionContainerId);
+    },
+  );
+});
+describe("actual collector HTTPS hostile process projection", () => {
+  it("keeps malformed, hostile, and unsettled process projections unknown", async () => {
+    const marker = "[agentscope-collector-https:v1 request-error]\n";
+    const native = () =>
+      Object.assign(new Error("PRIVATE TRANSPORT"), {
+        stderr: marker,
+        stdout: "",
+        code: 1,
+        signal: null,
+        killed: false,
+      });
+    let traps = 0;
+    const accessor = native();
+    Object.defineProperty(accessor, "stderr", {
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE GETTER");
+      },
+    });
+    const inherited = native();
+    Reflect.deleteProperty(inherited, "stderr");
+    Object.setPrototypeOf(
+      inherited,
+      Object.assign(new Error(), { stderr: marker }),
+    );
+    const proxy = new Proxy(native(), {
+      get: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+      getOwnPropertyDescriptor: () => {
+        traps++;
+        throw new Error("PRIVATE PROXY");
+      },
+    });
+    const coercion = {
+      toString: () => {
+        traps++;
+        throw new Error("PRIVATE COERCION");
+      },
+    };
+    const cases: unknown[] = [
+      { stderr: marker, stdout: "", code: 1, signal: null, killed: false },
+      accessor,
+      inherited,
+      proxy,
+      ...[
+        { stderr: marker.trimEnd() },
+        { stderr: `${marker}${marker}` },
+        { stderr: `PRIVATE ${marker}` },
+        { stderr: `${marker}PRIVATE` },
+        { stderr: "x".repeat(65) },
+        { stderr: "[agentscope-collector-https:v1 PRIVATE]\n" },
+        { stderr: coercion },
+        { stdout: "PRIVATE BODY" },
+        { code: 2 },
+        { signal: "SIGTERM" },
+        { killed: true },
+      ].map((change) => Object.assign(native(), change)),
+    ];
+    for (const error of cases) {
+      const f = Reflect.apply(actualCollectorObservation, undefined, [
+        "https-exec",
+        false,
+        error,
+      ]) as ReturnType<typeof actualCollectorObservation>;
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.collector-terminal",
+      });
+      expect(f.output).toHaveLength(1);
+      expect(f.output[0]).toContain('"httpsFailure":null');
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    }
+    expect(traps).toBe(0);
+  });
+});
+describe("actual collector refusal guard observation", () => {
+  it("projects only privately recorded finite refusals at the existing slot", () => {
+    const f = actualCollectorObservation("success");
+    const original = createOtlpObservationFailure("identity");
+    f.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      original,
+      f.plan,
+      {},
+    );
+    expect(f.output).toHaveLength(1);
+    expect(f.output[0]).toContain('"collectorRefusal":"identity"');
+    expect(f.output[0]).toContain(
+      '"code":"integration.operations.otlp-observation"',
+    );
+    expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    const foreign = actualCollectorObservation("success");
+    foreign.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      new Error("PRIVATE"),
+      foreign.plan,
+      {},
+    );
+    expect(foreign.output[0]).toContain('"collectorRefusal":null');
+    expect(foreign.output[0]).not.toContain("PRIVATE");
+    const refusedSink = actualCollectorObservation("success", true);
+    expect(() => {
+      refusedSink.functions.publishOperationFailureDiagnostic(
+        "join-collector-project",
+        original,
+        f.plan,
+        {},
+      );
+    }).not.toThrow();
+  });
+});
+describe("actual collector failure phase observation", () => {
+  it("wires the actual Codex outer catch to the same original collector error", async () => {
+    const f = actualCollectorObservation("terminal-wait");
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toBe(f.original);
+    expect(f.output).toHaveLength(1);
+    expect(f.output[0]).toContain('"collector":{"phase":"terminal-wait"}');
+    expect(f.output[0]).not.toContain("PRIVATE");
+  });
+  it("preserves success/order and swallows a refused optional observer", async () => {
+    const f = actualCollectorObservation("success");
+    expect(
+      await f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        () => {
+          throw Error("PRIVATE OBSERVER");
+        },
+      ),
+    ).toEqual([Buffer.from("{}")]);
+    expect(
+      f.calls.map((args) => (args[0] === "exec" ? "exec" : args[1])),
+    ).toEqual(["exec", "kill", "wait", "inspect"]);
+    expect(f.output).toEqual([]);
+  });
+  it("preserves the original remaining deadline when exec work consumes it", async () => {
+    const f = actualCollectorObservation("expired");
+    await expect(
+      f.functions.joinCollectorObservations(
+        f.plan,
+        new AbortController().signal,
+        1000,
+        f.observe,
+      ),
+    ).rejects.toBe(f.original);
+    expect(f.phase()).toBe("terminal-wait");
+    expect(f.calls).toHaveLength(2);
+  });
+  it("keeps sink failure optional and excludes unknown phases/other slots", () => {
+    const f = actualCollectorObservation("success", true);
+    expect(() => {
+      f.functions.publishOperationFailureDiagnostic(
+        "join-collector-read",
+        f.original,
+        f.plan,
+        { collectorPhase: "snapshot" },
+      );
+    }).not.toThrow();
+    expect(f.output).toEqual([]);
+    const ordinary = actualCollectorObservation("success");
+    ordinary.functions.publishOperationFailureDiagnostic(
+      "join-collector-read",
+      ordinary.original,
+      ordinary.plan,
+      { collectorPhase: "PRIVATE UNKNOWN" },
+    );
+    ordinary.functions.publishOperationFailureDiagnostic(
+      "join-collector-project",
+      ordinary.original,
+      ordinary.plan,
+      { collectorPhase: "snapshot" },
+    );
+    expect(ordinary.output).toHaveLength(2);
+    for (const line of ordinary.output) {
+      expect(line).not.toContain('collector":');
+      expect(line).not.toContain("PRIVATE");
+    }
+  });
+  it.each(collectorPhases)(
+    "keeps the original %s failure and bounds its existing diagnostic",
+    async (phase) => {
+      const f = actualCollectorObservation(phase);
+      let error: unknown;
+      try {
+        await f.functions.joinCollectorObservations(
+          f.plan,
+          new AbortController().signal,
+          1000,
+          f.observe,
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeDefined();
+      if (phase === "terminal-wait") expect(error).toBe(f.original);
+      else
+        expect(error).toMatchObject({
+          message: "integration.isolation.collector-terminal",
+        });
+      expect(f.phase()).toBe(phase);
+      f.functions.publishOperationFailureDiagnostic(
+        "join-collector-read",
+        error,
+        f.plan,
+        { collectorPhase: f.phase() },
+      );
+      expect(f.output).toHaveLength(1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      const row = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      ) as { collector: object };
+      expect(row.collector).toEqual({
+        phase,
+        ...(phase === "https-exec"
+          ? {
+              httpsFailure: null,
+              httpsCode: "unknown",
+              httpsDisposition: "unknown",
+            }
+          : {}),
+      });
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain(completionContainerId);
+      if (phase === "held-identity") expect(f.calls).toEqual([]);
+    },
+  );
+});
+const collectorHttpsScript = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const script = /\n {8}'(import \{get\} from "node:https";[^\n]+)',\n/u.exec(
+    source,
+  )?.[1];
+  if (script === undefined) throw new Error("missing-collector-https-script");
+  return script
+    .replace('import {get} from "node:https"; ', "")
+    .replace('import {readFileSync} from "node:fs"; ', "");
+};
+const runCollectorHttpsScript = (sinkFails = false) => {
+  const request = new EventEmitter();
+  const response = Object.assign(new EventEmitter(), { statusCode: 200 });
+  const stderr: string[] = [],
+    stdout: Buffer[] = [];
+  const process = {
+    exitCode: 0,
+    stderr: {
+      write: (text: string) => {
+        if (sinkFails) throw new Error("PRIVATE SINK");
+        stderr.push(text);
+      },
+    },
+    stdout: { write: (bytes: Buffer) => stdout.push(bytes) },
+  };
+  let callback!: (received: typeof response) => void;
+  let destroys = 0;
+  Object.assign(request, {
+    destroy: () => {
+      destroys++;
+      request.emit("error", new Error("PRIVATE DESTROY"));
+    },
+  });
+  runInNewContext(collectorHttpsScript(), {
+    Buffer,
+    process,
+    readFileSync: (path: string) => {
+      expect(path).toBe("/opt/agentscope/collector-ca.pem");
+      return "PUBLIC TEST CA";
+    },
+    get: (url: string, options: object, supplied: typeof callback) => {
+      expect(url).toBe("https://127.0.0.1:4318/observations");
+      expect(options).toEqual({ ca: "PUBLIC TEST CA", agent: false });
+      callback = supplied;
+      return request;
+    },
+  });
+  return {
+    request,
+    response,
+    process,
+    stderr,
+    stdout,
+    respond: () => {
+      callback(response);
+    },
+    destroys: () => destroys,
+  };
+};
+describe("actual extracted collector HTTPS child", () => {
+  it.each(["request-error", "response-error", "http-rejected", "output-bound"])(
+    "keeps exit one and emits only one fixed %s marker",
+    (reason) => {
+      const f = runCollectorHttpsScript();
+      if (reason === "request-error")
+        f.request.emit("error", new Error("PRIVATE REQUEST"));
+      else {
+        f.respond();
+        if (reason === "response-error")
+          f.response.emit("error", new Error("PRIVATE RESPONSE"));
+        else if (reason === "http-rejected") {
+          f.response.statusCode = 409;
+          f.response.emit("data", Buffer.from("PRIVATE REJECTED BODY"));
+          f.response.emit("end");
+        } else {
+          f.response.emit("data", Buffer.alloc(12 * 1024 * 1024 + 1, 65));
+          expect(f.destroys()).toBe(1);
+        }
+      }
+      expect(f.process.exitCode).toBe(1);
+      expect(f.stderr).toEqual([`[agentscope-collector-https:v1 ${reason}]\n`]);
+      expect(f.stdout).toEqual([]);
+    },
+  );
+  it("keeps success silent and emits the exact original bounded snapshot bytes", () => {
+    const f = runCollectorHttpsScript();
+    f.respond();
+    const snapshot = Buffer.from('{"observationVersion":2}');
+    f.response.emit("data", snapshot);
+    f.response.emit("end");
+    expect(f.process.exitCode).toBe(0);
+    expect(f.stderr).toEqual([]);
+    expect(f.stdout).toEqual([snapshot]);
+    expect(f.destroys()).toBe(0);
+  });
+  it("keeps exit one even when the optional child marker sink refuses", () => {
+    const f = runCollectorHttpsScript(true);
+    expect(() =>
+      f.request.emit("error", new Error("PRIVATE REQUEST")),
+    ).not.toThrow();
+    expect(f.process.exitCode).toBe(1);
+    expect(f.stderr).toEqual([]);
+    expect(f.stdout).toEqual([]);
+  });
+});
+const ledgerReasons = [
+  "none",
+  "late-publish",
+  "load-generated",
+  "drop",
+  "consumer",
+  "start",
+  "shutdown",
+  "eviction",
+  "truncation",
+  "reset",
+  "clear",
+  "drain",
+  "correlation",
+  "request-type",
+  "correlation-missing",
+  "response-missing",
+  ...Array.from({ length: 16 }, (_, index) => `response-missing-${index + 1}`),
+  "response-duplicate",
+  "response-null",
+  "response-status",
+  "row-count",
+  "serialization",
+  "control-capture",
+];
+const producerParser = () => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  return runInNewContext(
+    `${source.slice(source.indexOf("const mockServerProducerRefusalObservation ="), source.indexOf("const readProducerRefusal ="))}; mockServerProducerRefusalObservation`,
+    { types, Buffer },
+  ) as (output: unknown) => unknown;
+};
+describe("closed event-log refusal reason observation", () => {
+  it.each(ledgerReasons)(
+    "retains only fixed %s with all existing booleans",
+    (reason) => {
+      const parse = producerParser();
+      for (const stage of ["eligibility", "publication"])
+        for (let mask = 0; mask < 16; mask++) {
+          const fields = [
+            "terminal",
+            "snapshotAvailable",
+            "persistenceClosed",
+            "persistenceFailed",
+          ];
+          const booleans = Object.fromEntries(
+            fields.map((name, index) => [name, Boolean(mask & (1 << index))]),
+          );
+          const line = `[agentscope-mockserver-ledger:v1 stage=${stage} ${fields.map((name) => `${name}=${booleans[name]}`).join(" ")} reason=${reason}]\n`;
+          expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+          expect(parse({ stdout: "", stderr: line })).toEqual({
+            stage,
+            ...booleans,
+            reason,
+          });
+        }
+    },
+  );
+  it("refuses extensions, duplicate lines, and hostile process output", () => {
+    const parse = producerParser();
+    const line =
+      "[agentscope-mockserver-ledger:v1 stage=eligibility terminal=true snapshotAvailable=false persistenceClosed=true persistenceFailed=false reason=correlation]\n";
+    for (const stderr of [
+      line.replace("correlation", "PRIVATE"),
+      ...["0", "-1", "17", "01", "1PRIVATE"].map((ordinal) =>
+        line.replace("correlation", `response-missing-${ordinal}`),
+      ),
+      line.replace("reason=", "other="),
+      line.replace("]", " other=false]"),
+      line + line,
+      line.replace("reason=correlation", "reason=none reason=correlation"),
+      line.replace("false reason=", "false]\nreason="),
+      "PRIVATE".repeat(12000),
+    ])
+      expect(parse({ stdout: "", stderr })).toBeUndefined();
+    let reads = 0;
+    const hostile = Object.defineProperty({}, "stdout", {
+      get() {
+        reads++;
+        throw new Error("PRIVATE");
+      },
+    });
+    expect(parse(hostile)).toBeUndefined();
+    expect(
+      parse(
+        new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              reads++;
+              throw new Error("PRIVATE");
+            },
+          },
+        ),
+      ),
+    ).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+});
+const completionResponse = `Error response from daemon: Could not find the file /control/private/requests.complete in container ${completionContainerId}\n`;
+const completionContext = {
+  containerId: completionContainerId,
+  originalAborted: false,
+  joinAborted: false,
+  deadline: "live",
+};
+const completionError = (fields: object = {}) =>
+  Object.assign(new Error("SYNTHETIC PRIVATE ERROR"), {
+    code: 1,
+    signal: null,
+    killed: false,
+    stdout: "",
+    stderr: completionResponse,
+    ...fields,
+  });
+
+describe("exact completion source-missing response observation", () => {
+  it("matches the exact upstream response without changing the Error", () => {
+    const error = completionError();
+    const before = Object.getOwnPropertyDescriptors(error);
+    expect(
+      completionCopySourceMissingResponseMatches(error, completionContext),
+    ).toBe(true);
+    expect(Object.getOwnPropertyDescriptors(error)).toEqual(before);
+  });
+  it.each([
+    completionResponse.trimEnd(),
+    `${completionResponse}\n`,
+    completionResponse.replace("\n", "\r\n"),
+    `PRIVATE ${completionResponse}`,
+    `${completionResponse}PRIVATE`,
+    completionResponse.replace("requests.complete", "requests.json"),
+    completionResponse.replace("requests.complete", "requests.complete.tmp"),
+    completionResponse.replace("/control/private/", "/control/private/../"),
+    completionResponse.replace(completionContainerId, "d".repeat(64)),
+    completionResponse.replace(completionContainerId, "named-container"),
+    completionResponse.replace("Could", "could"),
+    `\u001b[31m${completionResponse}`,
+    "ENOENT: missing local destination",
+    "Error response from daemon: No such container",
+    "",
+    "PRIVATE".repeat(100),
+    Buffer.from(completionResponse),
+    { toString: () => completionResponse },
+  ])("does not interpret a near miss as missing source %#", (stderr) => {
+    expect(
+      completionCopySourceMissingResponseMatches(
+        completionError({ stderr }),
+        completionContext,
+      ),
+    ).toBe(false);
+  });
+  it.each([
+    { code: 0 },
+    { code: "1" },
+    { code: "ENOENT" },
+    { signal: "SIGTERM" },
+    { signal: undefined },
+    { killed: true },
+    { killed: undefined },
+    { stdout: "PRIVATE" },
+    { stdout: undefined },
+  ])("requires all exact settled process fields %#", (fields) => {
+    expect(
+      completionCopySourceMissingResponseMatches(
+        completionError(fields),
+        completionContext,
+      ),
+    ).toBe(false);
+  });
+  it.each([
+    { containerId: "c".repeat(63) },
+    { containerId: "C".repeat(64) },
+    { containerId: null },
+    { originalAborted: true },
+    { originalAborted: undefined },
+    { joinAborted: true },
+    { joinAborted: null },
+    { deadline: "expired" },
+    { deadline: "unavailable" },
+  ])("requires the same live join context %#", (fields) => {
+    expect(
+      completionCopySourceMissingResponseMatches(completionError(), {
+        ...completionContext,
+        ...fields,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("hostile completion response metadata", () => {
+  it.each(["stderr", "stdout", "code", "signal", "killed"])(
+    "never invokes an own %s accessor",
+    (field) => {
+      const getter = vi.fn(() => {
+        throw new Error("PRIVATE GETTER");
+      });
+      const error = completionError();
+      Object.defineProperty(error, field, { get: getter });
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+      expect(getter).not.toHaveBeenCalled();
+    },
+  );
+  it("rejects plain, inherited and Proxy metadata without traps/coercion", () => {
+    const trap = vi.fn(() => {
+      throw new Error("PRIVATE TRAP");
+    });
+    const native = completionError();
+    const proxy = new Proxy(native, {
+      get: trap,
+      getOwnPropertyDescriptor: trap,
+      getPrototypeOf: trap,
+    });
+    for (const error of [
+      { ...native },
+      Object.create(native),
+      proxy,
+      undefined,
+      null,
+    ])
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+    expect(trap).not.toHaveBeenCalled();
+  });
+  it("rejects inherited fields on a native Error and never coerces stderr", () => {
+    const inherited = completionError();
+    Reflect.deleteProperty(inherited, "stderr");
+    Object.setPrototypeOf(inherited, completionError());
+    const coerce = vi.fn(() => completionResponse);
+    for (const error of [
+      inherited,
+      completionError({ stderr: { toString: coerce } }),
+    ])
+      expect(
+        completionCopySourceMissingResponseMatches(error, completionContext),
+      ).toBe(false);
+    expect(coerce).not.toHaveBeenCalled();
+  });
+});
+
+const actualCompletionObservation = (sinkFails = false, producerLine = "") => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const operationFailureSlots =");
+  const end = source.indexOf("/* eslint-disable complexity", start);
+  const joinStart = source.indexOf("const joinMockServer =");
+  const joinEnd = source.indexOf("const createScenarioContainer =", joinStart);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  expect(joinEnd).toBeGreaterThan(joinStart);
+  const runId = "e".repeat(16);
+  const error = completionError();
+  const output: string[] = [];
+  const copies: string[][] = [];
+  const identities = new Map([[runId, completionContainerId]]);
+  const state = {
+    now: 100,
+    retired: false,
+    beforeFailure: undefined as (() => void) | undefined,
+  };
+  const functions = runInNewContext(
+    `${source.slice(start, end)}\n${source.slice(joinStart, joinEnd)};
+    ({ joinMockServer, publishOperationFailureDiagnostic })`,
+    {
+      Buffer,
+      types,
+      AbortSignal,
+      completionCopySourceMissingResponseMatches,
+      knownFailureCode,
+      readOtlpObservationFailure,
+      preparedDockerClient: {},
+      preparedDockerClientRequiresOuterHostRetirement: () => state.retired,
+      linuxBootMonotonicMilliseconds: () => state.now,
+      writeSync: (_fd: number, bytes: Buffer) => {
+        if (sinkFails) throw new Error("PRIVATE SINK");
+        output.push(bytes.toString("utf8"));
+      },
+      mockServerContainerIdentities: identities,
+      mockServerJoinDeadlines: new Map([[runId, 1000]]),
+      assertControlVolumeCurrent: () => {},
+      mockServerControls: new Map([[runId, {}]]),
+      openMockServerControl: () => ({ stop: () => ({ status: 200 }) }),
+      verifyMockServerControlBoundary: () => {},
+      assertJoinedMockServerTerminal: () => {},
+      createFinalMockServerLedgerDirectory: () => "/synthetic-ledger",
+      resolve: (_directory: string, name: string) =>
+        `/synthetic-ledger/${name}`,
+      dockerWithSignal: (args: string[]) => {
+        if (args[0] === "logs") return { stdout: "", stderr: producerLine };
+        if (args[0] !== "cp") return { stdout: "" };
+        copies.push(args);
+        if (args[1]!.endsWith("requests.json")) {
+          // The observer must use the same held identity, never reread this map.
+          identities.set(runId, "f".repeat(64));
+          return { stdout: "" };
+        }
+        state.retired = true;
+        state.beforeFailure?.();
+        throw error;
+      },
+    },
+  ) as {
+    joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+    publishOperationFailureDiagnostic: (
+      slot: string,
+      error: unknown,
+      plan: object,
+      context: object,
+    ) => void;
+  };
+  return { functions, runId, output, copies, error, state };
+};
+const assertUnknownProducerRefusal = (output: string[], runId: string) => {
+  expect(output).toHaveLength(2);
+  expect(output[1]).toBe(
+    `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify({
+      runId,
+      stage: "unknown",
+      terminal: null,
+      snapshotAvailable: null,
+      persistenceClosed: null,
+      persistenceFailed: null,
+      reason: null,
+    })}\n`,
+  );
+  expect(Buffer.byteLength(output[1]!)).toBeLessThanOrEqual(256);
+};
+
+describe("actual-source completion copy fixed refusal reason", () => {
+  it.each(ledgerReasons)(
+    "projects %s without replacing the original copy failure",
+    async (reason) => {
+      const line = `[agentscope-mockserver-ledger:v1 stage=eligibility terminal=true snapshotAvailable=false persistenceClosed=true persistenceFailed=false reason=${reason}]\n`;
+      for (const sinkFails of [false, true]) {
+        const f = actualCompletionObservation(sinkFails, line);
+        await expect(
+          f.functions.joinMockServer(
+            { runId: f.runId },
+            new AbortController().signal,
+          ),
+        ).rejects.toBe(f.error);
+        expect(f.state.retired).toBe(true);
+        expect(f.copies).toHaveLength(2);
+        if (sinkFails) expect(f.output).toEqual([]);
+        else {
+          expect(f.output).toHaveLength(2);
+          expect(
+            JSON.parse(f.output[1]!.slice(f.output[1]!.indexOf(":") + 1)),
+          ).toEqual({
+            runId: f.runId,
+            stage: "eligibility",
+            terminal: true,
+            snapshotAvailable: false,
+            persistenceClosed: true,
+            persistenceFailed: false,
+            reason,
+          });
+          expect(Buffer.byteLength(f.output[1]!)).toBeLessThanOrEqual(256);
+          expect(f.output.join("")).not.toMatch(
+            /PRIVATE|\/control\/private|cccccccc/u,
+          );
+        }
+      }
+    },
+  );
+});
+describe("actual-source completion copy observation", () => {
+  it.each([false, true])(
+    "preserves the identical copy error and retirement when sinkFails=%s",
+    async (sinkFails) => {
+      const f = actualCompletionObservation(sinkFails);
+      await expect(
+        f.functions.joinMockServer(
+          { runId: f.runId },
+          new AbortController().signal,
+        ),
+      ).rejects.toBe(f.error);
+      expect(f.state.retired).toBe(true);
+      expect(f.copies).toEqual([
+        [
+          "cp",
+          `${completionContainerId}:/control/private/requests.json`,
+          "/synthetic-ledger/requests.json",
+        ],
+        [
+          "cp",
+          `${completionContainerId}:/control/private/requests.complete`,
+          "/synthetic-ledger/requests.complete",
+        ],
+      ]);
+      if (sinkFails) expect(f.output).toEqual([]);
+      else {
+        assertUnknownProducerRefusal(f.output, f.runId);
+        expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+        const row: unknown = JSON.parse(
+          f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+        );
+        expect(row).toMatchObject({
+          slot: "join-ledger-complete",
+          runId: f.runId,
+          clientRetirementRequired: true,
+          process: { completionSourceMissingResponse: true },
+        });
+        for (const privateText of [
+          "PRIVATE",
+          completionContainerId,
+          "/control/private/",
+          completionResponse,
+        ])
+          expect(f.output.join("")).not.toContain(privateText);
+      }
+    },
+  );
+  it.each(["abort", "expired"])(
+    "does not match when actual join context becomes %s",
+    async (failure) => {
+      const f = actualCompletionObservation();
+      const controller = new AbortController();
+      f.state.beforeFailure = () => {
+        if (failure === "abort") controller.abort();
+        else f.state.now = 1000;
+      };
+      await expect(
+        f.functions.joinMockServer({ runId: f.runId }, controller.signal),
+      ).rejects.toBe(f.error);
+      assertUnknownProducerRefusal(f.output, f.runId);
+      const row: unknown = JSON.parse(
+        f.output[0]!.slice(f.output[0]!.indexOf(":") + 1),
+      );
+      expect(row).toMatchObject({
+        process: { completionSourceMissingResponse: false },
+      });
+      expect(f.state.retired).toBe(true);
+    },
+  );
+  it("leaves candidate and other slots without the match-only field", () => {
+    const f = actualCompletionObservation();
+    for (const slot of [
+      "candidate-image-build",
+      "runtime-original",
+      "cleanup-images",
+    ])
+      f.functions.publishOperationFailureDiagnostic(
+        slot,
+        f.error,
+        { runId: f.runId },
+        {
+          signal: new AbortController().signal,
+          joinSignal: new AbortController().signal,
+          deadline: 1000,
+          containerId: completionContainerId,
+        },
+      );
+    expect(f.output).toHaveLength(3);
+    for (const row of f.output) {
+      expect(row).not.toContain("completionSourceMissingResponse");
+      expect(row).not.toContain("mockserver-ledger-diagnostic");
+    }
+  });
+});
 
 const storage = {
   cleanupFails: false,
@@ -99,6 +1496,506 @@ const syntheticPull = async (trigger: string, reconciliationFails = false) => {
   return { failure, engineCall, inspectLocalImage };
 };
 
+const controllerCodes = (primaryCause: unknown, cleanupCause?: unknown) => {
+  const failure = new IntegrationControllerFailure({
+    primaryCause,
+    cleanupCause,
+    retirementRequired: false,
+    stage: "runScenarios",
+  });
+  return readControllerFailureDiagnostic(failure).firstCodes;
+};
+describe("actual fixed image failure producer vocabulary", () => {
+  it.each([
+    "integration.images.build",
+    "integration.images.socket",
+    "integration.images.executable",
+    "integration.images.interrupted",
+    "integration.images.output",
+    "integration.images.teardown",
+  ])(
+    "preserves actual fixedError %s with no numeric process metadata",
+    (code) => {
+      const error = fixedError(code);
+      expect(Object.getOwnPropertyDescriptor(error, "code")).toBeUndefined();
+      expect(knownFailureCode(error)).toBe(code);
+      expect(controllerCodes(error)).toEqual({
+        primary: code,
+        causal: "unknown",
+        cleanup: "unknown",
+      });
+    },
+  );
+  it.each(["context", "authority"])(
+    "preserves the actual %s wrapper without expanding causes",
+    (phase) => {
+      const error = buildPhaseFailure(new Error("PRIVATE"), phase, []);
+      expect(knownFailureCode(error)).toBe(`integration.images.build.${phase}`);
+      expect(knownFailureCode(new Error("PRIVATE", { cause: error }))).toBe(
+        "unknown",
+      );
+    },
+  );
+  it("preserves the existing timed-out teardown code without converting it into an exit", () => {
+    const error = fixedError("integration.images.teardown", true);
+    expect(error.code).toBe("ETIMEDOUT");
+    expect(knownFailureCode(error)).toBe("integration.images.teardown");
+  });
+});
+
+describe("actual settled build failure finite vocabulary", () => {
+  const cases = [
+    "preflight",
+    "builder-create",
+    "builder-bootstrap",
+    "image-build",
+    "unknown-operation",
+  ].flatMap((operation) =>
+    [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].map((outcome) => [operation, outcome] as const),
+  );
+  it.each(cases)(
+    "retains actual producer %s/%s and rejects extensions",
+    (operation, outcome) => {
+      const error = settledBuildFailure(
+        {
+          firstFailureDiagnostic: {
+            operationKind: operation,
+            process: { stderrClass: outcome },
+          },
+        },
+        new Error("PRIVATE"),
+      );
+      const code = `integration.images.build.${operation}.${outcome}`;
+      expect(knownFailureCode(error)).toBe(code);
+      expect(knownFailureCode(new Error(`${code}.PRIVATE`))).toBe("unknown");
+      expect(knownFailureCode(new Error(`${code}\n`))).toBe("unknown");
+      expect(knownFailureCode({ message: code })).toBe("unknown");
+    },
+  );
+  it.each([
+    "integration.images.build.other.build-failed",
+    "integration.images.build.image-build.other",
+    "integration.images.socket.PRIVATE",
+    "integration.images.platform-identity",
+  ])("keeps unapproved %s unknown", (code) => {
+    expect(knownFailureCode(new Error(code))).toBe("unknown");
+  });
+  it("does not invoke new-message accessors or Proxy traps", () => {
+    let reads = 0;
+    const getter = () => {
+      reads++;
+      throw new Error("PRIVATE");
+    };
+    const accessor = new Error("integration.images.build.authority");
+    Object.defineProperty(accessor, "message", { get: getter });
+    const proxy = new Proxy(
+      new Error("integration.images.build.image-build.build-failed"),
+      {
+        get: getter,
+        getOwnPropertyDescriptor: getter,
+      },
+    );
+    for (const error of [accessor, proxy])
+      expect(knownFailureCode(error)).toBe("unknown");
+    expect(reads).toBe(0);
+  });
+});
+describe("direct source-derived operation failure codes", () => {
+  it.each([
+    "integration.mockserver.control",
+    "integration.isolation.base-image",
+    "integration.images.build.input",
+    "integration.images.build.base",
+    "integration.images.build.artifact",
+    "integration.images.build.context-header",
+    "integration.images.build.context-path",
+    "integration.images.build.context-file-type",
+    "integration.images.build.context-file-identity",
+    "integration.images.build.context-aggregate-size",
+    "integration.images.build.context-file-length",
+    "integration.images.build.context-file-race",
+    "integration.images.build.context-directory",
+    "integration.images.build.context-symlink",
+    "integration.images.build.context-special",
+    "integration.images.build.context-policy",
+    "integration.images.build.context-root",
+    "integration.images.build.context-size",
+    "integration.images.build.context-entries",
+    "integration.images.build.context-unknown",
+    "integration.images.build.context-file-size-harness-material-default",
+    "integration.images.build.context-file-size-harness-material-harness",
+    "integration.images.build.context-file-size-candidate-default",
+    "integration.images.build.context-file-size-candidate-harness",
+    "integration.images.build.context-file-size-testkit-default",
+    "integration.images.build.context-file-size-testkit-harness",
+    "integration.images.build.context-file-size-runtime-default",
+    "integration.images.build.context-file-size-runtime-harness",
+    "integration.images.build.context-file-size-controller-default",
+    "integration.images.build.context-file-size-controller-harness",
+    "integration.operations.fixture-result",
+    "integration.certification.predicate",
+  ])("retains only direct native data code %s", (code) => {
+    expect(knownFailureCode(new Error(code))).toBe(code);
+    expect(knownFailureCode(new Error(`${code}.PRIVATE`))).toBe("unknown");
+    expect(
+      knownFailureCode(new Error("PRIVATE", { cause: new Error(code) })),
+    ).toBe("unknown");
+    let reads = 0;
+    const accessor = new Error(code);
+    Object.defineProperty(accessor, "message", {
+      get: () => {
+        reads++;
+        return code;
+      },
+    });
+    const proxy = new Proxy(new Error(code), {
+      get: () => {
+        reads++;
+        return code;
+      },
+    });
+    for (const value of [accessor, proxy, { message: code }])
+      expect(knownFailureCode(value)).toBe("unknown");
+    expect(reads).toBe(0);
+  });
+});
+describe("closed certification failure codes", () => {
+  it.each(Object.values(SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES))(
+    "projects only the existing exact certification code %s",
+    (primary) => {
+      expect(controllerCodes(new Error(primary))).toEqual({
+        primary,
+        causal: "unknown",
+        cleanup: "unknown",
+      });
+      expect(
+        controllerCodes(
+          new Error("integration.controller.unsettled-operation", {
+            cause: new Error(primary),
+          }),
+          new Error(primary),
+        ),
+      ).toEqual({
+        primary: "integration.controller.unsettled-operation",
+        causal: primary,
+        cleanup: primary,
+      });
+      for (const value of [
+        `${primary}.PRIVATE`,
+        `${primary}\nPRIVATE`,
+        "integration.certification.unlisted",
+      ])
+        expect(controllerCodes(new Error(value))).toBeUndefined();
+      expect(controllerCodes({ message: primary })).toBeUndefined();
+      expect(
+        controllerCodes(
+          new Error("UNKNOWN", {
+            cause: new Error(primary),
+          }),
+        ),
+      ).toBeUndefined();
+    },
+  );
+
+  it("does not read substituted certification messages through accessors or proxies", () => {
+    const primary = SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES["leaked-child"];
+    let reads = 0;
+    const accessor = new Error(primary);
+    Object.defineProperty(accessor, "message", {
+      get: () => {
+        reads += 1;
+        return primary;
+      },
+    });
+    const proxy = new Proxy(new Error(primary), {
+      get: () => {
+        reads += 1;
+        return primary;
+      },
+    });
+    expect(controllerCodes(accessor)).toBeUndefined();
+    expect(controllerCodes(proxy)).toBeUndefined();
+    expect(reads).toBe(0);
+  });
+});
+
+describe("closed first controller failure codes", () => {
+  it.each([
+    "integration.harness-scenario-admission.invalid",
+    "integration.harness-admission.invalid",
+  ])("retains only the fixed direct admission code %s", (primary) => {
+    expect(
+      controllerCodes(
+        new Error(primary, {
+          cause: new Error("integration.images.transport"),
+        }),
+      ),
+    ).toEqual({
+      primary,
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(controllerCodes(new Error(`${primary}.PRIVATE`))).toBeUndefined();
+  });
+  it.each([
+    "preflight",
+    "validate-package",
+    "validate-descriptors",
+    "download-key",
+    "download-manifest",
+    "download-signature",
+    "download-platform-package",
+    "integrity",
+    "download-binary",
+    "download-tarball",
+    "download-attestation",
+    "compile-audit",
+    "verify",
+    "verify-context",
+    "verify-build",
+    "verify-build-input",
+    "verify-build-context",
+    "verify-build-authority",
+    "verify-build-preflight",
+    "verify-build-create",
+    "verify-build-bootstrap",
+    "verify-build-image-build",
+    "verify-build-containment",
+    "verify-build-timeout",
+    "verify-retire",
+    "compile-authority",
+    "publish",
+  ])(
+    "retains one actual material envelope phase %s without inspecting deeper causes",
+    (phase) => {
+      const cause = new Error(`integration.harness-material.${phase}`, {
+        cause: new Error("PRIVATE_DEEP_CAUSE"),
+      });
+      const primary = new Error("integration.harness-material.failed", {
+        cause,
+      });
+      expect(
+        controllerCodes(
+          primary,
+          new Error("integration.isolation.cleanup-inventory"),
+        ),
+      ).toEqual({
+        primary: "integration.harness-material.failed",
+        causal: `integration.harness-material.${phase}`,
+        cleanup: "integration.isolation.cleanup-inventory",
+      });
+    },
+  );
+  it("retains one known controller envelope and first cleanup code", () => {
+    const primary = new Error("integration.controller.unsettled-operation", {
+      cause: new Error("integration.isolation.mockserver-terminal"),
+    });
+    expect(
+      controllerCodes(
+        primary,
+        new Error("integration.isolation.cleanup-network-remove"),
+      ),
+    ).toEqual({
+      primary: "integration.controller.unsettled-operation",
+      causal: "integration.isolation.mockserver-terminal",
+      cleanup: "integration.isolation.cleanup-network-remove",
+    });
+  });
+  it("does not unwrap an arbitrary envelope or walk past a known envelope", () => {
+    const known = new Error("integration.images.transport");
+    expect(
+      controllerCodes(new Error("PRIVATE", { cause: known })),
+    ).toBeUndefined();
+    expect(
+      controllerCodes(
+        new Error("integration.harness-material.failed", {
+          cause: new Error("PRIVATE", { cause: known }),
+        }),
+      ),
+    ).toEqual({
+      primary: "integration.harness-material.failed",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(
+      controllerCodes(
+        new Error("integration.isolation.context", { cause: known }),
+      ),
+    ).toEqual({
+      primary: "integration.isolation.context",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+  });
+});
+describe("closed controller code hostile inputs", () => {
+  it("rejects nonallowlisted suffixes, plain values, accessors and proxies without traps", () => {
+    let traps = 0;
+    const getter = () => {
+      traps++;
+      throw new Error("PRIVATE");
+    };
+    const messageAccessor = Object.defineProperty(new Error(), "message", {
+      get: getter,
+    });
+    const proxy = new Proxy(new Error("integration.images.transport"), {
+      get: getter,
+      getOwnPropertyDescriptor: getter,
+    });
+    for (const value of [
+      messageAccessor,
+      proxy,
+      { message: "integration.images.transport" },
+      new Error(
+        "integration.harness-material.download-attestation-root-upstream",
+      ),
+      new Error(
+        "integration.harness-material.verify-build-image-build.PRIVATE",
+      ),
+      new Error("integration.harness-material.verify-build-unknown"),
+      new Error("integration.isolation.context" + "PRIVATE".repeat(100)),
+    ])
+      expect(controllerCodes(value)).toBeUndefined();
+    const primary = Object.defineProperty(
+      new Error("integration.harness-material.failed"),
+      "cause",
+      { get: getter },
+    );
+    expect(controllerCodes(primary)).toEqual({
+      primary: "integration.harness-material.failed",
+      causal: "unknown",
+      cleanup: "unknown",
+    });
+    expect(traps).toBe(0);
+  });
+});
+
+describe("content-free image preparation request hints", () => {
+  it("keeps an observed pull request failure uncertain even after successful reconciliation", async () => {
+    const primary = recordImageRequestDiagnostic(
+      new Error("integration.images.transport"),
+      "image-pull",
+      "request-error",
+    );
+    const inspectLocalImage = vi.fn(() => Promise.resolve());
+    const pull = createPullOperation({
+      engineCall: () => Promise.reject(primary),
+      inspectLocalImage,
+      platformText: () => "linux/amd64",
+    });
+    const failure = await pull(pullInput).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      message: "integration.images.daemon-uncertain",
+    });
+    expect(inspectLocalImage).toHaveBeenCalledOnce();
+    expect(readImagePreparationDiagnostic(failure)).toEqual({
+      primary: "pull-outcome-unknown",
+      cleanup: "none",
+      trigger: "transport",
+      reconciliation: "completed",
+      request: { phase: "image-pull", outcome: "request-error" },
+    });
+    expect(imagePreparationFailureRequiresOuterHostRetirement(failure)).toBe(
+      true,
+    );
+  });
+  it.each([false, true])(
+    "retains the first observed request hint through preparation cleanup failure=%s and the controller envelope",
+    async (cleanupFails) => {
+      storage.cleanupFails = cleanupFails;
+      const primary = new Error("integration.images.transport");
+      recordImageRequestDiagnostic(
+        primary,
+        "registry-auth",
+        "unexpected-status",
+        503,
+      );
+      recordImageRequestDiagnostic(
+        primary,
+        "daemon-info",
+        "request-error",
+        401,
+      );
+      let failure: unknown;
+      try {
+        await prepareImageOperation(
+          { admitPreparedSet: () => undefined },
+          {
+            ...storageDependencies,
+            engineTransport: () => undefined,
+            prepareImageSet: () => Promise.reject(primary),
+          },
+          [image],
+          {
+            socketIdentityForTesting: {
+              path: "/synthetic.sock",
+              device: "1",
+              inode: "2",
+              mode: "3",
+              owner: "4",
+            },
+          },
+        );
+      } catch (error) {
+        failure = error;
+      }
+      if (cleanupFails)
+        expect(failure).toMatchObject({
+          message: "integration.images.cleanup",
+        });
+      else expect(failure).toBe(primary);
+      expect(storage.cleanups).toBe(1);
+      const expected = {
+        phase: "registry-auth",
+        outcome: "unexpected-status",
+        status: 503,
+      };
+      expect(readImagePreparationDiagnostic(failure)?.request).toEqual(
+        expected,
+      );
+      const wrapped = new IntegrationControllerFailure({
+        primaryCause: new Error("integration.images.transport", {
+          cause: failure,
+        }),
+        retirementRequired: true,
+        stage: "prepareImages",
+      });
+      expect(
+        readControllerFailureDiagnostic(wrapped).imagePreparation?.request,
+      ).toEqual(expected);
+    },
+  );
+  it("keeps invalid phases/outcomes and absent status unknown without property inspection", () => {
+    const failure = Object.defineProperty(new Error("PRIVATE"), "code", {
+      get: () => {
+        throw new Error("must-not-read");
+      },
+    });
+    expect(
+      recordImageRequestDiagnostic(
+        failure,
+        "https://PRIVATE",
+        "request-error",
+        503,
+      ),
+    ).toBe(failure);
+    recordImageRequestDiagnostic(failure, "daemon-info", "PRIVATE", 503);
+    expect(readImageRequestDiagnostic(failure)).toBeUndefined();
+    recordImageRequestDiagnostic(failure, "daemon-info", "request-error", 0);
+    expect(readImageRequestDiagnostic(failure)).toEqual({
+      phase: "daemon-info",
+      outcome: "request-error",
+    });
+    expect(readImagePreparationDiagnostic(failure)).toBeUndefined();
+    expect(formatControllerFailureDiagnostic(failure)).not.toContain("PRIVATE");
+  });
+});
 describe("content-free image preparation diagnostics", () => {
   it.each([
     "transport",

@@ -118,41 +118,36 @@ describe("actual research workflow shell file commands", () => {
     expect(projection.if).toBe("always()");
     expect(projection.env).toEqual({
       OBSERVED_OUTCOME: "${{ steps.research_packet.outcome }}",
-      OBSERVED_ENTERED: "${{ steps.research_packet.outputs.shell_entered }}",
-      OBSERVED_COMMAND_STATUS:
-        "${{ steps.research_packet.outputs.command_status }}",
-      OBSERVED_SHELL_STATUS:
-        "${{ steps.research_packet.outputs.shell_status }}",
-      OBSERVED_SUPERVISOR:
-        "${{ steps.research_packet.outputs.supervisor_observation }}",
-      OBSERVED_SUPERVISOR_CODE:
-        "${{ steps.research_packet.outputs.supervisor_code }}",
-      OBSERVED_SUPERVISOR_SIGNAL:
-        "${{ steps.research_packet.outputs.supervisor_signal }}",
-      OBSERVED_CONTAINED:
-        "${{ steps.research_packet.outputs.supervisor_contained }}",
-      OBSERVED_RESIDUAL:
-        "${{ steps.research_packet.outputs.supervisor_residual }}",
-      OBSERVED_TERMINATION:
-        "${{ steps.research_packet.outputs.supervisor_termination }}",
-      OBSERVED_WITHIN_DEADLINE:
-        "${{ steps.research_packet.outputs.supervisor_within_deadline }}",
-      OBSERVED_FAILURE:
-        "${{ steps.research_packet.outputs.controller_failure }}",
-      OBSERVED_STAGE: "${{ steps.research_packet.outputs.controller_stage }}",
-      OBSERVED_KIND: "${{ steps.research_packet.outputs.controller_kind }}",
-      OBSERVED_CLEANUP:
-        "${{ steps.research_packet.outputs.controller_cleanup }}",
-      OBSERVED_PULL_TRIGGER:
-        "${{ steps.research_packet.outputs.controller_pull_trigger }}",
-      OBSERVED_RECONCILIATION:
-        "${{ steps.research_packet.outputs.controller_reconciliation }}",
-      OBSERVED_MATERIAL_PHASE:
-        "${{ steps.research_packet.outputs.material_phase }}",
-      OBSERVED_UNTRUSTED_BOOTSTRAP_STAGE:
-        "${{ steps.research_packet.outputs.untrusted_bootstrap_stage }}",
-      OBSERVED_UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY:
-        "${{ steps.research_packet.outputs.untrusted_bootstrap_failure_family }}",
+      ...Object.fromEntries(
+        [
+          ["ENTERED", "shell_entered"],
+          ["COMMAND_STATUS", "command_status"],
+          ["SHELL_STATUS", "shell_status"],
+          ["SUPERVISOR", "supervisor_observation"],
+          ["SUPERVISOR_CODE", "supervisor_code"],
+          ["SUPERVISOR_SIGNAL", "supervisor_signal"],
+          ["CONTAINED", "supervisor_contained"],
+          ["RESIDUAL", "supervisor_residual"],
+          ["TERMINATION", "supervisor_termination"],
+          ["WITHIN_DEADLINE", "supervisor_within_deadline"],
+          ["FAILURE", "controller_failure"],
+          ["STAGE", "controller_stage"],
+          ["KIND", "controller_kind"],
+          ["CLEANUP", "controller_cleanup"],
+          ["PULL_TRIGGER", "controller_pull_trigger"],
+          ["RECONCILIATION", "controller_reconciliation"],
+          ["MATERIAL_PHASE", "material_phase"],
+          ["UNTRUSTED_BOOTSTRAP_STAGE", "untrusted_bootstrap_stage"],
+          [
+            "UNTRUSTED_BOOTSTRAP_FAILURE_FAMILY",
+            "untrusted_bootstrap_failure_family",
+          ],
+          ["UNTRUSTED_MAVEN_FAILURE", "untrusted_maven_failure"],
+        ].map(([key, field]) => [
+          `OBSERVED_${key}`,
+          `\u0024{{ steps.research_packet.outputs.${field} }}`,
+        ]),
+      ),
       ...Object.fromEntries(
         [
           "operation",
@@ -382,6 +377,10 @@ describe("closed always-after projection", () => {
         "entry",
         "extract",
         "package",
+        ...["compilation", "resolution", "frontend", "other"].map(
+          (kind) => `package-${kind}`,
+        ),
+        "service-finalization",
         "inventory",
         ...["read", "guard", "internal"].map((kind) => `inventory-${kind}`),
         "output-create",

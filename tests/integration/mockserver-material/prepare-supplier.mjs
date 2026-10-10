@@ -8,10 +8,12 @@ import {
   realpathSync,
   rmdirSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { types } from "node:util";
 import {
   exactDirectory,
   readMaterialSource,
@@ -23,6 +25,7 @@ import {
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientDiagnostic,
 } from "../image-preparation.mjs";
+import { readImageRequestDiagnostic } from "../image-preparation/boundary.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { prepareMockServerBootstrap } from "./prepare-bootstrap.mjs";
@@ -40,6 +43,7 @@ const modules = Object.freeze(
       "supplier-inventory.mjs",
       "build-recipe.mjs",
       "callback-patch.mjs",
+      "lifecycle-patch.mjs",
       "source-archive.mjs",
       "build-tool-archive.mjs",
       "bootstrap-archive.mjs",
@@ -60,6 +64,7 @@ const dockerfile = Buffer.from(
     "WORKDIR /supplier",
     "COPY --chmod=0600 *.mjs /supplier/command/",
     "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+    'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/supplier/maven-repository\', \'/supplier/npm-cache\']) mkdirSync(path, { mode: 0o700 });"]',
     "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
     "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
     'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',
@@ -69,6 +74,31 @@ const dockerfile = Buffer.from(
   ].join("\n"),
 );
 const reserve = 6_000;
+const serviceDockerfile = Buffer.from(
+  [
+    ...dockerfile
+      .toString("utf8")
+      .split("\n")
+      .slice(0, 6)
+      .map((line) =>
+        line.replace('"dependency-research"]', '"cache-seeding"]'),
+      ),
+    "FROM ${BASE_IMAGE}",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/bin /opt/java/bin",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/lib /opt/java/lib",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/conf /opt/java/conf",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/legal /opt/java/legal",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/release /opt/java/release",
+    "COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/NOTICE /opt/java/NOTICE",
+    "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+    'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/opt/control\', \'/config\']) mkdirSync(path, { mode: 0o700 });"]',
+    "COPY --chmod=0600 control-private.pem control-jwks.json /opt/control/",
+    "COPY --chmod=0444 expectations.json /config/expectations.json",
+    "USER 0:0",
+    "ENTRYPOINT [\"/bin/sh\", \"-ec\", \"printf '[agentscope-mockserver:v1 phase=entry]\\n' >&2; umask 077; mkdir /control/private; printf '[agentscope-mockserver:v1 phase=directory]\\n' >&2; cp /opt/control/control-private.pem /control/private/control-private.pem; printf '[agentscope-mockserver:v1 phase=private-key]\\n' >&2; cp /opt/control/control-jwks.json /control/private/control-jwks.json; printf '[agentscope-mockserver:v1 phase=jwks]\\n' >&2; printf '[agentscope-mockserver:v1 phase=java-entry]\\n' >&2; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -Dmockserver.attemptToProxyIfNoMatchingExpectation=false -jar /opt/mockserver.jar -serverPort 1080\"]",
+    "",
+  ].join("\n"),
+);
 const fail = () => {
   throw new Error("integration.mockserver-material.supplier");
 };
@@ -120,7 +150,119 @@ const cleanup = (owned, deadline) => {
   check({ aborted: false }, deadline);
 };
 
-export const researchMockServerSupplier = async (input) => {
+const supplierContextFiles = (archives, service) => {
+  const files = {
+    ...archives,
+    "Supplier.Dockerfile":
+      service === undefined ? dockerfile : serviceDockerfile,
+  };
+  if (service !== undefined) {
+    if (
+      !/^agentscope-int-[a-f0-9]{16}:mockserver$/u.test(service.tag ?? "") ||
+      !Buffer.isBuffer(service.privateKey) ||
+      service.privateKey.length < 1 ||
+      service.privateKey.length > 4096 ||
+      !Buffer.isBuffer(service.jwks) ||
+      service.jwks.length < 1 ||
+      service.jwks.length > 4096 ||
+      !Buffer.isBuffer(service.expectations) ||
+      service.expectations.length < 1 ||
+      service.expectations.length > 1024 * 1024
+    )
+      fail();
+    files["control-private.pem"] = Buffer.from(service.privateKey);
+    files["control-jwks.json"] = Buffer.from(service.jwks);
+    files["expectations.json"] = Buffer.from(service.expectations);
+  }
+  for (const [name, snapshot] of Object.entries(modules)) {
+    if (
+      createHash("sha256").update(snapshot.bytes).digest("hex") !==
+      snapshot.sha256
+    )
+      fail();
+    files[name] = snapshot.bytes;
+  }
+  return files;
+};
+
+const preserveSupplierBuildFailure = (error, dockerClient) => {
+  try {
+    publishBootstrapGpgObservation(
+      preparedDockerClientDiagnostic(dockerClient),
+    );
+  } catch {
+    // Optional observation cannot replace the supplier's original failure.
+  }
+  throw error;
+};
+
+const supplierPrimaryFailure = (error, signal, workSignal) => {
+  let kind = "unknown";
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+    const code = Object.getOwnPropertyDescriptor(error, "code")?.value;
+    if (code === "ETIMEDOUT" || message === "integration.images.timeout")
+      kind = "timeout";
+    else if (message === "integration.images.interrupted") kind = "interrupted";
+    else if (message === "integration.images.command") kind = "command";
+  }
+  return {
+    kind,
+    callerAborted: signal.aborted,
+    preparationAborted: workSignal.aborted,
+  };
+};
+const supplierFailureTiming = (started, buildEntered, deadline) => {
+  const failed = performance.now();
+  const bounded = (value) => Math.min(300_000, Math.max(0, Math.floor(value)));
+  return {
+    elapsedMilliseconds: bounded(failed - started),
+    buildEntryElapsedMilliseconds:
+      buildEntered === undefined ? null : bounded(buildEntered - started),
+    buildEntryRemainingMilliseconds:
+      buildEntered === undefined
+        ? null
+        : bounded(deadline - reserve - buildEntered),
+    buildElapsedMilliseconds:
+      buildEntered === undefined ? null : bounded(failed - buildEntered),
+    remainingMilliseconds: bounded(deadline - failed),
+  };
+};
+const observeSupplierFailure = (phase, dockerClient, failure, timing) => {
+  try {
+    const request = readImageRequestDiagnostic(failure[0]);
+    const bytes = Buffer.from(
+      `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({
+        phase,
+        imagePreparation: preparedDockerClientDiagnostic(dockerClient) ?? null,
+        primaryFailure: supplierPrimaryFailure(...failure),
+        timing,
+        ...(request === undefined ? {} : { request }),
+      })}\n`,
+    );
+    if (bytes.length > 4096) return;
+    writeSync(2, bytes);
+  } catch {
+    // Optional owned diagnostics cannot replace the original failure.
+  }
+};
+
+const cleanupFailedSupplierContext = (
+  owned,
+  created,
+  dockerClient,
+  deadline,
+) => {
+  if (owned !== undefined) {
+    try {
+      cleanup(owned, deadline);
+    } catch {
+      markPreparedDockerClientForOuterHostRetirement(dockerClient);
+    }
+  } else if (created)
+    markPreparedDockerClientForOuterHostRetirement(dockerClient);
+};
+const prepareSupplier = async (input, service) => {
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserve - performance.now();
   if (
@@ -134,16 +276,20 @@ export const researchMockServerSupplier = async (input) => {
     resolve(privateRoot) !== privateRoot
   )
     fail();
+  const started = performance.now();
+  let buildEntered;
   const work = new AbortController();
   const timer = setTimeout(() => work.abort(), Math.floor(budget));
   const workSignal = AbortSignal.any([signal, work.signal]);
   let owned;
   let created = false;
+  let phase = "bootstrap-preflight";
   try {
     // Bootstrap owns its own cutoff at this same absolute deadline. Its original
     // caller signal must remain usable during reserved late-image retirement.
     const bootstrap = await prepareMockServerBootstrap(input);
     check(workSignal, deadline - reserve);
+    phase = "supplier-context";
     publishMaterialResearchPhase("supplier-context");
     // Mutable returned bytes are never accepted on the strength of the receipt.
     const archives = {
@@ -169,15 +315,7 @@ export const researchMockServerSupplier = async (input) => {
     created = true;
     owned = { parent, root: exactDirectory(rootPath), files: [] };
     if (owned.root.dev !== parent.dev) fail();
-    const files = { ...archives, "Supplier.Dockerfile": dockerfile };
-    for (const [name, snapshot] of Object.entries(modules)) {
-      if (
-        createHash("sha256").update(snapshot.bytes).digest("hex") !==
-        snapshot.sha256
-      )
-        fail();
-      files[name] = snapshot.bytes;
-    }
+    const files = supplierContextFiles(archives, service);
     for (const [name, bytes] of Object.entries(files)) {
       check(workSignal, deadline - reserve);
       sameDirectory(owned.root);
@@ -186,11 +324,13 @@ export const researchMockServerSupplier = async (input) => {
       owned.files.push({ path, status: lstatSync(path) });
     }
     check(workSignal, deadline - reserve);
+    phase = "supplier-build";
     publishMaterialResearchPhase("supplier-build");
+    buildEntered = performance.now();
     const inventory = await buildPreparedDockerImage(dockerClient, {
       buildArguments: { BASE_IMAGE: base },
       buildNetwork: "default",
-      buildOutput: "evidence-tar",
+      buildOutput: service === undefined ? "evidence-tar" : "image",
       context: rootPath,
       dockerfile: "Supplier.Dockerfile",
       labels: {
@@ -199,48 +339,55 @@ export const researchMockServerSupplier = async (input) => {
       },
       maximumBuildContextBytes: 384 * 1024 * 1024,
       maximumMilliseconds: Math.floor(deadline - reserve - performance.now()),
-      retirementRequired: false,
+      retirementRequired: service !== undefined,
+      ...(service === undefined ? {} : { tag: service.tag }),
       signal: workSignal,
-    }).catch((error) => {
-      try {
-        publishBootstrapGpgObservation(
-          preparedDockerClientDiagnostic(dockerClient),
-        );
-      } catch {
-        // Optional observation cannot replace the supplier's original failure.
-      }
-      throw error;
-    });
+    }).catch((error) => preserveSupplierBuildFailure(error, dockerClient));
     check(workSignal, deadline - reserve);
+    phase = "supplier-inventory";
     publishMaterialResearchPhase("supplier-inventory");
     if (
-      !Buffer.isBuffer(inventory) ||
-      inventory.length < 1 ||
-      inventory.length > 8 * 1024 * 1024
+      service !== undefined
+        ? !/^sha256-[a-f0-9]{64}$/u.test(inventory ?? "")
+        : !Buffer.isBuffer(inventory) ||
+          inventory.length < 1 ||
+          inventory.length > 8 * 1024 * 1024
     )
       fail();
-    const bytes = Buffer.from(inventory);
+    const bytes = service === undefined ? Buffer.from(inventory) : undefined;
+    phase = "supplier-cleanup";
     publishMaterialResearchPhase("supplier-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     created = false;
     check(signal, deadline);
-    return Object.freeze({
-      evidenceScope: "untrusted-cache-and-jar-research-only",
-      inventory: bytes,
-      bootstrapVerification: bootstrap.verification,
-    });
+    return service === undefined
+      ? Object.freeze({
+          evidenceScope: "untrusted-cache-and-jar-research-only",
+          inventory: bytes,
+          bootstrapVerification: bootstrap.verification,
+        })
+      : Object.freeze({
+          imageId: inventory,
+          tag: service.tag,
+          bootstrapVerification: bootstrap.verification,
+        });
   } catch (error) {
-    if (owned !== undefined) {
-      try {
-        cleanup(owned, deadline);
-      } catch {
-        markPreparedDockerClientForOuterHostRetirement(dockerClient);
-      }
-    } else if (created)
-      markPreparedDockerClientForOuterHostRetirement(dockerClient);
+    observeSupplierFailure(
+      phase,
+      dockerClient,
+      [error, signal, workSignal],
+      supplierFailureTiming(started, buildEntered, deadline),
+    );
+    cleanupFailedSupplierContext(owned, created, dockerClient, deadline);
     throw error;
   } finally {
     clearTimeout(timer);
   }
 };
+
+export const researchMockServerSupplier = (input) =>
+  prepareSupplier(input, undefined);
+/** Actual fresh offline image, not a whole-cache inventory certificate. */
+export const prepareMockServerService = (input, service) =>
+  prepareSupplier(input, service);

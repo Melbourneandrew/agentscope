@@ -5,6 +5,7 @@ import { request } from "node:https";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
+import { types } from "node:util";
 
 import {
   compileNpmAttestationAudit,
@@ -44,6 +45,73 @@ const phaseFailure = (phase) =>
   new Error("integration.harness-material.failed", {
     cause: new Error(`integration.harness-material.${phase}`),
   });
+
+const buildFailurePhases = new Map([
+  ["integration.images.build.input", "input"],
+  ["integration.images.build.context", "context"],
+  ["integration.images.build.authority", "authority"],
+  ["integration.images.containment", "containment"],
+  ["integration.images.timeout", "timeout"],
+  ["integration.images.deadline", "timeout"],
+  ...[
+    "header",
+    "path",
+    "file-type",
+    "file-identity",
+    "aggregate-size",
+    "file-length",
+    "file-race",
+    "directory",
+    "symlink",
+    "special",
+    "policy",
+    "root",
+    "size",
+    "entries",
+    "unknown",
+  ].map((reason) => [`integration.images.build.context-${reason}`, "context"]),
+  ...[
+    "harness-material",
+    "candidate",
+    "testkit",
+    "runtime",
+    "controller",
+  ].flatMap((role) =>
+    ["default", "harness"].map((limit) => [
+      `integration.images.build.context-file-size-${role}-${limit}`,
+      "context",
+    ]),
+  ),
+  ...[
+    "preflight",
+    "builder-create",
+    "builder-bootstrap",
+    "image-build",
+  ].flatMap((operation) =>
+    [
+      "resource-conflict",
+      "build-failed",
+      "bootstrap-failed",
+      "permission-denied",
+      "unknown",
+    ].map((reason) => [
+      `integration.images.build.${operation}.${reason}`,
+      operation === "builder-create"
+        ? "create"
+        : operation === "builder-bootstrap"
+          ? "bootstrap"
+          : operation,
+    ]),
+  ),
+]);
+const materialBuildFailurePhase = (error) => {
+  if (types.isProxy(error) || !types.isNativeError(error))
+    return "verify-build";
+  const message = Object.getOwnPropertyDescriptor(error, "message")?.value;
+  const phase =
+    typeof message === "string" ? buildFailurePhases.get(message) : undefined;
+  return phase === undefined ? "verify-build" : `verify-build-${phase}`;
+};
 
 const remaining = (deadline) => {
   const value = Math.floor(deadline - performance.now());
@@ -228,20 +296,29 @@ const runMaterialVerification = async ({
   const buildDeadline =
     retirementBoundary - materialRetirementReserveMilliseconds;
   onPhase("verify-build");
-  const imageId = await buildPreparedDockerImage(client, {
-    buildArguments: { BASE_IMAGE: material.verifierImage },
-    context,
-    dockerfile: "Verifier.Dockerfile",
-    labels: {
-      "com.agentscope.integration": "true",
-      "com.agentscope.integration.run": runId,
-    },
-    maximumBuildContextBytes: maximumAuditBytes,
-    maximumMilliseconds: remaining(buildDeadline),
-    retirementRequired: true,
-    signal,
-    tag,
-  });
+  let imageId;
+  try {
+    imageId = await buildPreparedDockerImage(client, {
+      buildArguments: { BASE_IMAGE: material.verifierImage },
+      context,
+      dockerfile: "Verifier.Dockerfile",
+      labels: {
+        "com.agentscope.integration": "true",
+        "com.agentscope.integration.run": runId,
+      },
+      maximumBuildContextBytes:
+        material.platformPackage === undefined
+          ? maximumAuditBytes
+          : material.platformPackage.bytes + maximumAuditBytes,
+      maximumMilliseconds: remaining(buildDeadline),
+      retirementRequired: true,
+      signal,
+      tag,
+    });
+  } catch (error) {
+    onPhase(materialBuildFailurePhase(error));
+    throw error;
+  }
   const retirementDeadline = Math.min(
     retirementBoundary,
     performance.now() + materialRetirementReserveMilliseconds,
@@ -388,11 +465,14 @@ const runSignedManifestVerification = async ({
   root,
   runId,
   signal,
+  onPhase,
 }) => {
   const context = resolve(root, "verifier");
   mkdirSync(context, { mode: 0o700 });
   for (const name of ["key", "manifest", "signature"])
     writeExclusive(resolve(context, name), objects[name]);
+  if (material.platformPackage !== undefined)
+    writeExclusive(resolve(context, "platform.tgz"), objects.platformPackage);
   const verifier = await runMaterialVerification({
     client: dockerClient,
     deadline,
@@ -403,10 +483,17 @@ const runSignedManifestVerification = async ({
       signatureHashAlgorithm: material.signingKey.signatureHashAlgorithm,
       signerFingerprint: material.signingKey.signerFingerprint,
       uid: material.signingKey.uid,
+      ...(material.platformPackage === undefined
+        ? {}
+        : {
+            platformPackage: material.platformPackage,
+            maximumMilliseconds: remaining(deadline),
+          }),
     },
     root,
     runId,
     signal,
+    onPhase,
   });
   return {
     primaryFingerprint: material.signingKey.fingerprint,
@@ -421,8 +508,42 @@ const runSignedManifestVerification = async ({
   };
 };
 
+const signedMaterialDescriptors = (material) => {
+  const descriptors = {
+    key: material.signingKey,
+    manifest: material.manifest,
+    signature: material.signature,
+    ...(material.platformPackage === undefined
+      ? {}
+      : {
+          platformPackage: {
+            ...material.platformPackage,
+            url: material.platformPackage.tarballUrl,
+          },
+        }),
+  };
+  const totalBytes = Object.values(descriptors).reduce(
+    (total, descriptor) => total + descriptor.bytes,
+    0,
+  );
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes < 1 ||
+    totalBytes > maximumAggregateArchiveBytes ||
+    !Number.isSafeInteger(material.binary.bytes) ||
+    material.binary.bytes < 1 ||
+    material.binary.bytes > 384 * 1024 * 1024 ||
+    (material.platformPackage !== undefined &&
+      material.platformPackage.bytes + maximumAuditBytes >
+        maximumAggregateArchiveBytes)
+  )
+    fail();
+  return descriptors;
+};
+
 const prepareSignedManifestHarnessMaterial = async (input) => {
   let owned;
+  let phase = "preflight";
   try {
     const {
       dockerClient,
@@ -448,25 +569,26 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
     owned = exactDirectory(root);
     if (owned.dev !== parent.dev || !root.startsWith(`${parent.path}/`)) fail();
     const deadline = performance.now() + maximumMilliseconds;
-    const descriptors = {
-      binary: material.binary,
-      key: material.signingKey,
-      manifest: material.manifest,
-      signature: material.signature,
-    };
-    const totalBytes = Object.values(descriptors).reduce(
-      (total, descriptor) => total + descriptor.bytes,
-      0,
-    );
+    phase = "validate-descriptors";
+    const descriptors = signedMaterialDescriptors(material);
+    const objects = {};
+    for (const [name, descriptor] of Object.entries(descriptors)) {
+      phase = {
+        key: "download-key",
+        manifest: "download-manifest",
+        signature: "download-signature",
+        platformPackage: "download-platform-package",
+      }[name];
+      objects[name] = await download(descriptor, signal, deadline);
+    }
+    phase = "integrity";
     if (
-      !Number.isSafeInteger(totalBytes) ||
-      totalBytes < 1 ||
-      totalBytes > maximumAggregateArchiveBytes
+      material.platformPackage !== undefined &&
+      `sha512-${createHash("sha512").update(objects.platformPackage).digest("base64")}` !==
+        material.platformPackage.integrity
     )
       fail();
-    const objects = {};
-    for (const [name, descriptor] of Object.entries(descriptors))
-      objects[name] = await download(descriptor, signal, deadline);
+    phase = "verify-context";
     const verification = await runSignedManifestVerification({
       deadline,
       dockerClient,
@@ -475,7 +597,15 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       root,
       runId,
       signal,
+      onPhase: (value) => {
+        phase = value;
+      },
     });
+    // The existing verifier has retired before expanded executable ingress.
+    if (objects.platformPackage !== undefined) objects.platformPackage.fill(0);
+    phase = "download-binary";
+    objects.binary = await download(material.binary, signal, deadline);
+    phase = "compile-authority";
     const authority = compileVerifiedSignedManifestHarnessMaterial({
       binary: objects.binary,
       evidenceId,
@@ -485,6 +615,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       signingKeyBytes: objects.key,
       verification,
     });
+    phase = "publish";
     if (performance.now() >= deadline) fail();
     sameDirectory(owned);
     for (const name of ["verifier"])
@@ -504,7 +635,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
       fail();
     }
     return token;
-  } catch (error) {
+  } catch {
     if (owned !== undefined) {
       try {
         sameDirectory(owned);
@@ -513,12 +644,7 @@ const prepareSignedManifestHarnessMaterial = async (input) => {
         // Outer disposable-host reconciliation retains ambiguous state.
       }
     }
-    if (
-      error instanceof Error &&
-      error.message === "integration.harness-material.failed"
-    )
-      throw error;
-    fail();
+    throw phaseFailure(phase);
   }
 };
 

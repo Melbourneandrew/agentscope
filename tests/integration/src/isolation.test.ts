@@ -75,7 +75,13 @@ const planFor = (
       candidate.executionMode === executionMode &&
       candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
-  return createIsolationPlan({
+  return planForScenario(scenario, token);
+};
+const planForScenario = (
+  scenario: (typeof manifest.scenarios)[number],
+  token: string,
+) =>
+  createIsolationPlan({
     scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
@@ -92,7 +98,6 @@ const planFor = (
     maximumParallelScenarios: 2,
     scenarioTimeoutMilliseconds: 300_000,
   });
-};
 
 const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   policyVersion: 1,
@@ -864,33 +869,16 @@ describe("scenario isolation", () => {
     expect(() => planFor("not-a-token")).toThrow("integration.isolation.plan");
   });
 
-  it("reserves a control volume only for the real Codex gate scenario", () => {
+  it("reserves a private control volume for every upstream service consumer", () => {
     const ordinary = planFor("0123456789abcdef");
     const scenario = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
     if (scenario === undefined) throw new Error("integration.test.scenario");
-    const codex = createIsolationPlan({
-      scenario,
-      manifestIdentity: manifest.manifestIdentity,
-      candidate,
-      runToken: "0123456789abcdef",
-      baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
-      mockServerImageIdentity: preparedIdentityFor(
-        scenario.mockServerImage,
-        "b",
-      ),
-      selection: {
-        selectionVersion: 2,
-        manifestIdentity: manifest.manifestIdentity,
-        mode: "scenario",
-        selector: { scenarioId: scenario.scenarioId },
-        scenarioIds: [scenario.scenarioId],
-      },
-      maximumParallelScenarios: 2,
-      scenarioTimeoutMilliseconds: 300_000,
-    });
-    expect(ordinary.controlVolumeName).toBeNull();
+    const codex = planForScenario(scenario, "0123456789abcdef");
+    expect(ordinary.controlVolumeName).toBe(
+      "agentscope-int-0123456789abcdef-control",
+    );
     expect(codex.controlVolumeName).toBe(
       "agentscope-int-0123456789abcdef-control",
     );
@@ -923,6 +911,7 @@ describe("scenario isolation", () => {
       "build",
       "build-mockserver",
       "network",
+      "control-volume",
       "collector",
       "retrieval",
       "mockserver",
@@ -933,6 +922,7 @@ describe("scenario isolation", () => {
       "container:agentscope-int-0123456789abcdef-retrieval",
       "container:agentscope-int-0123456789abcdef-mockserver",
       "remove-network:agentscope-int-0123456789abcdef-network",
+      "remove-control-volume:agentscope-int-0123456789abcdef-control",
       "image:agentscope-int-0123456789abcdef:candidate",
       "image:agentscope-int-0123456789abcdef:mockserver",
       "context:0123456789abcdef",
@@ -1041,6 +1031,294 @@ describe("scenario isolation outcomes", () => {
 
 // eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
+  it("retains the observed work phase when rejection has no value", async () => {
+    const fixture = driver();
+    fixture.inspectExecutionPolicy.mockRejectedValueOnce(undefined);
+    const cleanupCause = new Error("private-cleanup-cause");
+    const cleanupFailure = new Error(
+      "integration.isolation.cleanup-network-remove",
+      { cause: cleanupCause },
+    );
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      cleanupFailure,
+    );
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.cleanup-network-remove",
+        cause: cleanupCause,
+      });
+      expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe("failed");
+      expect(String(diagnostic.mock.calls[0]?.[0])).toContain(
+        '"originalWorkPhase":"inspect-policy"',
+      );
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it("bounds the full fixed removal vector and never retains error contents", async () => {
+    const fixture = driver();
+    fixture.removeContainer.mockRejectedValue(new Error("private-container"));
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValue(
+      new Error("integration.isolation.cleanup-network-remove"),
+    );
+    vi.spyOn(fixture.implementation, "removeControlVolume").mockRejectedValue(
+      new Error("integration.images.containment"),
+    );
+    vi.spyOn(fixture.implementation, "removeImage")
+      .mockRejectedValueOnce(new Error("integration.images.deadline"))
+      .mockRejectedValueOnce(new Error("integration.images.docker-client"));
+    vi.spyOn(fixture.implementation, "removeContext").mockRejectedValue(
+      new Error("private-context"),
+    );
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("integration.isolation.cleanup-scenario-container");
+      const output = String(diagnostic.mock.calls[0]?.[0]);
+      expect(
+        JSON.parse(
+          output.slice("integration.isolation.cleanup-diagnostic:".length),
+        ),
+      ).toMatchObject({
+        originalWorkPhase: null,
+        originalWorkFailureReason: null,
+        removalFailureCount: 9,
+        failedRemovals: [
+          { operation: "scenario-container", reason: "unknown" },
+          { operation: "collector-container", reason: "unknown" },
+          { operation: "retrieval-container", reason: "unknown" },
+          { operation: "mock-server-container", reason: "unknown" },
+          { operation: "network", reason: "network-remove" },
+          { operation: "control-volume", reason: "containment" },
+          { operation: "scenario-image", reason: "deadline" },
+          { operation: "mock-server-image", reason: "docker-client" },
+          { operation: "context", reason: "unknown" },
+        ],
+      });
+      expect(Buffer.byteLength(output)).toBeLessThan(2048);
+      expect(output).not.toContain("private-");
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it.each([
+    ["inspectExecutionPolicy", "inspect-policy"],
+    ["buildImage", "build-candidate"],
+    ["buildMockServerImage", "build-mock"],
+    ["createNetwork", "create-network"],
+    ["createControlVolume", "create-control"],
+    ["startCollector", "start-collector"],
+    ["startRetrieval", "start-retrieval"],
+    ["startMockServer", "start-mock"],
+    ["runScenario", "run-scenario"],
+    ["joinMockServer", "join-mock"],
+  ] as const)(
+    "retains only the original fixed work phase %s",
+    async (method, phase) => {
+      const fixture = driver();
+      const workFailure = new Error("private-work-canary");
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      vi.spyOn(fixture.implementation, method).mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      vi.spyOn(
+        fixture.implementation,
+        "removeControlVolume",
+      ).mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-control-volume"),
+      );
+      try {
+        await expect(
+          executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          ),
+        ).rejects.toMatchObject({
+          message: "integration.isolation.cleanup-network-remove",
+          cause: workFailure,
+        });
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(
+          JSON.parse(
+            output.slice("integration.isolation.cleanup-diagnostic:".length),
+          ),
+        ).toMatchObject({
+          originalWorkPhase: phase,
+          originalWorkFailureReason: "unknown",
+          removalFailureCount: 2,
+          failedRemovals: [
+            { operation: "network", reason: "network-remove" },
+            { operation: "control-volume", reason: "control-volume-identity" },
+          ],
+        });
+        expect(output).not.toContain("private-work-canary");
+        expect(fixture.calls.at(-1)).toBe("evidence");
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
+  it("keeps diagnostic getters and a throwing sink out of cleanup precedence", async () => {
+    const fixture = driver();
+    const workFailure = new Error("private-work-canary");
+    const cleanupFailure = new Error("private-cleanup-canary");
+    const getter = vi.fn(() => "private-getter-canary");
+    Object.defineProperty(cleanupFailure, "message", { get: getter });
+    fixture.runScenario.mockRejectedValueOnce(workFailure);
+    fixture.removeContainer.mockRejectedValueOnce(cleanupFailure);
+    const diagnostic = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => {
+        throw new Error("private-sink-canary");
+      });
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.cleanup-scenario-container",
+        cause: workFailure,
+      });
+      expect(getter).not.toHaveBeenCalled();
+      expect(String(diagnostic.mock.calls[0]?.[0])).not.toMatch(
+        /private-(?:work|cleanup|getter|sink)-canary/u,
+      );
+      expect(String(diagnostic.mock.calls[0]?.[0])).toContain(
+        '"reason":"unknown"',
+      );
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it.each([
+    ["integration.mockserver.control", "mockserver-control"],
+    ["integration.isolation.mockserver-terminal", "mockserver-terminal"],
+  ] as const)(
+    "retains join failure %s separately from removal reasons",
+    async (message, reason) => {
+      const fixture = driver();
+      const workFailure = new Error(message);
+      vi.spyOn(fixture.implementation, "joinMockServer").mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      try {
+        await expect(
+          executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          ),
+        ).rejects.toMatchObject({
+          message: "integration.isolation.cleanup-network-remove",
+          cause: workFailure,
+        });
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(
+          JSON.parse(
+            output.slice("integration.isolation.cleanup-diagnostic:".length),
+          ),
+        ).toMatchObject({
+          originalWorkPhase: "join-mock",
+          originalWorkFailureReason: reason,
+          failedRemovals: [{ operation: "network", reason: "network-remove" }],
+        });
+        expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe(
+          "failed",
+        );
+        expect(Buffer.byteLength(output)).toBeLessThan(2048);
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
+  it.each(["getter", "proxy"] as const)(
+    "does not inspect hostile work failure %s",
+    async (kind) => {
+      const fixture = driver();
+      const trap = vi.fn(() => {
+        throw new Error("private-work-trap");
+      });
+      const native = new Error("private-work-canary");
+      const workFailure =
+        kind === "proxy"
+          ? new Proxy(native, {
+              get: trap,
+              getOwnPropertyDescriptor: trap,
+              getPrototypeOf: trap,
+            })
+          : Object.defineProperty(native, "message", { get: trap });
+      vi.spyOn(fixture.implementation, "joinMockServer").mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      try {
+        let observed: unknown;
+        try {
+          await executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          );
+        } catch (error) {
+          observed = error;
+        }
+        expect(observed).toBeInstanceOf(Error);
+        expect(Object.getOwnPropertyDescriptor(observed, "cause")?.value).toBe(
+          workFailure,
+        );
+        expect(trap).not.toHaveBeenCalled();
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(output).toContain('"originalWorkFailureReason":"unknown"');
+        expect(output).not.toContain("private-");
+        expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe(
+          "failed",
+        );
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
   it("records unavailable runtime inspection and still tears down", async () => {
     const fixture = driver();
     fixture.inspectExecutionPolicy.mockRejectedValueOnce(
@@ -1088,7 +1366,7 @@ describe("scenario cleanup evidence", () => {
       remaining: emptyCleanupInventory(),
     });
     expect(diagnostic).toHaveBeenCalledWith(
-      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0}}\n',
+      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0},"originalWorkPhase":null,"originalWorkFailureReason":null,"failedRemovals":[{"operation":"scenario-container","reason":"unknown"}]}\n',
     );
     diagnostic.mockRestore();
   });
@@ -1275,7 +1553,7 @@ describe("scenario evidence validation", () => {
       remaining: null,
     });
     expect(diagnostic).toHaveBeenCalledWith(
-      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
+      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null,"originalWorkPhase":null,"originalWorkFailureReason":null,"failedRemovals":[]}\n',
     );
     diagnostic.mockRestore();
   });

@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { compileVerifiedSignedManifestHarnessMaterial } from "./harness-material.js";
 
 import { sha256 } from "./canonical.js";
 import {
@@ -7,7 +9,34 @@ import {
 } from "./harness-scenario-admission.js";
 
 const digest = (character: string): string => `sha256-${character.repeat(64)}`;
+// Deliberate grammar-only unit input, never actual-capture admission evidence.
+const componentFixture = (version = "1.2.3") => {
+  const base = parseHarnessSanitizedFixture(
+    JSON.parse(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+        ),
+        "utf8",
+      ),
+    ),
+  );
+  return {
+    ...base,
+    harnessVersion: version,
+    governance: {
+      ...base.governance,
+      representative: {
+        scenarioId: "codex-component-case",
+        representativeVersion: version,
+        evidenceSlot: "codex-component-v1",
+      },
+    },
+  };
+};
 const fixture = () => ({
+  componentFixture: componentFixture(),
   candidateDigest: digest("a"),
   destinationCombinationIdentity: digest("b"),
   evidence: {
@@ -102,15 +131,171 @@ const fixture = () => ({
   },
 });
 
+it("refuses hostile consumed metadata without invoking getters or proxy traps", () => {
+  const input = fixture();
+  const genuine = componentFixture();
+  let observed = 0;
+  const getter = () => {
+    observed++;
+    throw new Error("PRIVATE_RAW_CANARY");
+  };
+  const rootAccessor = Object.defineProperty({ ...genuine }, "harnessId", {
+    get: getter,
+  });
+  const authorityAccessor = Object.defineProperty({}, "status", {
+    get: getter,
+  });
+  const proxy = new Proxy(genuine, { getPrototypeOf: getter, ownKeys: getter });
+  const revoked = Proxy.revocable(genuine, {});
+  revoked.revoke();
+  for (const value of [
+    proxy,
+    revoked.proxy,
+    rootAccessor,
+    {
+      ...genuine,
+      governance: {
+        ...genuine.governance,
+        provenance: {
+          ...genuine.governance.provenance,
+          artifactAuthority: authorityAccessor,
+        },
+      },
+    },
+    { ...genuine, fixtureVersion: 2 },
+    { ...genuine, governance: { ...genuine.governance, representative: [] } },
+  ])
+    expect(() =>
+      compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
+  expect(observed).toBe(0);
+});
+
+it("consumes reviewed governance identity, not the test-only native payload grammar", () => {
+  const input = fixture();
+  const { fixtureVersion, harnessId, harnessVersion, governance } =
+    input.componentFixture;
+  const seed = compileHarnessAdmissionSeed({
+    ...input,
+    componentFixture: { fixtureVersion, harnessId, harnessVersion, governance },
+  });
+  expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+  expect(seed.component.fixtureDigest).toBe(digest("3"));
+});
+
 // eslint-disable-next-line max-lines-per-function -- complete bridge matrix
 describe("real harness scenario admission bridge", () => {
+  it("refuses missing, malformed, foreign and version-unbound component fixtures", () => {
+    const input = fixture();
+    const genuine = componentFixture();
+    for (const value of [
+      undefined,
+      {},
+      { ...genuine, harnessId: "claude-code" },
+      { ...genuine, harnessVersion: "9.9.9" },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            scenarioId: "invalid/case",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            evidenceSlot: "invalid/slot",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          provenance: {
+            ...genuine.governance.provenance,
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    ])
+      expect(() =>
+        compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+      ).toThrow("integration.harness-scenario-admission.invalid");
+  });
   it("binds material, component, catalog, platform, and scenario identities", () => {
     const input = fixture();
     const seed = compileHarnessAdmissionSeed(input);
     expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
     expect(seed.component.fixtureDigest).toBe(digest("3"));
+    expect(seed.scenarioId).toBe(input.scenario.scenarioId);
+    expect(seed.harness.evidenceSlot).toBe(
+      input.evidence.admission.evidenceSlot,
+    );
+    expect(seed.execution.mode).toBe(input.scenario.executionMode);
     expect(seed.catalogRowIdentity).toMatch(/^sha256-[a-f0-9]{64}$/u);
     expect(Object.isFrozen(seed)).toBe(true);
+  });
+
+  it("does not use authenticated component provenance as prepared runtime authority", () => {
+    const input = fixture();
+    const component = input.componentFixture;
+    const seed = compileHarnessAdmissionSeed({
+      ...input,
+      componentFixture: {
+        ...component,
+        governance: {
+          ...component.governance,
+          provenance: {
+            captureKind: "disposable-hermetic",
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    });
+    expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+    expect(seed.harness.artifactDigest).not.toBe(digest("f"));
+  });
+
+  it.each([
+    {
+      captureKind: "unknown",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "synthetic",
+      artifactAuthority: { status: "unresolved", reason: "other" },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: "malformed" },
+    },
+  ])("refuses malformed component provenance %#", (provenance) => {
+    const input = fixture();
+    expect(() =>
+      compileHarnessAdmissionSeed({
+        ...input,
+        componentFixture: {
+          ...input.componentFixture,
+          governance: { ...input.componentFixture.governance, provenance },
+        },
+      }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
   });
 
   it("rejects certification fixtures and cross-scenario material", () => {
@@ -147,8 +332,19 @@ describe("real harness scenario admission bridge", () => {
 
   it("uses the same admission seam for a signed-manifest distribution", () => {
     const input = fixture();
+    const binary = Buffer.from("inert binary"),
+      signature = Buffer.from("inert signature"),
+      key = Buffer.from("inert public key");
+    const hash = (bytes: Uint8Array) =>
+      createHash("sha256").update(bytes).digest("hex");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        platforms: { "linux-x64": { checksum: hash(binary) } },
+      }),
+    );
     const signed = {
       ...input,
+      componentFixture: componentFixture("2.1.89"),
       evidence: {
         ...input.evidence,
         representativeVersion: "2.1.89",
@@ -161,24 +357,24 @@ describe("real harness scenario admission bridge", () => {
           verifierImage: `node@sha256:${"a".repeat(64)}`,
           binary: {
             url: "https://downloads.vendor.invalid/2.1.89/linux-x64/tool",
-            bytes: 1,
-            sha256: "a".repeat(64),
+            bytes: binary.length,
+            sha256: hash(binary),
             executableName: "tool",
           },
           manifest: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json",
-            bytes: 1,
-            sha256: "b".repeat(64),
+            bytes: manifest.length,
+            sha256: hash(manifest),
           },
           signature: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json.sig",
-            bytes: 1,
-            sha256: "c".repeat(64),
+            bytes: signature.length,
+            sha256: hash(signature),
           },
           signingKey: {
             url: "https://downloads.vendor.invalid/keys/release.asc",
-            bytes: 1,
-            sha256: "d".repeat(64),
+            bytes: key.length,
+            sha256: hash(key),
             fingerprint: "A".repeat(40),
             signerFingerprint: "A".repeat(40),
             signatureHashAlgorithm: "sha512" as const,
@@ -191,7 +387,35 @@ describe("real harness scenario admission bridge", () => {
         },
       },
     };
+    const record = compileVerifiedSignedManifestHarnessMaterial({
+      binary,
+      evidenceId: input.evidence.evidenceId,
+      material: signed.evidence.material,
+      manifestBytes: manifest,
+      signatureBytes: signature,
+      signingKeyBytes: key,
+      verification: {
+        primaryFingerprint: "A".repeat(40),
+        signerFingerprint: "A".repeat(40),
+        uid: signed.evidence.material.signingKey.uid,
+        manifestSha256: hash(manifest),
+        signatureHashAlgorithm: "sha512",
+        verifier: {
+          controllerSha256: "d".repeat(64),
+          image: signed.evidence.material.verifierImage,
+          imageConfigDigest: `sha256:${"b".repeat(64)}`,
+          imageId: digest("c"),
+          imageManifestDigest: `sha256:${"e".repeat(64)}`,
+          name: "gpg",
+        },
+      },
+    });
+    signed.materialIdentity = record.materialIdentity;
+    expect(record.materialIdentity).not.toBe(
+      sha256(JSON.stringify(signed.evidence.material)),
+    );
     const seed = compileHarnessAdmissionSeed(signed);
+    expect(seed.harness.artifactDigest).toBe(record.materialIdentity);
     expect(seed.harness.distributionReference).toBe(
       "signed-manifest:vendor-tool@2.1.89#linux-x64",
     );
@@ -232,3 +456,6 @@ describe("real harness scenario admission bridge", () => {
       );
   });
 });
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";

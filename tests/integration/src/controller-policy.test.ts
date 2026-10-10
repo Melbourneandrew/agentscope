@@ -8,31 +8,1409 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { types } from "node:util";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
-import { SUBSTRATE_CERTIFICATION_CASES } from "./substrate-certification.js";
+import {
+  leakedChildReadinessIsValid,
+  leakedChildReadinessWasObserved,
+  SUBSTRATE_CERTIFICATION_CASES,
+  SUBSTRATE_CERTIFICATION_PREDICATES,
+} from "./substrate-certification.js";
+import { sanitizeFixtureResult } from "./operations.js";
+import {
+  completionCopySourceMissingResponseMatches,
+  knownFailureCode,
+  readOtlpObservationFailure,
+} from "./controller-failure-diagnostic.js";
 
-const expectCodexSettlementBeforeTraceSearch = (scenario: string): void => {
-  const reporterSettlement = scenario.indexOf(
-    "const reporterSettled = localSqliteReporterSettled(",
+type OperationDiagnosticFunctions = {
+  mockServerProducerRefusalObservation: (output: unknown) => unknown;
+  joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+  publishOperationFailureDiagnostic: (
+    slot: string,
+    error: unknown,
+    plan?: object,
+    processContext?:
+      | {
+          signal: AbortSignal;
+          joinSignal?: AbortSignal;
+          deadline?: number;
+        }
+      | {
+          leakedChild: {
+            fixtureCaptured: boolean;
+            complete: boolean;
+            readinessValid: boolean;
+          };
+        },
+  ) => void;
+};
+const terminalMockContainer = (containerId: string, runId: string) => ({
+  Id: containerId,
+  Name: "/owned",
+  Config: {
+    Labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": runId,
+    },
+  },
+  State: {
+    Status: "exited",
+    Running: false,
+    Paused: false,
+    Restarting: false,
+    OOMKilled: false,
+    Dead: false,
+    Pid: 0,
+    ExitCode: 0,
+    Error: "",
+    FinishedAt: "2026-01-01T00:00:00Z",
+  },
+});
+const diagnosticDockerFixture =
+  (
+    step: (slot: string, value?: unknown) => unknown,
+    state: {
+      now: number;
+      logs: unknown;
+      logsFail: boolean;
+      logsAdvance: number;
+      afterLogs: (() => void) | undefined;
+      signals: AbortSignal[];
+    },
+    containerId: string,
+    container: unknown,
+  ) =>
+  (
+    args: string[],
+    signal: AbortSignal,
+    options: {
+      terminal: boolean;
+      timeout?: number;
+      maxBuffer?: number;
+      mutationCapable?: boolean;
+    },
+  ) => {
+    state.signals.push(signal);
+    if (args[0] !== "cp") expect(signal.aborted).toBe(false);
+    expect(options.terminal).toBe(true);
+    if (args[0] === "logs") {
+      expect(args).toEqual(["logs", "--tail", "16", containerId]);
+      expect(options.timeout).toBe(1000 - state.now);
+      expect(options.maxBuffer).toBe(65536);
+      expect(options.mutationCapable).toBeUndefined();
+      step("join-producer-log-observation");
+      state.now += state.logsAdvance;
+      state.afterLogs?.();
+      if (state.logsFail) throw new Error("PRIVATE logs");
+      return state.logs;
+    }
+    if (args[0] === "cp")
+      return step(
+        args[1]?.endsWith("requests.json")
+          ? "join-ledger-requests"
+          : "join-ledger-complete",
+      );
+    return step(
+      args[1] === "wait" ? "join-container-wait" : "join-container-inspect",
+      {
+        stdout: args[1] === "wait" ? "0\n" : JSON.stringify([container]),
+      },
+    );
+  };
+const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const operationFailureSlots =");
+  const end = source.indexOf("const createScenarioContainer =", start);
+  const runId = "a".repeat(16);
+  const containerId = "b".repeat(64);
+  const plan = {
+    runId,
+    scenarioId: "codex-tui-trace-smoke",
+    mockServerName: "owned",
+  };
+  const error = new Error("integration.mockserver.control");
+  const calls: string[] = [];
+  const output: string[] = [];
+  const state = {
+    uncertain: false,
+    observerFails: false,
+    now: 100,
+    failure: error as unknown,
+    beforeFailure: undefined as (() => void) | undefined,
+    logs: { stdout: "", stderr: "" } as unknown,
+    logsFail: false,
+    logsAdvance: 0,
+    afterLogs: undefined as (() => void) | undefined,
+    signals: [] as AbortSignal[],
+    timeouts: [] as number[],
+  };
+  const step = (slot: string, value?: unknown) => {
+    calls.push(slot);
+    if (slot === failAt) {
+      state.uncertain = true;
+      state.beforeFailure?.();
+      throw state.failure;
+    }
+    return value;
+  };
+  const container = terminalMockContainer(containerId, runId);
+  const functions = runInNewContext(
+    `${source.slice(start, end)}; ({ joinMockServer, publishOperationFailureDiagnostic, mockServerProducerRefusalObservation })`,
+    {
+      Buffer,
+      AbortSignal: {
+        any: (signals: AbortSignal[]) => AbortSignal.any(signals),
+        timeout: (milliseconds: number) => {
+          state.timeouts.push(milliseconds);
+          return AbortSignal.timeout(milliseconds);
+        },
+      },
+      types,
+      completionCopySourceMissingResponseMatches,
+      knownFailureCode,
+      readOtlpObservationFailure,
+      preparedDockerClient: {},
+      preparedDockerClientRequiresOuterHostRetirement: () => {
+        if (state.observerFails) throw new Error("PRIVATE observer");
+        return state.uncertain;
+      },
+      writeSync: (_fd: number, bytes: Buffer) => {
+        if (sinkFails) throw new Error("PRIVATE sink");
+        output.push(bytes.toString("utf8"));
+      },
+      mockServerContainerIdentities: new Map([[runId, containerId]]),
+      mockServerJoinDeadlines: new Map([[runId, 1000]]),
+      linuxBootMonotonicMilliseconds: () => {
+        if (calls.length === 0) step("join-deadline");
+        return state.now;
+      },
+      assertControlVolumeCurrent: (_plan: object, signal: AbortSignal) => {
+        expect(signal.aborted).toBe(false);
+        step("join-control-volume");
+      },
+      mockServerControls: new Map([
+        [runId, { host: "mockserver", material: {} }],
+      ]),
+      openMockServerControl: (input: { deadline: number }) => {
+        expect(input.deadline).toBe(1000);
+        step("join-control-open");
+        return {
+          stop: () => step("join-control-stop", { status: 200 }),
+          snapshot: () => ({ entries: [] }),
+        };
+      },
+      verifyMockServerControlBoundary: () => step("join-control-boundary"),
+      dockerWithSignal: diagnosticDockerFixture(
+        step,
+        state,
+        containerId,
+        container,
+      ),
+      artifactsRoot: "/owned",
+      resolve,
+      mkdirSync: () => step("join-ledger-directory"),
+      readMockServerFinalLedger: (input: { deadline: number }) => {
+        expect(input.deadline).toBe(1000);
+        return step("join-ledger-read", []);
+      },
+      projectMockServerRequests: (value: unknown) => value,
+      assertMockServerFinalLedger: () => step("join-ledger-assert"),
+      fixtureResults: new Map(),
+      modelRoutes: {},
+      fixtureTrafficObservations: new Map(),
+      manifest: { scenarios: [plan] },
+      joinCollectorObservations: (
+        _plan: object,
+        _signal: AbortSignal,
+        deadline: number,
+      ) => {
+        expect(deadline).toBe(1000);
+        return step("join-collector-read", []);
+      },
+      completeCodexCollectorFixture: () => step("join-collector-project"),
+      completeClaudeCollectorFixture: () => step("join-collector-project"),
+    },
+  ) as OperationDiagnosticFunctions;
+  return { source, functions, plan, error, calls, output, state, container };
+};
+
+describe("actual-source optional original operation diagnostics", () => {
+  it.each([
+    "join-deadline",
+    "join-control-volume",
+    "join-control-open",
+    "join-control-boundary",
+    "join-control-stop",
+    "join-container-wait",
+    "join-container-inspect",
+    "join-ledger-directory",
+    "join-ledger-requests",
+    "join-ledger-complete",
+    "join-ledger-read",
+    "join-ledger-assert",
+    "join-collector-read",
+    "join-collector-project",
+  ])(
+    "retains exact %s failure before cleanup without changing its identity or deadline",
+    async (slot) => {
+      const f = operationDiagnosticFixture(slot);
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.calls.at(-1)).toBe(slot);
+      expect(f.output).toHaveLength(slot === "join-ledger-complete" ? 2 : 1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(
+        JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+      ).toEqual({
+        slot,
+        runId: f.plan.runId,
+        code: "integration.mockserver.control",
+        clientRetirementRequired: true,
+        ...(slot === "join-collector-project"
+          ? { collectorRefusal: null }
+          : {}),
+        ...(slot === "join-ledger-complete"
+          ? {
+              process: {
+                nativeError: true,
+                exitCode: null,
+                errorCode: "unknown",
+                signal: null,
+                killed: null,
+                originalAborted: false,
+                joinAborted: false,
+                deadline: "live",
+                completionSourceMissingResponse: false,
+              },
+            }
+          : {}),
+      });
+    },
   );
-  const settlementGate = scenario.indexOf(
-    'hookCommandObservation?.outcome !== "completed" ||',
-    reporterSettlement,
+  it("leaves a completed join silent and preserves actual boundary order", async () => {
+    const f = operationDiagnosticFixture();
+    await f.functions.joinMockServer(f.plan, new AbortController().signal);
+    expect(f.output).toEqual([]);
+    expect(f.calls).toEqual([
+      "join-deadline",
+      "join-control-volume",
+      "join-control-open",
+      "join-control-boundary",
+      "join-control-stop",
+      "join-container-wait",
+      "join-container-inspect",
+      "join-producer-log-observation",
+      "join-ledger-directory",
+      "join-ledger-requests",
+      "join-ledger-complete",
+      "join-ledger-read",
+      "join-ledger-assert",
+      "join-collector-read",
+      "join-collector-project",
+    ]);
+  });
+  it("preserves the exact terminal witness rejection and its join slot", async () => {
+    const f = operationDiagnosticFixture();
+    f.container.State.ExitCode = 1;
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toThrow("integration.isolation.mockserver-terminal");
+    expect(f.calls.at(-1)).toBe("join-container-inspect");
+    expect(f.calls).not.toContain("join-producer-log-observation");
+    expect(
+      JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+    ).toEqual({
+      slot: "join-terminal-witness",
+      runId: f.plan.runId,
+      code: "integration.isolation.mockserver-terminal",
+      clientRetirementRequired: false,
+    });
+  });
+  it.each(["sink", "observer"])(
+    "preserves original join error when optional %s fails",
+    async (failure) => {
+      const f = operationDiagnosticFixture(
+        "join-control-stop",
+        failure === "sink",
+      );
+      f.state.observerFails = failure === "observer";
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.output).toEqual([]);
+    },
   );
-  const traceSearchAdmission = scenario.indexOf(
-    "const traceSearchDeadlines = codexTraceSearchAttemptDeadlines({",
-    settlementGate,
+});
+
+const expectCanonicalCollectorRead = (outer: string) => {
+  expect(outer.match(/const read = joinCollectorObservations;/gu)).toHaveLength(
+    1,
   );
-  expect(reporterSettlement).toBeGreaterThan(-1);
-  expect(settlementGate).toBeGreaterThan(reporterSettlement);
-  expect(traceSearchAdmission).toBeGreaterThan(settlementGate);
+  expect(outer).toContain(
+    "const note = (phase, httpsFailure) => {\n      collectorPhase = phase;\n      collectorHttpsFailure = httpsFailure;\n    };",
+  );
+  expect(
+    outer.match(
+      /const batches = await read\(plan, joinSignal, deadline, note\);/gu,
+    ),
+  ).toHaveLength(2);
+};
+const expectCollectorWriterOwnership = (source: string) => {
+  const child = /\n {8}'(import \{get\} from "node:https";[^\n]+)',\n/u.exec(
+    source,
+  );
+  expect(child).not.toBeNull();
+  const childScript = child![1]!;
+  expect(childScript.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+  expect(childScript).toContain(
+    'process.stderr.write("[agentscope-collector-https:v1 "+reason+"]"+String.fromCharCode(10))',
+  );
+  const parent =
+    source.slice(0, child!.index) +
+    source.slice(child!.index + child![0].length);
+  expect(parent.match(/process\.stderr\.write\(/gu)).toHaveLength(1);
+};
+const producerRefusalLine = (
+  stage = "eligibility",
+  bits = [true, false, true, false],
+) =>
+  `[agentscope-mockserver-ledger:v1 stage=${stage} terminal=${bits[0]} snapshotAvailable=${bits[1]} persistenceClosed=${bits[2]} persistenceFailed=${bits[3]} reason=none]\n`;
+describe("actual-source terminal producer refusal projection", () => {
+  it.each(["eligibility", "publication"])(
+    "projects only fixed %s fields for all primitive boolean tuples",
+    (stage) => {
+      const f = operationDiagnosticFixture();
+      for (let value = 0; value < 16; value++) {
+        const bits = [0, 1, 2, 3].map((index) => Boolean(value & (1 << index)));
+        const line = producerRefusalLine(stage, bits);
+        expect(Buffer.byteLength(line)).toBeLessThanOrEqual(256);
+        expect(
+          f.functions.mockServerProducerRefusalObservation({
+            stdout: "PRIVATE unrelated\n",
+            stderr: line,
+          }),
+        ).toEqual({
+          stage,
+          terminal: bits[0],
+          snapshotAvailable: bits[1],
+          persistenceClosed: bits[2],
+          persistenceFailed: bits[3],
+          reason: "none",
+        });
+      }
+    },
+  );
+  it.each([
+    "absent",
+    "duplicate",
+    "foreign-stage",
+    "foreign-version",
+    "foreign-reason",
+    "missing-reason",
+    "nonboolean",
+    "extra",
+    "changed-key",
+    "crlf",
+    "oversized",
+    "getter",
+    "proxy",
+  ])(
+    "leaves %s producer output unknown without invoking hostile data",
+    (kind) => {
+      const f = operationDiagnosticFixture();
+      const line = producerRefusalLine();
+      let reads = 0;
+      let stdout = "";
+      let stderr = line;
+      if (kind === "absent") stderr = "PRIVATE unrelated\n";
+      if (kind === "duplicate") stdout = line;
+      if (kind === "foreign-stage") stderr = producerRefusalLine("PRIVATE");
+      if (kind === "foreign-version") stderr = line.replace(":v1", ":v2");
+      if (kind === "foreign-reason")
+        stderr = line.replace("reason=none", "reason=PRIVATE");
+      if (kind === "missing-reason") stderr = line.replace(" reason=none", "");
+      if (kind === "nonboolean")
+        stderr = line.replace("terminal=true", "terminal=1");
+      if (kind === "extra") stderr = line.replace("]\n", " private=PRIVATE]\n");
+      if (kind === "changed-key")
+        stderr = line.replace("snapshotAvailable", "private");
+      if (kind === "crlf") stderr = line.replace("\n", "\r\n");
+      if (kind === "oversized") stdout = "PRIVATE".repeat(10_000);
+      let output: unknown = { stdout, stderr };
+      if (kind === "getter")
+        Object.defineProperty(output, "stderr", {
+          get: () => {
+            reads++;
+            throw new Error("PRIVATE getter");
+          },
+        });
+      if (kind === "proxy")
+        output = new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor: () => {
+              reads++;
+              throw new Error("PRIVATE proxy");
+            },
+          },
+        );
+      expect(
+        f.functions.mockServerProducerRefusalObservation(output),
+      ).toBeUndefined();
+      expect(reads).toBe(0);
+    },
+  );
+});
+describe("actual-source optional terminal log read", () => {
+  it("spends only the original join budget and does not renew it for a later copy", async () => {
+    const f = operationDiagnosticFixture("join-ledger-requests");
+    const original = new AbortController();
+    f.state.logsAdvance = 900;
+    // The injected boot clock reaches the original deadline; its original
+    // cancellation authority becomes aborted before the next bounded client.
+    f.state.afterLogs = () => {
+      original.abort();
+    };
+    await expect(
+      f.functions.joinMockServer(f.plan, original.signal),
+    ).rejects.toBe(f.error);
+    expect(f.state.now).toBe(1000);
+    expect(f.state.timeouts).toEqual([900]);
+    expect(f.state.signals).toHaveLength(4);
+    expect(new Set(f.state.signals).size).toBe(1);
+    expect(f.state.signals.at(-1)?.aborted).toBe(true);
+    expect(f.calls.at(-1)).toBe("join-ledger-requests");
+    expect(
+      f.calls.filter((slot) => slot === "join-producer-log-observation"),
+    ).toHaveLength(1);
+    expect(f.output).toHaveLength(1);
+    expect(f.output.join("")).not.toContain("PRIVATE");
+  });
+  it.each([false, true])(
+    "retains original copy refusal when logs fail=%s",
+    async (logsFail) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      f.state.logsFail = logsFail;
+      f.state.logs = {
+        stdout: "PRIVATE unrelated\n",
+        stderr: producerRefusalLine(),
+      };
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(f.calls.indexOf("join-producer-log-observation")).toBeGreaterThan(
+        f.calls.indexOf("join-container-inspect"),
+      );
+      expect(f.calls.indexOf("join-producer-log-observation")).toBeLessThan(
+        f.calls.indexOf("join-ledger-requests"),
+      );
+      expect(f.calls.at(-1)).toBe("join-ledger-complete");
+      expect(f.output).toHaveLength(2);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(Buffer.byteLength(f.output[1]!)).toBeLessThanOrEqual(256);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+      expect(JSON.parse(f.output[1]!.split("diagnostic:")[1]!)).toEqual({
+        runId: f.plan.runId,
+        stage: logsFail ? "unknown" : "eligibility",
+        terminal: logsFail ? null : true,
+        snapshotAvailable: logsFail ? null : false,
+        persistenceClosed: logsFail ? null : true,
+        persistenceFailed: logsFail ? null : false,
+        reason: logsFail ? null : "none",
+      });
+    },
+  );
+  it("does not make a producer diagnostic acceptance authority or replace sink failure", async () => {
+    const f = operationDiagnosticFixture();
+    f.state.logs = { stdout: "", stderr: producerRefusalLine("publication") };
+    await f.functions.joinMockServer(f.plan, new AbortController().signal);
+    expect(f.output).toEqual([]);
+    const failed = operationDiagnosticFixture("join-ledger-complete", true);
+    await expect(
+      failed.functions.joinMockServer(
+        failed.plan,
+        new AbortController().signal,
+      ),
+    ).rejects.toBe(failed.error);
+    expect(failed.output).toEqual([]);
+  });
+});
+const copyRow = (output: string[]) =>
+  JSON.parse(output[0]!.slice(output[0]!.indexOf(":") + 1)) as {
+    process: Record<string, unknown>;
+  };
+describe("content-free exact completion-copy process observation", () => {
+  it.each([
+    [1, null, false, "unknown"],
+    ["ABORT_ERR", "SIGTERM", true, "ABORT_ERR"],
+    ["ENOENT", "SIGKILL", true, "ENOENT"],
+    ["EACCES", "SIGINT", false, "EACCES"],
+    [
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      null,
+      false,
+      "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    ],
+    ["ERR_OUT_OF_RANGE", null, false, "ERR_OUT_OF_RANGE"],
+  ])(
+    "projects only fixed native process scalars for %s",
+    async (code, signal, killed, errorCode) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      Object.assign(f.error, {
+        code,
+        signal,
+        killed,
+        stdout: "PRIVATE",
+        stderr: "PRIVATE",
+      });
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toEqual({
+        nativeError: true,
+        exitCode: typeof code === "number" ? code : null,
+        errorCode,
+        signal,
+        killed,
+        originalAborted: false,
+        joinAborted: false,
+        deadline: "live",
+        completionSourceMissingResponse: false,
+      });
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.output[0]).not.toContain("missing");
+    },
+  );
+  it.each([[-1], [256], [1.5], ["1"]])(
+    "refuses a non-exit scalar %s",
+    async (code) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      Object.assign(f.error, { code });
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toMatchObject({
+        exitCode: null,
+        errorCode: "unknown",
+      });
+    },
+  );
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "distinguishes abort=%s from expired=%s without renewing either",
+    async (abort, expired) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      const controller = new AbortController();
+      f.state.beforeFailure = () => {
+        if (expired) f.state.now = 1000;
+        if (abort) controller.abort();
+      };
+      await expect(
+        f.functions.joinMockServer(f.plan, controller.signal),
+      ).rejects.toBe(f.error);
+      expect(copyRow(f.output).process).toMatchObject({
+        originalAborted: abort,
+        joinAborted: abort,
+        deadline: expired ? "expired" : "live",
+      });
+    },
+  );
+});
+
+describe("hostile completion-copy observation metadata", () => {
+  it.each(["accessor", "proxy", "plain", "malformed"])(
+    "never reads hostile %s error metadata",
+    async (kind) => {
+      const f = operationDiagnosticFixture("join-ledger-complete");
+      let reads = 0;
+      const getter = () => {
+        reads++;
+        throw new Error("PRIVATE");
+      };
+      if (kind === "accessor") {
+        for (const key of [
+          "code",
+          "signal",
+          "killed",
+          "stdout",
+          "stderr",
+          "cause",
+        ])
+          Object.defineProperty(f.error, key, { get: getter });
+      } else if (kind === "proxy") {
+        f.state.failure = new Proxy(f.error, {
+          get: getter,
+          getOwnPropertyDescriptor: getter,
+        });
+      } else if (kind === "plain") {
+        f.state.failure = {
+          get code() {
+            return getter();
+          },
+        };
+      } else {
+        Object.assign(f.error, {
+          code: [1],
+          signal: { toString: getter },
+          killed: "true",
+        });
+      }
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.state.failure);
+      expect(copyRow(f.output).process).toMatchObject({
+        exitCode: null,
+        errorCode: "unknown",
+        killed: null,
+      });
+      expect(reads).toBe(0);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+  it("does not add copy metadata to another failure slot", async () => {
+    const f = operationDiagnosticFixture("join-ledger-requests");
+    Object.assign(f.error, { code: 1, stderr: "PRIVATE" });
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toBe(f.error);
+    expect(copyRow(f.output)).not.toHaveProperty("process");
+  });
+});
+
+const leakedChildPredicateFixture = (
+  result: unknown,
+  sinkFails = false,
+  certificationCase = "leaked-child",
+) => {
+  const f = operationDiagnosticFixture("", sinkFails);
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const retainedRecoveryObservation =");
+  const end = source.indexOf("const contentFreeChildFailureCode =", start);
+  const diagnosed: unknown[] = [];
+  const predicates: unknown[] = [];
+  const observe = runInNewContext(
+    `${source.slice(start, end)}; observeNegativeScenarioReceipt`,
+    {
+      Error,
+      Buffer,
+      substrateCertificationCase: certificationCase,
+      fixtureResults: new Map([[f.plan.runId, result]]),
+      leakedChildReadinessIsValid,
+      leakedChildReadinessWasObserved,
+      SUBSTRATE_CERTIFICATION_PREDICATES,
+      observeSubstrateCertificationPredicate: (...args: unknown[]) =>
+        predicates.push(args),
+      publishOperationFailureDiagnostic: (
+        ...args: Parameters<
+          OperationDiagnosticFunctions["publishOperationFailureDiagnostic"]
+        >
+      ) => {
+        diagnosed.push(args[1]);
+        f.functions.publishOperationFailureDiagnostic(...args);
+      },
+    },
+  ) as (
+    plan: object,
+    receipt: object,
+    captured: unknown,
+    output?: string,
+  ) => void;
+  return { ...f, observe, diagnosed, predicates };
+};
+describe("actual-source retained recovery diagnostic projection", () => {
+  it.each([true, false])(
+    "projects recovery success %s without changing refusal",
+    (succeeded) => {
+      const f = leakedChildPredicateFixture({ resultStatus: "partial" });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: succeeded,
+      })}`;
+      const receipt = {
+        outcome: "cleanup-failed",
+        cleanup: "residual",
+        termRequested: true,
+        killRequested: true,
+      };
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          receipt,
+          true,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty("leakedChild.recovery", {
+        attempted: true,
+        succeeded,
+        exitCode: null,
+        ...receipt,
+      });
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+});
+describe("actual-source reader refusal stage diagnostic", () => {
+  it.each(["open", "status", "read", "identity", "envelope", "unknown"])(
+    "projects only closed reader stage %s and the authenticated receipt exit code",
+    (stage) => {
+      const f = leakedChildPredicateFixture({ resultStatus: "partial" });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: false,
+        recoveryStage: stage,
+      })}`;
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          {
+            outcome: "exited",
+            cleanup: "clean",
+            exitCode: 1,
+            termRequested: false,
+            killRequested: false,
+          },
+          true,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.stage",
+        stage,
+      );
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.exitCode",
+        1,
+      );
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+  it.each([-1, 256, 0.5, "1", null])(
+    "leaves invalid receipt exit code %s unavailable",
+    (exitCode) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: f.plan.runId, recoveryAttempted: true, recoverySucceeded: false, recoveryStage: "open" })}`;
+      expect(() => {
+        f.observe(
+          { ...f.plan, executionMode: "headless" },
+          { exitCode },
+          false,
+          line,
+        );
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).toHaveProperty(
+        "leakedChild.recovery.exitCode",
+        null,
+      );
+    },
+  );
+  it.each(["PRIVATE", "open-extra", 1, {}, ["open"]])(
+    "rejects foreign reader stage %s without reflection",
+    (recoveryStage) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({ runId: f.plan.runId, recoveryAttempted: true, recoverySucceeded: false, recoveryStage })}`;
+      expect(() => {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false, line);
+      }).toThrow("integration.certification.predicate");
+      expect(copyRow(f.output)).not.toHaveProperty("leakedChild.recovery");
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+});
+describe("actual-source malformed recovery diagnostics", () => {
+  it.each([
+    "absent",
+    "malformed",
+    "duplicate",
+    "foreign",
+    "extra",
+    "oversized",
+    "contradictory",
+  ])(
+    "leaves %s optional recovery unknown without replacing failure",
+    (kind) => {
+      const f = leakedChildPredicateFixture(undefined);
+      const value = {
+        runId: f.plan.runId,
+        recoveryAttempted: true,
+        recoverySucceeded: false,
+      };
+      if (kind === "foreign") value.runId = "b".repeat(16);
+      if (kind === "contradictory")
+        Object.assign(value, {
+          recoveryAttempted: false,
+          recoverySucceeded: true,
+        });
+      const line = `AGENTSCOPE_RETAINED_RECOVERY=${kind === "malformed" ? "{" : JSON.stringify(kind === "extra" ? { ...value, private: "PRIVATE" } : value)}`;
+      const output =
+        kind === "absent"
+          ? ""
+          : kind === "duplicate"
+            ? `${line}\n${line}`
+            : kind === "oversized"
+              ? `${line}${"PRIVATE".repeat(64)}`
+              : line;
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false, output);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(copyRow(f.output)).not.toHaveProperty("leakedChild.recovery");
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+});
+describe("actual-source leaked-child predicate observation", () => {
+  const readiness = {
+    readinessVersion: 1,
+    certificationCase: "leaked-child",
+    challengeSha256: `sha256:${"b".repeat(64)}`,
+  };
+  it.each([
+    [false, "complete", readiness, [false, true, true]],
+    [true, "partial", readiness, [true, false, true]],
+    [true, "complete", null, [true, true, false]],
+    [
+      true,
+      "complete",
+      { ...readiness, challengeSha256: "PRIVATE raw readiness" },
+      [true, true, false],
+    ],
+    [false, undefined, undefined, [false, false, false]],
+  ])(
+    "observes only the failed conjunction bits %#",
+    (captured, status, ready, bits) => {
+      const f = leakedChildPredicateFixture({
+        resultStatus: status,
+        certificationReadiness: ready,
+      });
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, captured);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(rejected).toHaveProperty(
+        "message",
+        "integration.certification.predicate",
+      );
+      expect(f.predicates).toEqual([]);
+      expect(f.output).toHaveLength(1);
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(copyRow(f.output)).toEqual({
+        slot: "runtime-original",
+        runId: f.plan.runId,
+        code: "integration.certification.predicate",
+        clientRetirementRequired: false,
+        leakedChild: {
+          fixtureCaptured: bits[0],
+          complete: bits[1],
+          readinessValid: bits[2],
+        },
+      });
+      expect(f.output.join("")).not.toContain(readiness.challengeSha256);
+      expect(f.output.join("")).not.toContain("PRIVATE");
+    },
+  );
+  it("leaves valid readiness acceptance and non-leak refusals unchanged and silent", () => {
+    const f = leakedChildPredicateFixture({
+      resultStatus: "complete",
+      certificationReadiness: readiness,
+    });
+    expect(() => {
+      f.observe({ ...f.plan, executionMode: "headless" }, {}, true);
+    }).toThrow("integration.certification.leaked-child");
+    expect(f.predicates).toEqual([
+      [f.plan.runId, SUBSTRATE_CERTIFICATION_PREDICATES["leaked-child"]],
+    ]);
+    expect(f.output).toEqual([]);
+    const other = leakedChildPredicateFixture(undefined, false, "missing-hook");
+    expect(() => {
+      other.observe({ ...other.plan, executionMode: "headless" }, {}, false);
+    }).toThrow("integration.certification.predicate");
+    expect(other.output).toEqual([]);
+  });
+  it.each(["sink", "retirement"])(
+    "preserves the identical refusal when optional %s throws",
+    (failure) => {
+      const f = leakedChildPredicateFixture(undefined, failure === "sink");
+      f.state.observerFails = failure === "retirement";
+      let rejected: unknown;
+      try {
+        f.observe({ ...f.plan, executionMode: "headless" }, {}, false);
+      } catch (error) {
+        rejected = error;
+      }
+      expect(rejected).toBe(f.diagnosed[0]);
+      expect(rejected).toHaveProperty(
+        "message",
+        "integration.certification.predicate",
+      );
+      expect(f.output).toEqual([]);
+      expect(f.predicates).toEqual([]);
+    },
+  );
+  it("does not extend another slot with readiness data", () => {
+    const f = leakedChildPredicateFixture(undefined);
+    f.functions.publishOperationFailureDiagnostic(
+      "cleanup-images",
+      f.error,
+      f.plan,
+      {
+        leakedChild: {
+          fixtureCaptured: true,
+          complete: true,
+          readinessValid: true,
+        },
+      },
+    );
+    expect(copyRow(f.output)).not.toHaveProperty("leakedChild");
+  });
+});
+
+describe("optional direct original and cleanup diagnostic separation", () => {
+  it("separates direct original and final cleanup codes without reading a nested cause", () => {
+    const f = operationDiagnosticFixture();
+    f.functions.publishOperationFailureDiagnostic(
+      "runtime-original",
+      new Error("integration.certification.leaked-child"),
+    );
+    f.state.uncertain = true;
+    f.functions.publishOperationFailureDiagnostic(
+      "cleanup-images",
+      new Error("PRIVATE", { cause: f.error }),
+    );
+    expect(
+      f.output.map(
+        (text) => JSON.parse(text.slice(text.indexOf(":") + 1)) as unknown,
+      ),
+    ).toEqual([
+      {
+        slot: "runtime-original",
+        runId: null,
+        code: "integration.certification.leaked-child",
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-images",
+        runId: null,
+        code: "unknown",
+        clientRetirementRequired: true,
+      },
+    ]);
+    f.functions.publishOperationFailureDiagnostic("PRIVATE slot", f.error);
+    f.functions.publishOperationFailureDiagnostic("runtime-original", f.error, {
+      runId: "PRIVATE",
+    });
+    for (const runId of [[], {}, 1, { toJSON: () => "PRIVATE" }])
+      f.functions.publishOperationFailureDiagnostic(
+        "runtime-original",
+        f.error,
+        {
+          runId,
+        },
+      );
+    expect(f.output).toHaveLength(2);
+    expect(f.output.join("")).not.toContain("PRIVATE");
+  });
+});
+
+describe("actual-source candidate failure diagnostics", () => {
+  it.each(["client", "prepared", "context", "build"])(
+    "observes the original build-candidate %s rejection before cleanup wrapping",
+    async (phase) => {
+      const f = operationDiagnosticFixture();
+      const original = new Error("integration.isolation.context");
+      const start = f.source.indexOf("const buildImage =");
+      const end = f.source.indexOf("const prepareMockServerImage =", start);
+      const buildImage = runInNewContext(
+        `${f.source.slice(start, end)}; buildImage`,
+        {
+          requireSettledMockServerClients: () => {
+            if (phase === "client") throw original;
+          },
+          preparedImageFor: () => {
+            if (phase === "prepared") throw original;
+          },
+          stageBuildContext: () => {
+            if (phase === "context") throw original;
+            return {
+              context: "/owned",
+              requiresHarnessBuildContextBound: false,
+            };
+          },
+          buildPreparedDockerImage: () => Promise.reject(original),
+          preparedDockerClient: {},
+          scenarioTimeoutMilliseconds: 300_000,
+          IMAGE_PREPARATION_LIMITS: {
+            maximumPreparationMilliseconds: 300_000,
+            defaultMaximumBuildContextBytes: 1024,
+          },
+          publishOperationFailureDiagnostic:
+            f.functions.publishOperationFailureDiagnostic,
+        },
+      ) as (plan: object, signal: AbortSignal) => Promise<unknown>;
+      await expect(
+        buildImage(f.plan, new AbortController().signal),
+      ).rejects.toBe(original);
+      expect(
+        JSON.parse(f.output[0]!.slice(f.output[0]!.indexOf(":") + 1)),
+      ).toEqual({
+        slot: (
+          {
+            client: "candidate-client",
+            prepared: "candidate-prepared-image",
+            context: "candidate-context-staging",
+            build: "candidate-image-build",
+          } as Record<string, string>
+        )[phase],
+        runId: f.plan.runId,
+        code: "integration.isolation.context",
+        clientRetirementRequired: false,
+        ...(phase === "build"
+          ? {
+              process: {
+                nativeError: true,
+                exitCode: null,
+                errorCode: "unknown",
+                signal: null,
+                killed: null,
+                originalAborted: false,
+                joinAborted: null,
+                deadline: "unavailable",
+              },
+            }
+          : {}),
+      });
+    },
+  );
+});
+
+describe("actual-source original versus final cleanup precedence", () => {
+  it("executes the actual outer catch and final cleanup slots without replacing either first error", async () => {
+    const f = operationDiagnosticFixture();
+    const original = new Error(
+      "integration.certification.mixed-artifact-digest",
+    );
+    const cleanup = new Error("integration.images.deadline");
+    const material = new Error("integration.harness-material.failed");
+    const start = f.source.indexOf(
+      '} catch (error) {\n  publishOperationFailureDiagnostic("runtime-original"',
+    );
+    const end = f.source.indexOf(
+      "if (primaryError !== undefined) throw primaryError;",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    const result = (await runInNewContext(
+      `(async () => { let primaryError; let retirementRequired = false; try { throw original; ${f.source.slice(start, end)} return { primaryError, retirementRequired }; })()`,
+      {
+        original,
+        publishOperationFailureDiagnostic:
+          f.functions.publishOperationFailureDiagnostic,
+        publishScenarioContextRefusals: () => undefined,
+        mockServerBuiltImages: new Map(),
+        preparedDockerClient: {},
+        preparedDockerClientRequiresOuterHostRetirement: () => false,
+        plans: [],
+        substrateCertificationCase: undefined,
+        process: { removeListener: () => undefined },
+        abort: () => undefined,
+        requireSettledMockServerClients: () => {
+          throw cleanup;
+        },
+        preparedHarnessMaterials: new Map([["owned", {}]]),
+        retirePreparedHarnessMaterial: () => {
+          throw material;
+        },
+        requireIntegrationFailureEvidence: () => undefined,
+        publishControllerFailureManifest: () => undefined,
+      },
+    )) as { primaryError: unknown; retirementRequired: boolean };
+    expect(result.primaryError).toBe(original);
+    expect(result.retirementRequired).toBe(true);
+    expect(
+      f.output.map(
+        (text) => JSON.parse(text.slice(text.indexOf(":") + 1)) as unknown,
+      ),
+    ).toEqual([
+      {
+        slot: "runtime-original",
+        runId: null,
+        code: original.message,
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-images",
+        runId: null,
+        code: cleanup.message,
+        clientRetirementRequired: false,
+      },
+      {
+        slot: "cleanup-materials",
+        runId: null,
+        code: material.message,
+        clientRetirementRequired: false,
+      },
+    ]);
+  });
+});
+import { snapshotMockServerTraffic } from "../mockserver-control.mjs";
+
+const mixedArtifactPartialOutput = () => {
+  const platform = readFileSync(
+    resolve(import.meta.dirname, "../platform-fixture.mjs"),
+    "utf8",
+  );
+  const plan = {
+    runId: "a".repeat(16),
+    scenarioId: "fixture-codex-smoke",
+    executionMode: "headless",
+  };
+  let output = "";
+  runInNewContext(
+    `${platform.slice(platform.indexOf("const trafficEvidence ="), platform.indexOf('emitEvidence("partial");'))};emitEvidence("partial");`,
+    {
+      snapshotMockServerTraffic,
+      integrationRunId: plan.runId,
+      mockTraffic: [],
+      Buffer,
+      basename: () => "pnpm-lock.yaml",
+      artifactPath: "/prepared/pnpm-lock.yaml",
+      scenarioId: plan.scenarioId,
+      observedLifecycle: [],
+      certificationReadiness: null,
+      partial: {
+        eventKinds: [],
+        modelLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          entries: [],
+        },
+        destinationLedger: {
+          ledgerVersion: 1,
+          scenarioId: plan.scenarioId,
+          ingestion: [],
+          retrieval: [],
+        },
+      },
+      interactive: false,
+      console: {
+        log: (value: string) => {
+          output = value;
+        },
+      },
+    },
+  );
+  return { output, plan };
+};
+const mixedArtifactCaptureFixture = () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const { output, plan } = mixedArtifactPartialOutput();
+  const observed: string[] = [];
+  const context = {
+    Buffer,
+    createHash,
+    snapshotMockServerTraffic,
+    sanitizeFixtureResult,
+    fixtureTrafficObservations: new Map(),
+    fixtureResults: new Map(),
+    substrateCertificationCase: "mixed-artifact-digest",
+    testMode: undefined,
+    candidate: {
+      bundleIdentity: "held-bundle",
+      lockfile: { fileName: "pnpm-lock.yaml" },
+    },
+    cliArtifact: { fileName: "agentscope-cli.tgz" },
+    SCENARIO_HOME: "/home/runner",
+    manifest: { scenarios: [{ ...plan, harnessEvidenceId: "fixture" }] },
+    evidenceById: new Map([["fixture", { material: { kind: "npm" } }]]),
+    linuxBootMonotonicMilliseconds: () => 100,
+    SUBSTRATE_CERTIFICATION_PREDICATES: {
+      "mixed-artifact-digest": "artifact-digest-mismatch",
+    },
+    observeSubstrateCertificationPredicate: (
+      _runId: string,
+      predicate: string,
+    ) => observed.push(predicate),
+  };
+  const definitions = [
+    source.slice(
+      source.indexOf("const fingerprintHeadlessRequest ="),
+      source.indexOf("const fingerprintSelectedPtyAuthority ="),
+    ),
+    source.slice(
+      source.indexOf("const expectedHeadlessEnvironment ="),
+      source.indexOf("const activeMarkerFor ="),
+    ),
+    source.slice(
+      source.indexOf("const captureFixtureResult ="),
+      source.indexOf(
+        "// eslint-disable-next-line complexity -- exact closed receipt predicate",
+      ),
+    ),
+  ].join("\n");
+  const helpers = runInNewContext(
+    `${definitions};({expectedNegativeHeadlessRequest, fingerprintHeadlessRequest, captureFixtureResult});`,
+    context,
+  ) as {
+    expectedNegativeHeadlessRequest: (
+      receipt: unknown,
+      plan: unknown,
+    ) => { monotonicShutdownDeadlineMs: number };
+    fingerprintHeadlessRequest: (request: unknown) => string;
+    captureFixtureResult: (output: string, plan: unknown) => boolean;
+  };
+  const receipt = {
+    receiptVersion: 1,
+    runId: plan.runId,
+    outerMonotonicDeadlineMs: 50_000,
+    requestConstructedAtMs: 200,
+    translationBootAtMs: 100,
+    translationLocalAtMs: 100,
+    request: { monotonicShutdownDeadlineMs: 50_000 },
+    returnedAtMs: 300,
+    outcome: "exited",
+    exitCode: 1,
+    signal: null,
+    termRequested: false,
+    killRequested: false,
+    cleanup: "clean",
+    residualProcessCount: 0,
+    processJoined: true,
+    stdinJoined: true,
+    stdoutJoined: true,
+    stderrJoined: true,
+    requestFingerprint: "",
+  };
+  receipt.request = helpers.expectedNegativeHeadlessRequest(receipt, plan);
+  receipt.requestFingerprint = helpers.fingerprintHeadlessRequest(
+    receipt.request,
+  );
+  const branchStart = source.indexOf(
+    '      const output = `${error?.stdout ?? ""}`;',
+  );
+  const branchEnd = source.indexOf("      const receipt =", branchStart);
+  const evaluate = (
+    selectedOutput: string,
+    selectedCase = "mixed-artifact-digest",
+    mode = "headless",
+  ) =>
+    runInNewContext(`${definitions};${source.slice(branchStart, branchEnd)}`, {
+      ...context,
+      substrateCertificationCase: selectedCase,
+      plan: { ...plan, executionMode: mode },
+      outerMonotonicDeadline: 50_000,
+      error: { stdout: selectedOutput },
+    }) as unknown;
+  const encode = (value: unknown) =>
+    `${output}\nAGENTSCOPE_HEADLESS_RECEIPT=${Buffer.from(JSON.stringify(value)).toString("base64url")}\n`;
+  return { output, receipt, observed, helpers, plan, evaluate, encode };
+};
+
+describe("mixed artifact failed-receipt chronology", () => {
+  it("recognizes the exact mutation before parsing actual wrong-artifact partial output", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    expect(() =>
+      fixture.helpers.captureFixtureResult(fixture.output, fixture.plan),
+    ).toThrow("integration.operations.fixture-result");
+    expect(fixture.observed).toEqual([]);
+    expect(() => fixture.evaluate(fixture.encode(fixture.receipt))).toThrow(
+      "integration.certification.mixed-artifact-digest",
+    );
+    expect(fixture.observed).toEqual(["artifact-digest-mismatch"]);
+  });
+
+  it("refuses missing, malformed, foreign and substituted receipts without observing the predicate", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    const substitutedRequest = {
+      ...fixture.receipt.request,
+      arguments: [
+        "/opt/agentscope/scenario-process.mjs",
+        "--artifact",
+        "/foreign/agentscope-cli.tgz",
+      ],
+    };
+    const invalid = [
+      fixture.output,
+      `${fixture.output}\nAGENTSCOPE_HEADLESS_RECEIPT=!`,
+      fixture.encode({ ...fixture.receipt, runId: "b".repeat(16) }),
+      fixture.encode({
+        ...fixture.receipt,
+        requestFingerprint: "sha256:" + "0".repeat(64),
+      }),
+      fixture.encode({ ...fixture.receipt, outerMonotonicDeadlineMs: 50_001 }),
+      fixture.encode({
+        ...fixture.receipt,
+        request: substitutedRequest,
+        requestFingerprint:
+          fixture.helpers.fingerprintHeadlessRequest(substitutedRequest),
+      }),
+    ];
+    for (const output of invalid)
+      expect(() => fixture.evaluate(output)).toThrow(
+        "integration.isolation.headless-receipt",
+      );
+    expect(fixture.observed).toEqual([]);
+  });
+
+  it("does not bypass fixture parsing for ordinary, leaked-child or interactive paths", () => {
+    const fixture = mixedArtifactCaptureFixture();
+    for (const [selectedCase, mode] of [
+      ["ordinary", "headless"],
+      ["leaked-child", "headless"],
+      ["mixed-artifact-digest", "interactive"],
+    ])
+      expect(() =>
+        fixture.evaluate(fixture.encode(fixture.receipt), selectedCase, mode),
+      ).toThrow("integration.operations.fixture-result");
+    expect(fixture.observed).toEqual([]);
+  });
+});
+
+const expectCodexNativeBeforeCollectorCompletion = (scenario: string): void => {
+  const terminal = scenario.indexOf(
+    "await waitForCodexTurnTerminal(traceDeadline)",
+  );
+  const hook = scenario.indexOf(
+    "await waitForCodexStopBeforeExit(traceDeadline)",
+    terminal,
+  );
+  const native = scenario.indexOf(
+    "const translated = translateCodexNativeObservations(",
+    hook,
+  );
+  expect(terminal).toBeGreaterThan(-1);
+  expect(hook).toBeGreaterThan(terminal);
+  expect(native).toBeGreaterThan(hook);
+  expect(scenario).not.toMatch(
+    /localSqlite|openOperationalStateHealth|waitForTraceSummary|--destination",\\s*"local"/u,
+  );
 };
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -42,6 +1420,137 @@ const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
   };
+describe("integration failure diagnostic preimages", () => {
+  it("hashes the actual builder image tuple identically in private diagnostic and failure manifest", () => {
+    const boundary = readIntegration("image-preparation/boundary.mjs");
+    const runner = readIntegration("run-scenarios.mjs");
+    const docker = readIntegration("image-preparation/docker.mjs");
+    const slice = (source: string, begin: string, end: string): string => {
+      const start = source.indexOf(begin);
+      const finish = source.indexOf(end, start);
+      if (start < 0 || finish <= start)
+        throw new Error("actual-diagnostic-source-boundary");
+      return source.slice(start, finish).replaceAll("export const", "const");
+    };
+    const privateHash =
+      slice(
+        boundary,
+        "export const diagnosticDigest =",
+        "export const classifyBuildxStderrForTesting",
+      ) +
+      slice(
+        boundary,
+        "export const digestBytes =",
+        "export const jsonRecord =",
+      );
+    const manifestHash = slice(
+      runner,
+      "const diagnosticDigest =",
+      "const admissionDigest =",
+    );
+    const privateTuple = /image: diagnosticDigest\((\{[^}]+\})\)/u.exec(
+      docker,
+    )?.[1];
+    const manifestTuple =
+      /buildkitImage: diagnosticDigest\((\{[^}]+\})\)/u.exec(runner)?.[1];
+    expect(privateTuple).toBeDefined();
+    expect(manifestTuple).toBeDefined();
+    const facts = {
+      image: `buildkit@sha256:${"a".repeat(64)}`,
+      configDigest: `sha256:${"b".repeat(64)}`,
+    };
+    const privateDigest = runInNewContext(
+      `${privateHash}; diagnosticDigest(${privateTuple});`,
+      {
+        Buffer,
+        createHash,
+        authority: { buildkit: facts },
+      },
+    ) as string;
+    const manifestDigest = (buildkit: typeof facts): string =>
+      runInNewContext(`${manifestHash}; diagnosticDigest(${manifestTuple});`, {
+        createHash,
+        buildkit,
+      }) as string;
+    expect(manifestDigest(facts)).toBe(privateDigest);
+    expect(
+      manifestDigest({ ...facts, image: `buildkit@sha256:${"c".repeat(64)}` }),
+    ).not.toBe(privateDigest);
+    expect(
+      manifestDigest({ ...facts, configDigest: `sha256:${"d".repeat(64)}` }),
+    ).not.toBe(privateDigest);
+  });
+});
+
+describe("integration controller policy", () => {
+  it("retains the original packed CLI material roles after candidate preparation", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const prepare = workflow.slice(
+      workflow.indexOf("      - name: Build and prepare candidate once"),
+      workflow.indexOf("  hermetic-platform:"),
+    );
+    const terminal = prepare.indexOf("          pnpm test:integration\n");
+    expect(terminal).toBeGreaterThan(-1);
+    for (const role of ["sbom", "attestations"]) {
+      const target = `artifacts/integration/cli-release-materials/${role}.json`;
+      const copy = `install -m 600 artifacts/npm/${role}.json ${target}`;
+      expect(prepare.indexOf(copy)).toBeGreaterThan(terminal);
+      expect(prepare).toContain(`            ${target}\n`);
+    }
+    expect(prepare).toContain("            artifacts/integration/candidates\n");
+    expect(prepare).toContain(
+      "            artifacts/integration/current-candidate.json\n",
+    );
+    expect(prepare).not.toMatch(
+      /npm (?:pack|publish)|assembleCandidateAssets/u,
+    );
+  });
+
+  it("requires the exact private control mount for ordinary and TUI consumers", () => {
+    const source = readIntegration("immutable-candidate-authority.mjs");
+    const start = source.indexOf("const selectedControlMountMatches =");
+    const end = source.indexOf(
+      "\nexport const validateImmutableScenarioContainer",
+      start,
+    );
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const matches = runInNewContext(
+      `${source.slice(start, end)}; selectedControlMountMatches`,
+    ) as (container: unknown, volume: unknown, handoff: unknown) => boolean;
+    const volume = {
+      name: "agentscope-int-0123456789abcdef-control",
+      mountpoint: "/private/volume",
+    };
+    const mount = {
+      Type: "volume",
+      Name: volume.name,
+      Source: volume.mountpoint,
+      Destination: "/control",
+      RW: true,
+    };
+    for (const scenarioId of [
+      "fixture-process-smoke",
+      "codex-tui-trace-smoke",
+    ]) {
+      const handoff = { runId: "0123456789abcdef", scenarioId };
+      expect(matches({ Mounts: [mount] }, volume, handoff)).toBe(true);
+      for (const mounts of [
+        [],
+        [mount, mount],
+        [{ ...mount, RW: false }],
+        [{ ...mount, Name: "substituted" }],
+        [{ ...mount, Destination: "/candidate" }],
+        [{ ...mount, Source: "/other" }],
+      ])
+        expect(matches({ Mounts: mounts }, volume, handoff)).toBe(false);
+      expect(matches({ Mounts: [mount] }, undefined, handoff)).toBe(false);
+    }
+  });
+});
 describe("integration controller policy", () => {
   it("exposes one integration command and no public stage aliases", () => {
     const root = manifest("package.json");
@@ -93,14 +1602,8 @@ describe("integration controller policy", () => {
   });
 
   it("keeps external-material verification inside the selected disposable daemon", () => {
-    const material = readFileSync(
-      resolve(workspaceRoot, "tests/integration/harness-material.mjs"),
-      "utf8",
-    );
-    const command = readFileSync(
-      resolve(workspaceRoot, "tests/integration/harness-material-command.mjs"),
-      "utf8",
-    );
+    const material = readIntegration("harness-material.mjs");
+    const command = readIntegration("harness-material-command.mjs");
     expect(material).toContain("buildPreparedDockerImage(client");
     expect(material).toContain("retirePreparedDockerImage(client");
     expect(material).toContain('RUN --network=${operation === "gpg-verify"');
@@ -115,10 +1618,7 @@ describe("integration controller policy", () => {
   });
 
   it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
-    const source = readFileSync(
-      resolve(workspaceRoot, "tests/integration/clean.mjs"),
-      "utf8",
-    );
+    const source = readIntegration("clean.mjs");
     expect(source).toContain(
       '"current-images.json": IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes',
     );
@@ -166,6 +1666,22 @@ describe("integration controller policy", () => {
 
 // eslint-disable-next-line max-lines-per-function -- closed integration authority matrix
 describe("integration cleanup authority", () => {
+  it("forwards child terminal observations only for held Claude and the selected predicate", () => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const recordInteractiveExecutionFailure =");
+    const body = source.slice(
+      start,
+      source.indexOf("const retainCodexResearchDiagnostic =", start),
+    );
+    expect(body).toContain(
+      'plan.scenarioId === "claude-interactive-trace-smoke"',
+    );
+    expect(body).toContain(
+      'predicate === "integration.fixture.claude-vendor-terminal"',
+    );
+    expect(body).toContain("observed?.predicate === predicate");
+    expect(body).toContain("childTerminal: observed.childTerminal");
+  });
   it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
     const source = readIntegration("run-scenarios.mjs");
     const recorder = source.slice(
@@ -277,25 +1793,18 @@ describe("integration cleanup authority", () => {
     const controller = readIntegration("run-scenarios.mjs");
     expect(controller).toContain("AGENTSCOPE_INTEGRATION_RUN_ID: plan.runId,");
     expect(scenario).toContain(
-      "const modelAdmissionCutoff = Math.floor(deadline - 5_000);",
+      "const preparationCutoff = Math.floor(deadline - 5_000);",
     );
-    expect(scenario).toContain(
-      "!Number.isSafeInteger(modelAdmissionCutoff) ||",
-    );
+    expect(scenario).toContain("!Number.isSafeInteger(preparationCutoff) ||");
   });
 
-  it("keeps Codex trace diagnosis split across terminal, settlement, and search", () => {
+  it("keeps native terminal diagnosis distinct from outer canonical OTLP delivery", () => {
     const scenario = readIntegration("codex-pty-scenario.mjs");
+    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const authority = readIntegration("immutable-candidate-authority.mjs");
     const runner = readIntegration("runner.mjs");
     const outer = readIntegration("run-scenarios.mjs");
-    for (const phase of [
-      "trace-terminal",
-      "trace-settlement",
-      "trace-reporter-settled",
-      "trace-search",
-      "trace-search-result",
-    ]) {
+    for (const phase of ["trace-terminal", "trace-settlement"]) {
       expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
@@ -326,23 +1835,15 @@ describe("integration cleanup authority", () => {
       "hook-accepted-without-trace",
       "hook-operational-unclassified",
     ]) {
-      expect(scenario).toContain(`"${phase}"`);
+      expect(diagnostic).toContain(`"${phase}"`);
       expect(authority).toContain(`"integration.fixture.codex-${phase}"`);
     }
     expect(scenario).toContain("inspectDiagnosticBeforeDeadline({");
     expect(scenario).toContain("recordTerminalObservationBeforeDeadline({");
-    expect(scenario.indexOf("inspectDiagnosticBeforeDeadline({")).toBeLessThan(
-      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
-    );
-    expect(
-      scenario.indexOf("const reporterSettled = localSqliteReporterSettled("),
-    ).toBeLessThan(
-      scenario.indexOf("await readTraceSummary(traceSearchDeadlines)"),
-    );
-    expect(scenario).toContain("codexTraceSearchAttemptDeadlines({");
-    expect(scenario).toContain("classifyCodexTraceFailureHint(");
+    expectCodexNativeBeforeCollectorCompletion(scenario);
+    expect(outer).toContain("observeSelectedWriterOtlp(");
+    expectCanonicalCollectorRead(outer);
     expect(scenario).toContain("classifyCodexCollectedChildFailure(");
-    const diagnostic = readIntegration("codex-trace-child-diagnostics.mjs");
     const search = diagnostic.indexOf(
       "codexTraceSearchChildFailureCategory(observation)",
     );
@@ -354,7 +1855,6 @@ describe("integration cleanup authority", () => {
     expect(scenario).toContain(
       "const failureObservation = {\n            code,\n            deadlineExpired,\n            signal,\n            stderrBytes: stderr.length,\n            stdoutBytes: stdout.length,\n            maximumBytes: maximumOutput,\n            stderr,\n            stdout,\n          };",
     );
-    expect(scenario).toContain("errorMessage: error?.message,");
     for (const phase of [
       "trace-await-hook",
       "trace-await-reporter",
@@ -379,12 +1879,29 @@ describe("integration cleanup authority", () => {
       "retainCodexResearchDiagnostic(plan, output, receipt, error)",
     );
     expect(outer).toContain("codexResearchDiagnostics.get(plan.runId) ?? null");
-    expect(outer).not.toContain("writeSync(2,");
+    const observerStart = outer.indexOf(
+      "const publishOperationFailureDiagnostic =",
+    );
+    const observerEnd = outer.indexOf(
+      "/* eslint-disable complexity",
+      observerStart,
+    );
+    const observer = outer.slice(observerStart, observerEnd);
+    expect(observer).toContain("if (bytes.length <= 512) writeSync(2, bytes);");
+    expect(observer).toContain("code: knownFailureCode(error)");
+    expect(observer).toContain("catch {");
+    expect(observer).not.toMatch(/error\.(?:message|stack|name|cause)/u);
+    expect(
+      outer.slice(0, observerStart) + outer.slice(observerEnd),
+    ).not.toContain("writeSync(2,");
     expect(diagnostic).toContain(
       "exitPair(receipt?.exitCode, error?.code, plan.scenarioId)",
     );
     expect(outer).not.toContain("integration.isolation.codex-exit-pair:");
-    expect(outer).not.toContain("process.stderr.write(");
+    expectCollectorWriterOwnership(outer);
+    expect(outer).toContain(
+      "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
+    );
     expect(authority).toContain("extractUntrustedCodexConfigHint");
     expect(authority).toContain("extractUntrustedCodexGateHint");
     const researchCapture = outer.indexOf(
@@ -393,10 +1910,8 @@ describe("integration cleanup authority", () => {
     expect(researchCapture).toBeLessThan(
       outer.indexOf("recordInteractiveExecutionFailure(", researchCapture),
     );
-    expect(scenario).toContain(
-      "const terminalCut = classifyCodexSettledTraceObservation({",
-    );
-    expect(scenario).toContain("traceGraph.sessionId !== codexSessionId");
+    expect(scenario).not.toContain("classifyCodexSettledTraceObservation");
+    expect(scenario).toContain("sessionId: codexSessionId,");
     for (const phase of ["hook-missing", "hook-failed", "hook-completed"])
       expect(authority).not.toContain(`"integration.fixture.codex-${phase}"`);
     expect(authority).not.toContain('"integration.fixture.codex-trace"');
@@ -543,20 +2058,74 @@ describe("integration cleanup authority", () => {
     );
   });
 
-  it("settles empty npm configuration identity despite a restrictive umask", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-npm-config-"));
-    const target = resolve(directory, "npm-userconfig");
-    const priorUmask = process.umask(0o777);
+  it.each([0o600, 0o644, 0o444] as const)(
+    "settles exact file mode %s despite a restrictive umask",
+    (mode) => {
+      const directory = mkdtempSync(
+        resolve(tmpdir(), "agentscope-npm-config-"),
+      );
+      const target = resolve(directory, "npm-userconfig");
+      const priorUmask = process.umask(0o777);
+      try {
+        writeExactRegularFile(target, Buffer.alloc(0), mode);
+        const status = lstatSync(target);
+        expect(status.isFile()).toBe(true);
+        expect(status.isSymbolicLink()).toBe(false);
+        expect(status.size).toBe(0);
+        expect(status.mode & 0o777).toBe(mode);
+      } finally {
+        process.umask(priorUmask);
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+  );
+  it("stages the actual read-only collector CA caller without relaxing exclusive file identity", () => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf(
+      "  if (gateCapableMockServer)\n    writeExactRegularFile(",
+    );
+    const end = source.indexOf("  stageEsmPackageBoundary(context);", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const directory = mkdtempSync(
+      resolve(tmpdir(), "agentscope-collector-ca-"),
+    );
+    const target = resolve(directory, "collector-ca.pem");
+    const collectorCa = "synthetic-public-test-ca\n";
     try {
-      writeExactRegularFile(target, Buffer.alloc(0), 0o600);
-      const status = lstatSync(target);
-      expect(status.isFile()).toBe(true);
-      expect(status.isSymbolicLink()).toBe(false);
-      expect(status.size).toBe(0);
-      expect(status.mode & 0o777).toBe(0o600);
+      runInNewContext(source.slice(start, end), {
+        gateCapableMockServer: true,
+        writeExactRegularFile,
+        resolve,
+        context: directory,
+        Buffer,
+        collectorCa,
+      });
+      expect(readFileSync(target, "utf8")).toBe(collectorCa);
+      expect(lstatSync(target).mode & 0o777).toBe(0o444);
+      expect(() => {
+        writeExactRegularFile(target, Buffer.from("replacement"), 0o444);
+      }).toThrow();
+      expect(readFileSync(target, "utf8")).toBe(collectorCa);
+      const alias = resolve(directory, "alias");
+      symlinkSync(target, alias);
+      expect(() => {
+        writeExactRegularFile(alias, Buffer.alloc(0), 0o444);
+      }).toThrow();
+      expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+      for (const mode of [0o400, 0o440, 0o555, 0o666, 0o777]) {
+        const unsupported = resolve(directory, `unsupported-${mode}`);
+        expect(() => {
+          Reflect.apply(writeExactRegularFile, undefined, [
+            unsupported,
+            Buffer.alloc(0),
+            mode,
+          ]);
+        }).toThrow("integration.isolation.context");
+        expect(existsSync(unsupported)).toBe(false);
+      }
     } finally {
-      process.umask(priorUmask);
-      rmSync(directory, { force: true, recursive: true });
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });
@@ -654,37 +2223,38 @@ describe("Codex interactive diagnostic order", () => {
         (match) => match[1],
       );
     };
-    expect(phases(scenario)).toEqual(expected);
+    expect(scenario).toContain(
+      '  interactivePhases,\n  classifyCodexCollectedChildFailure,\n} from "./codex-trace-child-diagnostics.mjs";',
+    );
     expect(phases(diagnostic)).toEqual(expected);
     expect(runner).toContain(
       'import { interactivePhases } from "./codex-trace-child-diagnostics.mjs";',
     );
     expect(64 + expected.length - 1).toBeLessThan(139);
     for (const phase of expected.slice(expected.indexOf("verify") + 1)) {
-      expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
+      if (!["verify-trace-get", "verify-correlation"].includes(phase))
+        expect(scenario).toContain(`recordInteractivePhase("${phase}")`);
     }
     expect(scenario).toContain(
       "if (phaseIndex <= interactiveFailurePhaseIndex)",
     );
     expect(scenario).not.toContain("recordInteractivePhase(classification)");
-    expectCodexSettlementBeforeTraceSearch(scenario);
+    expectCodexNativeBeforeCollectorCompletion(scenario);
     const modelRequestObservation = scenario.indexOf(
-      "await waitForModelRequestBeforeDeadline({",
+      "const modelRequests = await readTerminalModelRequests();",
     );
     const modelRequestPhase = scenario.indexOf(
-      'recordInteractivePhase("model-request")',
-      modelRequestObservation,
+      'recordInteractivePhase("verify-gate")',
     );
     const settlementPhase = scenario.indexOf(
       'recordInteractivePhase("trace-settlement")',
-      modelRequestPhase,
     );
     const traceObservation = scenario.indexOf(
-      "await waitForTraceSummary(traceDeadline)",
-      modelRequestPhase,
+      "const translated = translateCodexNativeObservations(",
     );
     const terminalLedgerRead = scenario.indexOf(
       "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+      scenario.indexOf("const waitForCodexTurnTerminal ="),
     );
     const terminalDeadlinePrecheck = scenario.lastIndexOf(
       "if (bootNow() >= traceDeadline)",
@@ -695,15 +2265,17 @@ describe("Codex interactive diagnostic order", () => {
       terminalLedgerRead,
     );
     const sessionCorrelation = scenario.indexOf(
-      "traceGraph.sessionId !== codexSessionId",
+      "sessionId: codexSessionId,",
       terminalObservation,
     );
-    expect(modelRequestPhase).toBeGreaterThan(modelRequestObservation);
+    expect(modelRequestObservation).toBeGreaterThan(modelRequestPhase);
+    expect(modelRequestObservation).toBeGreaterThan(terminalObservation);
+    expect(scenario).not.toContain("waitForModelRequestBeforeDeadline");
     expect(terminalDeadlinePrecheck).toBeGreaterThan(-1);
     expect(terminalLedgerRead).toBeGreaterThan(terminalDeadlinePrecheck);
     expect(terminalObservation).toBeGreaterThan(terminalLedgerRead);
     expect(sessionCorrelation).toBeGreaterThan(terminalObservation);
-    expect(settlementPhase).toBeGreaterThan(modelRequestPhase);
+    expect(settlementPhase).toBeLessThan(modelRequestPhase);
     expect(traceObservation).toBeGreaterThan(terminalObservation);
     expect(settlementPhase).toBeLessThan(traceObservation);
     for (let index = 0; index < expected.length; index += 1)
@@ -783,6 +2355,49 @@ describe("integration controller supervision", () => {
 // The workflow policy inventory is kept in one closed review surface.
 // eslint-disable-next-line max-lines-per-function
 describe("integration workflow policy", () => {
+  it("aligns only the initial positive job envelope with the existing controller budget", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const job = (name: string) => {
+      const start = workflow.indexOf(`  ${name}:\n`);
+      expect(start).toBeGreaterThan(0);
+      return workflow
+        .slice(start + `  ${name}:\n`.length)
+        .split(/^ {2}[a-z][a-z-]+:\n/mu)[0]!;
+    };
+    for (const name of [
+      "prepare-candidate",
+      "hermetic-platform",
+      "controlled-negative",
+      "mockserver-supplier-research",
+    ]) {
+      const body = job(name);
+      const budget = name === "hermetic-platform" ? 1_680_000 : 1_200_000;
+      expect(body).toContain("timeout-minutes: 30");
+      expect(
+        body.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
+      ).toHaveLength(1);
+      expect(body).toContain(`($1 * 1000) + ${budget} }' /proc/uptime`);
+    }
+    const positive = job("hermetic-platform");
+    expect(positive).toContain(
+      "    steps:\n      - name: Establish job-scoped integration deadline\n",
+    );
+    const established = positive.indexOf("+ 1680000");
+    for (const stage of [
+      "actions/checkout@",
+      "Install immutable workspace dependencies",
+      "Build workspace fixture code",
+      "Run the private integration lifecycle",
+    ])
+      expect(positive.indexOf(stage)).toBeGreaterThan(established);
+    expect(positive).toContain('selector: "0/1"');
+    expect(positive).toContain("replay: [1, 2, 3]");
+    expect(positive).toContain('AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"');
+  });
+
   // eslint-disable-next-line max-lines-per-function -- one closed workflow and staged-runtime inventory
   it("routes candidate, clean replay, and controlled rejection through one command", () => {
     const workflow = readFileSync(
@@ -844,10 +2459,7 @@ describe("integration workflow policy", () => {
     for (const certificationCase of SUBSTRATE_CERTIFICATION_CASES)
       expect(workflow).toContain(`          - ${certificationCase}`);
     const scenarios = readIntegration("run-scenarios.mjs");
-    const exactFile = readFileSync(
-      resolve(workspaceRoot, "tests/integration/exact-file.mjs"),
-      "utf8",
-    );
+    const exactFile = readIntegration("exact-file.mjs");
     const finalized = scenarios.indexOf(
       "finalizeControllerFailureEvidence(plan",
     );
@@ -905,7 +2517,10 @@ describe("integration workflow policy", () => {
       scenarios.indexOf('"USER node"'),
     );
     expect(required).toBeGreaterThanOrEqual(0);
-    expect(scenarios).not.toContain("process.stderr.write(");
+    expectCollectorWriterOwnership(scenarios);
+    expect(scenarios).toContain(
+      "if (Buffer.byteLength(output) <= 512) process.stderr.write(output);",
+    );
     expect(finalized).toBeGreaterThan(required);
     expect(manifest).toBeGreaterThan(finalized);
     expect(readinessReleased).toBeGreaterThan(manifest);
@@ -1045,211 +2660,370 @@ describe("integration workflow policy", () => {
     }
   });
 
-  // The fixture must rewrite one exact manifest repeatedly to prove every
-  // cross-bound substitution against the same file identities.
-  // eslint-disable-next-line max-lines-per-function
-  it("separates unsettled retirement evidence from witnessed certification", () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-retirement-"));
-    const artifacts = resolve(directory, "artifacts/integration");
-    const runId = "0123456789abcdef";
-    const run = resolve(artifacts, "runs", runId);
-    const diagnostic = {
-      diagnosticVersion: 1,
-      stage: "scenario-operation",
-      authorityDigests: {
-        daemon: `sha256:${"a".repeat(64)}`,
-        images: `sha256:${"b".repeat(64)}`,
-        socket: `sha256:${"c".repeat(64)}`,
-      },
-      outcome: "retired-failure",
-      retirementReason: "mutation-outcome-unknown",
-    };
-    const preparedAuthorityDigests = {
-      buildkitImage: `sha256:${"d".repeat(64)}`,
-      buildkitPlatform: `sha256:${"e".repeat(64)}`,
-      daemon: diagnostic.authorityDigests.daemon,
-      images: diagnostic.authorityDigests.images,
-      socket: diagnostic.authorityDigests.socket,
-    };
-    const writeEvidence = (
-      privateCleanup: unknown,
-      certification = {
-        certificationCase: null as string | null,
-        certificationPredicate: null as string | null,
-        primaryFailure: "integration.controller.unsettled-operation",
-      },
-      codexResearchDiagnostic: unknown = null,
-    ) => {
-      const content = `${JSON.stringify({
-        controllerFailureEvidenceVersion: 3,
-        runId,
-        certificationCase: certification.certificationCase,
-        certificationPredicate: certification.certificationPredicate,
-        certificationReadiness: null,
-        scenarioOutcome: "failed",
-        controllerOutcome: "retired-failure",
-        primaryFailure: certification.primaryFailure,
-        causalFailure: null,
-        cleanupFailure: null,
-        installedPtyFailure: null,
-        codexResearchDiagnostic,
-        privateCleanup,
-      })}\n`;
-      writeFileSync(resolve(run, "controller-failure.json"), content, {
-        mode: 0o600,
-      });
-      const status = lstatSync(resolve(run, "controller-failure.json"));
-      writeFileSync(
-        resolve(artifacts, "controller-failure-manifest.json"),
-        `${JSON.stringify({
-          controllerFailureManifestVersion: 1,
-          controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
-          certificationCase: certification.certificationCase,
-          preparedAuthorityDigests,
-          runIds: [runId],
-          failureEvidence: [
-            {
-              dev: status.dev,
-              digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
-              ino: status.ino,
-              runId,
-              size: status.size,
-            },
-          ],
-        })}\n`,
-        { mode: 0o600 },
+  // Each case retains the full ordered mutation setup on the same held file
+  // identities, but launches only its selected real verifier under default 5s.
+  it.each([
+    [1, "scenario retirement"],
+    [2, "bounded research observation"],
+    [3, "research hint privacy"],
+    [4, "research exit refusal"],
+    [5, "missing cleanup"],
+    [6, "scenario success refusal"],
+    [7, "scenario daemon substitution"],
+    [8, "builder retirement"],
+    [9, "settled failure"],
+    [10, "settled negative refusal"],
+    [11, "settled success refusal"],
+    [12, "settled retired-success refusal"],
+    [13, "settled unknown refusal"],
+    [14, "settled resource count"],
+    [15, "settled response truncation"],
+    [16, "settled response bound"],
+    [17, "settled resource digest"],
+    [18, "settled generation"],
+    [19, "settled process output bound"],
+    [20, "retired generation"],
+    [21, "retired resource count"],
+    [22, "retired response truncation"],
+    [23, "retired resource digest"],
+    [24, "witnessed wrong argv"],
+    [25, "unwitnessed wrong argv"],
+    [26, "shared settled failure"],
+    [27, "shared negative refusal"],
+    [28, "shared foreign owner"],
+    [29, "shared crossed builder"],
+    [30, "shared crossed resources"],
+    [31, "shared rehashed recipient identity"],
+    [32, "shared duplicate recipient"],
+  ] as const)(
+    "separates retirement and certification: %s %s",
+    // eslint-disable-next-line max-lines-per-function
+    (caseNumber, _caseName) => {
+      const directory = mkdtempSync(
+        resolve(tmpdir(), "agentscope-retirement-"),
       );
-    };
-    const verify = (mode = "failure", certificationCase?: string) =>
-      spawnSync(
-        process.execPath,
-        [
-          resolve(
-            workspaceRoot,
-            "tests/integration/verify-substrate-certification.mjs",
-          ),
-          mode,
-        ],
-        {
-          cwd: directory,
-          env: {
-            ...(certificationCase === undefined
-              ? {}
-              : {
-                  AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
-                }),
-            PATH: process.env.PATH,
-          },
-        },
-      ).status;
-    try {
-      mkdirSync(run, { recursive: true, mode: 0o700 });
-      writeEvidence(diagnostic);
-      expect(verify()).toBe(0);
-      writeEvidence(diagnostic, undefined, {
+      const artifacts = resolve(directory, "artifacts/integration");
+      const runId = "0123456789abcdef";
+      const run = resolve(artifacts, "runs", runId);
+      const diagnostic = {
         diagnosticVersion: 1,
-        untrustedConfigHint: "render",
-        exitPair: "150:78",
-      });
-      expect(verify()).toBe(0);
-      writeEvidence(diagnostic, undefined, {
-        diagnosticVersion: 1,
-        untrustedConfigHint: "render:secret",
-        exitPair: "150:78",
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence(diagnostic, undefined, {
-        diagnosticVersion: 1,
-        untrustedConfigHint: "render",
-        exitPair: "150:0",
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence(null);
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...diagnostic, outcome: "retired-success" });
-      expect(verify()).not.toBe(0);
-      writeEvidence({
-        ...diagnostic,
+        stage: "scenario-operation",
         authorityDigests: {
-          ...diagnostic.authorityDigests,
-          daemon: `sha256:${"f".repeat(64)}`,
-        },
-      });
-      expect(verify()).not.toBe(0);
-      const digestJson = (value: unknown) =>
-        `sha256:${createHash("sha256")
-          .update(JSON.stringify(value))
-          .digest("hex")}`;
-      const builderCleanup = {
-        diagnosticVersion: 1,
-        stage: "builder-reconciliation",
-        operationKind: "image-build",
-        identityDigests: {
-          builder: digestJson(`agentscope-${runId}`),
-          daemon: preparedAuthorityDigests.daemon,
-          image: preparedAuthorityDigests.buildkitImage,
-          platform: preparedAuthorityDigests.buildkitPlatform,
-          runGeneration: digestJson(runId),
-        },
-        process: {
-          observed: true,
-          exited: false,
-          signaled: true,
-          timedOut: true,
-          joined: false,
-          outputBytes: 1,
-          outputTruncated: false,
-          stderrClass: "unknown",
-        },
-        responseBytes: 1,
-        responseTruncated: false,
-        expectedResourceCount: 2,
-        observedResourceCount: 1,
-        expectedResourceDigest: digestJson([
-          `buildx_buildkit_agentscope-${runId}0`,
-          `buildx_buildkit_agentscope-${runId}0_state`,
-        ]),
-        observedResourceDigest: `sha256:${"f".repeat(64)}`,
-        reconciliationReasons: {
-          builderContainer: "matched",
-          builderVolume: "absent",
-          builtTag: "not-observed",
+          daemon: `sha256:${"a".repeat(64)}`,
+          images: `sha256:${"b".repeat(64)}`,
+          socket: `sha256:${"c".repeat(64)}`,
         },
         outcome: "retired-failure",
+        retirementReason: "mutation-outcome-unknown",
       };
-      writeEvidence(builderCleanup);
-      expect(verify()).toBe(0);
-      writeEvidence({
-        ...builderCleanup,
-        identityDigests: {
-          ...builderCleanup.identityDigests,
-          runGeneration: `sha256:${"f".repeat(64)}`,
+      const preparedAuthorityDigests = {
+        buildkitImage: `sha256:${"d".repeat(64)}`,
+        buildkitPlatform: `sha256:${"e".repeat(64)}`,
+        daemon: diagnostic.authorityDigests.daemon,
+        images: diagnostic.authorityDigests.images,
+        socket: diagnostic.authorityDigests.socket,
+      };
+      const writeEvidence = (
+        privateCleanup: unknown,
+        certification = {
+          certificationCase: null as string | null,
+          certificationPredicate: null as string | null,
+          primaryFailure: "integration.controller.unsettled-operation",
         },
-      });
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...builderCleanup, expectedResourceCount: 3 });
-      expect(verify()).not.toBe(0);
-      writeEvidence({ ...builderCleanup, responseTruncated: true });
-      expect(verify()).not.toBe(0);
-      writeEvidence({
-        ...builderCleanup,
-        expectedResourceDigest: `sha256:${"a".repeat(64)}`,
-      });
-      expect(verify()).not.toBe(0);
-      const witnessedWrongArgv = {
-        certificationCase: "wrong-argv",
-        certificationPredicate: "request-argv-mismatch",
-        primaryFailure: "integration.certification.wrong-argv",
+        codexResearchDiagnostic: unknown = null,
+        runIds = [runId],
+      ) => {
+        const failureEvidence = runIds.map((recipientRunId) => {
+          const recipient = resolve(artifacts, "runs", recipientRunId);
+          mkdirSync(recipient, { recursive: true, mode: 0o700 });
+          const content = `${JSON.stringify({
+            controllerFailureEvidenceVersion: 3,
+            runId: recipientRunId,
+            certificationCase: certification.certificationCase,
+            certificationPredicate: certification.certificationPredicate,
+            certificationReadiness: null,
+            scenarioOutcome: "failed",
+            controllerOutcome: "retired-failure",
+            primaryFailure: certification.primaryFailure,
+            causalFailure: null,
+            cleanupFailure: null,
+            installedPtyFailure: null,
+            codexResearchDiagnostic,
+            privateCleanup,
+          })}\n`;
+          writeFileSync(
+            resolve(recipient, "controller-failure.json"),
+            content,
+            {
+              mode: 0o600,
+            },
+          );
+          const status = lstatSync(
+            resolve(recipient, "controller-failure.json"),
+          );
+          return {
+            dev: status.dev,
+            digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+            ino: status.ino,
+            runId: recipientRunId,
+            size: status.size,
+          };
+        });
+        writeFileSync(
+          resolve(artifacts, "controller-failure-manifest.json"),
+          `${JSON.stringify({
+            controllerFailureManifestVersion: 1,
+            controllerAuthorityDigest: `sha256:${"d".repeat(64)}`,
+            certificationCase: certification.certificationCase,
+            preparedAuthorityDigests,
+            runIds: [...runIds].sort(),
+            failureEvidence: failureEvidence.sort((left, right) =>
+              left.runId.localeCompare(right.runId),
+            ),
+          })}\n`,
+          { mode: 0o600 },
+        );
       };
-      writeEvidence(null, witnessedWrongArgv);
-      expect(verify("negative", "wrong-argv")).toBe(0);
-      writeEvidence(diagnostic, {
-        ...witnessedWrongArgv,
-        primaryFailure: "integration.controller.unsettled-operation",
-      });
-      expect(verify("negative", "wrong-argv")).not.toBe(0);
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
+      const verify = (mode = "failure", certificationCase?: string) =>
+        spawnSync(
+          process.execPath,
+          [
+            resolve(
+              workspaceRoot,
+              "tests/integration/verify-substrate-certification.mjs",
+            ),
+            mode,
+          ],
+          {
+            cwd: directory,
+            env: {
+              ...(certificationCase === undefined
+                ? {}
+                : {
+                    AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: certificationCase,
+                  }),
+              PATH: process.env.PATH,
+            },
+          },
+        ).status;
+      let vectorNumber = 0;
+      let executed = 0;
+      const checkVerification = (
+        success: boolean,
+        mode = "failure",
+        certificationCase?: string,
+      ) => {
+        vectorNumber += 1;
+        if (vectorNumber !== caseNumber) return;
+        executed += 1;
+        const status = verify(mode, certificationCase);
+        if (success) expect(status).toBe(0);
+        else expect(status).not.toBe(0);
+      };
+      try {
+        mkdirSync(run, { recursive: true, mode: 0o700 });
+        writeEvidence(diagnostic);
+        checkVerification(true);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render",
+          exitPair: "150:78",
+        });
+        checkVerification(true);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render:secret",
+          exitPair: "150:78",
+        });
+        checkVerification(false);
+        writeEvidence(diagnostic, undefined, {
+          diagnosticVersion: 1,
+          untrustedConfigHint: "render",
+          exitPair: "150:0",
+        });
+        checkVerification(false);
+        writeEvidence(null);
+        checkVerification(false);
+        writeEvidence({ ...diagnostic, outcome: "retired-success" });
+        checkVerification(false);
+        writeEvidence({
+          ...diagnostic,
+          authorityDigests: {
+            ...diagnostic.authorityDigests,
+            daemon: `sha256:${"f".repeat(64)}`,
+          },
+        });
+        checkVerification(false);
+        const digestJson = (value: unknown) =>
+          `sha256:${createHash("sha256")
+            .update(JSON.stringify(value))
+            .digest("hex")}`;
+        const builderCleanup = {
+          diagnosticVersion: 1,
+          stage: "builder-reconciliation",
+          operationKind: "image-build",
+          identityDigests: {
+            builder: digestJson(`agentscope-${runId}`),
+            daemon: preparedAuthorityDigests.daemon,
+            image: preparedAuthorityDigests.buildkitImage,
+            platform: preparedAuthorityDigests.buildkitPlatform,
+            runGeneration: digestJson(runId),
+          },
+          process: {
+            observed: true,
+            exited: false,
+            signaled: true,
+            timedOut: true,
+            joined: false,
+            outputBytes: 1,
+            outputTruncated: false,
+            stderrClass: "unknown",
+          },
+          responseBytes: 1,
+          responseTruncated: false,
+          expectedResourceCount: 2,
+          observedResourceCount: 1,
+          expectedResourceDigest: digestJson([
+            `buildx_buildkit_agentscope-${runId}0`,
+            `buildx_buildkit_agentscope-${runId}0_state`,
+          ]),
+          observedResourceDigest: `sha256:${"f".repeat(64)}`,
+          reconciliationReasons: {
+            builderContainer: "matched",
+            builderVolume: "absent",
+            builtTag: "not-observed",
+          },
+          outcome: "retired-failure",
+        };
+        writeEvidence(builderCleanup);
+        checkVerification(true);
+        // rejectSettledBuild records this distinct disposition after reconciliation;
+        // the captured process is the first failure, not a successful build result.
+        const settledFailure = { ...builderCleanup, outcome: "failed-settled" };
+        writeEvidence(settledFailure);
+        checkVerification(true);
+        checkVerification(false, "negative", "wrong-argv");
+        for (const outcome of ["success", "retired-success", "unknown"]) {
+          writeEvidence({ ...settledFailure, outcome });
+          checkVerification(false);
+        }
+        for (const substitution of [
+          { expectedResourceCount: 3 },
+          { responseTruncated: true },
+          { responseBytes: 16_777_217 },
+          { expectedResourceDigest: `sha256:${"a".repeat(64)}` },
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              runGeneration: `sha256:${"f".repeat(64)}`,
+            },
+          },
+          { process: { ...settledFailure.process, outputBytes: 16_777_217 } },
+        ]) {
+          writeEvidence({ ...settledFailure, ...substitution });
+          checkVerification(false);
+        }
+        writeEvidence({
+          ...builderCleanup,
+          identityDigests: {
+            ...builderCleanup.identityDigests,
+            runGeneration: `sha256:${"f".repeat(64)}`,
+          },
+        });
+        checkVerification(false);
+        writeEvidence({ ...builderCleanup, expectedResourceCount: 3 });
+        checkVerification(false);
+        writeEvidence({ ...builderCleanup, responseTruncated: true });
+        checkVerification(false);
+        writeEvidence({
+          ...builderCleanup,
+          expectedResourceDigest: `sha256:${"a".repeat(64)}`,
+        });
+        checkVerification(false);
+        const witnessedWrongArgv = {
+          certificationCase: "wrong-argv",
+          certificationPredicate: "request-argv-mismatch",
+          primaryFailure: "integration.certification.wrong-argv",
+        };
+        writeEvidence(null, witnessedWrongArgv);
+        checkVerification(true, "negative", "wrong-argv");
+        writeEvidence(diagnostic, {
+          ...witnessedWrongArgv,
+          primaryFailure: "integration.controller.unsettled-operation",
+        });
+        checkVerification(false, "negative", "wrong-argv");
+        // One material build belongs to an owned plan, while its shared-client
+        // failure is copied into every selected recipient's retained record.
+        const recipients = [runId, "1123456789abcdef", "2123456789abcdef"];
+        const writeShared = (cleanup: unknown) => {
+          writeEvidence(cleanup, undefined, null, recipients);
+        };
+        writeShared(settledFailure);
+        checkVerification(true);
+        checkVerification(false, "negative", "wrong-argv");
+        for (const substitution of [
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              runGeneration: digestJson("foreign-owner"),
+            },
+          },
+          {
+            identityDigests: {
+              ...settledFailure.identityDigests,
+              builder: digestJson(`agentscope-${recipients[1]}`),
+            },
+          },
+          {
+            expectedResourceDigest: digestJson([
+              `buildx_buildkit_agentscope-${recipients[1]}0`,
+              `buildx_buildkit_agentscope-${recipients[1]}0_state`,
+            ]),
+          },
+        ]) {
+          writeShared({ ...settledFailure, ...substitution });
+          checkVerification(false);
+        }
+        writeShared(settledFailure);
+        const manifestPath = resolve(
+          artifacts,
+          "controller-failure-manifest.json",
+        );
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          runIds: string[];
+          failureEvidence: { runId: string; size: number; digest: string }[];
+        };
+        const recipientPath = resolve(
+          artifacts,
+          "runs",
+          recipients[1]!,
+          "controller-failure.json",
+        );
+        const recipient = JSON.parse(
+          readFileSync(recipientPath, "utf8"),
+        ) as Record<string, unknown>;
+        recipient.runId = runId;
+        const substituted = `${JSON.stringify(recipient)}\n`;
+        writeFileSync(recipientPath, substituted);
+        const identity = manifest.failureEvidence.find(
+          (value) => value.runId === recipients[1],
+        )!;
+        identity.size = Buffer.byteLength(substituted);
+        identity.digest = `sha256:${createHash("sha256").update(substituted).digest("hex")}`;
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+        checkVerification(false);
+        writeShared(settledFailure);
+        const duplicated = JSON.parse(
+          readFileSync(manifestPath, "utf8"),
+        ) as Record<string, unknown>;
+        duplicated.runIds = [runId, runId, recipients[2]!];
+        writeFileSync(manifestPath, JSON.stringify(duplicated));
+        checkVerification(false);
+        expect(vectorNumber).toBe(32);
+        expect(executed).toBe(1);
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+  );
 });

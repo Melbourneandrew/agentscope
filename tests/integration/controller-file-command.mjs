@@ -2,6 +2,7 @@
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { types } from "node:util";
+import { parseMavenFailureObservation } from "./image-preparation/process-output.mjs";
 
 const stages = [
   "unknown",
@@ -80,6 +81,32 @@ const bootstrapStages = [
   "supplier-connected-entry",
   "supplier-connected-extract",
   "supplier-connected-package",
+  ...["", "connected-"].flatMap((prefix) =>
+    Array.from(
+      { length: 12 },
+      (_, index) =>
+        `supplier-${prefix}package-goal-${String.fromCharCode(97 + index)}`,
+    ),
+  ),
+  "supplier-image-worker-complete",
+  ...[
+    "copy-java",
+    "copy-jar",
+    "copy-control",
+    "copy-configuration",
+    "export",
+    "layers",
+    "tar",
+    "load",
+  ].flatMap((role) => [
+    `supplier-image-${role}`,
+    `supplier-image-${role}-complete`,
+  ]),
+  "supplier-connected-package-compilation",
+  "supplier-connected-package-resolution",
+  "supplier-connected-package-frontend",
+  "supplier-connected-package-other",
+  "supplier-connected-service-finalization",
   "supplier-connected-inventory",
   "supplier-connected-inventory-read",
   "supplier-connected-inventory-guard",
@@ -89,6 +116,11 @@ const bootstrapStages = [
   "supplier-entry",
   "supplier-extract",
   "supplier-package",
+  "supplier-package-compilation",
+  "supplier-package-resolution",
+  "supplier-package-frontend",
+  "supplier-package-other",
+  "supplier-service-finalization",
   "supplier-inventory",
   "supplier-inventory-read",
   "supplier-inventory-guard",
@@ -267,8 +299,42 @@ export const publishBootstrapGpgObservation = (
   );
   const invalidSupplierFamily =
     observedStage.startsWith("supplier-") && observedFamily !== "none";
+  const maven = own(processObservation, "untrustedMavenFailure");
+  const exit = own(maven, "exitCode"),
+    signal = own(maven, "signal");
+  const disposition = own(maven, "disposition");
+  const numbers = ["goal", "unit", "line", "column", "reason"].map((key) =>
+    own(maven, key),
+  );
+  const mavenTuple =
+    typeof maven === "object" &&
+    maven !== null &&
+    !types.isProxy(maven) &&
+    Reflect.ownKeys(maven).length === 8 &&
+    typeof disposition === "string" &&
+    numbers.every(Number.isInteger) &&
+    (exit === null || Number.isInteger(exit)) &&
+    (signal === null ||
+      ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].includes(signal))
+      ? [
+          disposition,
+          exit === null ? 0 : exit + 1,
+          signal === null
+            ? 0
+            : ["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].indexOf(signal) + 1,
+          ...numbers,
+        ].join(",")
+      : "unknown";
+  const validMaven =
+    !invalidSupplierFamily &&
+    observedFamily === "none" &&
+    /^supplier-(?:connected-)?package-(?:compilation|resolution|frontend|other)$/u.test(
+      observedStage,
+    ) &&
+    parseMavenFailureObservation(mavenTuple);
   append(
     [
+      ["untrusted_maven_failure", validMaven ? mavenTuple : "unknown"],
       [
         "untrusted_builder_operation",
         selected(own(diagnostic, "operationKind"), [

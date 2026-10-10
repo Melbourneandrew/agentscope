@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 import { Agent, type request as HttpRequest } from "node:http";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -10,6 +11,7 @@ import {
   extractAdapterReportedFailure,
   projectUntrustedCodexPtyReceipt,
   encodeAdapterReportedFailureMarker,
+  codexGateResearchHints,
 } from "../codex-pty-research.mjs";
 // @ts-expect-error private integration module has no published declaration
 import * as privateAuthority from "../immutable-candidate-authority.mjs";
@@ -17,7 +19,22 @@ const {
   codexFailureExitPair,
   validCodexResearchDiagnostic,
   encodeInteractiveFailureExitCode,
+  extractUntrustedCodexGateHint,
+  readBoundedInteractiveFailureRecord,
+  selectInteractiveFailureDiagnostic,
+  codexArmPendingResearchHint,
 } = privateAuthority as {
+  codexArmPendingResearchHint: (error: unknown) => string;
+  readBoundedInteractiveFailureRecord: (
+    ledger: string,
+    runId: string,
+  ) => { predicate: string } | undefined;
+  selectInteractiveFailureDiagnostic: (
+    marker: unknown,
+    phase: unknown,
+    selected: unknown,
+  ) => string | undefined;
+  extractUntrustedCodexGateHint: (output: unknown) => string | undefined;
   codexFailureExitPair: (
     fixture: unknown,
     container: unknown,
@@ -32,17 +49,381 @@ const {
 const readIntegration = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+describe("actual retained model research marker channel", () => {
+  it.each([
+    "model-budget",
+    "model-http-status",
+    "model-projection",
+    "model-control-order",
+    "model-control-count",
+    "model-ledger",
+  ])("preserves fixture131 and verify-gate while retaining only %s", (hint) => {
+    const source = readIntegration("codex-pty-scenario.mjs");
+    const start = source.indexOf(
+      "process.setUncaughtExceptionCaptureCallback(",
+    );
+    const end = source.indexOf("const required =", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const phasesSource = readIntegration("codex-trace-child-diagnostics.mjs");
+    const phases = runInNewContext(
+      `${phasesSource.slice(phasesSource.indexOf("export const interactivePhases"), phasesSource.indexOf("export const candidateConfigStages")).replace("export const", "const")}\ninteractivePhases;`,
+    ) as readonly string[];
+    const phaseIndex = phases.indexOf("verify-gate");
+    expect(phaseIndex).toBe(67);
+    const directory = mkdtempSync(join(tmpdir(), "agentscope-model-hint-"));
+    let callback: ((error: Error) => void) | undefined;
+    let fixtureExit: number | undefined;
+    try {
+      runInNewContext(
+        source.slice(start, end),
+        {
+          process: {
+            setUncaughtExceptionCaptureCallback: (
+              value: (error: Error) => void,
+            ) => {
+              callback = value;
+            },
+            stdout: {
+              write: (_text: string, complete: (error?: unknown) => void) => {
+                complete();
+              },
+            },
+            exit: (code: number) => {
+              fixtureExit = code;
+            },
+          },
+          interactiveFailurePhase: "verify-gate",
+          interactiveFailurePhaseIndex: phaseIndex,
+          modelControlFailureHint: hint,
+          candidateConfigStage: undefined,
+          preCheckpointFailureDiagnostic: undefined,
+          joinDeadlineHookState: undefined,
+          adapterReportedFailure: undefined,
+          postTraceFailureDiagnostic: () => undefined,
+          ledger: directory,
+          integrationRunId: "0123456789abcdef",
+          terminalCompletionMarker: "AGENTSCOPE_PTY_COMPLETE",
+          encodeInteractiveFailureExitCode,
+          encodeAdapterReportedFailureMarker,
+          writeFileSync,
+          join,
+          setTimeout: () => 1,
+          clearTimeout: () => undefined,
+        },
+        { timeout: 1000 },
+      );
+      expect(callback).toBeDefined();
+      callback!(new Error("synthetic original"));
+      expect(fixtureExit).toBe(131);
+      const record = readBoundedInteractiveFailureRecord(
+        directory,
+        "0123456789abcdef",
+      );
+      expect(record?.predicate).toBe(
+        `integration.fixture.codex-gate-research-${hint}`,
+      );
+      const primary = selectInteractiveFailureDiagnostic(
+        record?.predicate,
+        "integration.fixture.codex-verify-gate",
+        "integration.runner.fixture-failed",
+      );
+      expect(primary).toBe("integration.fixture.codex-verify-gate");
+      expect(
+        encodeInteractiveFailureExitCode(primary!, "codex-tui-trace-smoke"),
+      ).toBe(127);
+      expect(codexGateResearchHints).toContain(hint);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+const postCheckpointFailure = (
+  error: unknown,
+  phase = "model-gate-arm-complete",
+  sinkThrows = false,
+) => {
+  const source = readIntegration("codex-pty-scenario.mjs");
+  const start = source.indexOf("process.setUncaughtExceptionCaptureCallback(");
+  const end = source.indexOf("const required =", start);
+  const phasesSource = readIntegration("codex-trace-child-diagnostics.mjs");
+  const phases = runInNewContext(
+    `${phasesSource.slice(phasesSource.indexOf("export const interactivePhases"), phasesSource.indexOf("export const candidateConfigStages")).replace("export const", "const")}\ninteractivePhases;`,
+  ) as readonly string[];
+  const directory = mkdtempSync(join(tmpdir(), "agentscope-post-checkpoint-"));
+  let callback: ((error: unknown) => void) | undefined;
+  let exitCode: number | undefined;
+  try {
+    runInNewContext(
+      source.slice(start, end),
+      {
+        process: {
+          setUncaughtExceptionCaptureCallback: (value: typeof callback) => {
+            callback = value;
+          },
+          stdout: {
+            write: (_text: string, complete: () => void) => {
+              complete();
+            },
+          },
+          exit: (code: number) => {
+            exitCode = code;
+          },
+        },
+        interactiveFailurePhase: phase,
+        interactiveFailurePhaseIndex: phases.indexOf(phase),
+        modelControlFailureHint: undefined,
+        candidateConfigStage: undefined,
+        preCheckpointFailureDiagnostic: undefined,
+        joinDeadlineHookState: undefined,
+        adapterReportedFailure: undefined,
+        postTraceFailureDiagnostic: () => undefined,
+        codexArmPendingResearchHint,
+        ledger: directory,
+        integrationRunId: "0123456789abcdef",
+        terminalCompletionMarker: "AGENTSCOPE_PTY_COMPLETE",
+        encodeInteractiveFailureExitCode,
+        encodeAdapterReportedFailureMarker,
+        writeFileSync: sinkThrows
+          ? () => {
+              throw new Error("private sink");
+            }
+          : writeFileSync,
+        join,
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+      { timeout: 1000 },
+    );
+    expect(callback).toBeDefined();
+    callback!(error);
+    return {
+      exitCode,
+      originalExitCode: 64 + phases.indexOf(phase),
+      marker: readBoundedInteractiveFailureRecord(directory, "0123456789abcdef")
+        ?.predicate,
+    };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+describe("post-checkpoint original failure research", () => {
+  it.each([
+    ["integration.codex.trace-deadline", "arm-deadline"],
+    ["integration.codex.session-ledger", "arm-session-ledger"],
+    ["private synthetic error", "arm-other"],
+  ])(
+    "retains only %s category without replacing the phase",
+    (message, hint) => {
+      const result = postCheckpointFailure(new Error(message));
+      expect(result.exitCode).toBe(result.originalExitCode);
+      expect(result.marker).toBe(
+        `integration.fixture.codex-gate-research-${hint}`,
+      );
+      const runner = readIntegration("runner.mjs");
+      const start = runner.indexOf(
+        'const gatePrefix = "integration.fixture.codex-gate-research-";',
+      );
+      const end = runner.indexOf("const traceHint =", start);
+      const lines: string[] = [];
+      runInNewContext(
+        `(async () => { ${runner.slice(start, end)} })()`,
+        {
+          marker: result.marker,
+          codexGateResearchHints,
+          process: { stdout: { write: (line: string) => lines.push(line) } },
+        },
+        { timeout: 1000 },
+      );
+      const untrustedGateHint = extractUntrustedCodexGateHint(lines.join(""));
+      expect(untrustedGateHint).toBe(hint);
+      const phase = "integration.fixture.codex-model-gate-arm-complete";
+      expect(
+        selectInteractiveFailureDiagnostic(
+          result.marker,
+          phase,
+          "integration.runner.fixture-failed",
+        ),
+      ).toBe(phase);
+      expect(lines.join("")).not.toContain(message);
+      const research = createCodexFailureResearchRecord(
+        { runId: "0123456789abcdef", scenarioId: "codex-tui-trace-smoke" },
+        lines.join(""),
+        undefined,
+        { code: 1 },
+        [
+          () => undefined,
+          extractUntrustedCodexGateHint,
+          () => undefined,
+          projectUntrustedCodexPtyReceipt,
+          extractAdapterReportedFailure,
+          codexFailureExitPair,
+        ],
+      );
+      expect(research.untrustedGateHint).toBe(hint);
+      expect(research.exitPair).toBe("none:1");
+      expect(
+        validCodexResearchDiagnostic(JSON.parse(JSON.stringify(research))),
+      ).toBe(true);
+    },
+  );
+  it("retains unrelated phases and the existing optional sink fallback", () => {
+    const unrelated = postCheckpointFailure(
+      new Error("integration.codex.session-ledger"),
+      "tui-checkpoint",
+    );
+    expect(unrelated.marker).toBe("integration.fixture.codex-tui-checkpoint");
+    expect(unrelated.exitCode).toBe(unrelated.originalExitCode);
+    const sink = postCheckpointFailure(
+      new Error("integration.codex.session-ledger"),
+      "model-gate-arm-complete",
+      true,
+    );
+    expect(sink.marker).toBeUndefined();
+    expect(sink.exitCode).toBe(64);
+  });
+  it("contains hostile and foreign categories without reflecting their content", () => {
+    const hostile = Object.defineProperty(new Error(), "message", {
+      get: () => {
+        throw new Error("private getter");
+      },
+    });
+    for (const value of [
+      null,
+      "integration.codex.session-ledger",
+      { message: "integration.codex.session-ledger" },
+      hostile,
+      new Proxy(new Error(), {
+        get: () => {
+          throw new Error("private proxy");
+        },
+      }),
+    ]) {
+      expect(codexArmPendingResearchHint(value)).toBe("arm-other");
+    }
+    expect(
+      extractUntrustedCodexGateHint(
+        "integration.runner.untrusted-gate-hint:arm-session-ledger-private\n",
+      ),
+    ).toBeUndefined();
+  });
+});
+
+const finalModelFixture = (variant: string) => {
+  const source = readIntegration("codex-pty-scenario.mjs");
+  const start = source.indexOf("const readModelRequests = async () => {");
+  const end = source.indexOf("const configureModelGate =", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const control = (path: string) => ({
+    method: "PUT",
+    path,
+    role: "allowed-control",
+    status: 200,
+    bodyBytes: 2,
+    bodySha256: "a".repeat(64),
+  });
+  const configuration = control("/mockserver/expectation");
+  const retrieval = control("/mockserver/retrieve");
+  const candidate = Array.from({ length: 5 }, (_, index) => ({
+    ...control(`/denied-${index}`),
+    role: "forbidden-control",
+    status: 403,
+  }));
+  const rows = [configuration, ...candidate, retrieval];
+  if (variant === "order") [rows[0], rows[1]] = [rows[1]!, rows[0]!];
+  if (variant === "count") rows.pop();
+  const original = new Error("synthetic original");
+  const requests = vi.fn(() =>
+    Promise.resolve({
+      status: variant === "status" ? 503 : 200,
+      bytes: Buffer.from("synthetic bounded response"),
+    }),
+  );
+  const execute = runInNewContext(
+    `let modelControlFailureHint; ${source.slice(start, end)};
+     ({ read: readModelRequests, hint: () => modelControlFailureHint });`,
+    {
+      upstreamControl: {
+        snapshot: () => ({
+          entries:
+            variant === "budget"
+              ? Array.from({ length: 7 }, () => configuration)
+              : [configuration, retrieval],
+        }),
+        requests,
+      },
+      candidateTraffic: { entries: candidate },
+      promptSha256: "b".repeat(64),
+      integrationRunId: "0123456789abcdef",
+      projectMockServerRequests: () => {
+        if (variant === "projection") throw original;
+        return rows;
+      },
+      snapshotMockServerTraffic: (value: unknown) => value,
+      boundedRequestLedger: () => {
+        if (variant === "ledger") throw original;
+        return [];
+      },
+      upstreamTraffic: undefined,
+    },
+    { timeout: 1000 },
+  ) as { read: () => Promise<unknown>; hint: () => unknown };
+  return { ...execute, requests, original };
+};
+
+describe("actual final model-control boundary observations", () => {
+  it.each([
+    ["budget", "model-budget"],
+    ["status", "model-http-status"],
+    ["projection", "model-projection"],
+    ["order", "model-control-order"],
+    ["count", "model-control-count"],
+    ["ledger", "model-ledger"],
+  ])(
+    "preserves %s refusal and records only its fixed hint",
+    async (variant, hint) => {
+      const fixture = finalModelFixture(variant);
+      await expect(fixture.read()).rejects.toMatchObject({
+        message:
+          variant === "projection" || variant === "ledger"
+            ? fixture.original.message
+            : "integration.codex.model-control",
+      });
+      expect(fixture.hint()).toBe(hint);
+      if (variant === "budget") expect(fixture.requests).not.toHaveBeenCalled();
+      if (variant === "projection" || variant === "ledger")
+        await expect(fixture.read()).rejects.toBe(fixture.original);
+      expect(fixture.hint()).toBe(hint);
+    },
+  );
+  it("keeps valid control ordering successful without a hint", async () => {
+    const fixture = finalModelFixture("success");
+    await expect(fixture.read()).resolves.toEqual([]);
+    expect(fixture.hint()).toBeUndefined();
+    expect(fixture.requests).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("optional runner diagnostic sink preserves the original failure", () => {
-  it.each([false, true])(
-    "preserves the actual exit when sink throws %s",
-    async (throws) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "preserves the actual exit when sink throws %s and model hint %s",
+    async (throws, modelHint) => {
       const source = readIntegration("runner.mjs");
       const start = source.indexOf(
         'if (scenario.executionMode === "interactive" && fixtureFailure !== undefined)',
       );
       expect(start).toBeGreaterThan(0);
-      const predicate =
-        "integration.fixture.codex-verify-trace-get-child-invoke-get";
+      const predicate = modelHint
+        ? "integration.fixture.codex-verify-gate"
+        : "integration.fixture.codex-verify-trace-get-child-invoke-get";
       const writes: string[] = [];
       const process = {
         env: {},
@@ -70,18 +451,22 @@ describe("optional runner diagnostic sink preserves the original failure", () =>
           untrustedCodexJoinHint: () => undefined,
           requiredEnvironment: () => "0123456789abcdef",
           readBoundedInteractiveFailureRecord: () => ({
-            predicate,
-            adapterReportedFailure: {
-              stage: 11,
-              cutoffExpired: false,
-              workerJoined: true,
-              watchdogJoined: null,
-              leaseReleased: false,
-            },
+            predicate: modelHint
+              ? "integration.fixture.codex-gate-research-model-control-order"
+              : predicate,
+            adapterReportedFailure: modelHint
+              ? undefined
+              : {
+                  stage: 11,
+                  cutoffExpired: false,
+                  workerJoined: true,
+                  watchdogJoined: null,
+                  leaseReleased: false,
+                },
           }),
           encodeAdapterReportedFailureMarker,
           retainedInteractivePhase: () => undefined,
-          codexGateResearchHints: [],
+          codexGateResearchHints,
           untrustedCodexTraceHint: () => undefined,
           encodeInteractiveFailureExitCode,
         },
@@ -90,9 +475,15 @@ describe("optional runner diagnostic sink preserves the original failure", () =>
       await expect(Promise.resolve(completed)).resolves.toBeUndefined();
       expect(writes).toHaveLength(1);
       expect(writes[0]).toMatch(
-        /^integration\.runner\.adapter-reported-failure:/u,
+        modelHint
+          ? /^integration\.runner\.untrusted-gate-hint:model-control-order\n$/u
+          : /^integration\.runner\.adapter-reported-failure:/u,
       );
-      expect(process.exitCode).toBe(189);
+      if (modelHint)
+        expect(extractUntrustedCodexGateHint(writes[0])).toBe(
+          "model-control-order",
+        );
+      expect(process.exitCode).toBe(modelHint ? 127 : 189);
       expect(process.exitCode).toBe(
         encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
       );

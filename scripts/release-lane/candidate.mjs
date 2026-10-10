@@ -4,6 +4,7 @@ import { basename, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import npa from "npm-package-arg";
 
+import { assertAlphaLocalNativeAbsent } from "../../apps/cli/scripts/alpha-packed-absence.mjs";
 import { publishManifestFields } from "../../apps/cli/scripts/publish-manifest-contract.mjs";
 
 import {
@@ -257,14 +258,132 @@ export function inspectCandidateTarball(tarballPath) {
     "Candidate tarball size is invalid",
   );
   const tarball = readFileSync(tarballPath);
+  return Object.freeze({ ...inspectCandidateBytes(tarball), bytes: stat.size });
+}
+
+function inspectCandidateBytes(tarball) {
+  assert(
+    Buffer.isBuffer(tarball) &&
+      tarball.length > 0 &&
+      tarball.length <= MAX_TARBALL_BYTES,
+    "Candidate tarball size is invalid",
+  );
   const inspected = readTarInventory(tarball);
   return Object.freeze({
-    bytes: stat.size,
+    bytes: tarball.length,
     integrity: `sha512-${createHash("sha512").update(tarball).digest("base64")}`,
     inventory: inspected.inventory,
     inventoryDigest: inspected.inventoryDigest,
     packedManifest: inspected.packedManifest,
     sha256: `sha256:${createHash("sha256").update(tarball).digest("hex")}`,
+  });
+}
+
+// Pure packaging only: callers must independently verify these actual role
+// bytes and semantic admission. This helper neither admits support nor uploads
+// a candidate, and cannot replace the release lane's disabled admission guard.
+export function assembleCandidateAssets({
+  tarball,
+  sourceRevision,
+  roleBytes,
+}) {
+  assert(
+    typeof sourceRevision === "string" &&
+      SOURCE_REVISION_PATTERN.test(sourceRevision),
+    "Invalid candidate source revision",
+  );
+  assert(
+    Buffer.isBuffer(tarball) &&
+      tarball.length > 0 &&
+      tarball.length <= MAX_TARBALL_BYTES,
+    "Candidate tarball size is invalid",
+  );
+  const roles = [
+    "checksum-manifest.json",
+    "support-admission.json",
+    "sbom.json",
+    "attestations.json",
+    "evidence-index.json",
+  ];
+  assertExactKeys(roleBytes, roles, "candidate retained roles");
+  const retained = roles.map((name) => {
+    const input = Object.entries(roleBytes)
+      .find(([key]) => key === name)
+      .at(1);
+    assert(
+      Buffer.isBuffer(input) && input.length > 0 && input.length <= 2_097_152,
+      "Candidate retained role bytes are invalid",
+    );
+    const bytes = Buffer.from(input);
+    const value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    );
+    return {
+      name,
+      bytes,
+      digest: sha256(bytes),
+      canonicalDigest: sha256(canonicalJson(value)),
+    };
+  });
+  const bytes = Buffer.from(tarball);
+  const inspected = inspectCandidateBytes(bytes);
+  const packageIdentity = {
+    name: inspected.packedManifest.name,
+    version: inspected.packedManifest.version,
+  };
+  const certificationRecord = {
+    schemaVersion: 1,
+    recordId: "agentscope.candidate-certification.v1",
+    state: "certified",
+    package: packageIdentity,
+    sourceRevision,
+    protectedTag: "v0.1.0",
+    tarballSha256: inspected.sha256,
+    inventoryDigest: inspected.inventoryDigest,
+    supportAdmissionDigest: retained.find(
+      ({ name }) => name === "support-admission.json",
+    ).canonicalDigest,
+    evidenceIndexDigest: retained.find(
+      ({ name }) => name === "evidence-index.json",
+    ).canonicalDigest,
+  };
+  const manifest = {
+    schemaVersion: 1,
+    candidateId: "agentscope.release-candidate.v1",
+    package: { ...packageIdentity, bin: inspected.packedManifest.bin },
+    channel: { npmDistTag: "alpha", githubPrerelease: true },
+    sourceRevision,
+    protectedTag: "v0.1.0",
+    tarball: {
+      fileName: "agentscope-cli-0.1.0.tgz",
+      bytes: inspected.bytes,
+      sha256: inspected.sha256,
+      integrity: inspected.integrity,
+      inventoryDigest: inspected.inventoryDigest,
+    },
+    certification: {
+      state: "certified",
+      recordDigest: sha256(canonicalJson(certificationRecord)),
+    },
+  };
+  validateCandidateManifest(manifest);
+  validateCertificationRecord(certificationRecord, manifest);
+  verifyPackedCandidate(inspected, manifest);
+  const asset = (name, content) =>
+    Object.freeze({ name, bytes: content, digest: sha256(content) });
+  return Object.freeze({
+    manifest,
+    certificationRecord,
+    manifestDigest: sha256(canonicalJson(manifest)),
+    assets: Object.freeze([
+      asset(manifest.tarball.fileName, bytes),
+      asset("candidate-manifest.json", Buffer.from(canonicalJson(manifest))),
+      asset(
+        "certification-record.json",
+        Buffer.from(canonicalJson(certificationRecord)),
+      ),
+      ...retained.map(({ name, bytes: content }) => asset(name, content)),
+    ]),
   });
 }
 
@@ -470,7 +589,27 @@ export function verifyCandidateArtifact({
     inspected.inventoryDigest === manifest.tarball.inventoryDigest,
     "Candidate inventory digest mismatch",
   );
+  verifyPackedCandidate(inspected, manifest);
+  return Object.freeze({
+    bytes: inspected.bytes,
+    inventoryEntries: inspected.inventory.length,
+    inventoryDigest: inspected.inventoryDigest,
+    manifestDigest: expectedManifestDigest,
+    package: inspected.packedManifest.name,
+    protectedTag: manifest.protectedTag,
+    sha256: inspected.sha256,
+    sourceRevision: manifest.sourceRevision,
+    version: inspected.packedManifest.version,
+  });
+}
+
+function verifyPackedCandidate(inspected, manifest) {
   const { packedManifest } = inspected;
+  // Inventory classification only: the fresh packed CLI gate owns exact
+  // directory-runtime byte verification, not this Local exclusion check.
+  assertAlphaLocalNativeAbsent(
+    inspected.inventory.map(({ path }) => path.slice("package/".length)),
+  );
   for (const field of Object.keys(packedManifest))
     assert(
       publishManifestFields.includes(field),
@@ -498,15 +637,4 @@ export function verifyCandidateArtifact({
       !Object.hasOwn(packedManifest.publishConfig, "tag"),
     "Product tarball publishConfig drifted",
   );
-  return Object.freeze({
-    bytes: inspected.bytes,
-    inventoryEntries: inspected.inventory.length,
-    inventoryDigest: inspected.inventoryDigest,
-    manifestDigest: expectedManifestDigest,
-    package: packedManifest.name,
-    protectedTag: manifest.protectedTag,
-    sha256: inspected.sha256,
-    sourceRevision: manifest.sourceRevision,
-    version: packedManifest.version,
-  });
 }

@@ -413,7 +413,7 @@ describe("actual bootstrap host failure boundary", () => {
     "projects the existing client observation without replacing primary (sink failure=%s)",
     async (sinkFails) => {
       const source = sourceAt("../mockserver-material/prepare-bootstrap.mjs");
-      const start = source.indexOf("const verifyKind =");
+      const start = source.indexOf("const verifyInputs =");
       const body = source.slice(
         start,
         source.indexOf("/** Mutable returned archives", start),
@@ -428,7 +428,7 @@ describe("actual bootstrap host failure boundary", () => {
       const client = {};
       const seen: unknown[] = [];
       const verify = runInNewContext(
-        body + "\nverifyKind;",
+        body + "\nverifyInputs;",
         {
           reserveMilliseconds: 6_000,
           maximumContextBytes: 384 * 1024 * 1024,
@@ -456,7 +456,6 @@ describe("actual bootstrap host failure boundary", () => {
         verify(
           { deadline: 10_000, dockerClient: client, runId: "run", signal: {} },
           {},
-          "maven",
           {},
           {},
         ),

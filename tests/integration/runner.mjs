@@ -21,7 +21,12 @@ import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
-import { readPtyReconciliationStage } from "./testkit/internal/kernel-errors.js";
+import {
+  readPtyReconciliationStage,
+  readPtySemanticFailure,
+  readPtyExitSignal,
+  trustedErrorCode,
+} from "./testkit/internal/kernel-errors.js";
 import {
   encodeAdapterReportedFailureMarker,
   failedCodexSessionStartHint,
@@ -34,6 +39,7 @@ import {
   decodeInteractiveFailureExitCode,
   decodeImmutableCandidateHandoff,
   encodeInteractiveFailureExitCode,
+  formatInteractiveChildDiagnostic,
   interactivePtyExecutionReserveMilliseconds,
   interactivePtyReceiptFailed,
   readBoundedInteractiveFailureMarker,
@@ -204,7 +210,9 @@ const compileNativeReadiness = (scenario, challenge) => {
     return Object.freeze({ kind: "challenge-process-topology", challenge });
   if (
     readiness?.kind === "challenge-marker" &&
-    scenario.harnessEvidenceId === "codex-0-149-1" &&
+    (scenario.harnessEvidenceId === "codex-0-149-1" ||
+      (scenario.harnessEvidenceId === "claude-code-2-1-245" &&
+        scenario.scenarioId === "claude-interactive-trace-smoke")) &&
     JSON.stringify(Object.keys(readiness).sort()) ===
       JSON.stringify(["kind"]) &&
     typeof challenge === "string" &&
@@ -406,6 +414,9 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+let recoveryAttempted = false;
+let recoverySucceeded = false;
+let recoveryStage = null;
 let interactiveFailureDiagnostic;
 let codexPtyFailureHint =
   scenarioId === "codex-tui-trace-smoke" ? "arm-pty-before-call" : undefined;
@@ -420,7 +431,14 @@ const emitCodexPtyFailureHint = () => {
   }
 };
 const recoverRetainedFixtureOutput = () =>
-  readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
+  readRetainedFixtureOutput(
+    join(ledger, "fixture-result.json"),
+    scenarioId,
+    undefined,
+    (stage) => {
+      recoveryStage = stage;
+    },
+  );
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -679,13 +697,30 @@ try {
     if (interactivePtyReceiptFailed(receipt)) {
       if (scenarioId === "codex-tui-trace-smoke")
         codexPtyFailureHint = "arm-pty-returned-failed";
+      const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);
+      const decoded = decodeScenarioFailureExitCode(receipt.exitCode);
+      const retainedPhase =
+        decoded === undefined ? retainedInteractivePhase(ledger) : undefined;
       const diagnostic =
-        decodeScenarioFailureExitCode(receipt.exitCode) ??
-        retainedInteractivePhase(ledger);
+        decoded ??
+        selectInteractiveFailureDiagnostic(
+          fixtureRecord?.predicate,
+          retainedPhase,
+          undefined,
+        ) ??
+        retainedPhase;
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
-          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+          formatInteractiveChildDiagnostic(
+            diagnostic,
+            undefined,
+            undefined,
+            scenarioId === "claude-interactive-trace-smoke" &&
+              diagnostic === fixtureRecord?.predicate
+              ? fixtureRecord?.childTerminal
+              : undefined,
+          ),
         );
       fixtureFailure = new Error("integration.runner.fixture-failed");
       fixtureOutput = "";
@@ -736,6 +771,18 @@ try {
       trace.result.killRequested
     )
       fixtureFailure = new Error("integration.runner.fixture-failed");
+    if (
+      fixtureFailure !== undefined &&
+      substrateCertificationCase === "leaked-child"
+    ) {
+      try {
+        recoveryAttempted = true;
+        fixtureOutput = recoverRetainedFixtureOutput();
+        recoverySucceeded = true;
+      } catch {
+        // Keep the original failed output when retained bytes cannot authenticate.
+      }
+    }
   }
 } catch (error) {
   emitCodexPtyFailureHint();
@@ -743,15 +790,37 @@ try {
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
-    const fixtureFailure = readBoundedInteractiveFailureMarker(ledger);
-    const diagnostic = selectInteractiveFailureDiagnostic(
+    const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);
+    const fixtureFailure = fixtureRecord?.predicate;
+    let diagnostic = selectInteractiveFailureDiagnostic(
       fixtureFailure,
       retainedInteractivePhase(ledger),
       selectedError,
     );
+    if (
+      diagnostic === "testkit.headless.reconciliation.deadline" &&
+      trustedErrorCode(error) === diagnostic
+    ) {
+      const stage = readPtyReconciliationStage(error);
+      if (stage !== undefined)
+        diagnostic =
+          selectInteractiveFailureDiagnostic(
+            undefined,
+            undefined,
+            `${diagnostic}-${stage}`,
+          ) ?? diagnostic;
+    }
     interactiveFailureDiagnostic = diagnostic;
     process.stdout.write(
-      `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
+      formatInteractiveChildDiagnostic(
+        diagnostic ?? "integration.runner.fixture-failed",
+        readPtySemanticFailure(error),
+        readPtyExitSignal(error),
+        scenarioId === "claude-interactive-trace-smoke" &&
+          diagnostic === fixtureFailure
+          ? fixtureRecord?.childTerminal
+          : undefined,
+      ),
     );
   }
   if (
@@ -759,7 +828,9 @@ try {
     substrateCertificationCase === "leaked-child"
   ) {
     try {
+      recoveryAttempted = true;
       fixtureOutput = recoverRetainedFixtureOutput();
+      recoverySucceeded = true;
     } catch {
       fixtureOutput = "";
     }
@@ -801,15 +872,36 @@ if (scenario.executionMode === "interactive" && fixtureFailure !== undefined) {
           "integration.fixture.codex-model-gate-arm-health-pending"
         ? await failedCodexSessionStartHint(home)
         : undefined;
-    if (codexGateResearchHints.includes(gateHint))
-      process.stdout.write(
-        `integration.runner.untrusted-gate-hint:${gateHint}\n`,
-      );
+    if (codexGateResearchHints.includes(gateHint)) {
+      try {
+        process.stdout.write(
+          `integration.runner.untrusted-gate-hint:${gateHint}\n`,
+        );
+      } catch {
+        // Optional research cannot replace the original fixture failure.
+      }
+    }
     const traceHint = untrustedCodexTraceHint(marker);
     if (traceHint !== undefined)
       process.stdout.write(
         `integration.runner.untrusted-trace-hint:${traceHint}\n`,
       );
+  }
+}
+if (
+  scenario.executionMode === "headless" &&
+  substrateCertificationCase === "leaked-child"
+) {
+  try {
+    const observation = `AGENTSCOPE_RETAINED_RECOVERY=${JSON.stringify({
+      runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+      recoveryAttempted,
+      recoverySucceeded,
+      recoveryStage,
+    })}`;
+    if (Buffer.byteLength(observation) <= 256) console.log(observation);
+  } catch {
+    // Optional observation cannot replace the original receipt or failure.
   }
 }
 const fixtureResult = fixtureOutput

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type * as NodeFs from "node:fs";
 import {
   existsSync,
   mkdtempSync,
@@ -11,6 +12,23 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+const stderr = vi.hoisted(() => vi.fn((bytes: Uint8Array) => bytes.byteLength));
+const cacheRootInstruction =
+  'RUN --network=none ["/usr/local/bin/node", "--input-type=module", "-e", "import { mkdirSync } from \'node:fs\'; for (const path of [\'/supplier/maven-repository\', \'/supplier/npm-cache\']) mkdirSync(path, { mode: 0o700 });"]';
+const serviceFixture = (key = "key", jwks = "{}") => ({
+  tag: "agentscope-int-0123456789abcdef:mockserver",
+  privateKey: Buffer.from(key),
+  jwks: Buffer.from(jwks),
+  expectations: Buffer.from("[]"),
+});
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>();
+  return {
+    ...original,
+    writeSync: (descriptor: number, bytes: Uint8Array) =>
+      descriptor === 2 ? stderr(bytes) : original.writeSync(descriptor, bytes),
+  };
+});
 const state = vi.hoisted(() => ({
   inputs: [] as Record<string, unknown>[],
   builds: [] as Record<string, unknown>[],
@@ -60,7 +78,11 @@ vi.mock("../image-preparation.mjs", () => ({
     state.builds.push(input);
     state.afterBuild();
     if (state.failure === "build") return Promise.reject(state.primary);
-    return Promise.resolve(Buffer.from("synthetic-research"));
+    return Promise.resolve(
+      input.buildOutput === "image"
+        ? `sha256-${"a".repeat(64)}`
+        : Buffer.from("synthetic-research"),
+    );
   },
   markPreparedDockerClientForOuterHostRetirement: () => {
     state.marked = true;
@@ -77,7 +99,10 @@ vi.mock("../controller-file-command.mjs", () => ({
     if (state.sinkFailure) throw Error("sink");
   },
 }));
-import { researchMockServerSupplier } from "../mockserver-material/prepare-supplier.mjs";
+import {
+  prepareMockServerService,
+  researchMockServerSupplier,
+} from "../mockserver-material/prepare-supplier.mjs";
 const roots: string[] = [];
 const fixture = () => {
   const privateRoot = mkdtempSync(
@@ -96,6 +121,7 @@ const fixture = () => {
   };
 };
 beforeEach(() => {
+  stderr.mockReset().mockImplementation((bytes) => bytes.byteLength);
   state.inputs = [];
   state.builds = [];
   state.failure = "";
@@ -116,6 +142,102 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe("connected supplier research under inherited lifecycle (synthetic builder)", () => {
+  it("packages the exact patched service once before consuming its inert artifact", async () => {
+    const input = fixture();
+    const service = serviceFixture("synthetic-key", '{"keys":[]}');
+    state.afterBuild = () => {
+      const context = state.builds[0]?.context as string;
+      const source = readFileSync(
+        resolve(context, "Supplier.Dockerfile"),
+        "utf8",
+      );
+      expect(source).toContain('"cache-seeding"]');
+      expect(source.match(/RUN --network=default .+/gu)).toHaveLength(1);
+      expect(source).not.toContain('"service-offline"]');
+      expect(source).not.toContain("AS offline");
+      expect(source.match(/COPY --from=supplier .+/gu)).toEqual([
+        ...["bin", "lib", "conf", "legal", "release", "NOTICE"].map(
+          (name) =>
+            `COPY --from=supplier /supplier/tools/jdk-17.0.20.1+1/${name} /opt/java/${name}`,
+        ),
+        "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+      ]);
+      expect(source).not.toContain("/out/material.json");
+      expect(source).not.toContain(cacheRootInstruction);
+      expect(source).toContain(
+        "COPY --from=supplier --chmod=0444 /supplier/source/mockserver/mockserver-netty/target/mockserver-netty-7.6.0-jar-with-dependencies.jar /opt/mockserver.jar",
+      );
+      expect(source).toContain("USER 0:0");
+      expect(source).toContain("umask 077; mkdir /control/private;");
+      for (const name of ["jmods", "include", "man"])
+        expect(source).not.toContain(`/opt/java/${name}`);
+      const entrypoint = JSON.parse(
+        source
+          .split("\n")
+          .find((line) => line.startsWith("ENTRYPOINT "))!
+          .slice(11),
+      ) as string[];
+      expect(entrypoint.slice(0, 2)).toEqual(["/bin/sh", "-ec"]);
+      const phases = [...entrypoint[2]!.matchAll(/phase=([a-z-]+)\]/gu)].map(
+        (match) => match[1],
+      );
+      expect(phases).toEqual([
+        "entry",
+        "directory",
+        "private-key",
+        "jwks",
+        "java-entry",
+      ]);
+      expect(entrypoint[2]).toMatch(
+        /; exec \/opt\/java\/bin\/java -Dmockserver\.startupWarmup=false -Dmockserver\.attemptToProxyIfNoMatchingExpectation=false -jar \/opt\/mockserver\.jar -serverPort 1080$/u,
+      );
+      expect(entrypoint[2]!.replace(/printf '[^']*' >&2; /gu, "")).toBe(
+        "umask 077; mkdir /control/private; cp /opt/control/control-private.pem /control/private/control-private.pem; cp /opt/control/control-jwks.json /control/private/control-jwks.json; exec /opt/java/bin/java -Dmockserver.startupWarmup=false -Dmockserver.attemptToProxyIfNoMatchingExpectation=false -jar /opt/mockserver.jar -serverPort 1080",
+      );
+      const arguments_ = entrypoint[2]!
+        .slice(entrypoint[2]!.lastIndexOf("; exec ") + 7)
+        .split(" ");
+      const proxyProperty =
+        "-Dmockserver.attemptToProxyIfNoMatchingExpectation=false";
+      expect(
+        arguments_.filter((value) =>
+          value.startsWith(
+            "-Dmockserver.attemptToProxyIfNoMatchingExpectation=",
+          ),
+        ),
+      ).toEqual([proxyProperty]);
+      expect(arguments_.indexOf(proxyProperty)).toBeLessThan(
+        arguments_.indexOf("-jar"),
+      );
+      expect(readFileSync(resolve(context, "control-private.pem"))).toEqual(
+        service.privateKey,
+      );
+      expect(readFileSync(resolve(context, "expectations.json"))).toEqual(
+        service.expectations,
+      );
+    };
+    const result = await prepareMockServerService(input as never, service);
+    expect(result.imageId).toBe(`sha256-${"a".repeat(64)}`);
+    expect(result.tag).toBe(service.tag);
+    expect(state.builds[0]).toMatchObject({
+      buildOutput: "image",
+      retirementRequired: true,
+      tag: service.tag,
+      maximumBuildContextBytes: 384 * 1024 * 1024,
+    });
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+  it("preserves the service build failure and cleans private credential staging", async () => {
+    const input = fixture();
+    state.failure = "build";
+    await expect(
+      prepareMockServerService(input as never, serviceFixture()),
+    ).rejects.toBe(state.primary);
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
+});
+
+describe("supplier research staging and cleanup", () => {
   it("stages complete helper graph and exact compressed inputs through the existing builder", async () => {
     const input = fixture();
     state.afterBuild = () => {
@@ -128,6 +250,7 @@ describe("connected supplier research under inherited lifecycle (synthetic build
           "build-recipe.mjs",
           "build-tool-archive.mjs",
           "callback-patch.mjs",
+          "lifecycle-patch.mjs",
           "jdk.tar.gz",
           "maven.zip",
           "node.tar.gz",
@@ -158,6 +281,7 @@ describe("connected supplier research under inherited lifecycle (synthetic build
         "WORKDIR /supplier",
         "COPY --chmod=0600 *.mjs /supplier/command/",
         "COPY --chmod=0600 source.tar.gz maven.zip node.tar.gz jdk.tar.gz /supplier/inputs/",
+        cacheRootInstruction,
         "COPY --from=supplier /supplier/maven-repository /supplier/maven-repository",
         "COPY --from=supplier /supplier/npm-cache /supplier/npm-cache",
         'RUN --network=none ["/usr/local/bin/node", "/supplier/command/supplier-command.mjs", "offline-build"]',

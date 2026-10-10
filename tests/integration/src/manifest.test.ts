@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+import { transpileModule } from "typescript";
+import { z } from "zod";
+import type { HarnessComponentEvidence } from "@agentscope/harnesses-core/testing";
 
 import { describe, expect, it } from "vitest";
 
@@ -34,6 +39,251 @@ const withIdentity = (
   manifestIdentity: capabilityManifestIdentity(value),
 });
 
+const publicComponentEvidence = (
+  harness: "codex" | "claude-code",
+): HarnessComponentEvidence => {
+  // Ordinary Node ESM self-reference selects the existing public import export.
+  const source =
+    harness === "codex"
+      ? 'import {codexComponentEvidence} from "@agentscope/harness-codex/testing"; console.log(JSON.stringify(codexComponentEvidence));'
+      : 'import {claudeCodeComponentAdapter} from "@agentscope/harness-claude-code/testing"; console.log(JSON.stringify(claudeCodeComponentAdapter.componentEvidence));';
+  const output = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", source],
+    {
+      cwd: resolve(integrationRoot, `../../packages/harnesses/${harness}`),
+      encoding: "utf8",
+      maxBuffer: 4096,
+      timeout: 3000,
+    },
+  );
+  return JSON.parse(output) as HarnessComponentEvidence;
+};
+
+describe("actual catalog component source attribution", () => {
+  it.each(["codex", "claude-code"] as const)(
+    "binds %s source bytes and public component digest without promoting its fixture",
+    (harness) => {
+      const manifest = compileCapabilityManifest(manifestFixture());
+      const row = manifest.evidence.find(
+        ({ harnessId }) => harnessId === harness,
+      )!;
+      const admission = row.admission!;
+      const component = publicComponentEvidence(harness);
+      expect(admission.component.componentEvidenceDigest).toBe(
+        component.componentDigest,
+      );
+      expect(admission.evidenceSlot).toBe(component.evidenceSlot);
+      expect(row.representativeVersion).toBe(component.testedVersion);
+      expect(admission.eligibleRange.minimumInclusive).toBe(
+        component.testedVersion,
+      );
+      const root = resolve(integrationRoot, "../..");
+      for (const artifact of [
+        admission.component.fixture,
+        admission.component.adapterArtifact,
+        admission.component.mappingArtifact,
+      ]) {
+        const bytes = readFileSync(resolve(root, artifact.path));
+        expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+          artifact.sha256,
+        );
+      }
+      const fixture = JSON.parse(
+        readFileSync(resolve(root, admission.component.fixture.path), "utf8"),
+      ) as {
+        governance: {
+          provenance: unknown;
+          representative: { scenarioId: string };
+        };
+      };
+      expect(fixture.governance.provenance).toMatchObject({
+        captureKind: "synthetic",
+        artifactAuthority: {
+          status: "unresolved",
+          reason: "independent-integrity-unavailable",
+        },
+      });
+      const runtime = manifest.scenarios.find(
+        ({ harnessEvidenceId }) => harnessEvidenceId === row.evidenceId,
+      )!;
+      expect(runtime.executionMode).toBe("interactive");
+      expect(runtime.outputContract).toBe("semantic-pty");
+      expect(fixture.governance.representative.scenarioId).toBe(
+        component.scenarioId,
+      );
+      expect(runtime.scenarioId).not.toBe(component.scenarioId);
+      verifyManifestEvidence(manifest, integrationRoot);
+    },
+  );
+
+  it.each(["fixture", "adapterArtifact", "mappingArtifact"] as const)(
+    "rejects substituted %s bytes even with a recomputed catalog identity",
+    (key) => {
+      const manifest = manifestFixture();
+      manifest.evidence[0]!.admission!.component[key].sha256 = "0".repeat(64);
+      expect(() => {
+        verifyManifestEvidence(
+          compileCapabilityManifest(withIdentity(manifest)),
+          integrationRoot,
+        );
+      }).toThrow("integration.manifest.evidence-digest");
+    },
+  );
+
+  it("does not accept a catalog label as an actual support result", () => {
+    const manifest = manifestFixture();
+    expect(() => {
+      compileCapabilityManifest(
+        withIdentity({
+          ...manifest,
+          evidence: manifest.evidence.map((row) => ({
+            ...row,
+            supportStatus: "passed",
+          })),
+        }),
+      );
+    }).toThrow("integration.manifest.invalid");
+  });
+});
+
+const verifyActualComponentMetadata = (fixture: unknown): void => {
+  const source = readFileSync(
+    new URL("./manifest.ts", import.meta.url),
+    "utf8",
+  );
+  const schemas = source.slice(
+    source.indexOf("const id ="),
+    source.indexOf("const dockerImage ="),
+  );
+  const verifier = source.slice(
+    source.indexOf("const verifyComponentFixture ="),
+    source.indexOf("export const verifyManifestEvidence ="),
+  );
+  expect(schemas).not.toBe("");
+  expect(verifier).not.toBe("");
+  runInNewContext(
+    transpileModule(
+      `${schemas}\n${verifier}\nverifyComponentFixture(bytes, evidence);`,
+      {},
+    ).outputText,
+    {
+      z,
+      bytes: Buffer.from(JSON.stringify(fixture)),
+      evidence: {
+        harnessId: "codex",
+        representativeVersion: "1.2.3",
+        evidenceId: "runtime",
+        admission: { evidenceSlot: "codex-interactive" },
+      },
+    },
+    { timeout: 1000 },
+  );
+};
+
+describe("component metadata does not own runtime scenario admission", () => {
+  const component = () => ({
+    fixtureVersion: 1,
+    harnessId: "codex",
+    harnessVersion: "1.2.3",
+    governance: {
+      provenance: {
+        captureKind: "synthetic",
+        artifactAuthority: {
+          status: "unresolved",
+          reason: "independent-integrity-unavailable",
+        },
+      },
+      representative: {
+        scenarioId: "codex-unit-case",
+        representativeVersion: "1.2.3",
+        evidenceSlot: "codex-component",
+      },
+    },
+  });
+  it("accepts synthetic component regression metadata without a live scenario or slot alias", () => {
+    expect(() => {
+      verifyActualComponentMetadata(component());
+    }).not.toThrow();
+  });
+  it("accepts authenticated component provenance without treating its digest as runtime authority", () => {
+    const fixture = component();
+    expect(() => {
+      verifyActualComponentMetadata({
+        ...fixture,
+        governance: {
+          ...fixture.governance,
+          provenance: {
+            captureKind: "disposable-hermetic",
+            artifactAuthority: {
+              status: "authenticated",
+              digest: `sha256-${"f".repeat(64)}`,
+            },
+          },
+        },
+      });
+    }).not.toThrow();
+  });
+  it.each([
+    {
+      captureKind: "synthetic",
+      artifactAuthority: {
+        status: "authenticated",
+        digest: `sha256-${"f".repeat(64)}`,
+      },
+    },
+    {
+      captureKind: "synthetic",
+      artifactAuthority: { status: "unresolved", reason: "other" },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: "bad" },
+    },
+  ])("rejects malformed provenance %#", (provenance) => {
+    const fixture = component();
+    expect(() => {
+      verifyActualComponentMetadata({
+        ...fixture,
+        governance: { ...fixture.governance, provenance },
+      });
+    }).toThrow("integration.manifest.fixture-provenance");
+  });
+  it.each([
+    { harnessId: "claude-code" },
+    { harnessVersion: "9.9.9" },
+    {
+      governance: {
+        ...component().governance,
+        representative: {
+          ...component().governance.representative,
+          representativeVersion: "9.9.9",
+        },
+      },
+    },
+    {
+      governance: {
+        ...component().governance,
+        representative: {
+          ...component().governance.representative,
+          evidenceSlot: "invalid/slot",
+        },
+      },
+    },
+  ])("rejects component identity/version drift %#", (change) => {
+    expect(() => {
+      verifyActualComponentMetadata({ ...component(), ...change });
+    }).toThrow("integration.manifest.fixture-provenance");
+  });
+});
+
 // eslint-disable-next-line max-lines-per-function -- closed manifest boundary matrix
 describe("integration capability manifest", () => {
   it("compiles the committed manifest and verifies descriptor evidence", () => {
@@ -45,7 +295,9 @@ describe("integration capability manifest", () => {
       ({ evidenceId }) => evidenceId === "codex-0-149-1",
     );
     expect(codex?.material.kind).toBe("npm");
-    expect(codex?.admission).toBeUndefined();
+    expect(codex?.admission?.distributionReference).toBe(
+      "npm:@openai/codex@0.149.1",
+    );
   });
 
   it("keeps authenticated diagnostic material distinct from support admission", () => {
@@ -54,7 +306,9 @@ describe("integration capability manifest", () => {
       ({ evidenceId }) => evidenceId === "codex-0-149-1",
     )!;
     expect(codex.material.kind).toBe("npm");
-    expect(codex.admission).toBeUndefined();
+    expect(codex.admission?.component.componentEvidenceDigest).toMatch(
+      /^component-sha256-[a-f\d]{64}$/u,
+    );
 
     const fixture = original.evidence.find(
       ({ evidenceId }) => evidenceId === "fixture-process-v1",
@@ -287,7 +541,8 @@ describe("integration capability manifest", () => {
     for (const literal of [
       "AGENTSCOPE_CANDIDATE_RUN_ID: integrationRunId,",
       "...(options.candidatePrincipal === true ? { uid: 1000, gid: 1000 } : {}),",
-      "{ ...options, candidatePrincipal: true },",
+      "...options,\n      env: {\n        ...process.env,",
+      'NODE_EXTRA_CA_CERTS: "/opt/agentscope/collector-ca.pem",\n      },\n      candidatePrincipal: true,',
       '["harness", "status", "codex", "--output", "json"],\n    { candidatePrincipal: true },',
       "fchownSync(codexDiagnosticLogDirectoryDescriptor, 1000, 1000);",
       "fchownSync(configurationDescriptor, 1000, 1000);",
@@ -312,9 +567,12 @@ describe("integration capability manifest", () => {
     );
     expect(configOwner).toBeGreaterThan(configMode);
     expect(configFinalProof).toBeGreaterThan(configOwner);
-    expect(source).toContain("fchownSync(ledgerDescriptor, 0, 0);");
-    expect(source).toContain("fchmodSync(ledgerDescriptor, 0o700);");
-    expect(source).toContain('ledger !== "/ledger"');
+    for (const literal of [
+      "fchownSync(ledgerDescriptor, 0, 0);",
+      "fchmodSync(ledgerDescriptor, 0o700);",
+      'ledger !== "/ledger"',
+    ])
+      expect(source).toContain(literal);
     expect(source.indexOf("fchmodSync(ledgerDescriptor, 0o700);")).toBeLessThan(
       source.indexOf('recordInteractivePhase("init")'),
     );
@@ -327,12 +585,15 @@ describe("integration capability manifest", () => {
       "publish",
     ])
       expect(source).toContain(`recordCandidateConfigStage("${stage}");`);
-    expect(source).toContain("candidateConfigStage = undefined;");
-    expect(source).toContain("codexHomeStatus.uid !== 1000");
-    expect(source).toContain("hookStatus.uid !== 1000");
-    expect(source).toContain("launcherStatus.uid !== 1000");
-    expect(source).toContain("(hookStatus.mode & 0o7777) !== 0o600");
-    expect(source).toContain("(launcherStatus.mode & 0o7777) !== 0o700");
+    for (const literal of [
+      "candidateConfigStage = undefined;",
+      "codexHomeStatus.uid !== 1000",
+      "hookStatus.uid !== 1000",
+      "launcherStatus.uid !== 1000",
+      "(hookStatus.mode & 0o7777) !== 0o600",
+      "(launcherStatus.mode & 0o7777) !== 0o700",
+    ])
+      expect(source).toContain(literal);
     expect(dropperSource).toContain(
       "process.setgid(1000);\nprocess.setuid(1000);",
     );
@@ -343,8 +604,8 @@ describe("integration capability manifest", () => {
     const readinessChallengePublication = source.indexOf(
       "AGENTSCOPE_PTY_READY:${readinessChallenge}",
     );
-    const sessionStartCheckpoint = source.indexOf(
-      "      checkpoint = inspectSessionStartBeforeFirstModelRequestAdmission();\n",
+    const freshSessionHome = source.indexOf(
+      "readCodexSessionLedgerRecords(homeDescriptor).length !== 0",
     );
     const explicitHookEnablement = dropperSource.indexOf(
       '    "--enable",\n    "hooks",\n',
@@ -353,15 +614,15 @@ describe("integration capability manifest", () => {
       '    "--dangerously-bypass-hook-trust",\n',
     );
     const modelRequest = source.indexOf(
-      "  await waitForModelRequestBeforeDeadline({\n",
+      "  const modelRequests = await readTerminalModelRequests();\n",
     );
     const traceDeadline = source.indexOf(
       "  const traceDeadline = deadline - 3_000;\n",
       challengeRead,
     );
     const terminalWait = source.indexOf(
-      "  await waitForCodexTurnTerminal(traceDeadline);\n",
-      traceDeadline,
+      "  ({ turnId: codexTurnId, records: codexTerminalLedger } =\n    await waitForCodexTurnTerminal(traceDeadline));\n",
+      codexLaunch,
     );
     const checkpointAcknowledgement = source.indexOf(
       "    await Promise.race([checkpointWitness, earlyCodexExit]);\n",
@@ -370,17 +631,27 @@ describe("integration capability manifest", () => {
     const checkpointWait = source.indexOf(
       "  const checkpointWitness = waitForCheckpointWitness();\n",
     );
-    const modelResponse = source.indexOf("  await releaseModelResponse();\n");
+    const terminalObserver = source.slice(
+      source.indexOf("const waitForCodexTurnTerminal ="),
+      source.indexOf("const waitForCodexStopBeforeExit ="),
+    );
+    const metadataBaseline = terminalObserver.indexOf(
+      "recordModelBaseline(records);",
+    );
+    const terminalLedgerRead = terminalObserver.indexOf(
+      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+    );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
-      modelRequest,
+      codexLaunch,
     );
     const traceQueryAfterJoin = source.indexOf(
-      "  const summary = await waitForTraceSummary(traceDeadline);\n",
+      "  const translated = translateCodexNativeObservations({\n",
       terminalWait,
     );
     expect(codexLaunch).toBeGreaterThan(-1);
-    expect(sessionStartCheckpoint).toBeGreaterThan(-1);
+    expect(freshSessionHome).toBeGreaterThan(-1);
+    expect(freshSessionHome).toBeLessThan(codexLaunch);
     expect(challengeRead).toBeGreaterThan(-1);
     expect(challengeRead).toBeLessThan(codexLaunch);
     expect(readinessChallengePublication).toBeGreaterThan(challengeRead);
@@ -395,71 +666,66 @@ describe("integration capability manifest", () => {
     expect(checkpointWait).toBeGreaterThan(codexLaunch);
     expect(checkpointWait).toBeLessThan(checkpointAcknowledgement);
     expect(checkpointAcknowledgement).toBeLessThan(modelRequest);
-    expect(sessionStartCheckpoint).toBeLessThan(modelResponse);
+    expect(terminalWait).toBeLessThan(modelRequest);
+    expect(codexJoin).toBeLessThan(modelRequest);
+    expect(source).not.toContain("waitForModelRequestBeforeDeadline");
+    expect(source.slice(checkpointAcknowledgement, terminalWait)).not.toContain(
+      "recordModelBaseline(",
+    );
+    expect(terminalLedgerRead).toBeGreaterThan(
+      terminalObserver.indexOf("if (bootNow() >= traceDeadline)"),
+    );
+    expect(terminalLedgerRead).toBeGreaterThan(-1);
+    expect(metadataBaseline).toBeGreaterThan(terminalLedgerRead);
+    expect(metadataBaseline).toBeLessThan(
+      terminalObserver.indexOf("codexTurnTerminalIdAfterBaseline("),
+    );
+    expect(source).not.toContain(
+      "inspectCodexSessionStartBeforeFirstModelRequestAdmission",
+    );
     expect(source).not.toContain("      prompt,\n");
-    expect(source).toContain(
+    for (const literal of [
       "const expectedAssistantMessage = `AGENTSCOPE_CODEX_RESPONSE:${readinessChallenge}`;",
-    );
-    expect(source).toContain(
       "terminalCompletionMarker = `AGENTSCOPE_PTY_COMPLETE:${readinessChallenge}`;",
-    );
-    expect(source).toContain(
-      'body.replace(\n        "AGENTSCOPE_PTY_COMPLETE",\n        expectedAssistantMessage,\n      )',
-    );
-    expect(source).toContain("baseUrl: `${modelEndpoint}/v1`,");
-    expect(source).toContain(
-      "codexLedgerBaseline = readCodexSessionLedgerRecords(homeDescriptor);",
-    );
+      'body.replace("AGENTSCOPE_PTY_COMPLETE", expectedAssistantMessage)',
+      "baseUrl: `${modelEndpoint}/v1`,",
+      "codexLedgerBaseline = [{ ...records[0], content: prefix }];",
+    ])
+      expect(source).toContain(literal);
     expect(source).not.toContain("readFileSync(`/proc/${pid}/stat`");
     expect(source).not.toContain('readdirSync("/proc"');
-    expect(source).toContain(
+    for (const literal of [
       "const checkpointWitness = waitForCheckpointWitness();",
-    );
-    expect(source).toContain(
       'recordInteractivePhase("tui-child-rejected");\n      throw new Error("integration.codex.tui-child-rejected");',
-    );
-    expect(source).toContain(
       'preCheckpointFailureDiagnostic = `integration.fixture.codex-${kind}`;\n  writeFileSync(\n    join(ledger, "interactive-failure.txt"),\n    `${preCheckpointFailureDiagnostic}\\n`,\n    { flag: "wx", mode: 0o600 },\n  );',
-    );
+    ])
+      expect(source).toContain(literal);
     expect(source).not.toContain('process.once("SIGUSR2", onSignal);');
     expect(explicitHookEnablement).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookEnablement).toBeLessThan(explicitHookTrust);
-    expect(source).toContain("decodeCodexJoinDeadlineExitCode(exitCode) ??");
-    expect(source).toContain(
+    for (const literal of [
+      "decodeCodexJoinDeadlineExitCode(exitCode) ??",
       "codexProjectionFailureDiagnostic(error?.message)",
-    );
-    expect(source).toContain("codexUninstallFailureDiagnostic(error?.message)");
-    expect(source).toContain(
+      "codexUninstallFailureDiagnostic(error?.message)",
       "const ownedDiagnostic =\n    preCheckpointFailureDiagnostic ??\n    candidateConfigDiagnostic ??\n    postTraceFailureDiagnostic(error);",
-    );
-    expect(source).toContain(
       'if (interactiveFailurePhase === "verify-projection")',
-    );
-    expect(source).toContain(
       'if (interactiveFailurePhase === "verify-uninstall")',
-    );
-    expect(source).toContain(
+      "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
+      ": `integration.fixture.codex-${interactiveFailurePhase}`);",
+      "`${diagnostic}\\n`",
+      "exitCode = 64 + interactiveFailurePhaseIndex;",
+      "encodeCodexJoinDeadlineExitCode(",
+      'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
+      "value.discovery.configurationLocationCount !== 2",
+      '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
+    ])
+      expect(source).toContain(literal);
+    expect(source).not.toContain(
       'if (interactiveFailurePhase === "verify-trace-get")',
     );
-    expect(source).toContain("classifyCodexTraceGetFailure(error?.message)");
-    expect(source).toContain(
-      "if (ledger !== undefined && preCheckpointFailureDiagnostic === undefined)",
-    );
-    expect(source).toContain(
-      ": `integration.fixture.codex-${interactiveFailurePhase}`);",
-    );
-    expect(source).toContain("`${diagnostic}\\n`");
-    expect(source).toContain("exitCode = 64 + interactiveFailurePhaseIndex;");
-    expect(source).toContain("encodeCodexJoinDeadlineExitCode(");
-    expect(source).toContain(
-      'if (worktree !== "/worktree")\n  throw new Error("integration.codex.environment-AGENTSCOPE_WORKTREE");',
-    );
-    expect(source).toContain(
-      "value.discovery.configurationLocationCount !== 2",
-    );
-    expect(source).toContain(
-      '[projects."/worktree"]\\ntrust_level = "trusted"\\n',
+    expect(source).not.toContain(
+      "classifyCodexTraceGetFailure(error?.message)",
     );
     const rootLogDirectory = source.indexOf(
       "const configuration = `log_dir = ${JSON.stringify(codexDiagnosticLogDirectory)}\\n${createCodexInternalProviderConfiguration(",
@@ -496,120 +762,42 @@ describe("integration capability manifest", () => {
     const traceSearchResultPhase = source.indexOf(
       '    record: () => recordInteractivePhase("trace-search-result"),\n',
     );
-    expect(traceTerminalPhase).toBeGreaterThan(modelRequest);
+    expect(traceTerminalPhase).toBeLessThan(modelRequest);
     expect(terminalWait).toBeLessThan(traceTerminalPhase);
     expect(traceTerminalPhase).toBeLessThan(codexJoin);
     expect(codexJoin).toBeLessThan(traceSettlementPhase);
     expect(traceSettlementPhase).toBeLessThan(traceQueryAfterJoin);
-    expect(traceSearchPhase).toBeGreaterThan(-1);
-    expect(traceSearchResultPhase).toBeGreaterThan(-1);
+    expect(traceSearchPhase).toBe(-1);
+    expect(traceSearchResultPhase).toBe(-1);
     expect(source).toContain(
       "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d5000$/u.test(launcher))",
     );
     expect(source).not.toContain("runDirectHookProbe");
     expect(source).not.toContain("options.input");
     expect(source).not.toContain("readHookOperationalHealth");
-    const terminalObservation = source.indexOf(
-      "    const turnId = codexTurnTerminalIdAfterBaseline(\n",
+    for (const literal of [
+      "localSqliteAcceptanceBaseline",
+      "classifyLocalSqliteOutcomeAfterBaseline",
+      "openOperationalStateHealth",
+      "const waitForTraceSummary =",
+      'parseMachine(stdout, "agentscope traces search")',
+    ])
+      expect(source).not.toContain(literal);
+    expect(source).toContain(
+      "const evidence = correlateCodexNativeObservations(",
     );
-    expect(source).toContain("localSqliteAcceptanceBaseline");
-    expect(source).toContain("classifyLocalSqliteOutcomeAfterBaseline");
-    expect(source).toContain("openOperationalStateHealth");
-    const traceSummaryWait = source.slice(
-      source.indexOf("const waitForTraceSummary ="),
-      source.indexOf("let completed = false;"),
+    const outer = readFileSync(
+      resolve(integrationRoot, "run-scenarios.mjs"),
+      "utf8",
     );
-    const preQueryDeadline = traceSummaryWait.indexOf(
-      '  if (bootNow() >= traceDeadline)\n    throw new Error("integration.codex.trace-deadline");\n',
+    expect(outer).toMatch(/observeSelectedWriterOtlp\(\s*batches\[0\],/u);
+    expect(outer).toContain(
+      "canonicalGraphDigest: observed.transport.graphSha256",
     );
-    const traceSearchPhaseInWait = traceSummaryWait.indexOf(
-      '    record: () => recordInteractivePhase("trace-search"),\n',
-      preQueryDeadline,
-    );
-    const boundedQuery = traceSummaryWait.indexOf(
-      "          : await readTraceSummary(traceSearchDeadlines),\n",
-      traceSearchPhaseInWait,
-    );
-    const lifecycleSettlement = traceSummaryWait.indexOf(
-      "    const reporterSettled = localSqliteReporterSettled(\n" +
-        "      localSqliteLifecycleDescriptor,\n" +
-        "    );\n",
-      traceSearchPhaseInWait,
-    );
-    const terminalObservationCut = traceSummaryWait.indexOf(
-      "    const observationClosed = traceSearchDeadlines === null;\n",
-      lifecycleSettlement,
-    );
-    const boundedBackoff = traceSummaryWait.indexOf(
-      "    await waitWithinObservationDeadline({\n      deadline: traceDeadline,\n      maximumWaitMilliseconds: 100,\n",
-      lifecycleSettlement,
-    );
-    const reporterSettledPhase = source.indexOf(
-      '    record: () => recordInteractivePhase("trace-reporter-settled"),\n',
-      source.indexOf("const waitForTraceSummary ="),
-    );
-    const postReporterResultPhase = source.indexOf(
-      '    record: () => recordInteractivePhase("trace-search-result"),\n',
-      reporterSettledPhase,
-    );
-    const traceSummaryFunction = source.slice(
-      source.indexOf("const readTraceSummary ="),
-      source.indexOf("const waitForCodexTurnTerminal ="),
-    );
-    const joinedSearch = traceSummaryFunction.indexOf(
-      "  const { stdout, traceTimedOut, traceUnavailable } = await run(\n",
-    );
-    const exactHarnessFilter = traceSummaryFunction.indexOf(
-      '      "--harness",\n      "codex",\n',
-      joinedSearch,
-    );
-    const guardedRawResult = traceSummaryFunction.indexOf(
-      "    !terminalObservationBeforeDeadline({\n",
-      joinedSearch,
-    );
-    const resultParsing = traceSummaryFunction.indexOf(
-      '  const records = parseMachine(stdout, "agentscope traces search");\n',
-      guardedRawResult,
-    );
-    const guardedClassification = traceSummaryFunction.indexOf(
-      "  return classifyTraceSearchRecordsBeforeDeadline({\n",
-      resultParsing,
-    );
-    expect(terminalObservation).toBeGreaterThan(-1);
-    expect(preQueryDeadline).toBeGreaterThan(-1);
-    expect(traceSearchPhaseInWait).toBeGreaterThan(preQueryDeadline);
-    expect(lifecycleSettlement).toBeGreaterThan(traceSearchPhaseInWait);
-    expect(terminalObservationCut).toBeGreaterThan(lifecycleSettlement);
-    expect(boundedQuery).toBeGreaterThan(lifecycleSettlement);
-    expect(boundedBackoff).toBeGreaterThan(lifecycleSettlement);
-    expect(reporterSettledPhase).toBeGreaterThan(lifecycleSettlement);
-    expect(postReporterResultPhase).toBeGreaterThan(reporterSettledPhase);
-    expect(traceSearchResultPhase).toBe(postReporterResultPhase);
-    expect(joinedSearch).toBeGreaterThan(-1);
-    expect(exactHarnessFilter).toBeGreaterThan(joinedSearch);
-    expect(guardedRawResult).toBeGreaterThan(exactHarnessFilter);
-    expect(guardedRawResult).toBeGreaterThan(joinedSearch);
-    expect(resultParsing).toBeGreaterThan(guardedRawResult);
-    expect(guardedClassification).toBeGreaterThan(resultParsing);
-    expect(traceSummaryFunction).toContain("  if (traceTimedOut) {\n");
-    expect(traceSummaryFunction).toContain(
-      "        deadline: observationDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "      monotonicDeadline: childDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "      deadline: attemptDeadline,\n",
-    );
-    expect(traceSummaryFunction).toContain(
-      "  if (traceUnavailable) return null;\n",
-    );
-    expect(traceSummaryFunction).not.toContain(
-      'recordInteractivePhase("trace-search-',
-    );
+    expect(outer).not.toContain("canonicalGraph: observed.graph");
     const terminalCompletion = source.indexOf(
       "`\\u001b]2;${terminalCompletionMarker}\\u001b\\\\`",
-      terminalObservation,
+      terminalWait,
     );
     expect(terminalCompletion).toBeGreaterThan(terminalWait);
     expect(terminalCompletion).toBeLessThan(codexJoin);
@@ -633,13 +821,12 @@ describe("integration capability manifest", () => {
     expect(postJoinDeadline).toBeGreaterThan(codexJoin);
     expect(postJoinDeadline).toBeLessThan(traceSettlementPhase);
     expect(source).not.toContain("const waitForTraceSettlement =");
-    expect(source).toContain(
+    for (const literal of [
       "  await publishTerminalCompletionBeforeDeadline({",
-    );
-    expect(source).toContain('            child.kill("SIGKILL");\n');
-    expect(source).toContain(
+      '            child.kill("SIGKILL");\n',
       "      if (timer !== undefined) clearTimeout(timer);\n",
-    );
+    ])
+      expect(source).toContain(literal);
     expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
     expect(traceDeadline).toBeGreaterThan(challengeRead);
     expect(traceDeadline).toBeLessThan(modelRequest);
@@ -652,7 +839,7 @@ describe("integration capability manifest", () => {
       '    await cli(["harness", "status", "codex"], "agentscope harness status", {\n      monotonicDeadline: traceDeadline,\n    }),\n',
     );
     const evidenceEncoding = source.indexOf(
-      "  const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(\n",
+      '  const encodedEvidence = Buffer.from(\n    JSON.stringify({ ...evidence, mockServerTraffic: upstreamTraffic }),\n  ).toString("base64url");\n',
     );
     const guardedEvidenceWrite = source.indexOf(
       '  recordTerminalObservationBeforeDeadline({\n    deadline: traceDeadline,\n    now: bootNow,\n    record: () =>\n      writeFileSync(\n        join(ledger, "fixture-result.json"),\n',
@@ -667,12 +854,14 @@ describe("integration capability manifest", () => {
     expect(completed).toBeGreaterThan(guardedEvidenceWrite);
     expect(checkpointAcknowledgement).toBeGreaterThan(codexLaunch);
     expect(modelRequest).toBeGreaterThan(checkpointAcknowledgement);
-    expect(modelResponse).toBeGreaterThan(-1);
-    expect(codexJoin).toBeGreaterThan(modelRequest);
+    expect(metadataBaseline).toBeGreaterThan(-1);
+    expect(codexJoin).toBeLessThan(modelRequest);
     expect(traceQueryAfterJoin).toBeGreaterThan(codexJoin);
-    expect(
-      source.indexOf("  await releaseModelResponse();\n", modelRequest),
-    ).toBeLessThan(terminalWait);
+    const configureUpstream = source.indexOf(
+      "  await configureModelGate(preparationCutoff, traceDeadline);\n",
+    );
+    expect(configureUpstream).toBeGreaterThan(-1);
+    expect(configureUpstream).toBeLessThan(codexLaunch);
     expect(source.match(/AGENTSCOPE_PTY_READY/gu)).toHaveLength(1);
     expect(source).not.toContain("AGENTSCOPE_PTY_TOPOLOGY");
     expect(source).not.toContain("AGENTSCOPE_PTY_READINESS_CHALLENGE");
@@ -752,6 +941,11 @@ describe("integration capability manifest", () => {
       "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
     );
     expect(codex.mockServerImage).toBe(codex.image);
+    expect(
+      manifest.scenarios.every(
+        (scenario) => scenario.mockServerImage === codex.image,
+      ),
+    ).toBe(true);
     expect(codex.image).not.toBe(
       manifest.scenarios.find(
         ({ scenarioId }) => scenarioId === "fixture-process-smoke",
@@ -766,6 +960,26 @@ describe("integration capability manifest", () => {
       "node@sha256:cd9f682fa2885cd1056e830424764158570061c59736a1da836bc3d73df095ae",
     );
     expect(material.verifierNpmVersion).toBe("11.19.1");
+    const claude = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === "claude-interactive-trace-smoke",
+    )!;
+    const signed = manifest.evidence.find(
+      ({ evidenceId }) => evidenceId === claude.harnessEvidenceId,
+    )!.material;
+    expect(signed.kind).toBe("signed-release-manifest");
+    if (signed.kind !== "signed-release-manifest")
+      throw new Error("test.material");
+    expect(signed.verifierImage).toBe(codex.image);
+    expect(signed.verifierImage).not.toBe(material.verifierImage);
+    expect(capabilityScenarioImages(manifest, [claude.scenarioId])).toEqual(
+      [
+        ...new Set([
+          claude.image,
+          claude.mockServerImage,
+          signed.verifierImage,
+        ]),
+      ].sort(),
+    );
     expect(capabilityScenarioImages(manifest, [codex.scenarioId])).toEqual(
       [
         ...new Set([
@@ -1047,7 +1261,7 @@ describe("integration capability selection", () => {
     for (const shard of [
       { index: -1, total: 1 },
       { index: 1, total: 1 },
-      { index: 0, total: 4 },
+      { index: 0, total: compiled.scenarios.length + 1 },
     ])
       expect(() => selectCapabilityScenarios(compiled, { shard })).toThrow(
         "integration.manifest.shard",

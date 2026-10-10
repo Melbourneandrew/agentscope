@@ -11,6 +11,25 @@ export type ImagePreparationDiagnostic = Readonly<{
     | "malformed-event"
     | "daemon-error-event";
   reconciliation: "not-attempted" | "completed" | "failed";
+  request?: Readonly<{
+    phase:
+      | "daemon-version"
+      | "daemon-info"
+      | "daemon-final-version"
+      | "daemon-final-info"
+      | "local-image-inspect"
+      | "image-pull"
+      | "registry-manifest"
+      | "registry-auth"
+      | "registry-config";
+    outcome:
+      | "request-error"
+      | "response-error"
+      | "incomplete-close"
+      | "malformed-response"
+      | "unexpected-status";
+    status?: number;
+  }>;
 }>;
 
 export declare const readImagePreparationDiagnostic: (
@@ -47,6 +66,7 @@ export declare const createPullOperation: (
         expected: readonly number[];
         method: "POST";
         path: string;
+        requestPhase: "image-pull";
       }>,
     ) => Promise<Readonly<{ body: Buffer }>>;
     inspectLocalImage: (

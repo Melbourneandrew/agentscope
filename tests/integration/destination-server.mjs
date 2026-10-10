@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createServer as createSecureServer } from "node:https";
 
 const mode = process.argv[2];
 const scenarioId = process.env.AGENTSCOPE_SCENARIO_ID;
@@ -8,6 +9,21 @@ if (!scenarioId || (mode !== "ingestion" && mode !== "retrieval"))
 const entries = [];
 const traces = new Map();
 const eventKindSets = [];
+const tlsCertificate = process.env.AGENTSCOPE_COLLECTOR_TLS_CERT;
+const tlsKey = process.env.AGENTSCOPE_COLLECTOR_TLS_KEY;
+const secureCollector = mode === "ingestion" && tlsCertificate !== undefined;
+if (
+  (tlsCertificate === undefined) !== (tlsKey === undefined) ||
+  (mode !== "ingestion" && tlsCertificate !== undefined)
+)
+  throw new Error("integration.destination.environment");
+const otlpBatches = [];
+const admittedHandlers = new Set();
+let aggregateOtlpBytes = 0;
+let otlpRequestCount = 0;
+let ingressOpen = true;
+let collectorFailed = false;
+let collectorSnapshotSent = false;
 const maximumRequestBytesValue = process.env.AGENTSCOPE_MAXIMUM_REQUEST_BYTES;
 if (
   !/^\d+$/u.test(maximumRequestBytesValue ?? "") ||
@@ -15,19 +31,22 @@ if (
 )
   throw new Error("integration.destination.environment");
 const maximumRequestBytes = Number(maximumRequestBytesValue);
-const readBody = async (request) => {
+const readBody = async (request, drainOverflow = false) => {
   const chunks = [];
   let bytes = 0;
   for await (const chunk of request) {
     const value = Buffer.from(chunk);
     bytes += value.byteLength;
     if (bytes > maximumRequestBytes) {
-      request.resume();
-      return undefined;
+      if (!drainOverflow) {
+        request.resume();
+        return undefined;
+      }
+      continue;
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks);
+  return bytes > maximumRequestBytes ? undefined : Buffer.concat(chunks);
 };
 const sendJson = (response, status, value) => {
   response.writeHead(status, { "content-type": "application/json" });
@@ -98,6 +117,76 @@ const ingestion = async (request, response, path) => {
   sendJson(response, 202, {});
 };
 
+const ingestLangfuse = async (request, response) => {
+  if (otlpRequestCount >= 8) {
+    collectorFailed = true;
+    request.resume();
+    sendJson(response, 413, {});
+    return;
+  }
+  otlpRequestCount += 1;
+  let body;
+  try {
+    body = await readBody(request, true);
+  } catch {
+    collectorFailed = true;
+    sendJson(response, 400, {});
+    return;
+  }
+  if (
+    body === undefined ||
+    otlpBatches.length >= 8 ||
+    aggregateOtlpBytes + body.byteLength > 8 * 1024 * 1024
+  ) {
+    collectorFailed = true;
+    sendJson(response, 413, {});
+    return;
+  }
+  if (
+    request.headers.authorization !==
+      `Basic ${Buffer.from("DUMMY_PUBLIC_KEY:DUMMY_SECRET_KEY").toString("base64")}` ||
+    request.headers["content-type"] !== "application/json" ||
+    request.headers["content-encoding"] !== undefined ||
+    request.headers["x-langfuse-ingestion-version"] !== "4"
+  ) {
+    collectorFailed = true;
+    sendJson(response, 400, {});
+    return;
+  }
+  // Retain the bounded original bytes only in this independent process. The
+  // outer controller scans redaction canaries before Protocol normalization.
+  aggregateOtlpBytes += body.byteLength;
+  otlpBatches.push(body);
+  record(request, body.byteLength, "otlp-ingest", "accepted");
+  sendJson(response, 200, {});
+};
+
+const closeCollector = async (request, response) => {
+  if (
+    !["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(
+      request.socket.remoteAddress,
+    )
+  ) {
+    sendJson(response, 403, {});
+    return;
+  }
+  if (!ingressOpen) {
+    sendJson(response, 409, {});
+    return;
+  }
+  ingressOpen = false;
+  await Promise.allSettled([...admittedHandlers]);
+  sendJson(response, collectorFailed ? 409 : 200, {
+    observationVersion: 2,
+    scenarioId,
+    batches: collectorFailed
+      ? []
+      : otlpBatches.map((body) => body.toString("base64")),
+    aggregateBytes: aggregateOtlpBytes,
+  });
+  collectorSnapshotSent = true;
+};
+
 const retrieval = async (request, response, path) => {
   const body = await readBody(request);
   const operation =
@@ -138,14 +227,58 @@ const retrieval = async (request, response, path) => {
 };
 
 const port = mode === "ingestion" ? 4318 : 4319;
-createServer(async (request, response) => {
+const handleRequest = async (request, response) => {
   const path = new URL(request.url ?? "/", "http://destination").pathname;
+  if (secureCollector && path === "/observations") {
+    if (request.method !== "GET") {
+      sendJson(response, 405, {});
+      return;
+    }
+    await closeCollector(request, response);
+    return;
+  }
+  if (secureCollector && !ingressOpen) {
+    sendJson(response, 409, {});
+    return;
+  }
+  if (secureCollector && path === "/ledger") {
+    sendJson(response, 403, {});
+    return;
+  }
+  if (
+    secureCollector &&
+    path === "/api/public/otel/v1/traces" &&
+    request.method !== "POST"
+  ) {
+    // Ordinary Langfuse doctor probes this exact reporter endpoint with GET.
+    // Method refusal proves reachability without ingesting or exposing data.
+    sendJson(response, 405, {});
+    return;
+  }
   if (request.method === "GET" && path === "/health") {
     sendJson(response, 200, { mode });
     return;
   }
   if (request.method === "GET" && path === "/ledger") {
     sendJson(response, 200, { ledgerVersion: 1, scenarioId, entries });
+    return;
+  }
+  if (
+    secureCollector &&
+    request.method === "POST" &&
+    path === "/api/public/otel/v1/traces"
+  ) {
+    const handler = ingestLangfuse(request, response);
+    admittedHandlers.add(handler);
+    try {
+      await handler;
+    } finally {
+      admittedHandlers.delete(handler);
+    }
+    return;
+  }
+  if (secureCollector) {
+    sendJson(response, 404, {});
     return;
   }
   if (
@@ -173,6 +306,30 @@ createServer(async (request, response) => {
     return;
   }
   sendJson(response, 404, {});
-}).listen(port, () =>
+};
+let server;
+const dispatch = (request, response) => {
+  handleRequest(request, response).catch(() => {
+    collectorFailed = true;
+    if (!response.headersSent) sendJson(response, 500, {});
+    else response.destroy();
+  });
+};
+try {
+  server = secureCollector
+    ? createSecureServer({ cert: tlsCertificate, key: tlsKey }, dispatch)
+    : createServer(dispatch);
+} catch {
+  throw new Error("integration.destination.tls");
+}
+if (secureCollector)
+  process.once("SIGTERM", () => {
+    // Only the host that has joined its reader may request ordinary shutdown.
+    // A signal before sealed snapshot publication must not look successful.
+    if (!collectorSnapshotSent || ingressOpen || collectorFailed)
+      process.exitCode = 1;
+    server.close();
+  });
+server.listen(port, () =>
   console.log(`Agentscope ${mode} fixture service listening on ${port}`),
 );

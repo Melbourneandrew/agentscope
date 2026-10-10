@@ -226,6 +226,11 @@ describe("fixed supplier phase projection", () => {
     "supplier-connected-entry",
     "supplier-connected-extract",
     "supplier-connected-package",
+    "supplier-connected-package-compilation",
+    "supplier-connected-package-resolution",
+    "supplier-connected-package-frontend",
+    "supplier-connected-package-other",
+    "supplier-connected-service-finalization",
     "supplier-connected-inventory",
     "supplier-connected-inventory-read",
     "supplier-connected-inventory-guard",
@@ -235,6 +240,11 @@ describe("fixed supplier phase projection", () => {
     "supplier-entry",
     "supplier-extract",
     "supplier-package",
+    "supplier-package-compilation",
+    "supplier-package-resolution",
+    "supplier-package-frontend",
+    "supplier-package-other",
+    "supplier-service-finalization",
     "supplier-inventory",
     "supplier-inventory-read",
     "supplier-inventory-guard",
@@ -294,7 +304,8 @@ describe("existing builder diagnostic projection", () => {
     );
     const text = readFileSync(value.output, "utf8");
     expect(text).toBe(
-      "untrusted_builder_operation=image-build\nuntrusted_builder_outcome=failed-settled\n" +
+      "untrusted_maven_failure=unknown\n" +
+        "untrusted_builder_operation=image-build\nuntrusted_builder_outcome=failed-settled\n" +
         "untrusted_builder_observed=true\nuntrusted_builder_exited=true\nuntrusted_builder_signaled=false\n" +
         "untrusted_builder_timed_out=false\nuntrusted_builder_joined=true\nuntrusted_builder_stderr_class=build-failed\n" +
         "untrusted_bootstrap_stage=unknown\nuntrusted_bootstrap_failure_family=unknown\n",
@@ -303,7 +314,7 @@ describe("existing builder diagnostic projection", () => {
     publishBootstrapGpgObservation(undefined, value.env);
     expect(
       readFileSync(value.output, "utf8").split("\n").filter(Boolean),
-    ).toHaveLength(10);
+    ).toHaveLength(11);
     expect(readFileSync(value.output, "utf8")).not.toMatch(/=(?!unknown\n)/u);
   });
   it.each(["preflight", "builder-create", "builder-bootstrap", "image-build"])(
@@ -378,45 +389,42 @@ const executableBody = (name: string) =>
   readFileSync(new URL(`../${name}`, import.meta.url), "utf8")
     .replace(/^import[\s\S]*?;\n/gmu, "")
     .replaceAll("import.meta.dirname", '"/synthetic"');
+const unavailableOutput = () => ({
+  once() {},
+  write() {
+    throw new Error("CANARY");
+  },
+});
+const supervisorProcess = (env: NodeJS.ProcessEnv) => ({
+  env,
+  execPath: "/synthetic/node",
+  exitCode: 0,
+  stdout: unavailableOutput(),
+  stderr: unavailableOutput(),
+});
+const executeBody = (name: string, context: Record<string, unknown>): unknown =>
+  runInNewContext(`(async () => {${executableBody(name)}})()`, context, {
+    timeout: 100,
+  });
 
 describe("actual entrypoint disposition despite lost diagnostic sinks", () => {
   it.each(["terminal", "rejected"])(
     "preserves supervisor %s with unavailable stdout/stderr",
     async (kind) => {
       const value = sink();
-      const processStub = {
-        env: value.env,
-        execPath: "/synthetic/node",
-        exitCode: 0,
-        stdout: {
-          once() {},
-          write() {
-            throw new Error("CANARY");
-          },
+      const processStub = supervisorProcess(value.env);
+      await executeBody("controller.mjs", {
+        process: processStub,
+        resolve: () => "synthetic-entry",
+        runSupervisedProcess: () =>
+          kind === "terminal"
+            ? Promise.resolve({ ...terminal, code: 1 })
+            : Promise.reject(new Error("CANARY")),
+        mockServerResearchStopFitsTerminalObservation: () => false,
+        publishSupervisorObservation: (result: unknown) => {
+          publishSupervisorObservation(result, value.env);
         },
-        stderr: {
-          once() {},
-          write() {
-            throw new Error("CANARY");
-          },
-        },
-      };
-      await runInNewContext(
-        `(async () => {${executableBody("controller.mjs")}})()`,
-        {
-          process: processStub,
-          resolve: () => "synthetic-entry",
-          runSupervisedProcess: () =>
-            kind === "terminal"
-              ? Promise.resolve({ ...terminal, code: 1 })
-              : Promise.reject(new Error("CANARY")),
-          mockServerResearchStopFitsTerminalObservation: () => false,
-          publishSupervisorObservation: (result: unknown) => {
-            publishSupervisorObservation(result, value.env);
-          },
-        },
-        { timeout: 100 },
-      );
+      });
       expect(processStub.exitCode).toBe(1);
       expect(readFileSync(value.output, "utf8")).toContain(
         `supervisor_observation=${kind}\n`,
@@ -425,63 +433,68 @@ describe("actual entrypoint disposition despite lost diagnostic sinks", () => {
   );
   it("preserves research stop 3 when file commands and stdout both fail", async () => {
     const value = sink();
-    const processStub = {
-      env: value.env,
-      execPath: "/synthetic/node",
-      exitCode: 0,
-      stdout: {
-        once() {},
-        write() {
-          throw new Error("CANARY");
-        },
+    const processStub = supervisorProcess(value.env);
+    await executeBody("controller.mjs", {
+      process: processStub,
+      resolve: () => "synthetic-entry",
+      runSupervisedProcess: () => Promise.resolve(terminal),
+      mockServerResearchStopFitsTerminalObservation: () => true,
+      publishSupervisorObservation: (result: unknown) => {
+        publishSupervisorObservation(result, {
+          ...value.env,
+          GITHUB_OUTPUT: value.root,
+        });
       },
-    };
-    await runInNewContext(
-      `(async () => {${executableBody("controller.mjs")}})()`,
-      {
-        process: processStub,
-        resolve: () => "synthetic-entry",
-        runSupervisedProcess: () => Promise.resolve(terminal),
-        mockServerResearchStopFitsTerminalObservation: () => true,
-        publishSupervisorObservation: (result: unknown) => {
-          publishSupervisorObservation(result, {
-            ...value.env,
-            GITHUB_OUTPUT: value.root,
-          });
-        },
-      },
-      { timeout: 100 },
-    );
+    });
     expect(processStub.exitCode).toBe(3);
   });
-  it("mirrors controller failure before best-effort stderr and original exit 1", async () => {
-    const value = sink();
-    const exit = vi.fn();
-    await runInNewContext(
-      `(async () => {${executableBody("controller-process.mjs")}})()`,
-      {
-        executeIntegrationController: () => Promise.reject(new Error("CANARY")),
-        readControllerFailureDiagnostic: () => failure,
-        formatControllerFailureDiagnostic: () => "fixed diagnostic\n",
+  it.each(["delivered", "throwing", "oversized"])(
+    "mirrors failure before synchronous %s sink and exit 1",
+    async (kind) => {
+      const value = sink();
+      const primary = new Error("CANARY");
+      const order: string[] = [];
+      const exit = vi.fn((_code: number) => {
+        order.push("exit");
+      });
+      const diagnostic =
+        kind === "oversized" ? "x".repeat(4097) : "fixed diagnostic\n";
+      const read = vi.fn(() => failure);
+      const format = vi.fn(() => diagnostic);
+      const writeSync = vi.fn((_descriptor: number, _bytes: Buffer) => {
+        order.push("sink");
+        if (kind === "throwing") throw new Error("CANARY");
+      });
+      await executeBody("controller-process.mjs", {
+        Buffer,
+        writeSync,
+        executeIntegrationController: () => Promise.reject(primary),
+        readControllerFailureDiagnostic: read,
+        formatControllerFailureDiagnostic: format,
         publishControllerFailureObservation: (result: unknown) => {
+          order.push("observation");
           publishControllerFailureObservation(result, value.env);
         },
-        process: {
-          exit,
-          stderr: {
-            once() {},
-            write() {
-              throw new Error("CANARY");
-            },
-          },
-        },
-      },
-      { timeout: 100 },
-    );
-    expect(exit).toHaveBeenCalledExactlyOnceWith(1);
-    expect(readFileSync(value.output, "utf8")).toContain(
-      "controller_failure=integration.controller.retire-outer-host\n",
-    );
-    expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
-  });
+        process: { exit },
+      });
+      expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+      expect(read).toHaveBeenCalledExactlyOnceWith(primary);
+      expect(format).toHaveBeenCalledExactlyOnceWith(primary);
+      expect(writeSync).toHaveBeenCalledTimes(kind === "oversized" ? 0 : 1);
+      if (kind !== "oversized")
+        expect(writeSync).toHaveBeenCalledExactlyOnceWith(
+          2,
+          Buffer.from(diagnostic),
+        );
+      expect(order).toEqual(
+        kind === "oversized"
+          ? ["observation", "exit"]
+          : ["observation", "sink", "exit"],
+      );
+      expect(readFileSync(value.output, "utf8")).toContain(
+        "controller_failure=integration.controller.retire-outer-host\n",
+      );
+      expect(readFileSync(value.output, "utf8")).not.toContain("CANARY");
+    },
+  );
 });

@@ -8,10 +8,13 @@ import {
   appendFileSync,
   mkdirSync,
   writeFileSync,
+  readdirSync,
 } from "node:fs";
 import {
   resolveContainedArtifactPath,
   verifyInertProbeTarball,
+  assembleCandidateAssets,
+  inspectCandidateTarball,
 } from "./release-lane/candidate.mjs";
 import { createGitHubReleaseStore } from "./release-lane/github-release-store.mjs";
 import {
@@ -28,9 +31,20 @@ import {
   stageRetainedProbe,
   recordProbeStagePacket,
   reconcileProbePacket,
+  recordPublicationCheckpoint,
+  recordPublicationApproval,
+  readPublicationForVerification,
+  verifyRegistryPublication,
+  continuePublication,
 } from "./release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "./release-lane/validation.mjs";
-import { requireActualSemanticAdmission } from "./release-lane/admission.mjs";
+import {
+  requireActualSemanticAdmission,
+  parseAdmissionDocument,
+  bindIntegrationArtifacts,
+  bindScenarioEvidence,
+  bindPreparedCliEvidence,
+} from "./release-lane/admission.mjs";
 import { validateStageResult } from "./release-lane/stage-result.mjs";
 import {
   validateProbeMaterial,
@@ -73,10 +87,6 @@ function readBounded(path, limit) {
     closeSync(fd);
   }
 }
-// The actual OTLP semantic producer is still absent. Do not substitute a
-// successful job, digest or caller certification label for that prerequisite.
-// rk8.6 consumes the reviewed producer when available; no live entry meanwhile.
-requireActualSemanticAdmission();
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
   process.env.GITHUB_REPOSITORY !== "Melbourneandrew/agentscope" ||
@@ -85,19 +95,576 @@ if (
   !/^[a-f0-9]{40}$/u.test(process.env.GITHUB_SHA ?? "")
 )
   fail();
+async function admissionMetadata(path) {
+  const remaining = deadline - performance.now();
+  if (remaining <= 0 || !process.env.GITHUB_TOKEN) fail();
+  const response = await fetch(
+    `https://api.github.com/repos/Melbourneandrew/agentscope/${path}`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining))),
+    },
+  );
+  if (response.status !== 200 || !response.body) fail();
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.byteLength;
+    if (size > 1_048_576 || performance.now() >= deadline) fail();
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+function producingRunId() {
+  const event = parseAdmissionDocument(
+    readBounded(process.env.GITHUB_EVENT_PATH, 65_536),
+  );
+  const idText = event.inputs?.["candidate-run-id"];
+  if (typeof idText !== "string" || !/^[1-9][0-9]{0,15}$/u.test(idText)) fail();
+  const id = Number(idText);
+  if (!Number.isSafeInteger(id) || id < 1) fail();
+  return id;
+}
+async function authenticateIntegration(id, emit = true) {
+  const runBytes = await admissionMetadata(`actions/runs/${id}`);
+  const run = parseAdmissionDocument(runBytes);
+  if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) fail();
+  const jobs = await admissionMetadata(
+    `actions/runs/${id}/attempts/${run.run_attempt}/jobs?per_page=100`,
+  );
+  const artifacts = await admissionMetadata(
+    `actions/runs/${id}/artifacts?per_page=100`,
+  );
+  const selected = bindIntegrationArtifacts(
+    runBytes,
+    jobs,
+    artifacts,
+    id,
+    process.env.GITHUB_SHA,
+  );
+  const current = parseAdmissionDocument(
+    await admissionMetadata(`actions/runs/${id}`),
+  );
+  if (
+    current.run_attempt !== selected.runAttempt ||
+    current.status !== "completed" ||
+    current.conclusion !== "success" ||
+    current.head_sha !== process.env.GITHUB_SHA
+  )
+    fail();
+  if (emit)
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `candidate-artifact-id=${selected.candidateArtifactId}\nscenario-artifact-id=${selected.scenarioArtifactId}\nintegration-run-id=${id}\n`,
+    );
+  return { ...selected, runId: id };
+}
+async function prepareAdmission() {
+  const id = producingRunId();
+  if (process.env.GITHUB_REF === "refs/heads/main") {
+    const event = parseAdmissionDocument(
+      readBounded(process.env.GITHUB_EVENT_PATH, 65_536),
+    );
+    if (event.inputs?.operation !== "prepare-candidate") fail();
+    return authenticateIntegration(id);
+  }
+  const event = parseAdmissionDocument(
+    readBounded(process.env.GITHUB_EVENT_PATH, 65_536),
+  );
+  if (event.inputs?.operation === "prepare-candidate") fail();
+  const run = parseAdmissionDocument(
+    await admissionMetadata(`actions/runs/${id}`),
+  );
+  if (
+    run.id !== id ||
+    run.path !== ".github/workflows/release.yml" ||
+    run.event !== "workflow_dispatch" ||
+    run.head_branch !== "main" ||
+    run.head_sha !== process.env.GITHUB_SHA ||
+    run.status !== "completed" ||
+    run.conclusion !== "success" ||
+    run.repository?.full_name !== "Melbourneandrew/agentscope" ||
+    run.head_repository?.full_name !== "Melbourneandrew/agentscope" ||
+    !Number.isSafeInteger(run.run_attempt) ||
+    run.run_attempt < 1
+  )
+    fail();
+  const jobs = parseAdmissionDocument(
+    await admissionMetadata(
+      `actions/runs/${id}/attempts/${run.run_attempt}/jobs?per_page=100`,
+    ),
+  );
+  const artifacts = parseAdmissionDocument(
+    await admissionMetadata(`actions/runs/${id}/artifacts?per_page=100`),
+  );
+  const retainedId = selectRetainedCandidate(run, jobs, artifacts);
+  const current = parseAdmissionDocument(
+    await admissionMetadata(`actions/runs/${id}`),
+  );
+  if (
+    current.run_attempt !== run.run_attempt ||
+    current.status !== "completed" ||
+    current.conclusion !== "success" ||
+    current.head_sha !== run.head_sha
+  )
+    fail();
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    `release-candidate-artifact-id=${retainedId}\n`,
+  );
+}
+function selectRetainedCandidate(run, jobs, artifacts) {
+  for (const [list, key] of [
+    [jobs, "jobs"],
+    [artifacts, "artifacts"],
+  ])
+    if (
+      !Array.isArray(list[key]) ||
+      list.total_count !== list[key].length ||
+      list.total_count > 100
+    )
+      fail();
+  const verified = jobs.jobs.filter((job) => job.name === "verify-candidate");
+  const retained = artifacts.artifacts.filter(
+    (artifact) => artifact.name === "release-certified-candidate",
+  );
+  if (verified.length !== 1 || retained.length !== 1) fail();
+  const job = verified[0],
+    artifact = retained[0];
+  const times = [
+    job.started_at,
+    artifact.created_at,
+    artifact.updated_at,
+    job.completed_at,
+  ].map((value) => {
+    if (typeof value !== "string") fail();
+    return Date.parse(value);
+  });
+  if (
+    job.run_id !== run.id ||
+    job.head_sha !== run.head_sha ||
+    (job.run_attempt !== undefined && job.run_attempt !== run.run_attempt) ||
+    job.status !== "completed" ||
+    job.conclusion !== "success" ||
+    times.some(
+      (time, index) =>
+        !Number.isFinite(time) || (index > 0 && time < times[index - 1]),
+    ) ||
+    artifact.expired !== false ||
+    artifact.workflow_run?.id !== run.id ||
+    artifact.workflow_run?.head_sha !== run.head_sha ||
+    !Number.isSafeInteger(retained[0].id) ||
+    retained[0].id < 1 ||
+    !Number.isSafeInteger(retained[0].size_in_bytes) ||
+    retained[0].size_in_bytes < 1 ||
+    retained[0].size_in_bytes > 268_435_456 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(retained[0].digest)
+  )
+    fail();
+  return artifact.id;
+}
+async function prepareSemantic(emit = true) {
+  const index = parseAdmissionDocument(
+    readBounded("artifacts/release-candidate/evidence-index.json", 1_048_576),
+  );
+  const id = index.producingRun?.runId;
+  if (
+    index.sourceRevision !== process.env.GITHUB_SHA ||
+    !Number.isSafeInteger(id) ||
+    id < 1
+  )
+    fail();
+  const selected = await authenticateIntegration(id, emit);
+  if (canonicalJson(index.producingRun) !== canonicalJson(selected)) fail();
+  return selected;
+}
+function admissionInventory(root, allowed, prefix = "", count = { value: 0 }) {
+  const directory = `${root}${prefix ? `/${prefix}` : ""}`;
+  if (
+    !lstatSync(directory).isDirectory() ||
+    lstatSync(directory).isSymbolicLink()
+  )
+    fail();
+  const files = [];
+  for (const name of readdirSync(directory)) {
+    if (
+      ++count.value > 512 ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$/u.test(name)
+    )
+      fail();
+    const path = prefix ? `${prefix}/${name}` : name;
+    const status = lstatSync(`${root}/${path}`);
+    if (
+      status.isDirectory() &&
+      !status.isSymbolicLink() &&
+      path.split("/").length < 4
+    )
+      files.push(...admissionInventory(root, allowed, path, count));
+    else if (status.isFile() && !status.isSymbolicLink() && allowed(path))
+      files.push(path);
+    else fail();
+  }
+  return files.sort();
+}
+function readAdmissionCandidate() {
+  const root = "artifacts/semantic-candidate";
+  const pointer = parseAdmissionDocument(
+    readBounded(`${root}/current-candidate.json`, 16_384),
+  );
+  if (
+    pointer.pointerVersion !== 1 ||
+    !/^sha256-[a-f0-9]{64}$/u.test(pointer.bundleIdentity) ||
+    pointer.candidateRevision !== process.env.GITHUB_SHA
+  )
+    fail();
+  const candidateRoot = `${root}/candidates/${pointer.bundleIdentity}`;
+  const preparedBytes = readBounded(
+    `${candidateRoot}/evidence.json`,
+    1_048_576,
+  );
+  const prepared = parseAdmissionDocument(preparedBytes);
+  if (
+    prepared.bundleIdentity !== pointer.bundleIdentity ||
+    !Array.isArray(prepared.artifacts)
+  )
+    fail();
+  const expected = [
+    "current-candidate.json",
+    `candidates/${pointer.bundleIdentity}/evidence.json`,
+  ];
+  const roleBytes = {};
+  // Standard release role bytes are beside the prepared runtime inventory,
+  // never runtime rows or a different candidate bundle preimage.
+  for (const name of ["sbom", "attestations"]) {
+    const path = `cli-release-materials/${name}.json`;
+    roleBytes[`${name}.json`] = readBounded(`${root}/${path}`, 2_097_152);
+    expected.push(path);
+  }
+  let total = 0;
+  let tarball, tarballPath;
+  for (const file of [prepared.lockfile, ...prepared.artifacts]) {
+    if (
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}$/u.test(file?.fileName) ||
+      !Number.isSafeInteger(file.bytes) ||
+      file.bytes < 1 ||
+      (total += file.bytes) > 268_435_456
+    )
+      fail();
+    const path = `candidates/${pointer.bundleIdentity}/files/${file.fileName}`;
+    const bytes = readBounded(`${root}/${path}`, file.bytes);
+    if (
+      bytes.length !== file.bytes ||
+      sha256(bytes).replace("sha256:", "sha256-") !== file.sha256
+    )
+      fail();
+    expected.push(path);
+    if (file.id === "agentscope-cli" && file.kind === "npm-tarball") {
+      if (tarball !== undefined) fail();
+      tarball = bytes;
+      tarballPath = `${root}/${path}`;
+    }
+  }
+  if (
+    canonicalJson(
+      admissionInventory(root, (path) => expected.includes(path)),
+    ) !== canonicalJson(expected.sort())
+  )
+    fail();
+  if (tarball === undefined) fail();
+  return { preparedBytes, tarball, tarballPath, roleBytes };
+}
+function verifyAdmission(candidateInput = readAdmissionCandidate()) {
+  const { preparedBytes } = candidateInput;
+  const semanticRoot = "artifacts/semantic-scenarios";
+  const files = admissionInventory(
+    semanticRoot,
+    (path) =>
+      path === "harness-support-evidence.json" ||
+      path === "certification/replay-1.json" ||
+      /^runs\/[a-f0-9]{16}\/(?:evidence|harness-observation|model-ledger|destination-ledger|fixture-lifecycle)\.json$/u.test(
+        path,
+      ),
+  );
+  const supportBytes = readBounded(
+    `${semanticRoot}/harness-support-evidence.json`,
+    1_048_576,
+  );
+  const support = parseAdmissionDocument(supportBytes);
+  if (!Array.isArray(support.entries) || support.entries.length > 32) fail();
+  const catalogBytes = readBounded(
+    "tests/integration/capability-manifest.json",
+    1_048_576,
+  );
+  const catalog = parseAdmissionDocument(catalogBytes);
+  const accepted = [];
+  candidateInput.evidenceFiles = [
+    {
+      name: "harness-support-evidence.json",
+      bytes: supportBytes.length,
+      digest: sha256(supportBytes),
+    },
+  ];
+  for (const entry of support.entries) {
+    const family = {
+      "@agentscope/harness-codex": "codex",
+      "@agentscope/harness-claude-code": "claude-code",
+    }[entry.harnessType];
+    if (!family) fail();
+    const runId = entry.binding?.seed?.runId;
+    if (!/^[a-f0-9]{16}$/u.test(runId)) fail();
+    const read = (name) => {
+      const path = `runs/${runId}/${name}.json`;
+      if (!files.includes(path)) fail();
+      const bytes = readBounded(`${semanticRoot}/${path}`, 1_048_576);
+      candidateInput.evidenceFiles.push({
+        name: path,
+        bytes: bytes.length,
+        digest: sha256(bytes),
+      });
+      return bytes;
+    };
+    const scenarios = catalog.scenarios?.filter(
+      (row) => row.scenarioId === entry.binding?.seed?.scenarioId,
+    );
+    const evidence = catalog.evidence?.filter(
+      (row) => row.evidenceId === scenarios?.[0]?.harnessEvidenceId,
+    );
+    if (
+      scenarios?.length !== 1 ||
+      evidence?.length !== 1 ||
+      !evidence[0].admission
+    )
+      fail();
+    const component = evidence[0].admission.component;
+    const componentBytes = (role) => {
+      const path = component?.[role]?.path;
+      if (
+        typeof path !== "string" ||
+        !/^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_.-]+$/u.test(path) ||
+        path.split("/").some((part) => part === "." || part === "..")
+      )
+        fail();
+      return readBounded(path, 1_048_576);
+    };
+    accepted.push(
+      bindScenarioEvidence(
+        preparedBytes,
+        supportBytes,
+        Object.fromEntries(
+          [
+            "evidence",
+            "fixture-lifecycle",
+            "model-ledger",
+            "destination-ledger",
+            "harness-observation",
+          ].map((name) => [`${name}.json`, read(name)]),
+        ),
+        family,
+        {
+          catalogBytes,
+          fixtureBytes: componentBytes("fixture"),
+          adapterBytes: componentBytes("adapterArtifact"),
+          mappingBytes: componentBytes("mappingArtifact"),
+          controllerBytes: readBounded(
+            "tests/integration/harness-material-command.mjs",
+            1_048_576,
+          ),
+        },
+      ),
+    );
+  }
+  return requireActualSemanticAdmission(accepted);
+}
+function bindReleaseSbom(sbom, inspected) {
+  const packageRow = sbom.packages?.filter(
+    (row) => row.SPDXID === "SPDXRef-Package",
+  );
+  if (
+    sbom.spdxVersion !== "SPDX-2.3" ||
+    packageRow?.length !== 1 ||
+    packageRow[0].name !== "agentscope-cli" ||
+    packageRow[0].versionInfo !== "0.1.0" ||
+    canonicalJson(packageRow[0].checksums) !==
+      canonicalJson([
+        { algorithm: "SHA256", checksumValue: inspected.sha256.slice(7) },
+      ]) ||
+    !Array.isArray(sbom.files)
+  )
+    fail();
+  const expectedFiles = inspected.inventory.map((row) => ({
+    fileName: row.path.slice(8),
+    checksums: [{ algorithm: "SHA256", checksumValue: row.sha256.slice(7) }],
+  }));
+  if (
+    canonicalJson(
+      sbom.files.map(({ fileName, checksums }) => ({ fileName, checksums })),
+    ) !== canonicalJson(expectedFiles)
+  )
+    fail();
+}
+function bindReleaseProvenance(statements, inspected, selected) {
+  if (!Array.isArray(statements) || statements.length !== 1) fail();
+  const statement = statements[0];
+  if (
+    statement._type !== "https://in-toto.io/Statement/v1" ||
+    statement.predicateType !== "https://slsa.dev/provenance/v1" ||
+    canonicalJson(statement.subject) !==
+      canonicalJson([
+        {
+          name: "agentscope-cli-0.1.0.tgz",
+          digest: { sha256: inspected.sha256.slice(7) },
+        },
+      ]) ||
+    statement.predicate?.buildDefinition?.externalParameters?.sourceRevision !==
+      process.env.GITHUB_SHA
+  )
+    fail();
+  const invocation =
+    statement.predicate.buildDefinition.internalParameters?.observedInvocation;
+  if (
+    invocation?.environment !== "github-actions" ||
+    invocation.authenticated !== false ||
+    invocation.repository !== "Melbourneandrew/agentscope" ||
+    invocation.runId !== String(selected.runId) ||
+    invocation.runAttempt !== String(selected.runAttempt) ||
+    invocation.sourceRevision !== process.env.GITHUB_SHA
+  )
+    fail();
+}
+function bindReleaseMaterials(candidateInput, selected) {
+  const { tarball, tarballPath, roleBytes } = candidateInput;
+  const inspected = inspectCandidateTarball(tarballPath);
+  if (inspected.sha256 !== sha256(tarball)) fail();
+  const document = (name) =>
+    JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(roleBytes[name]),
+    );
+  bindReleaseSbom(document("sbom.json"), inspected);
+  bindReleaseProvenance(document("attestations.json"), inspected, selected);
+  return inspected;
+}
+function assembleReleaseCandidate(candidateInput, accepted, selected) {
+  const inspected = bindReleaseMaterials(candidateInput, selected);
+  const roleBytes = { ...candidateInput.roleBytes };
+  roleBytes["support-admission.json"] = Buffer.from(
+    canonicalJson({
+      sourceRevision: process.env.GITHUB_SHA,
+      entries: accepted,
+    }),
+  );
+  roleBytes["evidence-index.json"] = Buffer.from(
+    canonicalJson({
+      sourceRevision: process.env.GITHUB_SHA,
+      producingRun: selected,
+      entries: accepted,
+      files: candidateInput.evidenceFiles,
+    }),
+  );
+  roleBytes["checksum-manifest.json"] = Buffer.from(
+    canonicalJson({
+      sourceRevision: process.env.GITHUB_SHA,
+      tarball: {
+        fileName: "agentscope-cli-0.1.0.tgz",
+        bytes: inspected.bytes,
+        sha256: inspected.sha256,
+        integrity: inspected.integrity,
+      },
+      files: Object.entries(roleBytes).map(([name, bytes]) => ({
+        name,
+        bytes: bytes.length,
+        sha256: sha256(bytes),
+      })),
+    }),
+  );
+  const assembled = assembleCandidateAssets({
+    tarball: candidateInput.tarball,
+    sourceRevision: process.env.GITHUB_SHA,
+    roleBytes,
+  });
+  bindPreparedCliEvidence(
+    candidateInput.preparedBytes,
+    Buffer.from(canonicalJson(assembled.manifest)),
+    candidateInput.tarball,
+  );
+  return assembled;
+}
+function retainReleaseCandidate(assembled) {
+  mkdirSync("artifacts/release-candidate", { mode: 0o700 });
+  for (const asset of assembled.assets)
+    writeFileSync(`artifacts/release-candidate/${asset.name}`, asset.bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
+}
+if (process.argv.length === 3 && process.argv[2] === "--prepare-admission") {
+  await prepareAdmission();
+  process.exit(0);
+}
+if (process.argv.length === 3 && process.argv[2] === "--prepare-semantic") {
+  await prepareSemantic();
+  process.exit(0);
+}
+function compareReleaseCandidate(assembled) {
+  const expected = assembled.assets.map((asset) => asset.name).sort();
+  if (
+    canonicalJson(
+      admissionInventory("artifacts/release-candidate", (name) =>
+        expected.includes(name),
+      ),
+    ) !== canonicalJson(expected)
+  )
+    fail();
+  for (const asset of assembled.assets)
+    if (
+      !readBounded(
+        `artifacts/release-candidate/${asset.name}`,
+        asset.bytes.length,
+      ).equals(asset.bytes)
+    )
+      fail();
+}
+if (process.argv.length === 3 && process.argv[2] === "--verify-admission") {
+  const candidateInput = readAdmissionCandidate();
+  const selected =
+    process.env.GITHUB_REF === "refs/heads/main"
+      ? await authenticateIntegration(producingRunId(), false)
+      : await prepareSemantic(false);
+  const assembled = assembleReleaseCandidate(
+    candidateInput,
+    verifyAdmission(candidateInput),
+    selected,
+  );
+  if (process.env.GITHUB_REF === "refs/heads/main")
+    retainReleaseCandidate(assembled);
+  else compareReleaseCandidate(assembled);
+  output("candidate-manifest-digest", assembled.manifestDigest);
+  process.exit(0);
+}
+// Acquiring read-only artifact metadata does not grant publication authority.
+// Read-only provenance acquisition precedes the real binding; every protected
+// product store/mutation remains after that binding. The closed protected-main
+// inert probe uses its separate existing material and authenticated-run checks.
 // Semantic verification is nonprivileged. Administrative settings are inspected
 // through the existing operator session and bound to the authenticated stage
 // checkpoint; the read-only Actions token cannot inspect those settings.
-if (process.argv[2] === "--verify-admission") process.exit(0);
 const eventBytes = readBounded(process.env.GITHUB_EVENT_PATH, 65_536);
 const event = JSON.parse(eventBytes.toString("utf8"));
 const mode = process.argv[2];
 if (!(
   process.argv.length === 2 ||
   (process.argv.length === 3 &&
-    ["--stage", "--record-stage", "--prepare-probe", "--verify-probe"].includes(
-      mode,
-    ))
+    [
+      "--stage",
+      "--record-stage",
+      "--prepare-probe",
+      "--verify-probe",
+      "--verify-publication",
+    ].includes(mode))
 ))
   fail();
 const probeOperation = [
@@ -110,6 +677,15 @@ if (
   (!probeOperation && process.env.GITHUB_REF !== "refs/tags/v0.1.0")
 )
   fail();
+if (!probeOperation) {
+  const candidateInput = readAdmissionCandidate();
+  const assembled = assembleReleaseCandidate(
+    candidateInput,
+    verifyAdmission(candidateInput),
+    await prepareSemantic(false),
+  );
+  compareReleaseCandidate(assembled);
+}
 if (mode === "--prepare-probe" || mode === "--verify-probe") {
   if (
     !["prepare-probe", "consume-probe", "reconcile-probe"].includes(
@@ -214,6 +790,7 @@ if (mode === "--prepare-probe" || mode === "--verify-probe") {
 const store = createGitHubReleaseStore({
   token: process.env.GITHUB_TOKEN,
   deadline,
+  ...(probeOperation ? {} : { executingDigests: executingDigests() }),
 });
 const run = await store.run(Number(process.env.GITHUB_RUN_ID));
 if (
@@ -241,6 +818,7 @@ function executingDigests() {
     "scripts/record-release-stage.mjs",
     "scripts/release-lane/production-recording.mjs",
     "scripts/release-lane/github-release-store.mjs",
+    "scripts/release-lane/terminal-probe.mjs",
     "scripts/release-lane/production-recorder.mjs",
     "scripts/release-lane/stage-result.mjs",
     "scripts/release-lane/npm-stage-producer.mjs",
@@ -250,6 +828,7 @@ function executingDigests() {
     "scripts/release-lane/operator-controls.mjs",
     "scripts/release-lane/release-controls.mjs",
     "apps/cli/scripts/publish-manifest-contract.mjs",
+    "apps/cli/scripts/verify-installed-smoke.ts",
   ];
   return {
     workflowDigest: sha256(
@@ -380,6 +959,65 @@ function dependentStageOutput(tuple) {
     response: encoded ? "ambiguous" : "missing",
     stageId: null,
   };
+}
+const publicationOperation = [
+  "prepare-publication",
+  "consume-publication",
+  "record-approval",
+  "continue-publication",
+].includes(event.inputs.operation);
+if (publicationOperation) {
+  const input = {
+    identity,
+    releaseId: Number(event.inputs["release-id"]),
+    expectedSequence: Number(event.inputs["expected-sequence"]),
+    expectedPriorDigest: event.inputs["expected-prior-digest"],
+    executingDigests: executingDigests(),
+    observedAt: new Date().toISOString(),
+  };
+  const owner = JSON.parse(event.inputs["owner-observation"]);
+  if (mode === "--verify-publication") {
+    if (event.inputs.operation !== "continue-publication") fail();
+    const verificationInput = { ...input };
+    delete verificationInput.observedAt;
+    const head = await readPublicationForVerification(store, verificationInput);
+    const packet = await verifyRegistryPublication(head, candidate(), deadline);
+    output(
+      "registry-result",
+      canonicalJson({
+        ...packet,
+        runId: identity.runId,
+        runAttempt: identity.runAttempt,
+        ...input.executingDigests,
+      }),
+    );
+  } else if (mode) fail();
+  else if (event.inputs.operation === "continue-publication") {
+    // Only fixed needs.verify-publication output, never event owner JSON,
+    // carries the credential-free registry/install acquisition result.
+    const encoded = process.env.RELEASE_REGISTRY_RESULT;
+    if (typeof encoded !== "string" || Buffer.byteLength(encoded) > 16_384)
+      fail();
+    const result = await continuePublication(
+      store,
+      input,
+      JSON.parse(encoded),
+      owner,
+    );
+    retainProbe("release-completion-manifest.json", result);
+  } else {
+    const record =
+      event.inputs.operation === "record-approval"
+        ? await recordPublicationApproval(store, input, owner)
+        : await recordPublicationCheckpoint(
+            store,
+            input,
+            owner,
+            event.inputs.operation === "consume-publication",
+          );
+    output("publication-record-digest", record.digest);
+  }
+  process.exit(0);
 }
 if (probeOperation) {
   const executing = executingDigests();

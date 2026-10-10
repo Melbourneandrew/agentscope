@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -11,12 +12,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
   classifyCodexSettledTraceObservation,
-  classifyCodexSessionStartAtFailedPty,
   classifyCodexTraceDeadlineObservation,
   classifyCodexTraceFailureHint,
   classifyCodexTraceGetFailure,
@@ -25,7 +27,6 @@ import {
   codexTraceSearchAttemptDeadlines,
   codexTraceSearchUnavailable,
   codexTraceSearchTimedOut,
-  codexSessionStartCheckpointMatchesLifecycle,
   classifyCodexStopHookCommand,
   classifyCodexShutdownAtJoinDeadline,
   classifyCodexShutdownLogSource,
@@ -33,10 +34,10 @@ import {
   classifyMissingOperationalStateByHookDuration,
   classifyLocalSqliteOutcomeAfterBaseline,
   inspectCodexRootHookLifecycle,
-  inspectCodexSessionStartBeforeFirstModelRequestAdmission,
   inspectCodexStopHookCommand,
   classifyTraceSearchRecordsBeforeDeadline,
   codexSessionIdentity,
+  projectCodexPostJoinTranscript,
   codexSessionStartMediationUpperBoundMilliseconds,
   codexTurnTerminalObserved,
   codexTurnTerminalObservedAfterBaseline,
@@ -59,6 +60,233 @@ import {
   waitWithinObservationDeadline,
 } from "../codex-runtime-evidence.mjs";
 
+const postJoinFixture = () => {
+  const lines = [
+    { type: "session_meta", payload: { id: "session-1", cwd: "/private" } },
+    null,
+    {
+      type: "turn_context",
+      payload: { turn_id: "turn-1", model: "fixture-model" },
+    },
+    {
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-1",
+        last_agent_message: "complete",
+      },
+    },
+  ];
+  const content = `${lines.map((line) => (line === null ? "" : JSON.stringify(line))).join("\n")}\n`;
+  const record = {
+    relativePath: ".codex/sessions/2026/09/16/rollout-test.jsonl",
+    dev: 1n,
+    ino: 2n,
+    mode: 0o100600n,
+    uid: 1000n,
+    gid: 1000n,
+    content,
+  };
+  return {
+    records: [record],
+    observedRecords: [{ ...record }],
+    baseline: [{ ...record, content: `${JSON.stringify(lines[0])}\n` }],
+    expectedMessage: "complete",
+    sessionId: "session-1",
+    turnId: "turn-1",
+    modelName: "fixture-model",
+  };
+};
+
+describe("held post-join Codex transcript projection", () => {
+  it("keeps the existing 4096 physical-line bound and rejects unavailable turn context", () => {
+    const input = postJoinFixture();
+    input.records[0]!.content += "\n".repeat(4092);
+    expect(projectCodexPostJoinTranscript(input).exclusiveEndPosition).toBe(
+      4096,
+    );
+    input.records[0]!.content += "\n";
+    expect(() => projectCodexPostJoinTranscript(input)).toThrow(
+      "integration.codex.session-ledger",
+    );
+    const unavailable = postJoinFixture();
+    unavailable.records[0]!.content = unavailable.records[0]!.content.replace(
+      '"turn_id":"turn-1","model"',
+      '"model"',
+    );
+    unavailable.observedRecords = [{ ...unavailable.records[0]! }];
+    expect(() => projectCodexPostJoinTranscript(unavailable)).toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+  it("retains physical positions and unavailable generation, never transcript or path", () => {
+    const input = postJoinFixture();
+    const result = projectCodexPostJoinTranscript(input);
+    expect(result).toEqual({
+      nativeFormat: "codex-0.149.1-rollout-jsonl",
+      boundaryKind: "transcript-range",
+      positionKind: "line",
+      availableStartPosition: 0,
+      exclusiveEndPosition: 4,
+      sessionMetaPosition: 0,
+      turnContextPosition: 2,
+      taskCompletePosition: 3,
+      sourceGeneration: null,
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(
+      /session-1|turn-1|fixture-model|private|complete"/u,
+    );
+    input.records[0]!.content += `${JSON.stringify({ type: "event_msg", payload: { type: "shutdown_complete" } })}\n`;
+    expect(projectCodexPostJoinTranscript(input).exclusiveEndPosition).toBe(5);
+  });
+  it.each([
+    "session",
+    "turn",
+    "model",
+    "inode",
+    "prefix",
+    "partial",
+    "context-missing",
+    "context-duplicate",
+    "reordered",
+  ])("refuses %s substitution or incomplete evidence after join", (kind) => {
+    const input = postJoinFixture();
+    if (kind === "session") input.sessionId = "other";
+    if (kind === "turn") input.turnId = "other";
+    if (kind === "model") input.modelName = "other";
+    if (kind === "inode") input.records[0]!.ino = 3n;
+    if (kind === "prefix")
+      input.records[0]!.content = input.records[0]!.content.replace(
+        "/private",
+        "/changed",
+      );
+    if (kind === "partial")
+      input.records[0]!.content = input.records[0]!.content.slice(0, -1);
+    if (kind.startsWith("context") || kind === "reordered") {
+      const lines = input.records[0]!.content.trimEnd().split("\n");
+      if (kind === "context-missing") lines.splice(2, 1);
+      if (kind === "context-duplicate") lines.splice(2, 0, lines[2]!);
+      if (kind === "reordered") [lines[2], lines[3]] = [lines[3]!, lines[2]!];
+      input.records[0]!.content = `${lines.join("\n")}\n`;
+      input.observedRecords = [{ ...input.records[0]! }];
+    }
+    expect(() => projectCodexPostJoinTranscript(input)).toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+});
+
+// Actual first-party grammar with only the descriptor reader substituted.
+// This is synthetic parsing evidence, not native log or filesystem evidence.
+const inspectSyntheticLifecycle = (source: string) => {
+  const runtime = readFileSync(
+    new URL("../codex-runtime-evidence.mjs", import.meta.url),
+    "utf8",
+  );
+  const window = (start: string, end: string) => {
+    const first = runtime.indexOf(start),
+      last = runtime.indexOf(end, first);
+    if (first < 0 || last <= first)
+      throw new Error("test.runtime-source-window");
+    return runtime.slice(first, last).replaceAll("export const ", "const ");
+  };
+  const script = [
+    window(
+      "const commandOutcome =",
+      "export const classifyCodexSettledTraceObservation",
+    ),
+    window(
+      "const rootHookEvents =",
+      "export const classifyCodexShutdownLogSource",
+    ),
+    window(
+      "const durationUnitMilliseconds =",
+      "/**\n * Returns one terminal Stop",
+    ),
+    "inspectCodexRootHookLifecycle({})",
+  ].join("\n");
+  return runInNewContext(
+    script,
+    {
+      createHash,
+      readCodexHookLog: () => source,
+    },
+    { timeout: 1_000 },
+  ) as {
+    sessionStartDurationMilliseconds: number | null;
+    stopDurationMilliseconds: number;
+    sessionEndDurationMilliseconds: number;
+  };
+};
+
+describe("Codex optional startup diagnostic grammar", () => {
+  const open = (event: string) =>
+    `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n`;
+  const close = (event: string, duration = 150, outcome = "completed") =>
+    `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="${outcome}"}: close time.busy=${duration}ms time.idle=0ms\n`;
+  const stop = open("Stop") + close("Stop", 4_875);
+  const end = open("SessionEnd") + close("SessionEnd");
+  const startup = open("SessionStart") + close("SessionStart", 8_001);
+  it.each([
+    [stop + end, null],
+    [startup + stop + end, 8_001],
+    [open("SessionStart") + close("SessionStart", 1_000) + stop + end, 1_000],
+    [open("SessionStart") + close("SessionStart", 1_001) + stop + end, 1_001],
+    [stop + startup + end, 8_001],
+    ["TRACE model: request\n" + stop + end + startup, 8_001],
+    [open("SessionStart") + stop + end, null],
+    [
+      open("SessionStart") +
+        stop +
+        close("SessionStart", 8_001, "timeout") +
+        end,
+      8_001,
+    ],
+  ] as const)(
+    "keeps required lifecycle independent of startup (%#)",
+    (source, duration) => {
+      expect(inspectSyntheticLifecycle(source)).toMatchObject({
+        sessionStartDurationMilliseconds: duration,
+        stopDurationMilliseconds: 4_875,
+        sessionEndDurationMilliseconds: 150,
+      });
+    },
+  );
+  it.each([
+    startup + stop,
+    startup + end,
+    end + stop,
+    startup + startup + stop + end,
+    stop + stop + end,
+    stop + end + end,
+    open("Stop") + open("SessionEnd") + close("Stop") + close("SessionEnd"),
+    open("SessionStart") + close("SessionStart", 150, "other") + stop + end,
+    close("SessionStart") + stop + end,
+    open("SessionStart") +
+      close("SessionStart") +
+      close("SessionStart") +
+      stop +
+      end,
+    startup.replace("time.idle=0ms", "") + stop + end,
+    startup.replace("time.busy=8001ms", "time.busy=1ms time.busy=2ms") +
+      stop +
+      end,
+    startup.replace(
+      'hook.event_name="SessionStart"',
+      'hook.event_name="SessionStart" hook.event_name="Stop"',
+    ) +
+      stop +
+      end,
+    startup + open("Stop") + close("Stop", 7_001) + end,
+    stop + open("SessionEnd") + close("SessionEnd", 7_001),
+  ])("still rejects incomplete or contradictory evidence (%#)", (source) => {
+    expect(() => inspectSyntheticLifecycle(source)).toThrow(
+      /integration\.codex\.hook-/u,
+    );
+  });
+});
+
 // eslint-disable-next-line max-lines-per-function -- descriptor-bound hostile native-record matrix
 describe("Codex bounded native ledgers", () => {
   it("classifies shutdown progress without using terminal contents", () => {
@@ -76,6 +304,9 @@ describe("Codex bounded native ledgers", () => {
       [`${sessionStart}${stop}`, "stop-completed"],
       [`${sessionStart}${stop}${start("SessionEnd")}`, "session-end-active"],
       [`${sessionStart}${stop}${sessionEnd}`, "session-end-completed"],
+      [stop, "stop-completed"],
+      [`${stop}${sessionStart}`, "stop-completed"],
+      [`${stop}${sessionStart}${sessionEnd}`, "session-end-completed"],
     ] as const) {
       expect(classifyCodexShutdownLogSource(source)).toBe(expected);
       if (expected === "stop-completed")
@@ -95,7 +326,6 @@ describe("Codex bounded native ledgers", () => {
     for (const source of [
       "TRACE unrelated: new\n",
       `${sessionStart}${sessionEnd}`,
-      `${stop}${sessionStart}`,
       `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
       `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
       `${sessionStart}${start("Stop")}${close("Stop").replace('"completed"', '"timeout"')}`,
@@ -139,6 +369,7 @@ describe("Codex bounded native ledgers", () => {
           [sessionStart, "stop-unseen"],
           [`${sessionStart}${start("Stop")}`, "stop-active"],
           [`${sessionStart}${stop}`, "stop-completed"],
+          [`${stop}${sessionStart}`, "stop-completed"],
           [
             `${sessionStart}${stop}${start("SessionEnd")}`,
             "session-end-active",
@@ -150,7 +381,6 @@ describe("Codex bounded native ledgers", () => {
         }
         for (const source of [
           `${sessionStart}${sessionEnd}`,
-          `${stop}${sessionStart}`,
           `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
           `${sessionStart}${start("Stop")}${start("SessionEnd")}`,
           `${sessionStart}${start("Stop")}${close("Stop").replace('"completed"', '"timeout"')}`,
@@ -715,7 +945,7 @@ describe("Codex bounded native ledgers", () => {
   );
 
   it.runIf(process.platform === "linux")(
-    "bounds SessionStart mediation from one exact new and close span",
+    "authenticates optional startup and required lifecycle from the held log",
     () => {
       const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
       const directory = join(root, "log");
@@ -727,185 +957,62 @@ describe("Codex bounded native ledgers", () => {
           constants.O_NOFOLLOW |
           constants.O_NONBLOCK,
       );
-      const path = join(directory, "codex-tui.log");
-      const measure = () =>
-        codexSessionStartMediationUpperBoundMilliseconds({
-          directoryDescriptor: descriptor,
-          directoryPath: directory,
-        });
-      const started =
-        '2026-08-31T12:00:00.000Z TRACE codex.hooks.command{hook.event_name="SessionStart"}: new\n';
-      const completed = (durations = "time.busy=125ms time.idle=25ms") =>
-        `2026-08-31T12:00:01.000Z TRACE codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${durations}\n`;
-      try {
-        expect(measure()).toBeUndefined();
-        writeFileSync(path, `${started}${completed()}`);
-        expect(measure()).toBe(150);
-        writeFileSync(
-          path,
-          `${started}${completed("time.busy=500ms time.idle=500ms")}`,
-        );
-        expect(measure()).toBe(1_000);
-        for (const hostile of [
-          started,
-          completed(),
-          `${completed()}${started}`,
-          'TRACE codex.hooks.command{hook.event_name="SessionStart" hook.command_outcome="completed"}: new : close time.busy=1ms time.idle=1ms\n',
-          `${started}${started}${completed()}`,
-          `${started}${completed()}${completed()}`,
-          `${started}${completed("time.busy=1000ms time.idle=1ms")}`,
-          `${started}${completed("time.busy=1ms")}`,
-          `${started}${completed().replaceAll("completed", "timeout")}`,
-          `${started}${completed().replace('hook.event_name="SessionStart"', 'hook.event_name="SessionStart" hook.event_name="Stop"')}`,
-        ]) {
-          writeFileSync(path, hostile);
-          expect(measure).toThrow(
-            /integration\.codex\.(?:hook-log|hook-mediation)/u,
-          );
-        }
-      } finally {
-        closeSync(descriptor);
-        rmSync(root, { recursive: true });
-      }
-    },
-  );
-
-  it.runIf(process.platform === "linux")(
-    "proves the closed root-hook lifecycle before the first model request",
-    // eslint-disable-next-line max-lines-per-function -- one fixture preserves the causal checkpoint through terminal lifecycle negatives
-    () => {
-      const root = mkdtempSync(join(tmpdir(), "agentscope-codex-hook-log-"));
-      const directory = join(root, "log");
-      mkdirSync(directory, { mode: 0o700 });
-      const descriptor = openSync(
-        directory,
-        constants.O_RDONLY |
-          constants.O_DIRECTORY |
-          constants.O_NOFOLLOW |
-          constants.O_NONBLOCK,
-      );
-      const span = (event: string, duration: string) =>
-        `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n` +
-        `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed" hook.command_outcome="completed"}: close ${duration}\n`;
-      const sessionStart = span(
-        "SessionStart",
-        "time.busy=125ms time.idle=25ms",
-      );
-      const stop = span("Stop", "time.busy=4.75s time.idle=125ms");
-      const sessionEnd = span("SessionEnd", "time.busy=100ms time.idle=50ms");
       const path = join(directory, "codex-tui.log");
       const input = {
         directoryDescriptor: descriptor,
         directoryPath: directory,
       };
+      const span = (event: string, duration: string) =>
+        `TRACE codex.hooks.command{hook.event_name="${event}"}: new\n` +
+        `TRACE codex.hooks.command{hook.event_name="${event}" hook.command_outcome="completed"}: close ${duration}\n`;
+      const startup = span("SessionStart", "time.busy=8s time.idle=1ms");
+      const stop = span("Stop", "time.busy=4.75s time.idle=125ms");
+      const end = span("SessionEnd", "time.busy=100ms time.idle=50ms");
       try {
-        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
-          "arm-log-unavailable",
-        );
-        writeFileSync(path, "TRACE codex.startup: ready\n");
-        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
-          "arm-hook-unseen",
-        );
-        expect(
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
-        ).toBe(undefined);
-        writeFileSync(path, "");
-        expect(
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
-        ).toBe(undefined);
-        writeFileSync(
-          path,
-          'TRACE codex.hooks.command{hook.event_name="SessionStart"}: unfinished\n',
-        );
-        expect(() =>
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
-        ).toThrow("integration.codex.hook-log");
-        expect(() => classifyCodexSessionStartAtFailedPty(input)).toThrow(
-          "integration.codex.hook-log",
-        );
-        writeFileSync(
-          path,
-          sessionStart.slice(0, sessionStart.indexOf("\n") + 1),
-        );
-        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
-          "arm-hook-open",
-        );
-        expect(
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
-        ).toBe(undefined);
-        writeFileSync(path, sessionStart);
-        expect(classifyCodexSessionStartAtFailedPty(input)).toBe(
-          "arm-hook-completed",
-        );
-        const firstModelRequestCheckpoint =
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input);
-        expect(firstModelRequestCheckpoint?.durationMilliseconds).toBe(150);
-        expect(firstModelRequestCheckpoint?.spanSha256).toMatch(
-          /^[a-f\d]{64}$/u,
-        );
-        writeFileSync(path, `${sessionStart}${stop}${sessionEnd}`);
-        const lifecycle = inspectCodexRootHookLifecycle(input);
-        expect(lifecycle).toEqual({
-          sessionStartDurationMilliseconds: 150,
-          sessionStartSpanSha256: firstModelRequestCheckpoint?.spanSha256,
-          stopDurationMilliseconds: 4_875,
-          sessionEndDurationMilliseconds: 150,
-        });
-        expect(
-          codexSessionStartCheckpointMatchesLifecycle(
-            firstModelRequestCheckpoint,
-            lifecycle,
-          ),
-        ).toBe(true);
-        const substitutedSessionStart = span(
-          "SessionStart",
-          "time.busy=100ms time.idle=50ms",
-        );
-        writeFileSync(path, `${substitutedSessionStart}${stop}${sessionEnd}`);
-        const substitutedLifecycle = inspectCodexRootHookLifecycle(input);
-        expect(substitutedLifecycle?.sessionStartDurationMilliseconds).toBe(
-          firstModelRequestCheckpoint?.durationMilliseconds,
-        );
-        expect(substitutedLifecycle?.sessionStartSpanSha256).not.toBe(
-          firstModelRequestCheckpoint?.spanSha256,
-        );
-        expect(
-          codexSessionStartCheckpointMatchesLifecycle(
-            firstModelRequestCheckpoint,
-            substitutedLifecycle,
-          ),
-        ).toBe(false);
-        writeFileSync(path, `${sessionStart}${stop}${sessionEnd}`);
+        expect(inspectCodexRootHookLifecycle(input)).toBeUndefined();
+        for (const [source, duration] of [
+          [stop + end, null],
+          [startup + stop + end, 8_001],
+          [stop + startup + end, 8_001],
+        ] as const) {
+          writeFileSync(path, source);
+          expect(inspectCodexRootHookLifecycle(input)).toMatchObject({
+            sessionStartDurationMilliseconds: duration,
+            stopDurationMilliseconds: 4_875,
+            sessionEndDurationMilliseconds: 150,
+          });
+          expect(classifyCodexStopHookCommand(input)).toBe("completed");
+          expect(inspectCodexStopHookCommand(input)).toEqual({
+            outcome: "completed",
+            durationMilliseconds: 4_875,
+          });
+        }
+        writeFileSync(path, startup);
         expect(codexSessionStartMediationUpperBoundMilliseconds(input)).toBe(
-          150,
+          8_001,
         );
-        expect(classifyCodexStopHookCommand(input)).toBe("completed");
-        expect(inspectCodexStopHookCommand(input)).toEqual({
-          outcome: "completed",
-          durationMilliseconds: 4_875,
-        });
+        writeFileSync(path, startup + stop + end);
+        const lifecycle = inspectCodexRootHookLifecycle(input);
+        expect(lifecycle?.sessionStartSpanSha256).toMatch(/^[a-f\d]{64}$/u);
+        writeFileSync(
+          path,
+          span("SessionStart", "time.busy=8001ms time.idle=0ms") + stop + end,
+        );
+        expect(
+          inspectCodexRootHookLifecycle(input)?.sessionStartSpanSha256,
+        ).not.toBe(lifecycle?.sessionStartSpanSha256);
         for (const hostile of [
-          `${sessionStart}${stop}`,
-          `${sessionStart}${sessionEnd}${stop}`,
-          `${sessionStart}${sessionStart}${stop}${sessionEnd}`,
-          `${sessionStart}${stop}${sessionEnd}${sessionEnd}`,
-          `${stop}${sessionStart}${sessionEnd}`,
-          `${sessionStart}${stop}${sessionEnd.replaceAll(
-            "completed",
-            "timeout",
-          )}`,
-          `${sessionStart}${span(
-            "PreToolUse",
-            "time.busy=1ms time.idle=1ms",
-          )}${stop}${sessionEnd}`,
-          `${sessionStart}${span(
-            "Stop",
-            "time.busy=7s time.idle=1ms",
-          )}${sessionEnd}`,
-          `${sessionStart}${stop}${span(
-            "SessionEnd",
-            "time.busy=7s time.idle=1ms",
-          )}`,
+          startup + stop,
+          startup + end + stop,
+          startup + startup + stop + end,
+          startup + stop + end + end,
+          startup + stop + end.replaceAll("completed", "timeout"),
+          startup +
+            span("PreToolUse", "time.busy=1ms time.idle=1ms") +
+            stop +
+            end,
+          startup + span("Stop", "time.busy=7s time.idle=1ms") + end,
+          startup + stop + span("SessionEnd", "time.busy=7s time.idle=1ms"),
         ]) {
           writeFileSync(path, hostile);
           expect(() => inspectCodexRootHookLifecycle(input)).toThrow(
@@ -914,19 +1021,14 @@ describe("Codex bounded native ledgers", () => {
         }
         writeFileSync(
           path,
-          `${sessionStart}${span(
-            "Stop",
-            "time.busy=7s time.idle=0ms",
-          )}${span("SessionEnd", "time.busy=7s time.idle=0ms")}`,
+          startup +
+            span("Stop", "time.busy=7s time.idle=0ms") +
+            span("SessionEnd", "time.busy=7s time.idle=0ms"),
         );
         expect(inspectCodexRootHookLifecycle(input)).toMatchObject({
           stopDurationMilliseconds: 7_000,
           sessionEndDurationMilliseconds: 7_000,
         });
-        writeFileSync(path, `${sessionStart}${stop}`);
-        expect(() =>
-          inspectCodexSessionStartBeforeFirstModelRequestAdmission(input),
-        ).toThrow("integration.codex.hook-lifecycle");
       } finally {
         closeSync(descriptor);
         rmSync(root, { recursive: true });

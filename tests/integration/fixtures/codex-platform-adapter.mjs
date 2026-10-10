@@ -47,8 +47,56 @@ const translateModelRequest = (request) => {
 
 // The adapter translates bounded native shapes only. Expected outcomes belong
 // exclusively to the independently checksum-bound oracle.
-// eslint-disable-next-line complexity -- one closed all-record native-shape translation grammar
-export const translateCodexPlatformObservations = (input) => {
+const validateNativeIdentity = (native) => {
+  if (
+    !exactKeys(native, [
+      "sessionId",
+      "turnId",
+      "modelName",
+      ...(native?.nativeTranscriptRange === undefined
+        ? []
+        : ["nativeTranscriptRange"]),
+    ]) ||
+    [native.sessionId, native.turnId, native.modelName].some(
+      (value) => !boundedString(value, 256) || value.length === 0,
+    )
+  )
+    throw new Error("integration.codex.adapter-observation");
+  if (native.nativeTranscriptRange !== undefined)
+    validateTranscriptRange(native.nativeTranscriptRange);
+};
+const validateTranscriptRange = (range) => {
+  if (
+    !exactKeys(range, [
+      "nativeFormat",
+      "boundaryKind",
+      "positionKind",
+      "availableStartPosition",
+      "exclusiveEndPosition",
+      "sessionMetaPosition",
+      "turnContextPosition",
+      "taskCompletePosition",
+      "sourceGeneration",
+    ]) ||
+    range.nativeFormat !== "codex-0.149.1-rollout-jsonl" ||
+    range.boundaryKind !== "transcript-range" ||
+    range.positionKind !== "line" ||
+    range.availableStartPosition !== 0 ||
+    range.sourceGeneration !== null ||
+    [
+      range.sessionMetaPosition,
+      range.turnContextPosition,
+      range.taskCompletePosition,
+      range.exclusiveEndPosition,
+    ].some((position) => !Number.isSafeInteger(position) || position < 0) ||
+    range.exclusiveEndPosition > 4096 ||
+    range.sessionMetaPosition >= range.turnContextPosition ||
+    range.turnContextPosition >= range.taskCompletePosition ||
+    range.taskCompletePosition >= range.exclusiveEndPosition
+  )
+    throw new Error("integration.codex.adapter-observation");
+};
+const validateObservationInput = (input, nativeOnly) => {
   if (
     !exactKeys(input, [
       "scenarioId",
@@ -56,8 +104,7 @@ export const translateCodexPlatformObservations = (input) => {
       "promptSha256",
       "mediation",
       "modelRequests",
-      "search",
-      "retrieval",
+      ...(nativeOnly ? ["native"] : ["search", "retrieval"]),
       "doctor",
       "uninstall",
     ]) ||
@@ -68,44 +115,52 @@ export const translateCodexPlatformObservations = (input) => {
     input.modelRequests.length > 8
   )
     throw new Error("integration.codex.adapter-observation");
+};
+// eslint-disable-next-line complexity -- one closed all-record native-shape translation grammar
+const translateObservations = (input, nativeOnly) => {
+  validateObservationInput(input, nativeOnly);
   const modelRequests = input.modelRequests.map(translateModelRequest);
-  const { mediation, search, retrieval, doctor, uninstall } = input;
+  const { mediation, native, search, retrieval, doctor, uninstall } = input;
+  if (nativeOnly) validateNativeIdentity(native);
   if (
     !exactKeys(mediation, ["sessionStartCommandDurationMilliseconds"]) ||
-    !Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
-    mediation.sessionStartCommandDurationMilliseconds < 0 ||
-    mediation.sessionStartCommandDurationMilliseconds > 1_000 ||
-    !exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
-    !boundedString(search.completion, 32) ||
-    !boundedString(search.harness, 64) ||
-    !Number.isSafeInteger(search.spanCount) ||
-    search.spanCount < 0 ||
-    search.spanCount > 256 ||
-    !boundedString(search.traceId, 64) ||
-    !exactKeys(retrieval, [
-      "completion",
-      "modelName",
-      "parentLinked",
-      "resourceSpanCount",
-      "sessionId",
-      "spanNames",
-      "traceId",
-    ]) ||
-    !boundedString(retrieval.completion, 32) ||
-    !boundedString(retrieval.traceId, 64) ||
-    !Number.isSafeInteger(retrieval.resourceSpanCount) ||
-    retrieval.resourceSpanCount < 0 ||
-    retrieval.resourceSpanCount > 256 ||
-    typeof retrieval.parentLinked !== "boolean" ||
-    !Array.isArray(retrieval.spanNames) ||
-    retrieval.spanNames.length > 256 ||
-    retrieval.spanNames.some((name) => !boundedString(name, 256)) ||
-    !(
-      retrieval.modelName === null || boundedString(retrieval.modelName, 256)
-    ) ||
-    !(
-      retrieval.sessionId === null || boundedString(retrieval.sessionId, 256)
-    ) ||
+    (mediation.sessionStartCommandDurationMilliseconds !== null &&
+      (!Number.isFinite(mediation.sessionStartCommandDurationMilliseconds) ||
+        mediation.sessionStartCommandDurationMilliseconds < 0)) ||
+    (!nativeOnly &&
+      (!exactKeys(search, ["completion", "harness", "spanCount", "traceId"]) ||
+        !boundedString(search.completion, 32) ||
+        !boundedString(search.harness, 64) ||
+        !Number.isSafeInteger(search.spanCount) ||
+        search.spanCount < 0 ||
+        search.spanCount > 256 ||
+        !boundedString(search.traceId, 64) ||
+        !exactKeys(retrieval, [
+          "completion",
+          "modelName",
+          "parentLinked",
+          "resourceSpanCount",
+          "sessionId",
+          "spanNames",
+          "traceId",
+        ]) ||
+        !boundedString(retrieval.completion, 32) ||
+        !boundedString(retrieval.traceId, 64) ||
+        !Number.isSafeInteger(retrieval.resourceSpanCount) ||
+        retrieval.resourceSpanCount < 0 ||
+        retrieval.resourceSpanCount > 256 ||
+        typeof retrieval.parentLinked !== "boolean" ||
+        !Array.isArray(retrieval.spanNames) ||
+        retrieval.spanNames.length > 256 ||
+        retrieval.spanNames.some((name) => !boundedString(name, 256)) ||
+        !(
+          retrieval.modelName === null ||
+          boundedString(retrieval.modelName, 256)
+        ) ||
+        !(
+          retrieval.sessionId === null ||
+          boundedString(retrieval.sessionId, 256)
+        ))) ||
     !exactKeys(doctor, ["completion", "errors", "findingCount", "warnings"]) ||
     !boundedString(doctor.completion, 32) ||
     !Number.isSafeInteger(doctor.errors) ||
@@ -149,11 +204,26 @@ export const translateCodexPlatformObservations = (input) => {
     promptSha256: input.promptSha256,
     mediation: Object.freeze({ ...mediation }),
     modelRequests: Object.freeze(modelRequests),
-    search: Object.freeze({ ...search }),
-    retrieval: Object.freeze({
-      ...retrieval,
-      spanNames: Object.freeze([...retrieval.spanNames]),
-    }),
+    ...(nativeOnly
+      ? {
+          native: Object.freeze({
+            ...native,
+            ...(native.nativeTranscriptRange === undefined
+              ? {}
+              : {
+                  nativeTranscriptRange: Object.freeze({
+                    ...native.nativeTranscriptRange,
+                  }),
+                }),
+          }),
+        }
+      : {
+          search: Object.freeze({ ...search }),
+          retrieval: Object.freeze({
+            ...retrieval,
+            spanNames: Object.freeze([...retrieval.spanNames]),
+          }),
+        }),
     doctor: Object.freeze({ ...doctor }),
     uninstall: Object.freeze({
       completion: uninstall.completion,
@@ -163,3 +233,8 @@ export const translateCodexPlatformObservations = (input) => {
     }),
   });
 };
+
+export const translateCodexPlatformObservations = (input) =>
+  translateObservations(input, false);
+export const translateCodexNativeObservations = (input) =>
+  translateObservations(input, true);

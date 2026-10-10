@@ -196,8 +196,8 @@ describe("supplier inventory first-failure observations", () => {
       )
         .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
         .replace(
-          "export const inventoryMockServerSupplier",
-          "const inventoryMockServerSupplier",
+          /export const (adoptMockServerSupplierCache|inventoryMockServerSupplier)/gu,
+          "const $1",
         );
       const result: unknown = runInNewContext(
         `${body}\n(() => { try { inventoryMockServerSupplier(root, observer); } catch (error) { return error; } })();`,
@@ -248,8 +248,8 @@ describe("supplier inventory first-failure observations", () => {
     )
       .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
       .replace(
-        "export const inventoryMockServerSupplier",
-        "const inventoryMockServerSupplier",
+        /export const (adoptMockServerSupplierCache|inventoryMockServerSupplier)/gu,
+        "const $1",
       );
     const result: unknown = runInNewContext(
       `${body}\n(() => { try { inventoryMockServerSupplier(root, observer); } catch (error) { return error; } })();`,
@@ -282,8 +282,8 @@ describe("supplier inventory byte bounds", () => {
     )
       .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
       .replace(
-        "export const inventoryMockServerSupplier",
-        "const inventoryMockServerSupplier",
+        /export const (adoptMockServerSupplierCache|inventoryMockServerSupplier)/gu,
+        "const $1",
       );
     let reads = 0;
     let closed = false;
@@ -327,8 +327,8 @@ describe("supplier inventory byte bounds", () => {
     )
       .replace(/import[\s\S]*?from "node:[^"]+";/gu, "")
       .replace(
-        "export const inventoryMockServerSupplier",
-        "const inventoryMockServerSupplier",
+        /export const (adoptMockServerSupplierCache|inventoryMockServerSupplier)/gu,
+        "const $1",
       );
     let reads = 0;
     let consumed = 0;

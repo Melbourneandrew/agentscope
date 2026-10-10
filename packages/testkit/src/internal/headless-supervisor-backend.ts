@@ -40,7 +40,10 @@ import {
   failObserverRead,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
+  readPtySemanticFailure,
+  readPtyExitSignal,
   trustedErrorCode,
+  type PtyReconciliationStage,
 } from "./kernel-errors.js";
 import {
   boundedInvoke,
@@ -1086,7 +1089,8 @@ const createImmutableCandidateAuthority = (
   immutableCandidateAuthorityCreated = true;
   const record = exactImmutableCandidateRecord(candidate);
   const profile =
-    record.scenarioId === "codex-tui-trace-smoke"
+    record.scenarioId === "codex-tui-trace-smoke" ||
+    record.scenarioId === "claude-interactive-trace-smoke"
       ? "codex-controller"
       : "ordinary";
   const initial = readPrincipalAuthority(profile);
@@ -1773,9 +1777,15 @@ const reapAdoptedZombies = (
   processes: readonly ProcessSnapshot[],
   rootPid: number,
   nativeDeadlineNs: bigint,
-  namespaceIdentity: string,
+  context: Readonly<{
+    namespaceIdentity: string;
+    diagnostic?: { stage?: PtyReconciliationStage | undefined };
+    polling?: true;
+  }>,
   runtime: ProcessAuthorityRuntime,
 ): void => {
+  const { namespaceIdentity, diagnostic = {} } = context;
+  diagnostic.stage = undefined;
   for (const identity of processesDescendantsFirst(processes, rootPid)) {
     if (
       identity.pid === rootPid ||
@@ -1792,23 +1802,28 @@ const reapAdoptedZombies = (
       current.state !== "Z"
     )
       return failObserverIdentity("observer-zombie-before");
-    const receipt = exactAdoptedZombieReapReceipt(
-      runtime.reapAdoptedZombie(
-        identity.pid,
-        identity.startIdentity,
-        rootPid,
-        nativeDeadlineNs,
-      ),
-      identity,
+    diagnostic.stage = "reap-call";
+    const result = runtime.reapAdoptedZombie(
+      identity.pid,
+      identity.startIdentity,
+      rootPid,
+      nativeDeadlineNs,
     );
+    diagnostic.stage = "reap-receipt";
+    const receipt = exactAdoptedZombieReapReceipt(result, identity);
+    diagnostic.stage = undefined;
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
       return failObserverIdentity("observer-zombie-after");
+    if (receipt.status === "not-ready" && context.polling === true) continue;
     if (
       (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
       after !== undefined
-    )
+    ) {
+      diagnostic.stage =
+        receipt.status === "not-ready" ? "reap-not-ready" : "reap-persisted";
       return fail("testkit.headless.observer.reap");
+    }
   }
 };
 const productionContainerRuntime = (
@@ -1860,17 +1875,12 @@ const productionPtyRuntime = (
       deadline,
     );
   },
-  releaseFrozenProcessSet: (
-    namespaceIdentity,
-    processes,
-    rootPid,
-    notifyRoot,
-  ) => {
+  releaseFrozenProcessSet: (namespaceIdentity, processes, rootPid) => {
     releaseFrozenContainerProcessSet(
       namespaceIdentity,
       processes,
       rootPid,
-      notifyRoot && authority.publishTopologyCheckpoint === undefined,
+      false,
       monotonicDeadlineMs,
     );
   },
@@ -2448,22 +2458,29 @@ const snapshotPtyRequest = (
                 thirdInputIndex !== secondInputIndex + 1 ||
                 semanticWaitIndex !== thirdInputIndex + 1 ||
                 secondInputByteLength < 1 ||
-                thirdInputByteLength !== 5 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 5
-                ] !== 0x1b ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 4
-                ] !== 0x5b ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 3
-                ] !== 0x31 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 2
-                ] !== 0x33 ||
-                safeBufferFrom(process_.stdin)[
-                  describedInputBytesAtSemanticWait - 1
-                ] !== 0x75) ||
+                (!(
+                  readinessKind === "challenge-marker" &&
+                  thirdInputByteLength === 1 &&
+                  safeBufferFrom(process_.stdin)[
+                    describedInputBytesAtSemanticWait - 1
+                  ] === 0x0d
+                ) &&
+                  (thirdInputByteLength !== 5 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 5
+                    ] !== 0x1b ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 4
+                    ] !== 0x5b ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 3
+                    ] !== 0x31 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 2
+                    ] !== 0x33 ||
+                    safeBufferFrom(process_.stdin)[
+                      describedInputBytesAtSemanticWait - 1
+                    ] !== 0x75))) ||
         describedInputBytesAtSemanticWait < 65 ||
         describedInputBytesAtSemanticWait > 165 ||
         describedInputBytes - describedInputBytesAtSemanticWait > 32 ||
@@ -2648,9 +2665,18 @@ const armSelectedPty = (
     if (root !== undefined) observed.set(root.startIdentity, root);
     let authorityFailure: string | undefined;
     let authorityFailureStage: ReturnType<typeof readPtyReconciliationStage>;
-    const retainAuthorityFailure = (error: unknown, fallback: string): void => {
+    const reapDiagnostic: { stage?: PtyReconciliationStage | undefined } = {};
+    const retainAuthorityFailure = (
+      error: unknown,
+      fallback: string,
+      reapStage?: PtyReconciliationStage,
+    ): void => {
       authorityFailure = trustedErrorCode(error) ?? fallback;
-      authorityFailureStage = readPtyReconciliationStage(error);
+      authorityFailureStage =
+        readPtyReconciliationStage(error) ??
+        (authorityFailure === "testkit.headless.observer.reap"
+          ? reapStage
+          : undefined);
     };
     const currentProcessSet = (): readonly ProcessSnapshot[] => {
       if (authorityFailure !== undefined) return [];
@@ -3119,7 +3145,11 @@ const armSelectedPty = (
               );
               // eslint-disable-next-line max-depth -- arm only after the exact completed submission input
               if (
-                isBracketedPasteEnter &&
+                (isBracketedPasteEnter ||
+                  (request.readiness.kind === "challenge-marker" &&
+                    readinessObserved &&
+                    request.interaction.actions[actionIndex + 1]?.action ===
+                      "wait-for-semantic-completion")) &&
                 semanticCompletionObservedAtOutputBytes < 0
               )
                 safeReflectApply(
@@ -3188,6 +3218,21 @@ const armSelectedPty = (
             );
             if (request.readiness.kind === "challenge-process-topology")
               readinessObserved = true;
+            // A command-started turn has only the challenged input before
+            // this settled checkpoint. Admit only its fresh completion title;
+            // ordinary input-submitted and styled Codex turns arm elsewhere.
+            if (
+              request.readiness.kind === "challenge-marker" &&
+              request.interaction.actions[actionIndex + 1]?.action ===
+                "wait-for-semantic-completion"
+            ) {
+              lastCompletedInputOutputBytes = outputBytes;
+              safeReflectApply(
+                emulatorArmPostSubmissionIdleObservation,
+                terminal,
+                [],
+              );
+            }
             actionIndex += 1;
             checkpointActionAdvanced = true;
           } else if (action?.action === "eof") {
@@ -3424,11 +3469,19 @@ const armSelectedPty = (
           currentProcessSet(),
           child.pid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          {
+            namespaceIdentity: composition.namespaceIdentity,
+            diagnostic: reapDiagnostic,
+            polling: true,
+          },
           runtime,
         );
       } catch (error) {
-        retainAuthorityFailure(error, "testkit.headless.observer.reap");
+        retainAuthorityFailure(
+          error,
+          "testkit.headless.observer.reap",
+          reapDiagnostic.stage,
+        );
         break;
       }
       pumpTransport(false);
@@ -3464,11 +3517,19 @@ const armSelectedPty = (
           currentProcessSet(),
           child.pid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          {
+            namespaceIdentity: composition.namespaceIdentity,
+            diagnostic: reapDiagnostic,
+            polling: true,
+          },
           runtime,
         );
       } catch (error) {
-        retainAuthorityFailure(error, "testkit.headless.observer.reap");
+        retainAuthorityFailure(
+          error,
+          "testkit.headless.observer.reap",
+          reapDiagnostic.stage,
+        );
         break;
       }
       pumpTransport(false);
@@ -3480,11 +3541,18 @@ const armSelectedPty = (
         currentProcessSet(),
         child.pid,
         nativeShutdownDeadlineNs,
-        composition.namespaceIdentity,
+        {
+          namespaceIdentity: composition.namespaceIdentity,
+          diagnostic: reapDiagnostic,
+        },
         runtime,
       );
     } catch (error) {
-      retainAuthorityFailure(error, "testkit.headless.observer.reap");
+      retainAuthorityFailure(
+        error,
+        "testkit.headless.observer.reap",
+        reapDiagnostic.stage,
+      );
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     const residual = currentProcessSet();
@@ -3533,7 +3601,12 @@ const armSelectedPty = (
       exit.signal !== 9 &&
       exit.signal !== 15
     )
-      return fail("testkit.pty.transport.exit");
+      return fail(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        exit.signal,
+      );
     const inputJoined =
       actionIndex === request.interaction.actions.length &&
       inputOffset === input.length &&
@@ -3574,6 +3647,17 @@ const armSelectedPty = (
           exit.code === 0
             ? "testkit.pty.transport.semantic-incomplete"
             : "testkit.pty.transport.semantic-nonzero",
+          undefined,
+          exit.code === 0 &&
+            (finalSnapshot.semanticState === "active" ||
+              finalSnapshot.semanticState === "ready")
+            ? {
+                finalSemanticState: finalSnapshot.semanticState,
+                inputJoined,
+                readinessObserved,
+                allInputBytesWritten: inputOffset === input.length,
+              }
+            : undefined,
         );
     }
     const outcome =
@@ -3848,7 +3932,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          { namespaceIdentity: composition.namespaceIdentity, polling: true },
           runtime,
         );
         await delay(containerPollMilliseconds);
@@ -3876,7 +3960,7 @@ const selectedContainerBackend = (
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
-          composition.namespaceIdentity,
+          { namespaceIdentity: composition.namespaceIdentity, polling: true },
           runtime,
         );
         await delay(containerPollMilliseconds);
@@ -3885,7 +3969,7 @@ const selectedContainerBackend = (
         runtime.listProcesses(composition.namespaceIdentity),
         childPid,
         nativeShutdownDeadlineNs,
-        composition.namespaceIdentity,
+        { namespaceIdentity: composition.namespaceIdentity },
         runtime,
       );
       const residual = runtime.listProcesses(composition.namespaceIdentity);
@@ -4407,6 +4491,8 @@ export const executeSelectedPtyProcessWithCapability = async (
       return fail(
         trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
         readPtyReconciliationStage(error),
+        readPtySemanticFailure(error),
+        readPtyExitSignal(error),
       );
     }
     assertPtyReceiptBinding(receipt, stableRequest);
@@ -5012,6 +5098,7 @@ type SelectedPtyTestSeed =
   | "adopted-zombie-reap-failure"
   | "blocked-input-completion"
   | "challenge-marker-prompt"
+  | "challenge-marker-title"
   | "clean"
   | "close-failure"
   | "completion-before-readiness"
@@ -5133,6 +5220,7 @@ const selectedPtyRuntimeForTest = (
   },
   // eslint-disable-next-line max-lines-per-function
 ): PtyRuntime => {
+  let matchedCheckpointResumed = false;
   const root: ProcessSnapshot = {
     parentPid: 1,
     pid: 42_001,
@@ -5268,6 +5356,7 @@ const selectedPtyRuntimeForTest = (
       }
       for (const expected of ordered)
         processes.set(expected.pid, { ...expected, state: "R" });
+      if (notifyRoot) matchedCheckpointResumed = true;
       if (seed === "checkpoint-transient-extra-process" && !notifyRoot)
         processes.delete(checkpointExtra.pid);
     },
@@ -5363,7 +5452,12 @@ const selectedPtyRuntimeForTest = (
                   ? safeBufferFrom("\u001b[")
                   : seed === "unsupported-control"
                     ? safeBufferFrom("\u001b[?9999h")
-                    : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+                    : seed === "challenge-marker-title" &&
+                        readiness.kind === "challenge-marker"
+                      ? safeBufferFrom(
+                          `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
+                        )
+                      : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
           ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m ${readiness.requiredText}`
@@ -5639,7 +5733,8 @@ const selectedPtyRuntimeForTest = (
                       ? [synchronizedPromptRendered]
                       : []),
                   ]
-          : seed === "challenge-marker-prompt"
+          : seed === "challenge-marker-prompt" ||
+              seed === "challenge-marker-title"
             ? [ready, safeBufferFrom("prompt-accepted"), output]
             : terminalQueryHandshake
               ? [
@@ -5743,6 +5838,8 @@ const selectedPtyRuntimeForTest = (
       let chunkIndex = 0;
       let chunkOffset = 0;
       let inputCalls = 0;
+      let markerTitleInputBytes = 0;
+      let markerTitleEchoedBytes = 0;
       let immediateActionApplied = false;
       let priorInputTransportReads = -1;
       let transportReads = 0;
@@ -5845,6 +5942,7 @@ const selectedPtyRuntimeForTest = (
           seed !== "kill-escalation" &&
           seed !== "signal-failure" &&
           seed !== "challenge-marker-prompt" &&
+          seed !== "challenge-marker-title" &&
           seed !== "terminal-redraw-enter-fragmented" &&
           seed !== "terminal-prompt-partial" &&
           seed !== "terminal-post-wait-pacing" &&
@@ -5942,9 +6040,20 @@ const selectedPtyRuntimeForTest = (
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
           if (
-            (seed === "terminal-post-wait-pacing" ||
+            seed === "challenge-marker-title" &&
+            chunkIndex === chunks.length &&
+            markerTitleInputBytes > markerTitleEchoedBytes &&
+            inputCalls >= (request.stdin.length === 71 ? 2 : 4)
+          ) {
+            markerTitleEchoedBytes = markerTitleInputBytes;
+            return { status: "data" as const, bytes: safeBufferFrom(".") };
+          }
+          if (
+            ((seed === "terminal-post-wait-pacing" ||
               seed === "challenge-marker-prompt") &&
-            inputCalls >= 4
+              inputCalls >= 4) ||
+            (seed === "challenge-marker-title" &&
+              markerTitleInputBytes === request.stdin.length)
           ) {
             processes.clear();
             terminal = true;
@@ -5990,7 +6099,13 @@ const selectedPtyRuntimeForTest = (
           )
             return { status: "would-block" as const };
           if (
-            seed === "challenge-marker-prompt" &&
+            (seed === "challenge-marker-prompt" ||
+              seed === "challenge-marker-title") &&
+            !(
+              seed === "challenge-marker-title" &&
+              request.stdin.length === 71 &&
+              matchedCheckpointResumed
+            ) &&
             ((chunkIndex === 1 && inputCalls < 2) ||
               (chunkIndex === 2 && inputCalls < 3))
           )
@@ -6108,6 +6223,8 @@ const selectedPtyRuntimeForTest = (
           if (seed === "terminal-no-prompt" && inputCalls >= 1)
             throw new Error("testkit.pty.test-prompt-after-terminal-close");
           inputCalls += 1;
+          if (seed === "challenge-marker-title")
+            markerTitleInputBytes += bytes.length;
           if (inputCalls === 2) promptInputObserved = true;
           const submissionResult = observeSubmissionInputWrite(
             bytes,

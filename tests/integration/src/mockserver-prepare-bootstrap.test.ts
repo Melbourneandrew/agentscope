@@ -160,7 +160,7 @@ vi.mock("../image-preparation.mjs", () => ({
     await Promise.resolve();
     const context = String(options.context);
     const policy = JSON.parse(
-      readFileSync(resolve(context, "policy.json"), "utf8"),
+      readFileSync(resolve(context, "maven-policy.json"), "utf8"),
     ) as { kind: string };
     state.built.push({
       ...options,
@@ -170,9 +170,9 @@ vi.mock("../image-preparation.mjs", () => ({
         resolve(context, "Verifier.Dockerfile"),
         "utf8",
       ),
-      manifest: readFileSync(resolve(context, "manifest")),
+      manifest: readFileSync(resolve(context, "node-manifest")),
     });
-    if (state.failure === policy.kind + "-build")
+    if (["maven-build", "node-build", "jdk-build"].includes(state.failure))
       throw new Error("verification");
     state.afterBuild();
     return "sha256:" + policy.kind;
@@ -239,17 +239,45 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
+function expectVerifierRecipe(recipe: string) {
+  for (const kind of ["maven", "node", "jdk"]) {
+    const stage = recipe
+      .split(`FROM agentscope_base AS verify_${kind}\n`)[1]!
+      .split("FROM ")[0]!;
+    expect(stage).toContain(
+      `COPY --chmod=0600 ${kind}-policy.json /verify/policy.json`,
+    );
+    expect(stage).toContain(
+      'RUN --network=none ["/usr/local/bin/node","/verify/material-command.mjs","bootstrap-gpg","/verify"]',
+    );
+    expect(stage.indexOf('bootstrap-gpg","/verify"]')).toBeLessThan(
+      stage.indexOf("writeFileSync"),
+    );
+    expect(stage).toContain(`'/proof-${kind}'`);
+    expect(stage).toContain("flag:'wx',mode:0o600");
+  }
+  expect(recipe.split("FROM scratch\n")[1]).toBe(
+    ["maven", "node", "jdk"]
+      .map(
+        (kind) => `COPY --from=verify_${kind} /proof-${kind} /proof/${kind}\n`,
+      )
+      .join(""),
+  );
+}
 describe("connected bootstrap stage (synthetic dependencies, not crypto)", () => {
-  it("stages all three kinds, retires each image, and removes only its private context", async () => {
+  it("forces all three isolated verifiers into one proof-only image and retires it", async () => {
     const input = setup();
     writeFileSync(resolve(input.privateRoot, "unrelated"), "preserve");
     const result = await prepareMockServerBootstrap(input);
-    expect(state.built.map((entry) => entry.kind)).toEqual([
-      "maven",
-      "node",
-      "jdk",
-    ]);
-    expect(state.retired).toHaveLength(3);
+    expect(state.built).toHaveLength(1);
+    expect(state.retired).toHaveLength(1);
+    expect(result.verification.verifications).toEqual(
+      ["maven", "node", "jdk"].map((kind) => ({
+        kind,
+        imageId: "sha256:maven",
+      })),
+    );
+    expect(state.retired[0]!.imageId).toBe("sha256:maven");
     expect(state.phases).toEqual([
       "bootstrap-preflight",
       "download-source",
@@ -262,10 +290,6 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
       "download-maven-signature",
       "verify-maven",
       "retire-maven",
-      "verify-node",
-      "retire-node",
-      "verify-jdk",
-      "retire-jdk",
       "bootstrap-cleanup",
     ]);
     for (const build of state.built) {
@@ -273,20 +297,29 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
       expect(build.buildNetwork).toBe("none");
       expect(build.baseImage).toBe(state.client.evidence.images[0]!.image);
       expect(build.buildArguments).toEqual({});
-      expect(build.dockerfileText).toMatch(/^FROM agentscope_base\n/u);
+      expect(build.dockerfileText).toMatch(
+        /^FROM agentscope_base AS verify_maven\n/u,
+      );
       expect(build.dockerfileText).toContain("COPY --chmod=0600");
       expect(build.dockerfileText).toContain("RUN --network=none");
-      expect(build.files).toEqual([
-        "Verifier.Dockerfile",
-        "bootstrap-gpg.mjs",
-        "key",
-        "manifest",
-        "material-command.mjs",
-        "policy.json",
-        "signature",
-      ]);
+      expect(build.files).toEqual(
+        [
+          "Verifier.Dockerfile",
+          ...["maven", "node", "jdk"].flatMap((kind) =>
+            [
+              "bootstrap-gpg.mjs",
+              "key",
+              "manifest",
+              "material-command.mjs",
+              "policy.json",
+              "signature",
+            ].map((name) => `${kind}-${name}`),
+          ),
+        ].sort(),
+      );
+      expectVerifierRecipe(String(build.dockerfileText));
     }
-    expect(state.built[1]!.manifest).toEqual(archive("node-checksums"));
+    expect(state.built[0]!.manifest).toEqual(archive("node-checksums"));
     expect(result.verification.evidenceScope).toBe(
       "bootstrap-input-verification-only",
     );
@@ -309,24 +342,31 @@ describe("connected bootstrap stage (synthetic dependencies, not crypto)", () =>
       expect(readdirSync(input.privateRoot)).toEqual([]);
     },
   );
-  it.each(["source", "maven-key", "node-build", "retirement"])(
-    "preserves %s failure and admits no later build",
-    async (kind) => {
-      const input = setup();
-      state.failure = kind;
-      await expect(prepareMockServerBootstrap(input)).rejects.toThrow();
-      expect(state.built.length).toBeLessThan(3);
-      expect(state.phases.at(-1)).toBe(
-        {
-          source: "download-source",
-          "maven-key": "download-maven-key",
-          "node-build": "verify-node",
-          retirement: "retire-maven",
-        }[kind],
-      );
-      expect(readdirSync(input.privateRoot)).toEqual([]);
-    },
-  );
+  it.each([
+    "source",
+    "maven-key",
+    "maven-build",
+    "node-build",
+    "jdk-build",
+    "retirement",
+  ])("preserves %s failure and admits no later build", async (kind) => {
+    const input = setup();
+    state.failure = kind;
+    await expect(prepareMockServerBootstrap(input)).rejects.toThrow();
+    expect(state.built.length).toBeLessThanOrEqual(1);
+    if (kind.endsWith("-build")) expect(state.retired).toHaveLength(0);
+    expect(state.phases.at(-1)).toBe(
+      {
+        source: "download-source",
+        "maven-key": "download-maven-key",
+        "maven-build": "verify-maven",
+        "node-build": "verify-maven",
+        "jdk-build": "verify-maven",
+        retirement: "retire-maven",
+      }[kind],
+    );
+    expect(readdirSync(input.privateRoot)).toEqual([]);
+  });
 });
 
 describe("bootstrap deadline and physical cleanup boundaries", () => {
@@ -419,7 +459,7 @@ describe("bootstrap deadline and physical cleanup boundaries", () => {
         resolve(
           input.privateRoot,
           "mockserver-bootstrap-" + input.runId,
-          "maven",
+          "verification",
           "unexpected",
         ),
       ),
@@ -428,7 +468,7 @@ describe("bootstrap deadline and physical cleanup boundaries", () => {
   it("fails closed when final cleanup exceeds the original deadline", async () => {
     const input = setup();
     state.afterBuild = () => {
-      if (state.built.length === 3) {
+      if (state.built.length === 1) {
         const now = input.deadline - 6_001;
         vi.spyOn(performance, "now")
           .mockReturnValueOnce(now)
