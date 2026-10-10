@@ -772,7 +772,8 @@ try {
     const selectedError = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
-    const fixtureFailure = readBoundedInteractiveFailureMarker(ledger);
+    const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);
+    const fixtureFailure = fixtureRecord?.predicate;
     const diagnostic = selectInteractiveFailureDiagnostic(
       fixtureFailure,
       retainedInteractivePhase(ledger),
@@ -784,6 +785,10 @@ try {
         diagnostic ?? "integration.runner.fixture-failed",
         readPtySemanticFailure(error),
         readPtyExitSignal(error),
+        scenarioId === "claude-interactive-trace-smoke" &&
+          diagnostic === fixtureFailure
+          ? fixtureRecord?.childTerminal
+          : undefined,
       ),
     );
   }

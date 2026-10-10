@@ -21,6 +21,164 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+it("preserves a refused Claude child close through the existing frame", () => {
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  const frame = formatInteractiveChildDiagnostic(
+    predicate,
+    undefined,
+    undefined,
+    { exitCode: 1, exitSignal: null },
+  );
+  expect(
+    immutableAuthority.readInteractiveChildFailureObservation(frame),
+  ).toEqual({ predicate, childTerminal: { exitCode: 1, exitSignal: null } });
+});
+
+it("keeps Claude close facts bounded and bound to the held scenario", () => {
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  const base = {
+    receiptVersion: 1,
+    phase: "pty-execution",
+    predicate,
+    scenarioId: "claude-interactive-trace-smoke",
+  };
+  for (const childTerminal of [
+    { exitCode: 255, exitSignal: null },
+    { exitCode: null, exitSignal: 12 },
+    { exitCode: null, exitSignal: 64 },
+  ]) {
+    const frame = formatInteractiveChildDiagnostic(
+      predicate,
+      undefined,
+      undefined,
+      childTerminal,
+    );
+    expect(
+      readInteractiveChildFailureObservation(frame)?.childTerminal,
+    ).toEqual(childTerminal);
+    expect(validInstalledPtyFailure({ ...base, childTerminal })).toBe(true);
+    expect(
+      validInstalledPtyFailure({
+        ...base,
+        scenarioId: "codex-tui-trace-smoke",
+        childTerminal,
+      }),
+    ).toBe(false);
+    expect(
+      validInstalledPtyFailure({
+        ...base,
+        predicate: "testkit.pty.request",
+        childTerminal,
+      }),
+    ).toBe(false);
+  }
+  let reads = 0;
+  for (const childTerminal of [
+    { exitCode: 0, exitSignal: null },
+    { exitCode: 256, exitSignal: null },
+    { exitCode: 1.5, exitSignal: null },
+    { exitCode: 1, exitSignal: 12 },
+    { exitCode: null, exitSignal: 65 },
+    { exitCode: null, exitSignal: null },
+    {
+      get exitCode() {
+        reads++;
+        return 1;
+      },
+      exitSignal: null,
+    },
+    new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      },
+    ),
+  ]) {
+    expect(validInstalledPtyFailure({ ...base, childTerminal })).toBe(false);
+    expect(
+      readInteractiveChildFailureObservation(
+        formatInteractiveChildDiagnostic(
+          predicate,
+          undefined,
+          undefined,
+          childTerminal,
+        ),
+      ),
+    ).toEqual({ predicate });
+  }
+  expect(reads).toBe(0);
+  expect(
+    readInteractiveChildFailureObservation(
+      `integration.runner.interactive-diagnostic:${predicate};child-code;01\n`,
+    ),
+  ).toBeUndefined();
+});
+
+it("joins the owned Claude marker into the held parent failure without promotion", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-child-terminal-"));
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  try {
+    writeFileSync(
+      join(root, "interactive-failure.txt"),
+      `${predicate}|signal;12\n`,
+      { mode: 0o600 },
+    );
+    const retained =
+      immutableAuthority.readBoundedInteractiveFailureRecord(root);
+    expect(retained.childTerminal).toEqual({ exitCode: null, exitSignal: 12 });
+    const frame = formatInteractiveChildDiagnostic(
+      retained.predicate,
+      undefined,
+      undefined,
+      retained.childTerminal,
+    );
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const recordInteractiveExecutionFailure =");
+    const failures = new Map();
+    const record = runInNewContext(
+      `${source.slice(start, source.indexOf("const retainCodexResearchDiagnostic =", start))}; recordInteractiveExecutionFailure`,
+      {
+        installedPtyFailures: failures,
+        readInteractiveChildFailureObservation,
+        selectInteractiveExecutionFailurePredicate: () => predicate,
+        contentFreeChildFailureCode: () => predicate,
+      },
+    );
+    const plan = {
+      runId: "a".repeat(16),
+      executionMode: "interactive",
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    record(plan, new Error("PRIVATE"), frame, retained.predicate);
+    const persisted = JSON.parse(JSON.stringify(failures.get(plan.runId)));
+    expect(persisted.childTerminal).toEqual(retained.childTerminal);
+    expect(validInstalledPtyFailure(persisted)).toBe(true);
+    for (const suffix of [
+      "signal;65",
+      "code;01",
+      "code;1;signal;12",
+      "PRIVATE",
+    ]) {
+      writeFileSync(
+        join(root, "interactive-failure.txt"),
+        `${predicate}|${suffix}\n`,
+      );
+      expect(
+        immutableAuthority.readBoundedInteractiveFailureRecord(root)?.predicate,
+      ).toBe(predicate);
+      expect(
+        immutableAuthority.readBoundedInteractiveFailureRecord(root)
+          ?.childTerminal,
+      ).toBeUndefined();
+    }
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
 const {
   claudePackedInstallFailurePhase,
   claudeScenarioFailureDiagnostic,
@@ -662,9 +820,10 @@ describe("actual runner caught-failure diagnostic routing", () => {
         `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
         {
           scenario: { executionMode: "interactive" },
+          scenarioId: "codex-tui-trace-smoke",
           error,
           ledger: "/synthetic",
-          readBoundedInteractiveFailureMarker: () => undefined,
+          readBoundedInteractiveFailureRecord: () => undefined,
           retainedInteractivePhase: () => undefined,
           selectInteractiveFailureDiagnostic: (
             _fixture: unknown,

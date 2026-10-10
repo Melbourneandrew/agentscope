@@ -57,6 +57,103 @@ if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
 const main = source.slice(start, end).replace("export const", "const");
 
 it.each([
+  [1, null, "code;1"],
+  [null, "SIGUSR2", "signal;12"],
+  [null, "UNKNOWN", undefined],
+  [0, "SIGTERM", undefined],
+] as const)(
+  "preserves actual refused child close %s/%s in the owned marker",
+  async (code, signal, suffix) => {
+    const registry = new WeakMap();
+    const signals = { SIGUSR2: 12, SIGTERM: 15 };
+    const begin = source.indexOf("export const runClaudeCodeInteractiveTurn =");
+    const finish = source.indexOf("\nconst publishClaudeMarker", begin);
+    const body = source
+      .slice(begin, finish)
+      .replace("export const", "const")
+      .replace(
+        'const { claudeCodeInteractiveInvocation } =\n    await import("./scenario-adapter.mjs");',
+        "",
+      );
+    const turn = runInNewContext(`${body}; runClaudeCodeInteractiveTurn`, {
+      process: { stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} },
+      monotonicNow: () => 1,
+      childTerminalFailures: registry,
+      childSignals: signals,
+      childCodeIsInteger: Number.isSafeInteger,
+      childSignalHasOwn: Object.hasOwn,
+      claudeCodeInteractiveInvocation: () => ({ environment: {} }),
+      spawn: () => ({
+        once: (
+          event: string,
+          callback: (code: unknown, signal: unknown) => void,
+        ) => {
+          if (event === "close") callback(code, signal);
+        },
+      }),
+    }) as (endpoint: string, deadline: number) => Promise<void>;
+    let failure: Error | undefined;
+    try {
+      await turn("internal", 100);
+    } catch (error) {
+      failure = error as Error;
+    }
+    expect(failure).toBeDefined();
+    if (failure === undefined)
+      throw new Error("synthetic-child-refusal-missing");
+    const original = failure;
+    expect(registry.get(failure as object)).toBe(suffix);
+    const caught = source
+      .slice(source.indexOf("if (isClaudeScenarioMain())\n"))
+      .replace("if (isClaudeScenarioMain())", "");
+    const writes: unknown[][] = [];
+    const childProcess = { exitCode: 0, stderr: { write: () => {} } };
+    const run = runInNewContext(`(async () => { ${caught} })`, {
+      process: childProcess,
+      childTerminalFailures: registry,
+      claudeFailurePhase: "model-pair",
+      claudeScenarioFailureDiagnostic: () =>
+        "integration.fixture.claude-vendor-terminal",
+      encodeInteractiveFailureExitCode,
+      runClaudeCodeScenario: () => Promise.reject(original),
+      writeFileSync: (...args: unknown[]) => writes.push(args),
+    }) as () => Promise<void>;
+    await run();
+    expect(writes[0]?.[1]).toBe(
+      `integration.fixture.claude-vendor-terminal${suffix === undefined ? "" : `|${suffix}`}\n`,
+    );
+    expect(childProcess.exitCode).not.toBe(0);
+  },
+);
+
+it("does not turn the genuine zero-code/null-signal close into a refusal", async () => {
+  const begin = source.indexOf("export const runClaudeCodeInteractiveTurn =");
+  const body = source
+    .slice(begin, source.indexOf("\nconst publishClaudeMarker", begin))
+    .replace("export const", "const")
+    .replace(
+      'const { claudeCodeInteractiveInvocation } =\n    await import("./scenario-adapter.mjs");',
+      "",
+    );
+  const registry = new WeakMap();
+  const turn = runInNewContext(`${body}; runClaudeCodeInteractiveTurn`, {
+    process: { stdin: { isTTY: true }, stdout: { isTTY: true }, env: {} },
+    monotonicNow: () => 1,
+    childTerminalFailures: registry,
+    childSignals: {},
+    childCodeIsInteger: Number.isSafeInteger,
+    childSignalHasOwn: Object.hasOwn,
+    claudeCodeInteractiveInvocation: () => ({ environment: {} }),
+    spawn: () => ({
+      once: (event: string, callback: (code: number, signal: null) => void) => {
+        if (event === "close") callback(0, null);
+      },
+    }),
+  }) as (endpoint: string, deadline: number) => Promise<void>;
+  await expect(turn("internal", 100)).resolves.toBeUndefined();
+});
+
+it.each([
   [
     "bootstrap",
     "integration.claude-code.environment",

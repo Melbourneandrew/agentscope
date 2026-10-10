@@ -1666,6 +1666,22 @@ describe("integration controller policy", () => {
 
 // eslint-disable-next-line max-lines-per-function -- closed integration authority matrix
 describe("integration cleanup authority", () => {
+  it("forwards child terminal observations only for held Claude and the selected predicate", () => {
+    const source = readIntegration("run-scenarios.mjs");
+    const start = source.indexOf("const recordInteractiveExecutionFailure =");
+    const body = source.slice(
+      start,
+      source.indexOf("const retainCodexResearchDiagnostic =", start),
+    );
+    expect(body).toContain(
+      'plan.scenarioId === "claude-interactive-trace-smoke"',
+    );
+    expect(body).toContain(
+      'predicate === "integration.fixture.claude-vendor-terminal"',
+    );
+    expect(body).toContain("observed?.predicate === predicate");
+    expect(body).toContain("childTerminal: observed.childTerminal");
+  });
   it("preserves the causal interactive child diagnostic over a later generic receipt failure", () => {
     const source = readIntegration("run-scenarios.mjs");
     const recorder = source.slice(

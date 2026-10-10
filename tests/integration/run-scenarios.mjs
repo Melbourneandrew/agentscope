@@ -3042,6 +3042,12 @@ const recordInteractiveExecutionFailure = (
           observed.exitSignal !== undefined
             ? { exitSignal: observed.exitSignal }
             : {}),
+          ...(plan.scenarioId === "claude-interactive-trace-smoke" &&
+          predicate === "integration.fixture.claude-vendor-terminal" &&
+          observed?.predicate === predicate &&
+          observed.childTerminal !== undefined
+            ? { childTerminal: observed.childTerminal }
+            : {}),
         }
       : {}),
   });

@@ -62,17 +62,38 @@ export const readBoundedInteractiveFailureRecord = (ledger, runId) => {
     )
       return undefined;
     const content = bytes.subarray(0, count).toString("utf8");
-    const predicate = /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
-      ? content.trim()
-      : content.startsWith(
-            "integration.fixture.codex-verify-trace-get-child-invoke-get|",
-          )
-        ? "integration.fixture.codex-verify-trace-get-child-invoke-get"
-        : undefined;
+    const claudeTerminal = content.match(
+      /^integration\.fixture\.claude-vendor-terminal\|(code|signal);([1-9][0-9]{0,2})\n$/u,
+    );
+    const predicate = content.startsWith(
+      "integration.fixture.claude-vendor-terminal|",
+    )
+      ? "integration.fixture.claude-vendor-terminal"
+      : /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+        ? content.trim()
+        : content.startsWith(
+              "integration.fixture.codex-verify-trace-get-child-invoke-get|",
+            )
+          ? "integration.fixture.codex-verify-trace-get-child-invoke-get"
+          : undefined;
     return predicate === undefined
       ? undefined
       : {
           predicate,
+          ...(claudeTerminal === null
+            ? {}
+            : {
+                childTerminal: validChildTerminal({
+                  exitCode:
+                    claudeTerminal[1] === "code"
+                      ? Number(claudeTerminal[2])
+                      : null,
+                  exitSignal:
+                    claudeTerminal[1] === "signal"
+                      ? Number(claudeTerminal[2])
+                      : null,
+                }),
+              }),
           adapterReportedFailure: decodeAdapterReportedFailureMarker(
             content,
             runId,
@@ -1270,6 +1291,21 @@ const ptySemanticFacts = (value) => {
     : undefined;
 };
 const ptySignalIsSafeInteger = Number.isSafeInteger;
+const claudeVendorPredicate = "integration.fixture.claude-vendor-terminal";
+const validChildTerminal = (input) => {
+  const value = diagnosticData(input, ["exitCode", "exitSignal"]);
+  if (!value) return undefined;
+  return (value.exitSignal === null &&
+    ptySignalIsSafeInteger(value.exitCode) &&
+    value.exitCode >= 1 &&
+    value.exitCode <= 255) ||
+    (value.exitCode === null &&
+      ptySignalIsSafeInteger(value.exitSignal) &&
+      value.exitSignal >= 1 &&
+      value.exitSignal <= 64)
+    ? Object.freeze(value)
+    : undefined;
+};
 const unsupportedPtySignal = (value) =>
   ptySignalIsSafeInteger(value) &&
   value >= 1 &&
@@ -1281,6 +1317,7 @@ export const formatInteractiveChildDiagnostic = (
   predicate,
   input,
   exitSignal,
+  childTerminal,
 ) => {
   const code = ptyExecutionFailurePredicates.includes(predicate)
     ? predicate
@@ -1293,7 +1330,15 @@ export const formatInteractiveChildDiagnostic = (
     code === "testkit.pty.transport.exit" && unsupportedPtySignal(exitSignal)
       ? `;signal;${exitSignal}`
       : "";
-  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? signal : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}\n`;
+  const child =
+    code === claudeVendorPredicate
+      ? validChildTerminal(childTerminal)
+      : undefined;
+  const suffix =
+    child === undefined
+      ? ""
+      : `;child-${child.exitCode === null ? "signal" : "code"};${child.exitCode ?? child.exitSignal}`;
+  return `integration.runner.interactive-diagnostic:${code}${semantic === undefined ? signal : `;${semantic.finalSemanticState};${Number(semantic.inputJoined)};${Number(semantic.readinessObserved)};${Number(semantic.allInputBytesWritten)}`}${suffix}\n`;
 };
 export const readInteractiveChildFailureObservation = (output) => {
   if (typeof output !== "string" || output.length > 16 * 1024 * 1024)
@@ -1305,7 +1350,7 @@ export const readInteractiveChildFailureObservation = (output) => {
   const match = lines[0]
     .slice(prefix.length)
     .match(
-      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01])|;signal;([1-9][0-9]?))?$/u,
+      /^((?:integration|testkit)\.[a-z0-9.-]{1,128})(?:;(active|ready);([01]);([01]);([01])|;signal;([1-9][0-9]?)|;child-(code|signal);([1-9][0-9]{0,2}))?$/u,
     );
   if (
     !match ||
@@ -1314,11 +1359,25 @@ export const readInteractiveChildFailureObservation = (output) => {
       match[1] !== "testkit.pty.transport.semantic-incomplete") ||
     (match[6] !== undefined &&
       (match[1] !== "testkit.pty.transport.exit" ||
-        !unsupportedPtySignal(Number(match[6]))))
+        !unsupportedPtySignal(Number(match[6])))) ||
+    (match?.[7] !== undefined &&
+      (match[1] !== claudeVendorPredicate ||
+        validChildTerminal({
+          exitCode: match[7] === "code" ? Number(match[8]) : null,
+          exitSignal: match[7] === "signal" ? Number(match[8]) : null,
+        }) === undefined))
   )
     return undefined;
   return Object.freeze({
     predicate: match[1],
+    ...(match[7] === undefined
+      ? {}
+      : {
+          childTerminal: validChildTerminal({
+            exitCode: match[7] === "code" ? Number(match[8]) : null,
+            exitSignal: match[7] === "signal" ? Number(match[8]) : null,
+          }),
+        }),
     ...(match[6] === undefined ? {} : { exitSignal: Number(match[6]) }),
     ...(match[2] === undefined
       ? {}
@@ -1339,6 +1398,13 @@ export const validInstalledPtyFailure = (input) => {
   const old = diagnosticData(input, ["phase", "predicate", "receiptVersion"]);
   const value =
     old ??
+    diagnosticData(input, [
+      "phase",
+      "predicate",
+      "receiptVersion",
+      "scenarioId",
+      "childTerminal",
+    ]) ??
     diagnosticData(input, [
       "phase",
       "predicate",
@@ -1376,6 +1442,10 @@ export const validInstalledPtyFailure = (input) => {
   )
     return false;
   return (
+    (!Object.hasOwn(value, "childTerminal") ||
+      (value.scenarioId === "claude-interactive-trace-smoke" &&
+        value.predicate === claudeVendorPredicate &&
+        validChildTerminal(value.childTerminal) !== undefined)) &&
     (!Object.hasOwn(value, "exitSignal") ||
       (value.predicate === "testkit.pty.transport.exit" &&
         unsupportedPtySignal(value.exitSignal))) &&

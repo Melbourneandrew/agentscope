@@ -37,6 +37,42 @@ import {
 } from "./claude-code-lifecycle.mjs";
 
 const execute = promisify(execFile);
+const childTerminalFailures = new WeakMap();
+const childSignals = Object.freeze({
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGILL: 4,
+  SIGTRAP: 5,
+  SIGABRT: 6,
+  SIGBUS: 7,
+  SIGFPE: 8,
+  SIGKILL: 9,
+  SIGUSR1: 10,
+  SIGSEGV: 11,
+  SIGUSR2: 12,
+  SIGPIPE: 13,
+  SIGALRM: 14,
+  SIGTERM: 15,
+  SIGSTKFLT: 16,
+  SIGCHLD: 17,
+  SIGCONT: 18,
+  SIGSTOP: 19,
+  SIGTSTP: 20,
+  SIGTTIN: 21,
+  SIGTTOU: 22,
+  SIGURG: 23,
+  SIGXCPU: 24,
+  SIGXFSZ: 25,
+  SIGVTALRM: 26,
+  SIGPROF: 27,
+  SIGWINCH: 28,
+  SIGIO: 29,
+  SIGPWR: 30,
+  SIGSYS: 31,
+});
+const childCodeIsInteger = Number.isSafeInteger;
+const childSignalHasOwn = Object.hasOwn;
 export const claudeCodeReadStimulus = Object.freeze({
   path: "/worktree/agentscope-claude-tool-stimulus.txt",
   contents: "agentscope-claude-tool-stimulus-v1\n",
@@ -253,9 +289,23 @@ export const runClaudeCodeInteractiveTurn = async (modelEndpoint, deadline) => {
     );
     child.once("error", reject);
     child.once("close", (code, signal) => {
-      if (code !== 0 || signal !== null)
-        reject(new Error("integration.claude-code.vendor-terminal"));
-      else resolve();
+      if (code !== 0 || signal !== null) {
+        const error = new Error("integration.claude-code.vendor-terminal");
+        if (
+          signal === null &&
+          childCodeIsInteger(code) &&
+          code >= 1 &&
+          code <= 255
+        )
+          childTerminalFailures.set(error, `code;${code}`);
+        else if (
+          code === null &&
+          typeof signal === "string" &&
+          childSignalHasOwn(childSignals, signal)
+        )
+          childTerminalFailures.set(error, `signal;${childSignals[signal]}`);
+        reject(error);
+      } else resolve();
     });
   });
   if (monotonicNow() >= deadline)
@@ -492,10 +542,18 @@ if (isClaudeScenarioMain())
         error,
         claudeFailurePhase,
       );
-      writeFileSync("/ledger/interactive-failure.txt", `${diagnostic}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
+      const terminal =
+        diagnostic === "integration.fixture.claude-vendor-terminal"
+          ? childTerminalFailures.get(error)
+          : undefined;
+      writeFileSync(
+        "/ledger/interactive-failure.txt",
+        `${diagnostic}${terminal === undefined ? "" : `|${terminal}`}\n`,
+        {
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
       process.exitCode =
         encodeInteractiveFailureExitCode(
           diagnostic,
