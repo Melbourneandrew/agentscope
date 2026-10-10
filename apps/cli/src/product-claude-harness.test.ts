@@ -10,7 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import type { HarnessInstallationPlanInput } from "@agentscope/harnesses-core/cli-management";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   cleanupProductHarnessFixtures,
@@ -134,8 +134,11 @@ const expectOutsideExpectedTupleUnavailable = (
 };
 
 describe("actual default private installation composition", () => {
+  let value: Awaited<ReturnType<typeof claudeFixture>>;
+  beforeAll(async () => {
+    value = await claudeFixture(undefined, false, true);
+  });
   it("uses the actual default dynamic private factory for a compatible Claude plan", async () => {
-    const value = await claudeFixture(undefined, false, true);
     const adapter = value.input.adapters?.find(
       (item) => item.commandName === "claude-code",
     );
