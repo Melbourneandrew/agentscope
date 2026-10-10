@@ -107,7 +107,77 @@ export const readRetainedInteractivePhase = (ledger) => {
   }
   return retained;
 };
+const claudeFailureCodes = Object.freeze([
+  "environment",
+  "clock",
+  "deadline",
+  "destination-settings",
+  "doctor",
+  "install",
+  "readiness",
+  "settings",
+  "uninstall",
+  "model-control",
+  "model-route",
+  "native-content",
+  "native-directory",
+  "native-file",
+  "native-identity",
+  "native-inventory",
+  "native-jsonl",
+  "native-model",
+  "native-record",
+  "native-tool",
+  "native-tool-result",
+  "native-turn",
+  "early-exit",
+  "model-pair",
+  "native-early-exit",
+  "native-final-turn",
+  "pty",
+  "response-model",
+  "vendor-terminal",
+  "internal-endpoint",
+]);
+const claudeFailurePhases = Object.freeze([
+  "bootstrap",
+  "readiness",
+  "packed-install",
+  "stimulus",
+  "model-config",
+  "candidate-denial",
+  "model-pair",
+  "native-final",
+  "retirement",
+  "result",
+]);
+const claudeFailurePredicates = Object.freeze([
+  ...claudeFailureCodes.map((code) => `integration.fixture.claude-${code}`),
+  ...claudeFailurePhases.map(
+    (phase) => `integration.fixture.claude-phase-${phase}`,
+  ),
+]);
+export const claudeScenarioFailureDiagnostic = (error, phase) => {
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    const field = Object.getOwnPropertyDescriptor(error, "message");
+    if (field && Object.hasOwn(field, "value")) {
+      const index = claudeFailureCodes.findIndex(
+        (code) =>
+          field.value ===
+          (code === "internal-endpoint"
+            ? "claude-code.execution.internal-endpoint"
+            : `integration.claude-code.${code}`),
+      );
+      if (index >= 0) return claudeFailurePredicates[index];
+    }
+  }
+  const index = claudeFailurePhases.indexOf(phase);
+  return claudeFailurePredicates[
+    claudeFailureCodes.length + Math.max(0, index)
+  ];
+};
 export const ptyExecutionFailurePredicates = Object.freeze([
+  ...claudeFailurePredicates,
   "child-failure",
   "integration.fixture.codex-bootstrap",
   "integration.fixture.codex-bootstrap-arguments",
@@ -1014,6 +1084,11 @@ export const selectInteractiveExecutionFailurePredicate = (
   const diagnostic = retainedDiagnostic ?? candidate;
   if (typeof diagnostic !== "string") return "child-failure";
   if (
+    claudeFailurePredicates.includes(diagnostic) &&
+    scenarioId !== "claude-interactive-trace-smoke"
+  )
+    return "child-failure";
+  if (
     diagnostic.startsWith("integration.fixture.codex-tui-join-deadline-") &&
     (scenarioId !== "codex-tui-trace-smoke" ||
       retainedDiagnostic !== diagnostic)
@@ -1037,6 +1112,10 @@ export const selectInteractiveExecutionFailurePredicate = (
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (claudeFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke"
+      ? 200 + claudeFailurePredicates.indexOf(diagnostic)
+      : undefined;
   if (scenarioId === "codex-tui-trace-smoke") {
     if (diagnostic === "integration.fixture.codex-tui-exit-before-checkpoint")
       return 139;
@@ -1069,6 +1148,8 @@ export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
 
 export const decodeInteractiveFailureExitCode = (exitCode, scenarioId) => {
   if (!Number.isSafeInteger(exitCode)) return undefined;
+  if (scenarioId === "claude-interactive-trace-smoke" && exitCode >= 200)
+    return claudeFailurePredicates[exitCode - 200];
   if (scenarioId === "codex-tui-trace-smoke") {
     if (exitCode === 139)
       return "integration.fixture.codex-tui-exit-before-checkpoint";
@@ -1194,10 +1275,12 @@ export const validInstalledPtyFailure = (input) => {
     !installedPtyFailurePredicates[value.phase].includes(value.predicate)
   )
     return false;
-  if (old) return true;
+  if (old) return !claudeFailurePredicates.includes(value.predicate);
   if (
     value.phase !== "pty-execution" ||
     (value.scenarioId !== "codex-tui-trace-smoke" &&
+      value.scenarioId !== "claude-interactive-trace-smoke") ||
+    (claudeFailurePredicates.includes(value.predicate) &&
       value.scenarioId !== "claude-interactive-trace-smoke")
   )
     return false;

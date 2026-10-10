@@ -12,6 +12,10 @@ import { promisify } from "node:util";
 import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  claudeScenarioFailureDiagnostic,
+  encodeInteractiveFailureExitCode,
+} from "./immutable-candidate-authority.mjs";
+import {
   openMockServerControl,
   projectMockServerRequests,
   snapshotMockServerTraffic,
@@ -331,6 +335,24 @@ const waitForClaudeNativeFinalTurn = async (turn, deadline) => {
 // This is the existing selected PTY scenario process, not a second driver.
 // It emits only native partial evidence; the outer authenticated collector
 // must independently join four real OTLP graphs before completing it.
+const probeClaudeCandidate = (runId, deadline) =>
+  execute(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import {probeMockServerCandidate,readMockServerBootClock as now} from '/opt/agentscope/mockserver-control.mjs'; console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(runId)},host:'mockserver',deadline:${deadline},now})));`,
+    ],
+    {
+      cwd: "/worktree",
+      env: cliEnvironment,
+      uid: 1000,
+      gid: 1000,
+      timeout: Math.max(1, Math.floor(deadline - monotonicNow())),
+      maxBuffer: 65536,
+    },
+  );
+let claudeFailurePhase = "bootstrap";
 export const runClaudeCodeScenario = async () => {
   const deadline = Number(process.env.AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS);
   const scenarioId = process.env.AGENTSCOPE_SCENARIO_ID;
@@ -347,12 +369,16 @@ export const runClaudeCodeScenario = async () => {
     process.argv[2] !== "--artifact"
   )
     throw new Error("integration.claude-code.environment");
+  claudeFailurePhase = "readiness";
   const challenge = await readClaudeCodeReadinessChallenge(
     deadline,
     monotonicNow,
   );
+  claudeFailurePhase = "packed-install";
   const { commands, settings } = await prepareClaudeCodePackedCli(deadline);
+  claudeFailurePhase = "stimulus";
   prepareClaudeCodeReadStimulus();
+  claudeFailurePhase = "model-config";
   if (process.env.AGENTSCOPE_MODEL_SERVER_URL !== "http://mockserver:1080")
     throw new Error("integration.claude-code.model-control");
   const control = openMockServerControl({
@@ -366,32 +392,20 @@ export const runClaudeCodeScenario = async () => {
       .status !== 201
   )
     throw new Error("integration.claude-code.model-control");
-  const candidate = await execute(
-    process.execPath,
-    [
-      "--input-type=module",
-      "-e",
-      `import {probeMockServerCandidate,readMockServerBootClock as now} from '/opt/agentscope/mockserver-control.mjs'; console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringify(runId)},host:'mockserver',deadline:${deadline},now})));`,
-    ],
-    {
-      cwd: "/worktree",
-      env: cliEnvironment,
-      uid: 1000,
-      gid: 1000,
-      timeout: Math.max(1, Math.floor(deadline - monotonicNow())),
-      maxBuffer: 65536,
-    },
-  );
+  claudeFailurePhase = "candidate-denial";
+  const candidate = await probeClaudeCandidate(runId, deadline);
   const denials = snapshotMockServerTraffic(
     JSON.parse(candidate.stdout),
     runId,
   );
   await publishClaudeMarker(`AGENTSCOPE_PTY_READY:${challenge}\r\n`);
+  claudeFailurePhase = "model-pair";
   const turn = runClaudeCodeInteractiveTurn(
     "http://mockserver.agentscope.internal:1080",
     deadline,
   );
   const { pair, rows } = await waitForClaudeModelPair(control, turn, deadline);
+  claudeFailurePhase = "native-final";
   await waitForClaudeNativeFinalTurn(turn, deadline);
   await publishClaudeMarker(
     `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`,
@@ -402,7 +416,9 @@ export const runClaudeCodeScenario = async () => {
     false,
     true,
   );
+  claudeFailurePhase = "retirement";
   await retireClaudeCodePackedCli(commands, settings, deadline);
+  claudeFailurePhase = "result";
   const traffic = correlateClaudeModelControl(
     rows,
     control.snapshot().entries,
@@ -463,8 +479,25 @@ const isClaudeScenarioMain = () => {
 if (isClaudeScenarioMain())
   try {
     await runClaudeCodeScenario();
-  } catch {
+  } catch (error) {
+    process.exitCode = 1;
+    try {
+      const diagnostic = claudeScenarioFailureDiagnostic(
+        error,
+        claudeFailurePhase,
+      );
+      writeFileSync("/ledger/interactive-failure.txt", `${diagnostic}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+      process.exitCode =
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ) ?? 1;
+    } catch {
+      // Failed or conflicting publication cannot replace the original refusal.
+    }
     // Never forward child output, native bodies or credential-bearing errors.
     process.stderr.write("integration.claude-code.scenario\n");
-    process.exitCode = 1;
   }

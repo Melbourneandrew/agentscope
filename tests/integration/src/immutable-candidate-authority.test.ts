@@ -22,6 +22,7 @@ const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
 const {
+  claudeScenarioFailureDiagnostic,
   codexArmPendingResearchHint,
   codexArmPtyResearchHint,
   codexFailureExitPair,
@@ -2419,6 +2420,193 @@ describe("Codex production get-child diagnostic wiring", () => {
   );
 });
 
+describe("source-defined Claude failure code transport", () => {
+  it.each([
+    "environment",
+    "clock",
+    "deadline",
+    "destination-settings",
+    "doctor",
+    "install",
+    "readiness",
+    "settings",
+    "uninstall",
+    "model-control",
+    "model-route",
+    "native-content",
+    "native-directory",
+    "native-file",
+    "native-identity",
+    "native-inventory",
+    "native-jsonl",
+    "native-model",
+    "native-record",
+    "native-tool",
+    "native-tool-result",
+    "native-turn",
+    "early-exit",
+    "model-pair",
+    "native-early-exit",
+    "native-final-turn",
+    "pty",
+    "response-model",
+    "vendor-terminal",
+    "internal-endpoint",
+  ])("transports only the exact source-defined Claude refusal %s", (code) => {
+    const message =
+      code === "internal-endpoint"
+        ? "claude-code.execution.internal-endpoint"
+        : `integration.claude-code.${code}`;
+    const diagnostic = claudeScenarioFailureDiagnostic(
+      new Error(message),
+      "bootstrap",
+    );
+    expect(diagnostic).toBe(`integration.fixture.claude-${code}`);
+    const exit = encodeInteractiveFailureExitCode(
+      diagnostic,
+      "claude-interactive-trace-smoke",
+    );
+    expect(exit).toBeGreaterThanOrEqual(200);
+    expect(exit).toBeLessThanOrEqual(255);
+    expect(
+      decodeInteractiveFailureExitCode(exit, "claude-interactive-trace-smoke"),
+    ).toBe(diagnostic);
+    expect(
+      decodeInteractiveFailureExitCode(exit, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        diagnostic,
+        undefined,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
+});
+describe("source-defined Claude failure phases", () => {
+  it.each([
+    "bootstrap",
+    "readiness",
+    "packed-install",
+    "stimulus",
+    "model-config",
+    "candidate-denial",
+    "model-pair",
+    "native-final",
+    "retirement",
+    "result",
+  ])(
+    "retains only actual fixed phase %s for unknown/reflected values",
+    (phase) => {
+      const trap = () => {
+        throw Error("must-not-read");
+      };
+      const accessor = new Error();
+      Object.defineProperty(accessor, "message", { get: trap });
+      for (const error of [
+        new Error("PRIVATE_CANARY"),
+        { message: "integration.claude-code.environment" },
+        accessor,
+        new Proxy(new Error(), { get: trap, getOwnPropertyDescriptor: trap }),
+      ]) {
+        const diagnostic = claudeScenarioFailureDiagnostic(error, phase);
+        expect(diagnostic).toBe(`integration.fixture.claude-phase-${phase}`);
+        const exit = encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        );
+        expect(
+          decodeInteractiveFailureExitCode(
+            exit,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(diagnostic);
+      }
+    },
+  );
+});
+describe("Claude owned failure marker routing", () => {
+  it("routes the existing owned marker through strict reader/frame/held-scenario selector", () => {
+    const ledger = mkdtempSync(join(tmpdir(), "agentscope-claude-failure-"));
+    const diagnostic = "integration.fixture.claude-model-pair";
+    try {
+      writeFileSync(
+        join(ledger, "interactive-failure.txt"),
+        `${diagnostic}\n`,
+        { flag: "wx", mode: 0o600 },
+      );
+      const retained = readBoundedInteractiveFailureMarker(ledger);
+      const selected = selectInteractiveFailureDiagnostic(
+        retained,
+        undefined,
+        "testkit.pty.transport.semantic-nonzero",
+      );
+      const frame: string = formatInteractiveChildDiagnostic(selected);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      const observed = extractInteractiveChildDiagnostic(frame);
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          observed,
+          undefined,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(diagnostic);
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          observed,
+          undefined,
+          "fixture-process-interactive",
+        ),
+      ).toBe("child-failure");
+      expect(
+        extractInteractiveChildDiagnostic(`${frame}${frame}`),
+      ).toBeUndefined();
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate: diagnostic,
+          scenarioId: "claude-interactive-trace-smoke",
+        }),
+      ).toBe(true);
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate: diagnostic,
+          scenarioId: "codex-tui-trace-smoke",
+        }),
+      ).toBe(false);
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate: diagnostic,
+        }),
+      ).toBe(false);
+    } finally {
+      rmSync(ledger, { recursive: true, force: true });
+    }
+  });
+  it("binds the Claude environment refusal to its exact scenario", () => {
+    const diagnostic = "integration.fixture.claude-environment";
+    expect(
+      encodeInteractiveFailureExitCode(
+        diagnostic,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(200);
+    expect(
+      decodeInteractiveFailureExitCode(200, "claude-interactive-trace-smoke"),
+    ).toBe(diagnostic);
+    expect(
+      decodeInteractiveFailureExitCode(200, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+  });
+});
 describe("interactive PTY failure exit-code transport", () => {
   it.each([
     [
