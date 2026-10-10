@@ -6,6 +6,7 @@ import {
   createOwnedHarnessHookInvocation,
   parseStableSemver,
   type HarnessInstallationPlanInput,
+  type HarnessDiscoveryResult,
   type HarnessInstallationPlanner,
   type HarnessTargetDecision,
   type HarnessTargetInspection,
@@ -16,9 +17,9 @@ import {
 } from "@agentscope/harness-codex";
 import {
   claudeCodeDescriptor,
+  createClaudeCodeDialectAuthority,
   prepareClaudeCodeInstallationContext,
   type ClaudeCodeInstallationContext,
-  type ClaudeCodeDialectAuthority,
 } from "@agentscope/harness-claude-code";
 
 import { createOwnedHookLauncherArtifacts } from "./hook-launcher.js";
@@ -47,7 +48,7 @@ export type ProductHarnessInstallationInput = ProductHarnessInstallationCommon &
     | (ClaudeCodeInstallationContext &
         Readonly<{
           harness: "claude-code";
-          dialectAuthority: ClaudeCodeDialectAuthority;
+          observedDiscovery: HarnessDiscoveryResult;
         }>)
   );
 
@@ -263,6 +264,12 @@ const installationPlanningContext = (
 ) => {
   const claude = input.harness === "claude-code";
   const { invocation, launcher } = installationArtifacts(input);
+  const dialectAuthority =
+    input.harness === "claude-code"
+      ? createClaudeCodeDialectAuthority(input.observedDiscovery, "posix")
+      : undefined;
+  if (input.harness === "claude-code" && dialectAuthority === undefined)
+    throw new Error("cli.launcher.unsupported");
   const effectiveUid =
     typeof process.geteuid === "function" ? process.geteuid() : null;
   const claudeContext =
@@ -277,6 +284,7 @@ const installationPlanningContext = (
   return Object.freeze({
     claude,
     invocation,
+    dialectAuthority,
     launcher,
     claudeContext,
     directoryPaths: claudeContext?.directoryPaths ?? [],
@@ -375,7 +383,7 @@ export const createProductHarnessInstallationInput = (
           ? claudeContext!.configurationPlanner(
               input.operation,
               context.invocation,
-              input.dialectAuthority,
+              context.dialectAuthority!,
               directories,
               [...heldFiles.values()],
             )

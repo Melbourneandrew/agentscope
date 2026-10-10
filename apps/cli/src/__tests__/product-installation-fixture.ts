@@ -10,14 +10,17 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "esbuild";
 import {
   claudeCodeDescriptor,
-  createClaudeCodeDialectAuthority,
   type ClaudeCodePluginInventory,
 } from "@agentscope/harness-claude-code";
 import type { HarnessTargetInspection } from "@agentscope/harnesses-core";
 import { afterEach } from "vitest";
 import { createOwnedHookLauncherArtifacts } from "../hook-launcher.js";
+import type { createProductHarnesses } from "../product-harnesses.js";
+import type { createHarnessCliServices } from "../harness-services.js";
 import {
   createProductHarnessInstallationInput,
   type ProductHarnessInstallationInput,
@@ -28,6 +31,59 @@ export const digest = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
 export const encode = (value: string): Uint8Array =>
   new TextEncoder().encode(value);
+
+// The ordinary unit suite owns these exact current-source bundles; it never
+// relies on a warm ignored CLI dist or adds a shipped export for the test.
+export const builtProductInstallationModules = async (root: string) => {
+  const privatePath = join(
+    root,
+    "internal",
+    "agentscope-product-harness-installation.js",
+  );
+  const productPath = join(root, "bin", "product-harnesses.mjs");
+  const options = {
+    bundle: true,
+    format: "esm" as const,
+    platform: "node" as const,
+    target: "node22",
+  };
+  await build({
+    ...options,
+    entryPoints: [
+      fileURLToPath(
+        new URL("../product-harness-installation.ts", import.meta.url),
+      ),
+    ],
+    outfile: privatePath,
+  });
+  await build({
+    ...options,
+    stdin: {
+      contents:
+        'export { createProductHarnesses } from "./src/product-harnesses.ts"; export { createHarnessCliServices } from "./src/harness-services.ts";',
+      resolveDir: fileURLToPath(new URL("../..", import.meta.url)),
+      loader: "ts",
+    },
+    external: [
+      "../internal/agentscope-product-harness-installation.js",
+      "./directory-runtime/loader/owned-loader.mjs",
+    ],
+    outfile: productPath,
+  });
+  return {
+    installation: (await import(
+      /* @vite-ignore */ pathToFileURL(privatePath).href
+    )) as {
+      createProductHarnessInstallationInput: typeof createProductHarnessInstallationInput;
+    },
+    product: (await import(
+      /* @vite-ignore */ pathToFileURL(productPath).href
+    )) as {
+      createProductHarnesses: typeof createProductHarnesses;
+      createHarnessCliServices: typeof createHarnessCliServices;
+    },
+  };
+};
 
 // Real held-directory DTOs originate in Node's realm, not Vitest's VM realm.
 // This child invokes only first-party services over synthetic vendor bytes.
@@ -140,11 +196,11 @@ export const directoryProofInNode = (
     import { writeFile } from "node:fs/promises";
     import { join } from "node:path";
     import { inspectHarnessInstallation, applyHarnessInstallation } from "@agentscope/harnesses-core";
-    import { createClaudeCodeDialectAuthority, claudeCodeDescriptor } from "@agentscope/harness-claude-code";
+    import { claudeCodeDescriptor } from "@agentscope/harness-claude-code";
     import { createProductHarnessInstallationInput } from "./src/product-harness-installation.ts";
     const input = JSON.parse(process.argv[1]);
-    input.dialectAuthority = createClaudeCodeDialectAuthority({ configurationLocations: [{locationIndex: 0, present: true}],
-      harnessType: claudeCodeDescriptor.harnessType, reason: "compatible", state: "installed", version: "2.1.245" }, "posix");
+    input.observedDiscovery = { configurationLocations: [{locationIndex: 0, present: true}],
+      harnessType: claudeCodeDescriptor.harnessType, reason: "compatible", state: "installed", version: "2.1.245" };
     const plan = await inspectHarnessInstallation(createProductHarnessInstallationInput(input));
     let applied;
     if (plan.disposition === "ready") {
@@ -225,17 +281,13 @@ export const createProductInstallationFixtures = () => {
       releaseIdentity: "0.1.0",
     };
     // Synthetic discovery tests factory composition, not an installed vendor.
-    const dialectAuthority = createClaudeCodeDialectAuthority(
-      {
-        configurationLocations: [{ locationIndex: 0, present: true }],
-        harnessType: claudeCodeDescriptor.harnessType,
-        reason: "compatible",
-        state: "installed",
-        version: "2.1.245",
-      },
-      "posix",
-    );
-    if (dialectAuthority === undefined) throw new Error("fixture.dialect");
+    const observedDiscovery = {
+      configurationLocations: [{ locationIndex: 0, present: true }],
+      harnessType: claudeCodeDescriptor.harnessType,
+      reason: "compatible",
+      state: "installed",
+      version: "2.1.245",
+    } as const;
     const pluginInventory: ClaudeCodePluginInventory = {
       settingsLayers: [
         {
@@ -257,7 +309,7 @@ export const createProductInstallationFixtures = () => {
     const input: FixtureClaudeInstallationInput = {
       ...common,
       harness: "claude-code",
-      dialectAuthority,
+      observedDiscovery,
       pluginInventory,
       readGuards: [guard],
     };

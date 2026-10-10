@@ -20,7 +20,10 @@ import {
 import { createHarnessCliServices } from "./harness-services.js";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
 import { createProductHarnesses } from "./product-harnesses.js";
-import { claudeServiceProofInNode } from "./__tests__/product-installation-fixture.js";
+import {
+  claudeServiceProofInNode,
+  builtProductInstallationModules,
+} from "./__tests__/product-installation-fixture.js";
 
 afterEach(cleanupProductHarnessFixtures);
 
@@ -30,7 +33,11 @@ const nativeIdentity = {
   sha256: createHash("sha256").update(nativeBytes).digest("hex"),
 };
 
-const claudeFixture = async (override?: string, absentRealHome = false) => {
+const claudeFixture = async (
+  override?: string,
+  absentRealHome = false,
+  builtDefault = false,
+) => {
   const value = await fixture();
   const bin = dirname(value.codexExecutables[0]!);
   const claudePath = join(bin, "claude");
@@ -39,7 +46,12 @@ const claudeFixture = async (override?: string, absentRealHome = false) => {
     PATH: bin,
     ...(override === undefined ? {} : { CLAUDE_CONFIG_DIR: override }),
   };
-  const input = createProductHarnesses({
+  const built = builtDefault
+    ? await builtProductInstallationModules(dirname(value.agentscopeRoot))
+    : undefined;
+  const createProduct =
+    built?.product.createProductHarnesses ?? createProductHarnesses;
+  const input = createProduct({
     architecture: "arm64",
     codexDiscoveryPolicy: testDiscoveryPolicy,
     claudeDiscoveryPolicy: {
@@ -52,7 +64,9 @@ const claudeFixture = async (override?: string, absentRealHome = false) => {
       ? join(value.vendorHome, "absent-home")
       : value.vendorHome,
     projectDirectory: value.vendorHome,
-    installationFactory: createProductHarnessInstallationInput,
+    ...(builtDefault
+      ? {}
+      : { installationFactory: createProductHarnessInstallationInput }),
     machineEntryPath: value.machineEntryPath,
     nodeExecutable: process.execPath,
     platform: "darwin",
@@ -64,7 +78,9 @@ const claudeFixture = async (override?: string, absentRealHome = false) => {
     claudePath,
     environment,
     input,
-    services: createHarnessCliServices(input),
+    services: (
+      built?.product.createHarnessCliServices ?? createHarnessCliServices
+    )(input),
   };
 };
 
@@ -116,6 +132,82 @@ const expectOutsideExpectedTupleUnavailable = (
   expect(proof.settingsMode).toBeNull();
   expect(proof.launcherNames).toEqual([]);
 };
+
+describe("actual default private installation composition", () => {
+  it("uses the actual default dynamic private factory for a compatible Claude plan", async () => {
+    const value = await claudeFixture(undefined, false, true);
+    const adapter = value.input.adapters?.find(
+      (item) => item.commandName === "claude-code",
+    );
+    if (!adapter) throw new Error("fixture.adapter");
+    // Synthetic native bytes are authenticated by discovery, never executed.
+    // Plain held filesystem observations avoid invoking the native directory primitive.
+    const plan = await adapter.createInstallationInput("install");
+    const directories = await Promise.all(
+      (plan.directoryPaths ?? []).map(async (directoryPath) => {
+        try {
+          const state = await lstat(directoryPath);
+          return {
+            directoryPath,
+            exists: true,
+            entries: await readdir(directoryPath),
+            mode: state.mode & 0o777,
+            uid: state.uid,
+          };
+        } catch (error) {
+          if (
+            !(error instanceof Error) ||
+            !("code" in error) ||
+            error.code !== "ENOENT"
+          )
+            throw error;
+          return {
+            directoryPath,
+            exists: false,
+            entries: [],
+            mode: null,
+            uid: null,
+          };
+        }
+      }),
+    );
+    const settingsPath = join(value.vendorHome, ".claude", "settings.json");
+    let settingsDecision;
+    for (const targetPath of plan.targetPaths) {
+      let target;
+      try {
+        const state = await lstat(targetPath);
+        const bytes = await readFile(targetPath);
+        target = {
+          targetPath,
+          exists: true,
+          bytes,
+          digest: createHash("sha256").update(bytes).digest("hex"),
+          mode: state.mode & 0o777,
+          uid: state.uid,
+        };
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          error.code !== "ENOENT"
+        )
+          throw error;
+        target = {
+          targetPath,
+          exists: false,
+          bytes: null,
+          digest: createHash("sha256").update("").digest("hex"),
+          mode: null,
+          uid: null,
+        };
+      }
+      const decision = plan.planner(target, directories);
+      if (targetPath === settingsPath) settingsDecision = decision;
+    }
+    expect(settingsDecision?.kind).toBe("replace");
+  });
+});
 
 describe("ordinary CLI registry exposes Codex and Claude independently", () => {
   it("discovers both exact artifacts and only Claude's default configuration", async () => {
