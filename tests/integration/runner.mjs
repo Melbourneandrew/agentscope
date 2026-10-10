@@ -696,13 +696,30 @@ try {
     if (interactivePtyReceiptFailed(receipt)) {
       if (scenarioId === "codex-tui-trace-smoke")
         codexPtyFailureHint = "arm-pty-returned-failed";
+      const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);
+      const decoded = decodeScenarioFailureExitCode(receipt.exitCode);
+      const retainedPhase =
+        decoded === undefined ? retainedInteractivePhase(ledger) : undefined;
       const diagnostic =
-        decodeScenarioFailureExitCode(receipt.exitCode) ??
-        retainedInteractivePhase(ledger);
+        decoded ??
+        selectInteractiveFailureDiagnostic(
+          fixtureRecord?.predicate,
+          retainedPhase,
+          undefined,
+        ) ??
+        retainedPhase;
       interactiveFailureDiagnostic = diagnostic;
       if (diagnostic !== undefined)
         process.stdout.write(
-          `integration.runner.interactive-diagnostic:${diagnostic}\n`,
+          formatInteractiveChildDiagnostic(
+            diagnostic,
+            undefined,
+            undefined,
+            scenarioId === "claude-interactive-trace-smoke" &&
+              diagnostic === fixtureRecord?.predicate
+              ? fixtureRecord?.childTerminal
+              : undefined,
+          ),
         );
       fixtureFailure = new Error("integration.runner.fixture-failed");
       fixtureOutput = "";

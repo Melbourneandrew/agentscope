@@ -18,6 +18,10 @@ import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { leakedChildReadinessWasObserved } from "./substrate-certification.js";
+// @ts-expect-error this private integration module has no published declaration
+import * as importedFailureAuthority from "../immutable-candidate-authority.mjs";
+// @ts-expect-error this private integration module has no published declaration
+import * as importedPhases from "../codex-trace-child-diagnostics.mjs";
 
 // The reader is private integration JavaScript, not a package API.
 // @ts-expect-error no declaration file is published for this private module
@@ -37,6 +41,183 @@ const createRoot = () => {
   chmodSync(root, 0o700);
   return root;
 };
+const failureAuthority = importedFailureAuthority as {
+  decodeInteractiveFailureExitCode: (
+    exit: unknown,
+    scenario: string,
+  ) => string | undefined;
+  encodeInteractiveFailureExitCode: (
+    code: string,
+    scenario: string,
+  ) => number | undefined;
+  interactivePtyReceiptFailed: (receipt: unknown) => boolean;
+  readBoundedInteractiveFailureRecord: (ledger: string) =>
+    | {
+        predicate: string;
+        childTerminal?: { exitCode: number | null; exitSignal: number | null };
+      }
+    | undefined;
+  readRetainedInteractivePhase: (ledger: string) => string | undefined;
+  selectInteractiveFailureDiagnostic: (
+    marker: unknown,
+    phase: unknown,
+    selected: unknown,
+  ) => string | undefined;
+  formatInteractiveChildDiagnostic: (
+    predicate: unknown,
+    semantic?: unknown,
+    signal?: unknown,
+    child?: unknown,
+  ) => string;
+  readInteractiveChildFailureObservation: (frame: string) =>
+    | {
+        predicate: string;
+        childTerminal?: { exitCode: number | null; exitSignal: number | null };
+      }
+    | undefined;
+};
+const interactivePhases = (
+  importedPhases as { interactivePhases: readonly string[] }
+).interactivePhases;
+
+const returnedInteractiveFixture = (
+  content?: string,
+  exitCode = 1,
+  phase?: string,
+  selectedScenario = "claude-interactive-trace-smoke",
+) => {
+  const root = createRoot();
+  if (content !== undefined)
+    writeFileSync(join(root, "interactive-failure.txt"), content, {
+      mode: 0o600,
+      flag: "wx",
+    });
+  if (phase !== undefined)
+    writeFileSync(
+      join(root, `interactive-phase-${phase}.txt`),
+      `integration.fixture.codex-${phase}\n`,
+      { mode: 0o600, flag: "wx" },
+    );
+  const source = readFileSync(
+    join(import.meta.dirname, "../runner.mjs"),
+    "utf8",
+  );
+  const decoderStart = source.indexOf("const decodeScenarioFailureExitCode = ");
+  const decoderEnd = source.indexOf(
+    "\nconst requiredEnvironment = ",
+    decoderStart,
+  );
+  const token = "    if (interactivePtyReceiptFailed(receipt)) {";
+  const start = source.indexOf(token);
+  const endToken = "    } else fixtureOutput = recoverRetainedFixtureOutput();";
+  const end = source.indexOf(endToken, start) + endToken.length;
+  expect(source.split(token)).toHaveLength(2);
+  expect(decoderStart).toBeGreaterThan(0);
+  expect(decoderEnd).toBeGreaterThan(decoderStart);
+  expect(end).toBeGreaterThan(start);
+  const lines: string[] = [];
+  const originalFailures: Error[] = [];
+  const result = runInNewContext(
+    `${source.slice(decoderStart, decoderEnd)}\n${source.slice(start, end)}\n({fixtureFailure,fixtureOutput,interactiveFailureDiagnostic})`,
+    {
+      ...failureAuthority,
+      Error: function (message: string) {
+        const error = new Error(message);
+        originalFailures.push(error);
+        return error;
+      },
+      Number,
+      scenarioId: selectedScenario,
+      ledger: root,
+      receipt: { outcome: "exited-nonzero", exitCode },
+      interactivePhases,
+      retainedInteractivePhase: failureAuthority.readRetainedInteractivePhase,
+      codexPtyFailureHint: undefined,
+      interactiveFailureDiagnostic: undefined,
+      fixtureFailure: undefined,
+      fixtureOutput: "PRIVATE synthetic failed output",
+      recoverRetainedFixtureOutput: () => {
+        throw new Error("must not recover failed return");
+      },
+      process: { stdout: { write: (line: string) => lines.push(line) } },
+    },
+  ) as {
+    fixtureFailure: Error;
+    fixtureOutput: string;
+    interactiveFailureDiagnostic?: string;
+  };
+  expect(result.fixtureFailure).toBe(originalFailures[0]);
+  expect(result.fixtureFailure.message).toBe(
+    "integration.runner.fixture-failed",
+  );
+  expect(result.fixtureOutput).toBe("");
+  return { ...result, lines, root };
+};
+
+describe("actual runner returned interactive failure diagnostics", () => {
+  const predicate = "integration.fixture.claude-vendor-terminal";
+  it("preserves the accepted existing marker and optional held Claude tuple without changing failure", () => {
+    const f = returnedInteractiveFixture(`${predicate}|code;1\n`);
+    expect(
+      failureAuthority.readBoundedInteractiveFailureRecord(f.root),
+    ).toMatchObject({ predicate });
+    expect(f.interactiveFailureDiagnostic).toBe(predicate);
+    expect(f.lines).toHaveLength(1);
+    expect(
+      failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
+    ).toMatchObject({
+      predicate,
+      childTerminal: { exitCode: 1, exitSignal: null },
+    });
+  });
+  it.each([
+    undefined,
+    "malformed\n",
+    "x".repeat(129),
+    "integration.fixture.unknown\n",
+  ])("keeps missing/invalid marker %j generic", (content) => {
+    const f = returnedInteractiveFixture(content);
+    expect(f.interactiveFailureDiagnostic).toBeUndefined();
+    expect(f.lines).toEqual([]);
+  });
+  it("preserves decoded Claude exit precedence over a conflicting marker", () => {
+    const decoded = "integration.fixture.claude-environment";
+    const exit = failureAuthority.encodeInteractiveFailureExitCode(
+      decoded,
+      "claude-interactive-trace-smoke",
+    );
+    expect(exit).toBeTypeOf("number");
+    const f = returnedInteractiveFixture(`${predicate}|code;1\n`, exit);
+    expect(f.interactiveFailureDiagnostic).toBe(decoded);
+    expect(
+      failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
+    ).toEqual({ predicate: decoded });
+  });
+  it("retains the existing Codex phase fallback without a marker", () => {
+    const phase = interactivePhases[0]!;
+    const f = returnedInteractiveFixture(undefined, 1, phase);
+    expect(f.interactiveFailureDiagnostic).toBe(
+      `integration.fixture.codex-${phase}`,
+    );
+  });
+  it("does not attach held Claude child facts to a foreign scenario", () => {
+    const f = returnedInteractiveFixture(
+      `${predicate}|code;1\n`,
+      1,
+      undefined,
+      "codex-tui-trace-smoke",
+    );
+    expect(
+      failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
+    ).toEqual({ predicate });
+  });
+  it("preserves the original fixed predicate without malformed tuple facts", () => {
+    const f = returnedInteractiveFixture(`${predicate}|code;0\n`);
+    expect(
+      failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
+    ).toEqual({ predicate });
+  });
+});
 const writeResult = (path: string, content = record()) => {
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);
