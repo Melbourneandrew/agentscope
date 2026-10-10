@@ -38,6 +38,7 @@ describe("Claude native hook observation projection (synthetic only)", () => {
     );
     expect(invocation.executable).toBe("/usr/local/bin/claude");
     expect(invocation.arguments).toEqual([
+      "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.",
       "--tools",
       "Read",
       "--allowedTools",

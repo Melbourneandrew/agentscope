@@ -3218,6 +3218,21 @@ const armSelectedPty = (
             );
             if (request.readiness.kind === "challenge-process-topology")
               readinessObserved = true;
+            // A command-started turn has only the challenged input before
+            // this settled checkpoint. Admit only its fresh completion title;
+            // ordinary input-submitted and styled Codex turns arm elsewhere.
+            if (
+              request.readiness.kind === "challenge-marker" &&
+              request.interaction.actions[actionIndex + 1]?.action ===
+                "wait-for-semantic-completion"
+            ) {
+              lastCompletedInputOutputBytes = outputBytes;
+              safeReflectApply(
+                emulatorArmPostSubmissionIdleObservation,
+                terminal,
+                [],
+              );
+            }
             actionIndex += 1;
             checkpointActionAdvanced = true;
           } else if (action?.action === "eof") {
@@ -5205,6 +5220,7 @@ const selectedPtyRuntimeForTest = (
   },
   // eslint-disable-next-line max-lines-per-function
 ): PtyRuntime => {
+  let matchedCheckpointResumed = false;
   const root: ProcessSnapshot = {
     parentPid: 1,
     pid: 42_001,
@@ -5340,6 +5356,7 @@ const selectedPtyRuntimeForTest = (
       }
       for (const expected of ordered)
         processes.set(expected.pid, { ...expected, state: "R" });
+      if (notifyRoot) matchedCheckpointResumed = true;
       if (seed === "checkpoint-transient-extra-process" && !notifyRoot)
         processes.delete(checkpointExtra.pid);
     },
@@ -6026,7 +6043,7 @@ const selectedPtyRuntimeForTest = (
             seed === "challenge-marker-title" &&
             chunkIndex === chunks.length &&
             markerTitleInputBytes > markerTitleEchoedBytes &&
-            inputCalls >= 4
+            inputCalls >= (request.stdin.length === 71 ? 2 : 4)
           ) {
             markerTitleEchoedBytes = markerTitleInputBytes;
             return { status: "data" as const, bytes: safeBufferFrom(".") };
@@ -6084,6 +6101,11 @@ const selectedPtyRuntimeForTest = (
           if (
             (seed === "challenge-marker-prompt" ||
               seed === "challenge-marker-title") &&
+            !(
+              seed === "challenge-marker-title" &&
+              request.stdin.length === 71 &&
+              matchedCheckpointResumed
+            ) &&
             ((chunkIndex === 1 && inputCalls < 2) ||
               (chunkIndex === 2 && inputCalls < 3))
           )

@@ -125,11 +125,11 @@ export const claudeCodeReadStimulus = Object.freeze({
     "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.",
 });
 
-// Input segments for the existing selected PTY owner. Enter/CR and /exit are
-// source-bound, but readiness and paste/submit behavior still need actual
-// pinned-vendor capture. Never send termination before semantic completion.
+// The adapter's positional initial prompt is submitted by the native
+// interactive lifecycle, not premature PTY typeahead. The same selected PTY
+// owner sends /exit only after the independent semantic completion marker.
 export const claudeCodeInteractiveInput = Object.freeze({
-  submission: Object.freeze([claudeCodeReadStimulus.prompt, "\r"]),
+  submission: Object.freeze([]),
   termination: Object.freeze(["/exit", "\r"]),
 });
 

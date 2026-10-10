@@ -9,6 +9,9 @@ export const claudeCodeInteractiveInvocation = (modelEndpoint) =>
     // Present in the authenticated 2.1.245 interactive command definition.
     // This restricts tools without using print mode or bypassing permissions.
     arguments: Object.freeze([
+      // Positional initial prompt precedes variadic flags; the native
+      // interactive initialMessage path submits after its own setup/hooks.
+      "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.",
       "--tools",
       "Read",
       "--allowedTools",

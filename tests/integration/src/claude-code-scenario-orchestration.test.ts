@@ -36,6 +36,7 @@ const { claudeScenarioFailureDiagnostic, encodeInteractiveFailureExitCode } =
 
 const { claudeCodeInteractiveInvocation } = adapterModule as {
   claudeCodeInteractiveInvocation: (endpoint: string) => Readonly<{
+    arguments: readonly string[];
     environment: Readonly<Record<string, string>>;
   }>;
 };
@@ -830,7 +831,11 @@ describe("Claude selected material and completion ordering", () => {
     const input = Buffer.from(scenario.terminalInputBase64, "base64");
     expect(input.byteLength).toBeLessThanOrEqual(100);
     expect(input.subarray(-6).toString()).toBe("/exit\r");
-    expect(input[input.length - 7]).toBe(13);
+    expect(input.toString()).toBe("/exit\r");
+    const initialPrompt = claudeCodeInteractiveInvocation(
+      "http://mockserver.agentscope.internal:1080",
+    ).arguments[0];
+    expect(source).toContain(`prompt:\n    ${JSON.stringify(initialPrompt)},`);
     expect(
       compileInteractivePtyActions(
         scenario,

@@ -327,6 +327,7 @@ describe("actual production checkpoint resume composition", () => {
 
 const compiledManifestRequest = (
   scenarioId: "codex-tui-trace-smoke" | "claude-interactive-trace-smoke",
+  terminalInput?: string,
 ): SelectedPtyExecutionRequest => {
   const integration = new URL(
     "../../../../tests/integration/",
@@ -361,10 +362,17 @@ const compiledManifestRequest = (
   ) as {
     scenarios: { scenarioId: string; terminalInputBase64: string }[];
   };
-  const scenario = manifest.scenarios.find(
+  const found = manifest.scenarios.find(
     (entry) => entry.scenarioId === scenarioId,
   );
-  if (scenario === undefined) throw new Error("test.compiler.scenario");
+  if (found === undefined) throw new Error("test.compiler.scenario");
+  const scenario =
+    terminalInput === undefined
+      ? found
+      : {
+          ...found,
+          terminalInputBase64: Buffer.from(terminalInput).toString("base64"),
+        };
   const challenge = "a".repeat(64);
   const stdin = new Uint8Array(
     Buffer.concat([
@@ -1182,8 +1190,159 @@ const boundedNegativePostSubmissionRequest =
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
-  it("completes the genuine Claude compiler plan through a submitted challenge title", async () => {
+  it.each(["fixed-readiness-spoof", "checkpoint-missing-process"] as const)(
+    "does not arm a command-started turn with %s",
+    async (seed) => {
+      const selected = compiledManifestRequest(
+        "claude-interactive-trace-smoke",
+      );
+      const now = performance.now();
+      const receipt = await executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 100,
+            monotonicExecutionDeadlineMs: now + 200,
+            monotonicShutdownDeadlineMs: now + 700,
+          },
+        },
+        seed,
+      );
+      expect(receipt.actions.map(({ action }) => action)).not.toContain(
+        "wait-for-semantic-completion",
+      );
+      expect(receipt.inputBytesWritten).toBe(65);
+      expect(receipt.outcome).not.toBe("completed");
+    },
+  );
+
+  it.each(["complete", "fragmented"] as const)(
+    "rejects a %s title begun before a command-started checkpoint",
+    async (kind) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const title = `]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\x1b\\`;
+      let first = true;
+      let fragmentPending = false;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          if (fragmentPending) {
+            fragmentPending = false;
+            Reflect.apply(write, this, [
+              new TextEncoder().encode(title.slice(3)),
+            ]);
+          }
+          Reflect.apply(write, this, [chunk]);
+          if (first) {
+            first = false;
+            fragmentPending = kind === "fragmented";
+            Reflect.apply(write, this, [
+              new TextEncoder().encode(
+                kind === "complete" ? `\x1b${title}` : "\x1b]2;",
+              ),
+            ]);
+          }
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        await expect(
+          execute(
+            compiledManifestRequest("claude-interactive-trace-smoke"),
+            "challenge-marker-title",
+          ),
+        ).rejects.toThrow("testkit.pty.transport.semantic-unsupported-osc");
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it("completes a command-started turn only after its matched checkpoint", async () => {
     const selected = compiledManifestRequest("claude-interactive-trace-smoke");
+    const challenge = selected.process.stdin.subarray(0, 65);
+    const exit = Buffer.from("/exit\r");
+    const stdin = new Uint8Array(Buffer.concat([challenge, exit]));
+    const input = (bytes: Uint8Array) => ({
+      action: "input" as const,
+      byteLength: bytes.length,
+      inputSha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...selected,
+        process: {
+          ...selected.process,
+          stdin,
+          monotonicStartupDeadlineMs: now + 500,
+          monotonicExecutionDeadlineMs: now + 1_000,
+          monotonicShutdownDeadlineMs: now + 2_000,
+        },
+        interaction: {
+          trigger: "immediate",
+          actions: [
+            { action: "resize", geometry: { columns: 100, rows: 30 } },
+            input(challenge),
+            {
+              action: "checkpoint-process-topology",
+              topology: "root-with-contained-process-set",
+            },
+            { action: "wait-for-semantic-completion" },
+            ...Array.from(exit, (byte) => input(new Uint8Array([byte]))),
+          ],
+        },
+      },
+      "challenge-marker-title",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      finalSnapshot: { semanticState: "completed" },
+    });
+    expect(receipt.inputBytesWritten).toBe(71);
+  });
+  it("accepts a fragmented fresh command-started title after checkpoint", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        Reflect.apply(write, this, [chunk.subarray(0, 1)]);
+        Reflect.apply(write, this, [chunk.subarray(1)]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("completes the genuine Claude compiler plan through a submitted challenge title", async () => {
+    // Retain the original input-submitted route independently of the new
+    // command-started manifest route.
+    const selected = compiledManifestRequest(
+      "claude-interactive-trace-smoke",
+      "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.\r/exit\r",
+    );
     const now = performance.now();
     const receipt = await executeSelectedPtyTransportForTest(
       {
@@ -1239,7 +1398,12 @@ describe("selected PTY transport", () => {
   ] as const)(
     "rejects %s compiler submission replaced with %s",
     async (scenarioId, _label, submission) => {
-      const selected = compiledManifestRequest(scenarioId);
+      const selected = compiledManifestRequest(
+        scenarioId,
+        scenarioId === "claude-interactive-trace-smoke"
+          ? "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.\r/exit\r"
+          : undefined,
+      );
       const promptAction = selected.interaction.actions[3];
       const submitAction = selected.interaction.actions[4];
       if (promptAction?.action !== "input" || submitAction?.action !== "input")
@@ -1623,11 +1787,9 @@ describe("selected PTY transport", () => {
       actions: [
         { action: "input", byteLength: 65 },
         { action: "checkpoint-process-topology" },
-        { action: "wait-for-semantic-completion" },
-        { action: "input", byteLength: 1 },
       ],
-      inputBytesWritten: 66,
-      outcome: "completed",
+      inputBytesWritten: 65,
+      outcome: "input-incomplete",
       readinessObserved: true,
     });
     for (const seed of ["checkpoint-missing-process"] as const)
