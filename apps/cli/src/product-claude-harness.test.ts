@@ -10,7 +10,7 @@ import {
 import { dirname, join } from "node:path";
 import type { HarnessInstallationPlanInput } from "@agentscope/harnesses-core/cli-management";
 
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
   cleanupProductHarnessFixtures,
@@ -26,6 +26,7 @@ import {
 } from "./__tests__/product-installation-fixture.js";
 
 afterEach(cleanupProductHarnessFixtures);
+afterAll(cleanupProductHarnessFixtures);
 
 const nativeBytes = Buffer.from("synthetic Claude artifact never executed\n");
 const nativeIdentity = {
