@@ -774,6 +774,41 @@ describe("Claude selected PTY input", () => {
   });
 });
 
+describe("Claude native setup ordering", () => {
+  it("prepares fixed native first-run state after verified hooks and before vendor launch", () => {
+    const lifecycle = readFileSync(
+      new URL("../claude-code-lifecycle.mjs", import.meta.url),
+      "utf8",
+    );
+    const settings = lifecycle.indexOf(
+      "const settings = readClaudeCodeInstalledSettings();",
+    );
+    const prepared = lifecycle.indexOf(
+      "prepareNativeFirstRunFixture(deadline);",
+      settings,
+    );
+    const returned = lifecycle.indexOf(
+      "return Object.freeze({ commands, settings });",
+      prepared,
+    );
+    expect(settings).toBeGreaterThan(0);
+    expect(prepared).toBeGreaterThan(settings);
+    expect(returned).toBeGreaterThan(prepared);
+    expect(source.indexOf("await prepareClaudeCodePackedCli(")).toBeLessThan(
+      source.indexOf("const turn = runClaudeCodeInteractiveTurn("),
+    );
+    const invocation = claudeCodeInteractiveInvocation(
+      "http://mockserver.agentscope.internal:1080",
+    );
+    expect(invocation.arguments).not.toContain(
+      "--dangerously-skip-permissions",
+    );
+    expect(invocation.environment).not.toHaveProperty("IS_DEMO");
+    expect(invocation.environment).not.toHaveProperty(
+      "CLAUDE_CODE_CUSTOM_OAUTH_URL",
+    );
+  });
+});
 describe("Claude selected material and completion ordering", () => {
   it("binds the normal Langfuse scenario to signed and npm-member material without support admission", () => {
     const manifest = JSON.parse(
