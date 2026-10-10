@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-2e831dbc358a01478ca0396246e525c398a5fa6ae99d2f09748047d386dfbf4a",
+  "manifestIdentity": "sha256-8bce0c1434f1631ef7cdb00c8d1336edeb11a86fbb412f1d09186a9118319301",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -340,7 +340,7 @@
       "destinations": ["langfuse"],
       "fixtureAdapter": {
         "path": "dist/claude-code-platform-adapter.mjs",
-        "sha256": "d9afa27d93e10d151b4c77c81244a63f612a61770324fc5a3654a69579394d09"
+        "sha256": "b498121ac7b3caf6fb63f93cc0a11c62dd2f60e2b5e34250cee3d33892172ef1"
       },
       "scenarioOracle": {
         "path": "claude-code-platform-oracle.mjs",
@@ -348,7 +348,7 @@
       },
       "scenarioProcess": {
         "path": "claude-code-scenario.mjs",
-        "sha256": "891ab2670ba561321de376328c0434be800f7ac1d7fd17ce6f71076b65a9ef69"
+        "sha256": "6fce727e14d8ea9e1688f11eafc417d9cad03b4d7ad78549954fd000a338a2d8"
       },
       "runtimeArtifacts": [
         {
@@ -376,7 +376,7 @@
           "sha256": "840b00ae1203b84d834652b22b203b4cc90e8bc35d54b2686aa7b237f30516c5"
         }
       ],
-      "terminalInputBase64": "UmVhZCAvd29ya3RyZWUvYWdlbnRzY29wZS1jbGF1ZGUtdG9vbC1zdGltdWx1cy50eHQgd2l0aCBSZWFkLCB0aGVuIHJlcGx5IERPTkUuDS9leGl0DQ==",
+      "terminalInputBase64": "L2V4aXQN",
       "postCompletionInputByteLength": 6,
       "postCompletionControl": "none",
       "waitForSemanticCompletionBeforeTerminalAction": true,

@@ -153,10 +153,7 @@ const {
 
 describe("Claude fixed interactive stimulus (source preparation only)", () => {
   it("keeps submission and post-completion exit separate without a synthetic readiness claim", () => {
-    expect(claudeCodeInteractiveInput.submission).toEqual([
-      claudeCodeReadStimulus.prompt,
-      "\r",
-    ]);
+    expect(claudeCodeInteractiveInput.submission).toEqual([]);
     expect(claudeCodeInteractiveInput.termination).toEqual(["/exit", "\r"]);
     expect(Object.isFrozen(claudeCodeInteractiveInput)).toBe(true);
     expect(Object.isFrozen(claudeCodeInteractiveInput.submission)).toBe(true);
