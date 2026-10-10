@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { performance } from "node:perf_hooks";
+import { types } from "node:util";
 
 import { transpileModule, ScriptTarget } from "typescript";
 
@@ -14,10 +15,12 @@ import { executeSelectedPtyTransportForTest } from "../internal/headless-supervi
 import type * as Backend from "../internal/headless-supervisor-backend.js";
 import {
   kernelError,
+  fail,
   failObserverIdentity,
   ptyAuthorityFailureStage,
   readPtyReconciliationStage,
   trustedErrorCode,
+  type PtyReconciliationStage,
 } from "../internal/kernel-errors.js";
 import {
   boundedInvoke,
@@ -80,6 +83,275 @@ const caughtFailure = (operation: () => unknown): unknown => {
   }
   return undefined;
 };
+
+const reapFixture = (() => {
+  const identity = { pid: 21, parentPid: 1, startIdentity: "21:1", state: "Z" };
+  const source = readInternal("headless-supervisor-backend.ts");
+  const start = source.indexOf("const exactAdoptedZombieReapReceipt = (");
+  const end = source.indexOf("const productionContainerRuntime = (", start);
+  const records = source.slice(
+    source.indexOf("const ownData = ("),
+    source.indexOf("const validScenario = ("),
+  );
+  const compiled = transpileModule(records + source.slice(start, end), {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
+  const retainStart = source.indexOf(
+    "    let authorityFailure: string | undefined;",
+  );
+  const retainEnd = source.indexOf(
+    "    const currentProcessSet =",
+    retainStart,
+  );
+  const retention = transpileModule(source.slice(retainStart, retainEnd), {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
+  const reap = runInNewContext(
+    `${compiled}\nreapAdoptedZombies;`,
+    {
+      safeReflectApply: Reflect.apply,
+      objectKeys: Object.keys,
+      getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+      getPrototypeOf: Object.getPrototypeOf,
+      objectPrototype: Object.prototype,
+      isProxy: types.isProxy,
+      fail,
+      failObserverIdentity,
+    },
+    { timeout: 1000 },
+  ) as (
+    processes: readonly (typeof identity)[],
+    root: number,
+    deadline: bigint,
+    context: object,
+    runtime: object,
+  ) => void;
+
+  const observe = (
+    receipt: unknown,
+    after: typeof identity | undefined,
+    thrown?: Error,
+  ) => {
+    const diagnostic: { stage?: PtyReconciliationStage } = {};
+    let reads = 0;
+    const runtime = {
+      assertNamespaceIdentity: () => undefined,
+      readProcess: () => (reads++ === 0 ? identity : after),
+      reapAdoptedZombie: () => {
+        if (thrown !== undefined) throw thrown;
+        return receipt;
+      },
+    };
+    const error = caughtFailure(() => {
+      reap(
+        [identity],
+        99,
+        1000n,
+        { namespaceIdentity: "owned", diagnostic },
+        runtime,
+      );
+    });
+    const retained = runInNewContext(
+      `${retention}\nretainAuthorityFailure(error, 'testkit.headless.observer.reap', stage); [authorityFailure, authorityFailureStage];`,
+      {
+        error,
+        stage: diagnostic.stage,
+        trustedErrorCode,
+        readPtyReconciliationStage,
+      },
+      { timeout: 1000 },
+    ) as [string | undefined, PtyReconciliationStage | undefined];
+    return { error, diagnostic, reads, retained };
+  };
+  return { observe, identity };
+})();
+
+const { observe, identity: reapIdentity } = reapFixture;
+describe("exact production reap refusal boundaries", () => {
+  it.each([
+    ["reap-receipt", { ...reapIdentity, status: "foreign" }, undefined],
+    [
+      "reap-not-ready",
+      { pid: 21, startIdentity: "21:1", status: "not-ready" },
+      undefined,
+    ],
+    [
+      "reap-persisted",
+      { pid: 21, startIdentity: "21:1", status: "reaped" },
+      reapIdentity,
+    ],
+    [
+      "reap-persisted",
+      { pid: 21, startIdentity: "21:1", status: "already-absent" },
+      reapIdentity,
+    ],
+  ] as const)("keeps the existing refusal at %s", (stage, receipt, after) => {
+    const result = observe(receipt, after);
+    expect(trustedErrorCode(result.error)).toBe(
+      "testkit.headless.observer.reap",
+    );
+    expect(result.diagnostic.stage).toBe(stage);
+    expect(result.retained).toEqual(["testkit.headless.observer.reap", stage]);
+    expect(
+      readPtyReconciliationStage(kernelError(code, result.retained[1])),
+    ).toBe(stage);
+  });
+
+  it("keeps the exact native-call exception without reflecting it", () => {
+    const original = new Error("synthetic");
+    Object.defineProperty(original, "message", {
+      get: () => {
+        throw new Error("private");
+      },
+    });
+    const result = observe(undefined, undefined, original);
+    expect(result.error).toBe(original);
+    expect(result.diagnostic.stage).toBe("reap-call");
+    expect(result.retained).toEqual([
+      "testkit.headless.observer.reap",
+      "reap-call",
+    ]);
+    expect(result.reads).toBe(1);
+  });
+
+  it.each(["reaped", "already-absent"])(
+    "does not classify successful %s",
+    (status) => {
+      const result = observe(
+        { pid: 21, startIdentity: "21:1", status },
+        undefined,
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.diagnostic.stage).toBeUndefined();
+      expect(result.reads).toBe(2);
+    },
+  );
+
+  it("refuses a proxy receipt without invoking its getters", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error("private");
+        },
+      },
+    );
+    const result = observe(hostile, undefined);
+    expect(trustedErrorCode(result.error)).toBe(
+      "testkit.headless.observer.reap",
+    );
+    expect(result.diagnostic.stage).toBe("reap-receipt");
+  });
+
+  it("keeps accessor receipt rejection under its original code", () => {
+    const receipt = {
+      pid: 21,
+      startIdentity: "21:1",
+      get status(): string {
+        throw new Error("private");
+      },
+    };
+    const result = observe(receipt, undefined);
+    expect(trustedErrorCode(result.error)).toBe(
+      "testkit.headless.kernel.request",
+    );
+    expect(result.retained).toEqual([
+      "testkit.headless.kernel.request",
+      undefined,
+    ]);
+  });
+
+  it("preserves the genuine post-read identity refusal", () => {
+    const result = observe(
+      { pid: 21, startIdentity: "21:1", status: "reaped" },
+      { ...reapIdentity, startIdentity: "21:2" },
+    );
+    expect(trustedErrorCode(result.error)).toBe(
+      "testkit.headless.observer.identity",
+    );
+    expect(readPtyReconciliationStage(result.error)).toBe(
+      "observer-zombie-after",
+    );
+    expect(result.diagnostic.stage).toBeUndefined();
+    expect(result.retained).toEqual([
+      "testkit.headless.observer.identity",
+      "observer-zombie-after",
+    ]);
+  });
+
+  it.each([
+    "reap-call",
+    "reap-receipt",
+    "reap-not-ready",
+    "reap-persisted",
+  ] as const)("admits %s only in the existing deadline registry", (stage) => {
+    expect(readPtyReconciliationStage(kernelError(code, stage))).toBe(stage);
+    expect(
+      readPtyReconciliationStage(
+        kernelError("testkit.headless.kernel.request", stage),
+      ),
+    ).toBeUndefined();
+  });
+});
+
+describe("exact production reap retention precedence", () => {
+  const source = readInternal("headless-supervisor-backend.ts");
+  const start = source.indexOf("    let authorityFailure: string | undefined;");
+  const end = source.indexOf("    const currentProcessSet =", start);
+  const compiled = transpileModule(source.slice(start, end), {
+    compilerOptions: { target: ScriptTarget.ES2022 },
+  }).outputText;
+  const retain = (error: unknown, stage?: string): readonly unknown[] =>
+    runInNewContext(
+      `${compiled}\nretainAuthorityFailure(error, 'testkit.headless.observer.reap', stage); [authorityFailure, authorityFailureStage];`,
+      { error, stage, trustedErrorCode, readPtyReconciliationStage },
+      { timeout: 1000 },
+    ) as readonly unknown[];
+
+  it.each(["observer-permission", "observer-zombie-after"] as const)(
+    "keeps genuine %s ahead of reap context",
+    (stage) => {
+      const error = kernelError(
+        stage === "observer-permission"
+          ? "testkit.headless.observer.read"
+          : "testkit.headless.observer.identity",
+        stage,
+      );
+      expect(retain(error, "reap-call")).toEqual([
+        trustedErrorCode(error),
+        stage,
+      ]);
+    },
+  );
+  it("does not relabel genuine unrelated failure", () => {
+    expect(
+      retain(kernelError("testkit.headless.kernel.request"), "reap-receipt"),
+    ).toEqual(["testkit.headless.kernel.request", undefined]);
+  });
+  it.each([
+    undefined,
+    null,
+    "private",
+    new Error("private"),
+    new Proxy(
+      {},
+      {
+        get: () => {
+          throw new Error("private");
+        },
+      },
+    ),
+  ])("does not reflect foreign errors (%#)", (error) => {
+    expect(retain(error, "reap-call")).toEqual([
+      "testkit.headless.observer.reap",
+      "reap-call",
+    ]);
+    expect(retain(error)).toEqual([
+      "testkit.headless.observer.reap",
+      undefined,
+    ]);
+  });
+});
 
 describe("authentic observer-code admission", () => {
   it.each([
@@ -146,7 +418,7 @@ describe("private reconciliation provenance", () => {
     ["observer-failure", "observer-read"],
     ["observer-esrch-failure", "observer-esrch"],
     ["signal-failure", "signal"],
-    ["adopted-zombie-reap-failure", "reap"],
+    ["adopted-zombie-reap-failure", "reap-call"],
     ["residual", "residual"],
     ["output-join-failure", "output-join"],
     ["close-failure", "transport-close"],
@@ -206,6 +478,10 @@ describe("kernel promise diagnostic ordering", () => {
     "output-join",
     "transport-close",
     "outer-shutdown",
+    "reap-call",
+    "reap-receipt",
+    "reap-not-ready",
+    "reap-persisted",
   ] as const)(
     "keeps authenticated %s across ordinary promise rewraps",
     async (stage) => {
