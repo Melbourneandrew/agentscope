@@ -124,8 +124,9 @@ const prepareNativeFirstRunFixture = (deadline) => {
       0o600,
     );
     try {
-      fchownSync(descriptor, 1000, 1000);
+      // CAP_CHOWN is admitted, not CAP_FOWNER: normalize mode as inode owner.
       fchmodSync(descriptor, 0o600);
+      fchownSync(descriptor, 1000, 1000);
       writeFileSync(descriptor, bytes);
       const held = fstatSync(descriptor),
         named = lstatSync("/harness-home/.claude.json");
