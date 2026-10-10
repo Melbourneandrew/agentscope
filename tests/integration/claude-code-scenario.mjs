@@ -353,6 +353,9 @@ const probeClaudeCandidate = (runId, deadline) =>
     },
   );
 let claudeFailurePhase = "bootstrap";
+const noteClaudeFailurePhase = (phase) => {
+  claudeFailurePhase = phase;
+};
 export const runClaudeCodeScenario = async () => {
   const deadline = Number(process.env.AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS);
   const scenarioId = process.env.AGENTSCOPE_SCENARIO_ID;
@@ -375,7 +378,10 @@ export const runClaudeCodeScenario = async () => {
     monotonicNow,
   );
   claudeFailurePhase = "packed-install";
-  const { commands, settings } = await prepareClaudeCodePackedCli(deadline);
+  const { commands, settings } = await prepareClaudeCodePackedCli(
+    deadline,
+    noteClaudeFailurePhase,
+  );
   claudeFailurePhase = "stimulus";
   prepareClaudeCodeReadStimulus();
   claudeFailurePhase = "model-config";

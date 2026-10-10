@@ -150,6 +150,12 @@ const claudeFailurePhases = Object.freeze([
   "native-final",
   "retirement",
   "result",
+  "packed-init",
+  "packed-configure",
+  "packed-routing",
+  "packed-hook-install",
+  "packed-status",
+  "packed-settings",
 ]);
 const claudeFailurePredicates = Object.freeze([
   ...claudeFailureCodes.map((code) => `integration.fixture.claude-${code}`),

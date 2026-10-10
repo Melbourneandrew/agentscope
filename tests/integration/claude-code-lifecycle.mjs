@@ -19,12 +19,24 @@ const claudeMachine = async (arguments_, deadline, command) =>
     command,
   );
 
-export const prepareClaudeCodePackedCli = async (deadline) => {
+export const prepareClaudeCodePackedCli = async (
+  deadline,
+  note = () => undefined,
+) => {
   const commands = claudeCodeLifecycleCommands({
     endpoint: "https://collector:4318",
   });
-  for (const arguments_ of commands.slice(0, 4))
+  const phases = [
+    "packed-init",
+    "packed-configure",
+    "packed-routing",
+    "packed-hook-install",
+  ];
+  for (const [index, arguments_] of commands.slice(0, 4).entries()) {
+    note(phases[index]);
     await runClaudeCodeLifecycleCommand(arguments_, deadline);
+  }
+  note("packed-status");
   const installed = await claudeMachine(
     commands[4],
     deadline,
@@ -32,11 +44,12 @@ export const prepareClaudeCodePackedCli = async (deadline) => {
   );
   if (
     installed.length !== 1 ||
-    installed[0]?.installation !== "installed" ||
+    installed[0]?.installation !== "unchanged" ||
     installed[0].discovery?.version !== "2.1.245" ||
     installed[0].discovery.harness !== "claude-code"
   )
     throw new Error("integration.claude-code.install");
+  note("packed-settings");
   const settings = readClaudeCodeInstalledSettings();
   return Object.freeze({ commands, settings });
 };
