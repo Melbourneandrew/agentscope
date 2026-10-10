@@ -16,60 +16,129 @@ const synthetic = vi.hoisted(() => ({
   commandFailure: undefined as Error | undefined,
   failAt: -1,
   settings: Buffer.alloc(0),
+  nativeBytes: Buffer.alloc(0),
+  nativeFailure: "",
 }));
-vi.mock("node:fs", async () => ({
-  constants: (await vi.importActual<{ constants: typeof constants }>("node:fs"))
-    .constants,
-  realpathSync: (
-    await vi.importActual<{
-      realpathSync: typeof realpathSync;
-    }>("node:fs")
-  ).realpathSync,
-  readFileSync: () => synthetic.uptime,
-  openSync: (path: string, flags: number, mode: number) => {
-    if (synthetic.writeError) throw new Error("synthetic-existing-path");
-    synthetic.fileCalls.push({ action: "open", path, flags, mode });
-    return 41;
-  },
-  writeFileSync: (descriptor: number, contents: string) => {
-    synthetic.fileCalls.push({ action: "write", descriptor, contents });
-  },
-  fchmodSync: (descriptor: number, mode: number) => {
-    synthetic.fileCalls.push({ action: "mode", descriptor, mode });
-    if (synthetic.modeError) throw new Error("synthetic-mode-failure");
-  },
-  closeSync: (descriptor: number) => {
-    synthetic.fileCalls.push({ action: "close", descriptor });
-  },
-  fstatSync: () => ({
-    isFile: () => true,
-    uid: 1000,
+function nativeStatus(descriptor: number, named = false) {
+  return {
+    isFile: () =>
+      descriptor === 44 &&
+      !(named && synthetic.nativeFailure === "target-symlink"),
+    isDirectory: () =>
+      descriptor !== 44 && synthetic.nativeFailure !== "symlink",
+    uid: synthetic.nativeFailure === "owner" ? 0 : 1000,
+    gid: 1000,
     nlink: 1,
-    mode: 0o600,
-    size: synthetic.settings.length,
+    mode:
+      synthetic.nativeFailure === "mode"
+        ? 0o644
+        : descriptor !== 44 && synthetic.nativeFailure === "parent-mode"
+          ? 0o777
+          : 0o600,
+    size: synthetic.nativeBytes.length,
     dev: 1,
-    ino: 1,
-    mtimeMs: 1,
-    ctimeMs: 1,
-  }),
-  lstatSync: () => ({
-    uid: 1000,
-    nlink: 1,
-    mode: 0o600,
-    size: synthetic.settings.length,
-    dev: 1,
-    ino: 1,
-    mtimeMs: 1,
-    ctimeMs: 1,
-  }),
-  readSync: (
-    _fd: number,
-    bytes: Buffer,
-    offset: number,
-    length: number,
-    position: number,
-  ) => synthetic.settings.copy(bytes, offset, position, position + length),
-}));
+    ino:
+      named &&
+      (synthetic.nativeFailure === "drift" ||
+        (descriptor === 42 &&
+          synthetic.nativeFailure === "parent-after" &&
+          synthetic.nativeBytes.length > 0))
+        ? 2
+        : 1,
+  };
+}
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<{ realpathSync: typeof realpathSync }>(
+    "node:fs",
+  );
+  return {
+    constants: (
+      await vi.importActual<{ constants: typeof constants }>("node:fs")
+    ).constants,
+    realpathSync: (path: string) => {
+      if (path === "/harness-home" || path === "/worktree")
+        return synthetic.nativeFailure === "alias" ? "/other" : path;
+      return actual.realpathSync(path);
+    },
+    readFileSync: () => synthetic.uptime,
+    openSync: (path: string, flags: number, mode: number) => {
+      if (synthetic.writeError) throw new Error("synthetic-existing-path");
+      synthetic.fileCalls.push({ action: "open", path, flags, mode });
+      if (path === "/harness-home") {
+        if (synthetic.nativeFailure === "missing") throw new Error("missing");
+        return 42;
+      }
+      if (path === "/worktree") return 43;
+      if (path === "/proc/self/fd/42/.claude.json") {
+        if (synthetic.nativeFailure === "existing") throw new Error("existing");
+        return 44;
+      }
+      return 41;
+    },
+    writeFileSync: (descriptor: number, contents: string | Buffer) => {
+      if (descriptor === 44) {
+        synthetic.nativeBytes = Buffer.from(contents);
+        if (synthetic.nativeFailure === "partial")
+          synthetic.nativeBytes = Buffer.alloc(1);
+        if (synthetic.nativeFailure === "deadline")
+          synthetic.uptime = "2.000 0.000\n";
+      }
+      synthetic.fileCalls.push({
+        action: "write",
+        descriptor,
+        contents: Buffer.isBuffer(contents)
+          ? contents.toString("utf8")
+          : contents,
+      });
+    },
+    fchownSync: (descriptor: number, uid: number, gid: number) => {
+      synthetic.fileCalls.push({ action: "owner", descriptor, uid, gid });
+    },
+    fchmodSync: (descriptor: number, mode: number) => {
+      synthetic.fileCalls.push({ action: "mode", descriptor, mode });
+      if (synthetic.modeError) throw new Error("synthetic-mode-failure");
+    },
+    closeSync: (descriptor: number) => {
+      synthetic.fileCalls.push({ action: "close", descriptor });
+    },
+    fstatSync: (descriptor: number) =>
+      descriptor >= 42
+        ? nativeStatus(descriptor)
+        : {
+            isFile: () => true,
+            uid: 1000,
+            nlink: 1,
+            mode: 0o600,
+            size: synthetic.settings.length,
+            dev: 1,
+            ino: 1,
+            mtimeMs: 1,
+            ctimeMs: 1,
+          },
+    lstatSync: (path: string) =>
+      path === "/harness-home" ||
+      path === "/worktree" ||
+      path === "/harness-home/.claude.json"
+        ? nativeStatus(path === "/harness-home/.claude.json" ? 44 : 42, true)
+        : {
+            uid: 1000,
+            nlink: 1,
+            mode: 0o600,
+            size: synthetic.settings.length,
+            dev: 1,
+            ino: 1,
+            mtimeMs: 1,
+            ctimeMs: 1,
+          },
+    readSync: (
+      _fd: number,
+      bytes: Buffer,
+      offset: number,
+      length: number,
+      position: number,
+    ) => synthetic.settings.copy(bytes, offset, position, position + length),
+  };
+});
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => {
     throw new Error("synthetic-native-launch-forbidden");
@@ -411,6 +480,8 @@ const resetPackedLifecycleFixture = () => {
   synthetic.commandFailure = undefined;
   synthetic.failAt = -1;
   synthetic.writeError = false;
+  synthetic.nativeFailure = "";
+  synthetic.nativeBytes = Buffer.alloc(0);
   const identity = `agentscope-hook-v1-sha256-${"a".repeat(64)}`;
   synthetic.settings = Buffer.from(
     JSON.stringify({
@@ -440,6 +511,74 @@ const resetPackedLifecycleFixture = () => {
     }),
   );
 };
+describe("Claude fixed native first-run fixture (synthetic filesystem)", () => {
+  beforeEach(resetPackedLifecycleFixture);
+  it("prepares only the fixed native first-run state after verifying installed hooks", async () => {
+    synthetic.fileCalls.length = 0;
+    const value = await prepareClaudeCodePackedCli(1500);
+    expect(value.settings.equals(synthetic.settings)).toBe(true);
+    expect(synthetic.fileCalls).toContainEqual({
+      action: "write",
+      descriptor: 44,
+      contents: JSON.stringify({
+        hasCompletedOnboarding: true,
+        autoUpdates: false,
+        bypassPermissionsModeAccepted: false,
+        projects: { "/worktree": { hasTrustDialogAccepted: true } },
+      }),
+    });
+    expect(synthetic.fileCalls).toContainEqual({
+      action: "open",
+      path: "/proc/self/fd/42/.claude.json",
+      flags:
+        constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      mode: 0o600,
+    });
+    expect(
+      Object.keys(
+        JSON.parse(synthetic.nativeBytes.toString("utf8")) as Record<
+          string,
+          unknown
+        >,
+      ).sort(),
+    ).toEqual([
+      "autoUpdates",
+      "bypassPermissionsModeAccepted",
+      "hasCompletedOnboarding",
+      "projects",
+    ]);
+  });
+  it.each([
+    "owner",
+    "symlink",
+    "alias",
+    "existing",
+    "mode",
+    "drift",
+    "partial",
+    "target-symlink",
+    "parent-after",
+    "missing",
+    "deadline",
+  ])(
+    "refuses native fixture %s without changing installed settings",
+    async (failure) => {
+      synthetic.nativeFailure = failure;
+      const settings = Buffer.from(synthetic.settings);
+      await expect(prepareClaudeCodePackedCli(1500)).rejects.toThrow();
+      expect(synthetic.settings.equals(settings)).toBe(true);
+    },
+  );
+  it("uses existing namespace ownership without inventing a parent mode gate", async () => {
+    synthetic.nativeFailure = "parent-mode";
+    await expect(prepareClaudeCodePackedCli(1500)).resolves.toHaveProperty(
+      "settings",
+    );
+  });
+});
 describe("Claude actual packed lifecycle (synthetic CLI and owned settings)", () => {
   beforeEach(resetPackedLifecycleFixture);
   it("accepts the actual successful unchanged status and retains strict settings", async () => {

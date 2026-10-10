@@ -2,11 +2,15 @@ import { execFile } from "node:child_process";
 import {
   closeSync,
   constants,
+  fchmodSync,
+  fchownSync,
   fstatSync,
   lstatSync,
   openSync,
   readFileSync,
   readSync,
+  realpathSync,
+  writeFileSync,
 } from "node:fs";
 import { promisify } from "node:util";
 import {
@@ -65,7 +69,95 @@ export const prepareClaudeCodePackedCli = async (
     throw new Error("integration.claude-code.install");
   note("packed-settings");
   const settings = readClaudeCodeInstalledSettings();
+  prepareNativeFirstRunFixture(deadline);
   return Object.freeze({ commands, settings });
+};
+const nativeFixtureDirectory = (path) => {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY |
+      constants.O_DIRECTORY |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK,
+  );
+  try {
+    const held = fstatSync(descriptor),
+      named = lstatSync(path);
+    if (
+      !held.isDirectory() ||
+      !named.isDirectory() ||
+      held.uid !== 1000 ||
+      held.gid !== 1000 ||
+      ["dev", "ino", "uid", "gid"].some((key) => held[key] !== named[key]) ||
+      realpathSync(path) !== path
+    )
+      throw new Error("integration.claude-code.settings");
+    return { descriptor, held, path };
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+};
+const prepareNativeFirstRunFixture = (deadline) => {
+  if (monotonicNow() >= deadline)
+    throw new Error("integration.claude-code.deadline");
+  const parent = nativeFixtureDirectory("/harness-home");
+  try {
+    const workspace = nativeFixtureDirectory("/worktree");
+    closeSync(workspace.descriptor);
+    // Controlled fixture preparation, not observed user consent or capture.
+    // The native runner uses this ordinary config; no auth/permission bypass.
+    const bytes = Buffer.from(
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        autoUpdates: false,
+        bypassPermissionsModeAccepted: false,
+        projects: { "/worktree": { hasTrustDialogAccepted: true } },
+      }),
+    );
+    const descriptor = openSync(
+      `/proc/self/fd/${parent.descriptor}/.claude.json`,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      fchownSync(descriptor, 1000, 1000);
+      fchmodSync(descriptor, 0o600);
+      writeFileSync(descriptor, bytes);
+      const held = fstatSync(descriptor),
+        named = lstatSync("/harness-home/.claude.json");
+      if (
+        !held.isFile() ||
+        !named.isFile() ||
+        held.uid !== 1000 ||
+        held.gid !== 1000 ||
+        held.nlink !== 1 ||
+        (held.mode & 0o7777) !== 0o600 ||
+        held.size !== bytes.length ||
+        ["dev", "ino", "uid", "gid", "mode", "nlink", "size"].some(
+          (key) => held[key] !== named[key],
+        )
+      )
+        throw new Error("integration.claude-code.settings");
+      const current = lstatSync(parent.path);
+      if (
+        !current.isDirectory() ||
+        ["dev", "ino", "uid", "gid"].some(
+          (key) => parent.held[key] !== current[key],
+        )
+      )
+        throw new Error("integration.claude-code.settings");
+    } finally {
+      closeSync(descriptor);
+    }
+  } finally {
+    closeSync(parent.descriptor);
+  }
+  if (monotonicNow() >= deadline)
+    throw new Error("integration.claude-code.deadline");
 };
 export const retireClaudeCodePackedCli = async (
   commands,
