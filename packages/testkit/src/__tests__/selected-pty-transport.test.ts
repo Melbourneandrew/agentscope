@@ -32,6 +32,7 @@ const sha256 = (value: string): string =>
 const reconciliationRunnerFrame = (
   error: unknown,
   fixture?: string,
+  codeReader: typeof trustedErrorCode = trustedErrorCode,
 ): string => {
   const source = readFileSync(
     new URL("../../../../tests/integration/runner.mjs", import.meta.url),
@@ -50,12 +51,14 @@ const reconciliationRunnerFrame = (
   const selector = authority.indexOf(
     "export const selectInteractiveFailureDiagnostic =",
   );
+  const predicateGuard = authority.indexOf("const unlistedModeNumber =");
   const formatter = authority.indexOf(
     "export const formatInteractiveChildDiagnostic =",
   );
   const wire = runInNewContext(
     [
       authority.slice(predicates, authority.indexOf("]);", predicates) + 3),
+      authority.slice(predicateGuard, selector),
       authority.slice(
         selector,
         authority.indexOf(
@@ -110,7 +113,7 @@ const reconciliationRunnerFrame = (
         fixture === undefined ? undefined : { predicate: fixture },
       retainedInteractivePhase: () => undefined,
       ...wire,
-      trustedErrorCode,
+      trustedErrorCode: codeReader,
       readPtyReconciliationStage,
       readPtySemanticFailure,
       readPtyExitSignal,
@@ -529,6 +532,26 @@ describe("fixed extended-CSI selected transport refusals", () => {
       terminalOutputJoined: true,
     });
   });
+  it.each([0, 9999, 65535])(
+    "retains genuine unlisted mode %s through the actual runner wire",
+    async (mode) => {
+      for (const final of ["h", "l"]) {
+        const error = await executeWithControl(`\u001b[?${mode}${final}`).then(
+          () => {
+            throw new Error("unsupported mode unexpectedly passed");
+          },
+          (failure: unknown) => failure,
+        );
+        const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${final}-${mode}`;
+        const { trustedErrorCode: currentCodeReader } =
+          await import("../internal/kernel-errors.js");
+        expect(currentCodeReader(error)).toBe(predicate);
+        expect(
+          reconciliationRunnerFrame(error, undefined, currentCodeReader),
+        ).toBe(`integration.runner.interactive-diagnostic:${predicate}\n`);
+      }
+    },
+  );
   it.each(["\u001b[?9001h", "\u001b[?25;9001l", "\u001b[?9001;25l"])(
     "retains refused Win32 enable/mixed mode %j",
     async (sequence) => {
@@ -562,7 +585,9 @@ describe("fixed extended-CSI selected transport refusals", () => {
     ["\u001b[1 p", "intermediate"],
     ["\u001b[>32u", "keyboard-shape"],
     ["\u001b[>4;1m", "modifier-shape"],
-    ["\u001b[?9999h", "private-mode-unlisted"],
+    ["\u001b[?9999h", "private-mode-unlisted-h-9999"],
+    ["\u001b[?0l", "private-mode-unlisted-l-0"],
+    ["\u001b[?65535h", "private-mode-unlisted-h-65535"],
     ["\u001b[<3p", "residual-shape"],
   ])(
     "retains fixed refused family %j through actual selected transport",
@@ -2323,7 +2348,7 @@ describe("selected PTY transport", () => {
     ],
     [
       "unsupported-control",
-      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted",
+      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-9999",
     ],
   ] as const)(
     "rejects terminal semantic state %s as completion",

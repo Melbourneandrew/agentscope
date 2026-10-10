@@ -159,6 +159,7 @@ export type PtyUnsupportedControlReason =
   | "csi"
   | "extended-csi"
   | "extended-csi-private-mode-unlisted"
+  | `extended-csi-private-mode-unlisted-${"h" | "l"}-${number}`
   | "extended-csi-residual-shape"
   | "osc"
   | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
@@ -1709,7 +1710,7 @@ export class BoundedTerminalEmulator {
               ? rejectedPrivateModeReasons[
                   mode as keyof typeof rejectedPrivateModeReasons
                 ]
-              : "extended-csi-private-mode-unlisted",
+              : `extended-csi-private-mode-unlisted-${final}-${mode}`,
           );
           return;
         }
