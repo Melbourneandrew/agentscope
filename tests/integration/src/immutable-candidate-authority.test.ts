@@ -21,6 +21,82 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+describe("fixed ground-control failure wire admission", () => {
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 28, 29, 30, 31, 127,
+  ])(
+    "preserves rejected control %s through the existing strict frame and held record",
+    (point) => {
+      const predicate = `testkit.pty.transport.semantic-malformed-ground-control-${point}`;
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      const observed = extractInteractiveChildDiagnostic(frame);
+      expect(observed).toBe(predicate);
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          observed,
+          undefined,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(predicate);
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+        }),
+      ).toBe(true);
+      expect(extractInteractiveChildDiagnostic(frame + frame)).toBeUndefined();
+    },
+  );
+  it.each([
+    "7",
+    "8",
+    "9",
+    "10",
+    "13",
+    "27",
+    "32",
+    "126",
+    "128",
+    "-1",
+    "01",
+    "1.5",
+    "PRIVATE",
+  ])("refuses out-of-list or noncanonical control suffix %s", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-malformed-ground-control-${suffix}`;
+    expect(
+      extractInteractiveChildDiagnostic(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it("keeps legacy generic ground-control admission", () => {
+    const predicate = "testkit.pty.transport.semantic-malformed-ground-control";
+    expect(
+      extractInteractiveChildDiagnostic(
+        formatInteractiveChildDiagnostic(predicate),
+      ),
+    ).toBe(predicate);
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(true);
+  });
+});
+
 it("preserves a refused Claude child close through the existing frame", () => {
   const predicate = "integration.fixture.claude-vendor-terminal";
   const frame = formatInteractiveChildDiagnostic(

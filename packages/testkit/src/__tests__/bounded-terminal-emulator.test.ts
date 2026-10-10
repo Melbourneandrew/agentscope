@@ -11,6 +11,30 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("fixed rejected ground-control reasons", () => {
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 28, 29, 30, 31, 127,
+  ])("retains only the first rejected control value %s", (point) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(new Uint8Array([point]));
+    terminal.write(new Uint8Array([point === 0 ? 127 : 0]));
+    expect(terminal.end()).toMatchObject({
+      semanticState: "malformed-control",
+      malformedControlCount: 2,
+    });
+    expect(terminal.malformedControlReason()).toBe(`ground-control-${point}`);
+  });
+  it("preserves permitted ground controls and fragmented OSC/escape parsing", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\r\n\b\t\u0007\u001b]0;title"));
+    terminal.write(bytes("\u0007\u001b["));
+    terminal.write(bytes("2J"));
+    expect(terminal.end().malformedControlCount).toBe(0);
+    expect(terminal.malformedControlReason()).toBeNull();
+  });
+});
+
 // These cases share one bounded emulator fixture surface across semantic states.
 // eslint-disable-next-line max-lines-per-function
 describe("bounded semantic terminal emulator", () => {
