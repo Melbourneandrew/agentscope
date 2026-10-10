@@ -25,6 +25,7 @@ import {
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientDiagnostic,
 } from "../image-preparation.mjs";
+import { readImageRequestDiagnostic } from "../image-preparation/boundary.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { prepareMockServerBootstrap } from "./prepare-bootstrap.mjs";
@@ -229,12 +230,14 @@ const supplierFailureTiming = (started, buildEntered, deadline) => {
 };
 const observeSupplierFailure = (phase, dockerClient, failure, timing) => {
   try {
+    const request = readImageRequestDiagnostic(failure[0]);
     const bytes = Buffer.from(
       `integration.mockserver-material.supplier-diagnostic:${JSON.stringify({
         phase,
         imagePreparation: preparedDockerClientDiagnostic(dockerClient) ?? null,
         primaryFailure: supplierPrimaryFailure(...failure),
         timing,
+        ...(request === undefined ? {} : { request }),
       })}\n`,
     );
     if (bytes.length > 4096) return;
