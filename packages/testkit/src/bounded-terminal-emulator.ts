@@ -569,7 +569,9 @@ export class BoundedTerminalEmulator {
   #savedRow = 0;
   #savedBold = false;
   #savedDim = false;
-  #savedCharacterSetTrusted = true;
+  #savedG0Ascii = true;
+  #savedG1Ascii = false;
+  #savedGlCharacterSet: 0 | 1 = 0;
   #savedRenditionTrusted = true;
   #savedAutoWrapEnabled = true;
   #savedCursorPositionTrusted = true;
@@ -616,6 +618,9 @@ export class BoundedTerminalEmulator {
   #bold = false;
   #dim = false;
   #characterSetTarget: "(" | ")" | null = null;
+  #g0Ascii = true;
+  #g1Ascii = false;
+  #glCharacterSet: 0 | 1 = 0;
   #characterSetTrusted = true;
   #renditionTrusted = true;
   #credentialPromptObserved = false;
@@ -1227,7 +1232,9 @@ export class BoundedTerminalEmulator {
         this.#savedColumn = this.#column;
         this.#savedBold = this.#bold;
         this.#savedDim = this.#dim;
-        this.#savedCharacterSetTrusted = this.#characterSetTrusted;
+        this.#savedG0Ascii = this.#g0Ascii;
+        this.#savedG1Ascii = this.#g1Ascii;
+        this.#savedGlCharacterSet = this.#glCharacterSet;
         this.#savedRenditionTrusted = this.#renditionTrusted;
         this.#savedAutoWrapEnabled = this.#autoWrapEnabled;
         this.#savedCursorPositionTrusted = this.#cursorPositionTrusted;
@@ -1238,7 +1245,10 @@ export class BoundedTerminalEmulator {
         this.#column = this.#savedColumn;
         this.#bold = this.#savedBold;
         this.#dim = this.#savedDim;
-        this.#characterSetTrusted = this.#savedCharacterSetTrusted;
+        this.#g0Ascii = this.#savedG0Ascii;
+        this.#g1Ascii = this.#savedG1Ascii;
+        this.#glCharacterSet = this.#savedGlCharacterSet;
+        this.#refreshCharacterSetTrust();
         this.#renditionTrusted = this.#savedRenditionTrusted;
         this.#autoWrapEnabled = this.#savedAutoWrapEnabled;
         this.#cursorPositionTrusted = this.#savedCursorPositionTrusted;
@@ -1286,9 +1296,10 @@ export class BoundedTerminalEmulator {
     if (this.#state === "charset") {
       if (character !== "0" && character !== "A" && character !== "B")
         this.#recordMalformedControl("escape");
-      this.#characterSetTrusted =
-        this.#characterSetTarget === "(" && character === "B";
+      if (this.#characterSetTarget === "(") this.#g0Ascii = character === "B";
+      else this.#g1Ascii = character === "B";
       this.#characterSetTarget = null;
+      this.#refreshCharacterSetTrust();
       this.#revokeChallengeScreenAuthority("charset");
       this.#state = "ground";
       return;
@@ -1313,6 +1324,13 @@ export class BoundedTerminalEmulator {
 
   // eslint-disable-next-line complexity -- response witness is parsed beside the bounded terminal character
   #consumeGround(character: string): void {
+    if (character === "\u000f" || character === "\u000e") {
+      // SI/LS0 and SO/LS1 invoke the independently designated G0/G1 slot.
+      this.#glCharacterSet = character === "\u000f" ? 0 : 1;
+      this.#refreshCharacterSetTrust();
+      this.#revokeChallengeScreenAuthority("charset");
+      return;
+    }
     if (character === "\r") {
       if (this.#challengeSynchronizedOutputFrameActive)
         this.#resetChallengeOutputObservation();
@@ -1347,8 +1365,8 @@ export class BoundedTerminalEmulator {
     const codePoint = character.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint === 0x7f) {
       this.#invalidateChallengeSynchronizedOutputFrame();
-      // CR/LF/BS/TAB/BEL returned above; ESC is consumed by the escape parser.
-      // This branch therefore contains only the 27 closed rejected values.
+      // CR/LF/BS/TAB/BEL/SI/SO returned above; ESC uses the escape parser.
+      // This branch therefore contains only the 25 closed rejected values.
       this.#recordMalformedControl(
         `ground-control-${codePoint}` as PtyMalformedControlReason,
       );
@@ -1362,8 +1380,9 @@ export class BoundedTerminalEmulator {
     this.#cells[cellIndex] = character;
     this.#cellBold[cellIndex] = this.#bold;
     this.#cellDim[cellIndex] = this.#dim;
-    this.#appendRecent(character);
+    if (this.#characterSetTrusted) this.#appendRecent(character);
     if (
+      this.#characterSetTrusted &&
       this.#readinessMatcher.kind === "challenge-styled-text" &&
       this.#readinessMatcher.postSubmissionResponseText !== undefined &&
       this.#postSubmissionIdleObservationArmed &&
@@ -1384,29 +1403,31 @@ export class BoundedTerminalEmulator {
       }
     }
     this.#observeChallengePrintableOutput(character, cellIndex);
-    const expectedReadinessMarker =
+    const readinessMarker =
       this.#readinessMatcher.kind === "challenge-marker" ||
       this.#readinessMatcher.kind === "challenge-styled-text"
         ? `${readyMarker}:${this.#readinessMatcher.challenge}`
         : readyMarker;
-    this.#readinessTail = `${this.#readinessTail}${character}`.slice(
-      -expectedReadinessMarker.length,
-    );
+    if (this.#characterSetTrusted)
+      this.#readinessTail = `${this.#readinessTail}${character}`.slice(
+        -readinessMarker.length,
+      );
     if (
       this.#readinessMatcher.kind === "semantic-marker" ||
       this.#readinessMatcher.kind === "challenge-marker"
     )
-      this.#readinessObserved ||=
-        this.#readinessTail === expectedReadinessMarker;
+      this.#readinessObserved ||= this.#readinessTail === readinessMarker;
     if (this.#readinessMatcher.kind === "challenge-styled-text")
       this.#readinessChallengeObserved ||=
-        this.#readinessTail === expectedReadinessMarker;
-    this.#completionTail = `${this.#completionTail}${character}`.slice(
-      -completedMarker.length,
-    );
+        this.#readinessTail === readinessMarker;
+    if (this.#characterSetTrusted)
+      this.#completionTail = `${this.#completionTail}${character}`.slice(
+        -completedMarker.length,
+      );
     this.#completionObserved ||= this.#completionTail === completedMarker;
     if (
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
+      this.#characterSetTrusted &&
       character === this.#readinessMatcher.text &&
       this.#completionObserved &&
       this.#bold === this.#readinessMatcher.bold &&
@@ -1644,6 +1665,18 @@ export class BoundedTerminalEmulator {
       this.#control = "";
       this.#state = "ground";
     }
+  }
+
+  #refreshCharacterSetTrust(): void {
+    this.#characterSetTrusted =
+      this.#glCharacterSet === 0 ? this.#g0Ascii : this.#g1Ascii;
+    // Designation/invocation cannot join marker fragments across character
+    // sets or promote old graphics bytes when ASCII is selected later.
+    this.#readinessTail = "";
+    this.#completionTail = "";
+    this.#postSubmissionResponseTail = "";
+    this.#recentCodePoints.length = 0;
+    this.#recentStart = 0;
   }
 
   #recordMalformedControl(reason: PtyMalformedControlReason): void {

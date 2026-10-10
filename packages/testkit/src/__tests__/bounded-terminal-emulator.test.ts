@@ -11,10 +11,126 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("G0/G1 designation and GL invocation", () => {
+  const frame =
+    "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";
+  const terminalForCharset = () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge,
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+    return terminal;
+  };
+  it.each([
+    ["\u000f", true],
+    ["\u001b(B\u000f", true],
+    ["\u001b(0\u000f", false],
+    ["\u001b)0\u000f", true],
+    ["\u001b)B\u000e", true],
+    ["\u001b)0\u000e", false],
+    ["\u001b(B\u000e", false],
+    ["\u001b(0\u001b)B\u000e", true],
+    ["\u001b)B\u000e\u001b(0\u000f", false],
+    ["\u001b)B\u000e\u001b7\u001b)0\u001b8", true],
+    ["\u001b(0\u001b7\u001b(B\u001b8\u000f", false],
+    ["\u001b)0\u001b7\u000e\u001b8", true],
+  ] as const)(
+    "derives active ASCII authority for %j without trusting graphics",
+    (sequence, trusted) => {
+      const terminal = terminalForCharset();
+      for (const character of sequence) terminal.write(bytes(character));
+      terminal.write(bytes(frame));
+      expect(terminal.readinessObserved()).toBe(trusted);
+      expect(terminal.end().malformedControlCount).toBe(0);
+    },
+  );
+  it("requires a fresh authenticated frame after SI, including idempotent SI", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u000f"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("does not derive ASCII marker authority from an invoked graphics G1", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`\u001b)0\u000eAGENTSCOPE_PTY_READY:${challenge}`));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
+  it.each(["\u001b)0\u000e", "\u001b(0\u000f"])(
+    "requires fresh ASCII marker bytes after graphics %j and SI recovery",
+    (graphics) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      terminal.write(bytes(`${graphics}AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\u001b(B\u000f"));
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.snapshot().semanticState).toBe("active");
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+      expect(terminal.readinessObserved()).toBe(true);
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(
+        bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+      );
+      expect(terminal.end().semanticState).toBe("completed");
+    },
+  );
+  it("cannot splice marker fragments across invocation and retains credential refusal", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 100, rows: 8 });
+    terminal.write(bytes("AGENTSCOPE_PTY_COM\u000fPLETE"));
+    expect(terminal.snapshot().semanticState).not.toBe("completed");
+    terminal.write(bytes("\u001b)0\u000ePassword: \u000f"));
+    expect(terminal.end().semanticState).toBe("credential-prompt");
+  });
+  it("retains already observed completion after designation and invocation", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 100, rows: 8 });
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\u001b)0\u000e\u000f"));
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+  it("never erases an earlier malformed control or accepts invalid designation", () => {
+    for (const sequence of ["\u0000\u000f", "\u001b)Z\u000f"]) {
+      const terminal = terminalForCharset();
+      terminal.write(bytes(sequence + frame));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.malformedControlReason()).toBe(
+        sequence[0] === "\u0000" ? "ground-control-0" : "escape",
+      );
+    }
+  });
+});
+
 describe("fixed rejected ground-control reasons", () => {
   it.each([
-    0, 1, 2, 3, 4, 5, 6, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-    26, 28, 29, 30, 31, 127,
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28,
+    29, 30, 31, 127,
   ])("retains only the first rejected control value %s", (point) => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(new Uint8Array([point]));
