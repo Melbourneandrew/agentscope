@@ -3634,6 +3634,94 @@ describe("source-defined Claude failure phases", () => {
     },
   );
 });
+describe("Claude model-pair alias compatibility", () => {
+  it("rejects unknown pending aliases rather than reflecting their suffix", () => {
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate: "integration.fixture.claude-model-pair-empty-private",
+        scenarioId: "claude-interactive-trace-smoke",
+      }),
+    ).toBe(false);
+  });
+  it.each(["empty", "initial-only"])(
+    "preserves generic223 and binds pending alias %s to held Claude",
+    (suffix) => {
+      const diagnostic = `integration.fixture.claude-model-pair-${suffix}`;
+      const phase = `model-pair-${suffix}`;
+      expect(
+        claudeScenarioFailureDiagnostic(
+          new Error("integration.claude-code.model-pair"),
+          phase,
+        ),
+      ).toBe(diagnostic);
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(223);
+      expect(
+        decodeInteractiveFailureExitCode(223, "claude-interactive-trace-smoke"),
+      ).toBe("integration.fixture.claude-model-pair");
+      expect(
+        encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          diagnostic,
+          undefined,
+          "fixture-process-interactive",
+        ),
+      ).toBe("child-failure");
+      for (const scenarioId of [
+        undefined,
+        "codex-tui-trace-smoke",
+        "claude-interactive-trace-smoke",
+      ]) {
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate: diagnostic,
+            ...(scenarioId === undefined ? {} : { scenarioId }),
+          }),
+        ).toBe(scenarioId === "claude-interactive-trace-smoke");
+      }
+      for (const error of [
+        new Error("private"),
+        { message: "integration.claude-code.model-pair" },
+        new Proxy(new Error("integration.claude-code.model-pair"), {}),
+        Object.defineProperty(new Error(), "message", {
+          get() {
+            throw new Error("private getter");
+          },
+        }),
+      ]) {
+        expect(claudeScenarioFailureDiagnostic(error, phase)).toBe(
+          "integration.fixture.claude-phase-bootstrap",
+        );
+      }
+      expect(
+        claudeScenarioFailureDiagnostic(
+          new Error("integration.claude-code.model-pair"),
+          "model-pair-empty-private",
+        ),
+      ).toBe("integration.fixture.claude-model-pair");
+      expect(
+        selectInteractiveFailureDiagnostic(
+          undefined,
+          decodeInteractiveFailureExitCode(
+            223,
+            "claude-interactive-trace-smoke",
+          ),
+          "integration.runner.fixture-failed",
+        ),
+      ).toBe("integration.fixture.claude-model-pair");
+    },
+  );
+});
 describe("Claude owned failure marker routing", () => {
   it.each([
     "integration.fixture.claude-model-pair",
