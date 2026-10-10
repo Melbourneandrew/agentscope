@@ -11,13 +11,107 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("truthful bounded DECRQM responses", () => {
+  it.each([
+    ["$p", "0;0"],
+    ["?$p", "?0;0"],
+    ["?00025$p", "?25;1"],
+    ["0$p", "0;0"],
+    ["65535$p", "65535;0"],
+    ["?7$p", "?7;1"],
+    ["?25$p", "?25;1"],
+    ["?1049$p", "?1049;2"],
+    ["?9001$p", "?9001;4"],
+    ["?2026$p", "?2026;2"],
+    ["?2031$p", "?2031;2"],
+    ["?12$p", "?12;0"],
+    ["?1004$p", "?1004;0"],
+    ["?1007$p", "?1007;0"],
+    ["?2004$p", "?2004;0"],
+    ["?65535$p", "?65535;0"],
+  ])(
+    "answers exact fragmented query %j without semantic progress",
+    (query, result) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary ASCII"));
+      const before = terminal.snapshot();
+      for (const character of `\u001b[${query}`)
+        terminal.write(bytes(character));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        `\u001b[${result}$y`,
+      );
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(`\u001b[${query}`).length,
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.requiredTerminalProtocolReady()).toBe(false);
+    },
+  );
+  it.each([7, 25, 1049, 2026, 2031])(
+    "reports actual current private mode %s",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const [final, state] of [
+        ["h", 1],
+        ["l", 2],
+      ] as const) {
+        terminal.write(bytes(`\u001b[?${mode}${final}`));
+        expect(terminal.takeTerminalResponses()).toHaveLength(0);
+        terminal.write(bytes(`\u001b[?${mode}$p`));
+        expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+          `\u001b[?${mode};${state}$y`,
+        );
+      }
+    },
+  );
+  it.each([12, 1004, 1007, 2004])(
+    "does not advertise unmodeled hint %s",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[?${mode}h\u001b[?${mode}$p`));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        `\u001b[?${mode};0$y`,
+      );
+    },
+  );
+  it.each(["?65536$p", "?1;2$p", ">1$p", "?1$$p", "?1$q", "?1:2$p"])(
+    "refuses neighboring query %j",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[${query}`));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it("preserves earlier errors and cumulative queue bounds after drain", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9001h\u001b[?25$p"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-9001",
+    );
+    terminal.takeTerminalResponses();
+    const count = Math.floor(4096 / bytes("\u001b[?25;1$y").length);
+    for (let index = 1; index < count; index++) {
+      terminal.write(bytes("\u001b[?25$p"));
+      terminal.takeTerminalResponses();
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[?25$p"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
 describe("fixed rejected CSI parameter syntax", () => {
   it.each([
     ["38:2::1:2:3m", "colon-sgr"],
     ["1:2u", "colon-keyboard"],
     ["?1:2h", "colon-other"],
-    ["?2026$p", "mode-query"],
-    ["$p", "mode-query"],
+    ["?65536$p", "range"],
+    ["65536$p", "range"],
     ["1!p", "intermediate"],
     ["65536m", "range"],
     ["999999999999999999999m", "range"],
@@ -320,6 +414,50 @@ const terminalForCharset = () => {
   terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
   return terminal;
 };
+describe("DECRQM preserves existing challenge authority", () => {
+  it("does not disturb an active styled frame or recover revoked trust", () => {
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes(frame.replace("\u001b[?2026l", "")));
+    const progress = terminal.challengedReadinessProgress();
+    const before = terminal.snapshot();
+    terminal.write(bytes("\u001b[?2026$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2026;1$y",
+    );
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 9,
+    });
+    terminal.write(bytes("\u001b[?2026l"));
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u001b(0\u001b[?7$p\u001b(B"));
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("reports current sync setting rather than invalidated observation frame", () => {
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes("\u001b[?2026h\u001b[?2026h\u001b[?2026$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2026;1$y",
+    );
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("uses original saved autowrap state and does not mint rejected subscriptions", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b7\u001b[?7l\u001b8\u001b[?7$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?7;1$y",
+    );
+    terminal.write(bytes("\u001b[?2031;9999h\u001b[?2031$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2031;2$y",
+    );
+    expect(terminal.end().semanticState).toBe("malformed-control");
+  });
+});
+
 describe("theme protocol preserves existing challenge authority", () => {
   it("does not mutate established styled readiness or screen identity", () => {
     const terminal = terminalForCharset();
