@@ -180,24 +180,72 @@ describe("ordinary supplier catch emits only owned diagnostics", () => {
     expect(causeReads).toBe(0);
     expect(readdirSync(input.privateRoot)).toEqual([]);
   });
-  it("reports bootstrap entry and honest absent preparation evidence", async () => {
-    state.failure = "bootstrap";
-    const write = stderr;
-    await expect(
-      researchMockServerSupplier(fixture() as never),
-    ).rejects.toThrow("bootstrap");
-    expect(write).toHaveBeenCalledTimes(1);
-    expect(readDiagnostic(write.mock.calls[0]?.[0])).toEqual({
-      phase: "bootstrap-preflight",
-      imagePreparation: null,
-      primaryFailure: {
-        kind: "unknown",
-        callerAborted: false,
-        preparationAborted: false,
-      },
-      timing: timing(false),
-    });
-  });
+});
+describe("bootstrap original request observation", () => {
+  it.each(["foreign", "owned", "no-status", "sink"])(
+    "preserves bootstrap primary and its optional %s request observation",
+    async (kind) => {
+      const { recordImageRequestDiagnostic } = await vi.importActual<{
+        recordImageRequestDiagnostic: (
+          error: Error,
+          phase: string,
+          outcome: string,
+          status?: number,
+        ) => Error;
+      }>("../image-preparation/boundary.mjs");
+      const input = fixture();
+      const primary = new Error("integration.images.config");
+      const request =
+        kind === "foreign"
+          ? undefined
+          : {
+              phase: "registry-config",
+              outcome: "unexpected-status",
+              ...(kind === "no-status" ? {} : { status: 503 }),
+            };
+      if (request !== undefined) {
+        recordImageRequestDiagnostic(
+          primary,
+          request.phase,
+          request.outcome,
+          request.status,
+        );
+        recordImageRequestDiagnostic(
+          primary,
+          "registry-auth",
+          "request-error",
+          401,
+        );
+      }
+      state.waitBootstrap = () => Promise.reject(primary);
+      const output: Uint8Array[] = [];
+      stderr.mockImplementation((bytes) => {
+        output.push(bytes);
+        if (kind === "sink") throw Error("PRIVATE_CANARY");
+        return bytes.byteLength;
+      });
+      await expect(researchMockServerSupplier(input as never)).rejects.toBe(
+        primary,
+      );
+      expect(output).toHaveLength(1);
+      expect(readDiagnostic(output[0])).toEqual({
+        phase: "bootstrap-preflight",
+        imagePreparation: null,
+        primaryFailure: {
+          kind: "unknown",
+          callerAborted: false,
+          preparationAborted: false,
+        },
+        timing: timing(false),
+        ...(request === undefined ? {} : { request }),
+      });
+      expect(output[0]!.byteLength).toBeLessThanOrEqual(4096);
+      expect(String(output[0])).not.toContain("PRIVATE_CANARY");
+      expect(readdirSync(input.privateRoot)).toEqual([]);
+    },
+  );
+});
+describe("optional supplier observation remains non-authoritative", () => {
   it.each(["reader", "sink", "oversized"])(
     "preserves primary and cleanup if the optional %s observation fails",
     async (kind) => {
@@ -268,6 +316,7 @@ describe("fixed primary failure and original cancellation observations", () => {
         reads++;
         throw new Error("PRIVATE_CANARY");
       };
+      Object.defineProperty(native, "request", { get: trap });
       if (kind === "accessor") {
         Object.defineProperty(native, "message", { get: trap });
         Object.defineProperty(native, "code", { get: trap });
@@ -292,6 +341,9 @@ describe("fixed primary failure and original cancellation observations", () => {
       expect(reads).toBe(0);
       expect(String(stderr.mock.calls[0]?.[0])).toContain('"kind":"unknown"');
       expect(String(stderr.mock.calls[0]?.[0])).not.toContain("PRIVATE");
+      expect(readDiagnostic(stderr.mock.calls[0]?.[0])).not.toHaveProperty(
+        "request",
+      );
       expect(readdirSync(input.privateRoot)).toEqual([]);
     },
   );
