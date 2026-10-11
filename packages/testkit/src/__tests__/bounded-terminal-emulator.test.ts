@@ -26,6 +26,7 @@ describe("truthful bounded DECRQM responses", () => {
     ["?2031$p", "?2031;2"],
     ["?1000$p", "?1000;2"],
     ["?1002$p", "?1002;2"],
+    ["?1003$p", "?1003;2"],
     ["?1006$p", "?1006;2"],
     ["?12$p", "?12;0"],
     ["?1004$p", "?1004;0"],
@@ -51,7 +52,7 @@ describe("truthful bounded DECRQM responses", () => {
       expect(terminal.requiredTerminalProtocolReady()).toBe(false);
     },
   );
-  it.each([7, 25, 1000, 1002, 1006, 1049, 2026, 2031])(
+  it.each([7, 25, 1000, 1002, 1003, 1006, 1049, 2026, 2031])(
     "reports actual current private mode %s",
     (mode) => {
       const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
@@ -109,7 +110,7 @@ describe("truthful bounded DECRQM responses", () => {
 });
 
 describe("normal mouse reporting subscription without pointer input", () => {
-  it.each(["1000", "1002;1006"])(
+  it.each(["1000", "1002;1006", "1003;1006"])(
     "preserves screen and semantic authority across fragmented %s enable and reset",
     (modes) => {
       const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
@@ -154,40 +155,50 @@ describe("ordered mouse tracking and independent SGR encoding", () => {
       "extended-csi-private-mode-1005",
     );
   });
-  it.each(["1000;1002", "1002;1000"])(
-    "uses the final tracking mode in %s",
-    (modes) => {
-      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
-      const selected = Number(modes.split(";").at(-1));
-      for (const character of `\u001b[?${modes};1006h`)
-        terminal.write(bytes(character));
-      expect(terminal.takeTerminalResponses()).toHaveLength(0);
-      terminal.write(bytes("\u001b[?1000$p\u001b[?1002$p\u001b[?1006$p"));
-      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
-        `\u001b[?1000;${selected === 1000 ? 1 : 2}$y\u001b[?1002;${selected === 1002 ? 1 : 2}$y\u001b[?1006;1$y`,
-      );
-      terminal.write(bytes("\u001b[?1000l\u001b[?1002$p\u001b[?1006$p"));
-      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
-        "\u001b[?1002;2$y\u001b[?1006;1$y",
-      );
-      terminal.write(bytes("\u001b[?1006l\u001b[?1006$p"));
-      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
-        "\u001b[?1006;2$y",
-      );
-      expect(terminal.snapshot().semanticState).toBe("active");
-      expect(terminal.readinessObserved()).toBe(false);
-    },
-  );
-  it.each(["1003", "1005", "9999"])(
+  it.each([
+    "1000;1002",
+    "1002;1000",
+    "1000;1003",
+    "1003;1000",
+    "1002;1003",
+    "1003;1002",
+  ])("uses the final tracking mode in %s", (modes) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    const selected = Number(modes.split(";").at(-1));
+    for (const character of `\u001b[?${modes};1006h`)
+      terminal.write(bytes(character));
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    terminal.write(
+      bytes("\u001b[?1000$p\u001b[?1002$p\u001b[?1003$p\u001b[?1006$p"),
+    );
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      `\u001b[?1000;${selected === 1000 ? 1 : 2}$y\u001b[?1002;${selected === 1002 ? 1 : 2}$y\u001b[?1003;${selected === 1003 ? 1 : 2}$y\u001b[?1006;1$y`,
+    );
+    terminal.write(bytes("\u001b[?1000l\u001b[?1002$p\u001b[?1006$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?1002;2$y\u001b[?1006;1$y",
+    );
+    terminal.write(bytes("\u001b[?1006l\u001b[?1006$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?1006;2$y",
+    );
+    expect(terminal.snapshot().semanticState).toBe("active");
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it.each(["1001", "1005", "9999"])(
     "does not commit any mouse state when %s is refused",
     (mode) => {
       const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
-      terminal.write(
-        bytes(`\u001b[?1002;1006;${mode}h\u001b[?1002$p\u001b[?1006$p`),
-      );
-      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
-        "\u001b[?1002;2$y\u001b[?1006;2$y",
-      );
+      for (const tracking of [1002, 1003]) {
+        terminal.write(
+          bytes(
+            `\u001b[?${tracking};1006;${mode}h\u001b[?${tracking}$p\u001b[?1006$p`,
+          ),
+        );
+        expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+          `\u001b[?${tracking};2$y\u001b[?1006;2$y`,
+        );
+      }
       expect(terminal.end().semanticState).toBe("malformed-control");
     },
   );
@@ -404,10 +415,10 @@ describe("fixed rejected extended-CSI legacy identities", () => {
   });
   it.each([
     1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
-    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1003, 1005, 1010, 1011, 1014, 1015,
-    1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039, 1040, 1041,
-    1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052, 1053, 1060,
-    1061, 2001, 2002, 2003, 2005, 2006,
+    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1005, 1010, 1011, 1014, 1015, 1016,
+    1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039, 1040, 1041, 1042,
+    1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052, 1053, 1060, 1061,
+    2001, 2002, 2003, 2005, 2006,
   ])(
     "identifies documented rejected private mode %s without admitting it",
     (mode) => {
