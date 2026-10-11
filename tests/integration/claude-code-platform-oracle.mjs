@@ -156,6 +156,34 @@ const claudeEffortOnlyMessage = (message) =>
   ["low", "medium", "high", "xhigh", "max"].includes(
     message.output_config.effort,
   );
+// Failure-only structural categories; never project request values or admit a
+// message that failed the independent closed profile above.
+const claudeEffortOnlyRefusal = (message) => {
+  if (
+    message === null ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    message.role !== "system"
+  )
+    return "role";
+  if (Object.keys(message).sort().join() !== "content,output_config,role")
+    return "keys";
+  if (!Array.isArray(message.content)) return "content-form";
+  if (message.content.length !== 0) return "content-nonempty";
+  const config = message.output_config;
+  if (
+    config === null ||
+    typeof config !== "object" ||
+    Array.isArray(config) ||
+    Object.getPrototypeOf(config) !== Object.prototype ||
+    Object.keys(config).join() !== "effort"
+  )
+    return "output-config";
+  if (typeof config.effort !== "string") return "effort-type";
+  if (!["low", "medium", "high", "xhigh", "max"].includes(config.effort))
+    return "effort-value";
+  return undefined;
+};
 const claudeUserHistory = (message) => {
   const blocks = claudeMessageBlocks(message, "user");
   const content = blocks.map((block, index) => {
@@ -252,12 +280,16 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
   const effortProfile =
     first.value.messages.length === 2 &&
     claudeEffortOnlyMessage(first.value.messages[1]);
+  const profileRefusal =
+    first.value.messages.length === 2 && !effortProfile
+      ? claudeEffortOnlyRefusal(first.value.messages[1])
+      : undefined;
   assert(
     first.value.messages.length === 1 || effortProfile,
     first.value.messages.length === 0
       ? "model-first-messages-empty"
       : first.value.messages.length === 2
-        ? "model-first-messages-two"
+        ? `model-first-messages-two${profileRefusal === undefined ? "" : `-${profileRefusal}`}`
         : "model-first-messages-three",
   );
   const prompt = claudeMessageBlocks(first.value.messages[0], "user");

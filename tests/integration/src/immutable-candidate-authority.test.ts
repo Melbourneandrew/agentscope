@@ -3674,6 +3674,9 @@ describe("Claude fixed model guard localization", () => {
       ).toBe(false);
     },
   );
+});
+
+describe("Claude fixed model guard wire compatibility", () => {
   it.each([
     "ledger",
     "primary-count",
@@ -3689,6 +3692,13 @@ describe("Claude fixed model guard localization", () => {
     "first-messages",
     "first-messages-empty",
     "first-messages-two",
+    "first-messages-two-role",
+    "first-messages-two-keys",
+    "first-messages-two-content-form",
+    "first-messages-two-content-nonempty",
+    "first-messages-two-output-config",
+    "first-messages-two-effort-type",
+    "first-messages-two-effort-value",
     "first-messages-three",
     "first-stimulus",
     "second",

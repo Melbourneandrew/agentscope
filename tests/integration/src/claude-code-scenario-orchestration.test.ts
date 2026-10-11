@@ -430,7 +430,55 @@ describe("native empty per-turn effort profile (synthetic requests)", () => {
   });
 });
 
+const firstProfileRefusals: readonly [unknown, string][] = [
+  [null, "role"],
+  [[], "role"],
+  [{ role: "user", content: [], output_config: { effort: "high" } }, "role"],
+  [
+    { role: "assistant", content: [], output_config: { effort: "high" } },
+    "role",
+  ],
+  [
+    { role: "system", content: "wrong", output_config: {}, extra: true },
+    "keys",
+  ],
+  [
+    { role: "system", content: "", output_config: { effort: "high" } },
+    "content-form",
+  ],
+  [
+    { role: "system", content: [{}], output_config: { effort: "high" } },
+    "content-nonempty",
+  ],
+  [{ role: "system", content: [], output_config: null }, "output-config"],
+  [{ role: "system", content: [], output_config: [] }, "output-config"],
+  [
+    {
+      role: "system",
+      content: [],
+      output_config: { effort: "high", extra: true },
+    },
+    "output-config",
+  ],
+  [
+    { role: "system", content: [], output_config: { effort: 1 } },
+    "effort-type",
+  ],
+  [
+    { role: "system", content: [], output_config: { effort: "unknown" } },
+    "effort-value",
+  ],
+];
 const strictModelGuardCases: readonly [unknown, string][] = [
+  ...firstProfileRefusals.map(([message, reason]): [unknown, string] => [
+    [
+      modelRequest({
+        ...modelInitial(),
+        messages: [modelInitial().messages[0], message],
+      }),
+    ],
+    `oracle-model-first-messages-two-${reason}`,
+  ]),
   [
     [
       {
@@ -517,7 +565,7 @@ const strictModelGuardCases: readonly [unknown, string][] = [
         ),
       }),
     ],
-    `oracle-model-first-messages-${count === 2 ? "two" : "three"}`,
+    `oracle-model-first-messages-${count === 2 ? "two-role" : "three"}`,
   ]),
   [
     [
