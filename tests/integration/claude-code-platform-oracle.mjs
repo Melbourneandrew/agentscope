@@ -156,6 +156,42 @@ const claudeEffortOnlyMessage = (message) =>
   ["low", "medium", "high", "xhigh", "max"].includes(
     message.output_config.effort,
   );
+// Native Ave/yOs context is string text or one cache-decorated text block.
+// Compare its exact semantic text locally; never retain or promote it to input.
+const claudeOrdinarySystemText = (message) => {
+  if (
+    message === null ||
+    typeof message !== "object" ||
+    Array.isArray(message) ||
+    Object.keys(message).sort().join() !== "content,role" ||
+    message.role !== "system"
+  )
+    return undefined;
+  if (typeof message.content === "string")
+    return message.content.length > 0 ? message.content : undefined;
+  if (!Array.isArray(message.content) || message.content.length !== 1)
+    return undefined;
+  const block = message.content[0];
+  if (
+    block === null ||
+    typeof block !== "object" ||
+    Array.isArray(block) ||
+    Object.keys(block).sort().join() !== "cache_control,text,type" ||
+    block.type !== "text" ||
+    typeof block.text !== "string" ||
+    block.text.length === 0
+  )
+    return undefined;
+  const cache = block.cache_control;
+  return cache !== null &&
+    typeof cache === "object" &&
+    !Array.isArray(cache) &&
+    cache.type === "ephemeral" &&
+    Object.keys(cache).every((key) => key === "type" || key === "ttl") &&
+    (!Object.hasOwn(cache, "ttl") || cache.ttl === "1h")
+    ? block.text
+    : undefined;
+};
 // Failure-only structural categories; never project request values or admit a
 // message that failed the independent closed profile above.
 const claudeEffortOnlyRefusal = (message) => {
@@ -210,15 +246,24 @@ const inspectClaudeReadRequestPair = (
   second,
   stimulus,
   effortProfile,
+  ordinaryContext,
 ) => {
-  const offset = effortProfile ? 1 : 0;
+  const offset = effortProfile || ordinaryContext !== undefined ? 1 : 0;
   assert(
     second.value.model === first.value.model &&
-      second.value.messages.length === 3 + offset &&
+      (second.value.messages.length === 3 + offset ||
+        (ordinaryContext !== undefined &&
+          second.value.messages.length === 5)) &&
       (!effortProfile ||
         (claudeEffortOnlyMessage(second.value.messages[1]) &&
           second.value.messages[1].output_config.effort ===
             first.value.messages[1].output_config.effort)) &&
+      (ordinaryContext === undefined ||
+        (claudeOrdinarySystemText(second.value.messages[1]) ===
+          ordinaryContext &&
+          (second.value.messages.length !== 5 ||
+            claudeOrdinarySystemText(second.value.messages[4]) !==
+              undefined))) &&
       JSON.stringify(claudeUserHistory(second.value.messages[0])) ===
         JSON.stringify(claudeUserHistory(first.value.messages[0])),
     "model-second",
@@ -280,12 +325,20 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
   const effortProfile =
     first.value.messages.length === 2 &&
     claudeEffortOnlyMessage(first.value.messages[1]);
+  const ordinaryContext =
+    first.value.messages.length === 2
+      ? claudeOrdinarySystemText(first.value.messages[1])
+      : undefined;
   const profileRefusal =
-    first.value.messages.length === 2 && !effortProfile
+    first.value.messages.length === 2 &&
+    !effortProfile &&
+    ordinaryContext === undefined
       ? claudeEffortOnlyRefusal(first.value.messages[1])
       : undefined;
   assert(
-    first.value.messages.length === 1 || effortProfile,
+    first.value.messages.length === 1 ||
+      effortProfile ||
+      ordinaryContext !== undefined,
     first.value.messages.length === 0
       ? "model-first-messages-empty"
       : first.value.messages.length === 2
@@ -301,8 +354,17 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
     "model-first-stimulus",
   );
   if (primary.length === 1) return undefined;
-  const second = claudeRequestBody(primary[1].body, effortProfile ? 4 : 3);
-  inspectClaudeReadRequestPair(first, second, stimulus, effortProfile);
+  const second = claudeRequestBody(
+    primary[1].body,
+    ordinaryContext !== undefined ? 5 : effortProfile ? 4 : 3,
+  );
+  inspectClaudeReadRequestPair(
+    first,
+    second,
+    stimulus,
+    effortProfile,
+    ordinaryContext,
+  );
   return Object.freeze({
     modelRequestBodySha256: Object.freeze([first.digest, second.digest]),
   });

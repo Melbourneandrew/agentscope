@@ -388,7 +388,9 @@ describe("Claude empty effort-only matcher profile", () => {
     );
     for (const [index, schema] of schemas.entries()) {
       const base = index === 0 ? 1 : 3;
-      expect(schema.properties.messages.anyOf).toHaveLength(2);
+      expect(schema.properties.messages.anyOf).toHaveLength(
+        index === 0 ? 3 : 4,
+      );
       expect(schema.properties.messages.anyOf[0]).toMatchObject({
         minItems: base,
         maxItems: base,
@@ -423,6 +425,82 @@ describe("Claude empty effort-only matcher profile", () => {
       expect(profile.items.slice(2)).toEqual(
         schema.properties.messages.anyOf[0]!.items.slice(1),
       );
+    }
+  });
+});
+
+describe("Claude ordinary system context matcher profile", () => {
+  it("adds only closed native context tuples beside unchanged legacy and effort tuples", () => {
+    const schemas = claudeCodeReadExpectations("synthetic-model").map(
+      (row) =>
+        JSON.parse(row.httpRequest.body.jsonSchema) as {
+          properties: {
+            messages: {
+              anyOf: {
+                minItems: number;
+                maxItems: number;
+                additionalItems: boolean;
+                items: unknown[];
+              }[];
+            };
+          };
+        },
+    );
+    for (const [index, schema] of schemas.entries()) {
+      const tuples = schema.properties.messages.anyOf;
+      const ordinary = tuples[2]!;
+      expect(ordinary).toMatchObject({
+        minItems: index === 0 ? 2 : 4,
+        maxItems: index === 0 ? 2 : 4,
+        additionalItems: false,
+      });
+      expect(ordinary.items[0]).toEqual(tuples[0]!.items[0]);
+      expect(ordinary.items.slice(2)).toEqual(tuples[0]!.items.slice(1));
+      expect(ordinary.items[1]).toEqual({
+        type: "object",
+        required: ["role", "content"],
+        additionalProperties: false,
+        properties: {
+          role: { const: "system" },
+          content: {
+            anyOf: [
+              { type: "string", minLength: 1 },
+              {
+                type: "array",
+                minItems: 1,
+                maxItems: 1,
+                items: {
+                  type: "object",
+                  required: ["type", "text", "cache_control"],
+                  additionalProperties: false,
+                  properties: {
+                    type: { const: "text" },
+                    text: { type: "string", minLength: 1 },
+                    cache_control: {
+                      type: "object",
+                      required: ["type"],
+                      additionalProperties: false,
+                      properties: {
+                        type: { const: "ephemeral" },
+                        ttl: { const: "1h" },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      if (index === 1) {
+        expect(tuples[3]).toMatchObject({
+          minItems: 5,
+          maxItems: 5,
+          additionalItems: false,
+        });
+        expect(tuples[3]!.items.slice(0, 4)).toEqual(ordinary.items);
+        expect(tuples[3]!.items[4]).toEqual(ordinary.items[1]);
+      }
     }
   });
 });

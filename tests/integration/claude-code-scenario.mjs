@@ -227,6 +227,42 @@ export const claudeCodeReadResponses = (model) => {
 };
 // Upstream matcher grammar, not another request decoder. The terminal owner
 // still independently checks the actual full ledger before declaring a turn.
+const ordinarySystemContextSchema = {
+  type: "object",
+  required: ["role", "content"],
+  additionalProperties: false,
+  properties: {
+    role: { const: "system" },
+    content: {
+      anyOf: [
+        { type: "string", minLength: 1 },
+        {
+          type: "array",
+          minItems: 1,
+          maxItems: 1,
+          items: {
+            type: "object",
+            required: ["type", "text", "cache_control"],
+            additionalProperties: false,
+            properties: {
+              type: { const: "text" },
+              text: { type: "string", minLength: 1 },
+              cache_control: {
+                type: "object",
+                required: ["type"],
+                additionalProperties: false,
+                properties: {
+                  type: { const: "ephemeral" },
+                  ttl: { const: "1h" },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+};
 export const claudeCodeReadExpectations = (model) => {
   const responses = claudeCodeReadResponses(model);
   const content = (role, block) => ({
@@ -285,6 +321,7 @@ export const claudeCodeReadExpectations = (model) => {
       },
     },
   };
+  const ordinary = ordinarySystemContextSchema;
   const expectation = (messages, response) => ({
     httpRequest: {
       method: "POST",
@@ -301,6 +338,10 @@ export const claudeCodeReadExpectations = (model) => {
               anyOf: [
                 messages,
                 [messages[0], effort, ...messages.slice(1)],
+                [messages[0], ordinary, ...messages.slice(1)],
+                ...(messages.length === 3
+                  ? [[messages[0], ordinary, ...messages.slice(1), ordinary]]
+                  : []),
               ].map((tuple) => ({
                 type: "array",
                 minItems: tuple.length,

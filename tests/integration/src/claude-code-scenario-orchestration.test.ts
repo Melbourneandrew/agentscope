@@ -338,6 +338,189 @@ const effortPairRows = (effort?: string, cached = false) =>
       });
     return modelRequest(body);
   });
+const contextMessage = (content: unknown) => ({ role: "system", content });
+const contextText = "synthetic native context";
+const cachedContext = (ttl?: string) =>
+  contextMessage([
+    {
+      type: "text",
+      text: contextText,
+      cache_control: {
+        type: "ephemeral",
+        ...(ttl === undefined ? {} : { ttl }),
+      },
+    },
+  ]);
+const contextPairRows = (
+  first: unknown,
+  second: unknown = first,
+  trailing?: unknown,
+) =>
+  modelPairRows().map((row, index) => {
+    const body = JSON.parse(row.body) as SyntheticRequestBody;
+    return modelRequest({
+      ...body,
+      messages: [
+        body.messages[0],
+        index === 0 ? first : second,
+        ...body.messages.slice(1),
+        ...(index === 1 && trailing !== undefined ? [trailing] : []),
+      ],
+    });
+  });
+
+describe("native ordinary system context profile (synthetic requests)", () => {
+  it.each([
+    [contextMessage(contextText), contextMessage(contextText), undefined],
+    [cachedContext(), contextMessage(contextText), undefined],
+    [cachedContext("1h"), contextMessage(contextText), undefined],
+    [contextMessage(contextText), cachedContext("1h"), undefined],
+    [
+      contextMessage(contextText),
+      contextMessage(contextText),
+      contextMessage("new context"),
+    ],
+    [cachedContext("1h"), contextMessage(contextText), cachedContext()],
+  ])(
+    "preserves exact semantic context and raw pair digests",
+    async (first, second, trailing) => {
+      const rows = contextPairRows(first, second, trailing);
+      await expect(modelPollFixture(rows).run()).resolves.toHaveProperty(
+        "pair.modelRequestBodySha256",
+        rows.map((row) => createHash("sha256").update(row.body).digest("hex")),
+      );
+    },
+  );
+  it.each([
+    contextMessage(""),
+    contextMessage([]),
+    contextMessage([{ type: "text", text: contextText }]),
+    contextMessage([{ type: "tool_addition", text: contextText }]),
+    contextMessage([
+      { type: "text", text: "", cache_control: { type: "ephemeral" } },
+    ]),
+    contextMessage([
+      { type: "text", text: contextText, cache_control: { type: "other" } },
+    ]),
+    cachedContext("5m"),
+    { ...contextMessage(contextText), extra: true },
+    { ...contextMessage(contextText), output_config: { effort: "high" } },
+    contextMessage([
+      {
+        type: "text",
+        text: contextText,
+        extra: true,
+        cache_control: { type: "ephemeral" },
+      },
+    ]),
+    contextMessage([
+      {
+        type: "text",
+        text: contextText,
+        cache_control: { type: "ephemeral", extra: true },
+      },
+    ]),
+    contextMessage([
+      ...(cachedContext().content as unknown[]),
+      ...(cachedContext().content as unknown[]),
+    ]),
+  ])("rejects a non-native ordinary context shape", async (message) => {
+    await expect(
+      modelPollFixture(contextPairRows(message)).run(),
+    ).rejects.toThrow(
+      "integration.claude-code.oracle-model-first-messages-two",
+    );
+    await expect(
+      modelPollFixture(
+        contextPairRows(
+          contextMessage(contextText),
+          contextMessage(contextText),
+          message,
+        ),
+      ).run(),
+    ).rejects.toThrow("integration.claude-code.oracle-model-second");
+  });
+});
+
+describe("ordinary context pair preserves independent semantic guards", () => {
+  it.each([
+    "changed",
+    "missing",
+    "duplicate",
+    "moved",
+    "extra",
+    "trailing",
+    "profile",
+    "history",
+    "model",
+    "tool",
+    "path",
+    "result",
+  ])("rejects %s pair contradiction", async (kind) => {
+    const rows = contextPairRows(contextMessage(contextText));
+    const body = JSON.parse(rows[1]!.body) as SyntheticRequestBody;
+    if (kind === "changed")
+      body.messages[1] = {
+        role: "system",
+        content: [
+          {
+            type: "text",
+            text: "changed context",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      };
+    if (kind === "missing") body.messages.splice(1, 1);
+    if (kind === "duplicate") body.messages.splice(1, 0, body.messages[1]!);
+    if (kind === "moved") body.messages.push(body.messages.splice(1, 1)[0]!);
+    if (kind === "extra")
+      body.messages.push(body.messages[1]!, body.messages[1]!);
+    if (kind === "trailing") body.messages.push({ role: "user", content: [] });
+    if (kind === "profile")
+      body.messages[1] = {
+        role: "system",
+        content: [],
+        output_config: { effort: "high" },
+      };
+    if (kind === "history")
+      body.messages[0]!.content[0]!.text = "wrong history";
+    if (kind === "model") body.model = "wrong model";
+    if (kind === "tool") body.messages[2]!.content[0]!.id = "wrong";
+    if (kind === "path")
+      body.messages[2]!.content[0]!.input = { file_path: "/wrong" };
+    if (kind === "result") body.messages[3]!.content[0]!.tool_use_id = "wrong";
+    rows[1] = modelRequest(body);
+    await expect(modelPollFixture(rows).run()).rejects.toThrow(
+      "integration.claude-code.oracle-model-",
+    );
+  });
+  it("does not turn valid context into stimulus authority or widen effort tuples", async () => {
+    const rows = contextPairRows(contextMessage(contextText));
+    const body = JSON.parse(rows[0]!.body) as SyntheticRequestBody;
+    body.messages[0]!.content[0]!.text = "wrong stimulus";
+    rows[0] = modelRequest(body);
+    await expect(modelPollFixture(rows).run()).rejects.toThrow(
+      "integration.claude-code.oracle-model-first-stimulus",
+    );
+    const effort = effortPairRows("high");
+    const second = JSON.parse(effort[1]!.body) as SyntheticRequestBody;
+    second.messages.push(second.messages[1]!);
+    effort[1] = modelRequest(second);
+    await expect(modelPollFixture(effort).run()).rejects.toThrow(
+      "integration.claude-code.oracle-model-messages",
+    );
+  });
+  it("uses the original body byte bound rather than an invented context cutoff", async () => {
+    await expect(
+      modelPollFixture(contextPairRows(contextMessage("x".repeat(5000)))).run(),
+    ).resolves.toHaveProperty("pair.modelRequestBodySha256");
+    await expect(
+      modelPollFixture(
+        contextPairRows(contextMessage("x".repeat(65536))),
+      ).run(),
+    ).rejects.toThrow("integration.claude-code.oracle-model-body-bound");
+  });
+});
 
 describe("native empty per-turn effort profile (synthetic requests)", () => {
   it.each([undefined, "low", "medium", "high", "xhigh", "max"])(
