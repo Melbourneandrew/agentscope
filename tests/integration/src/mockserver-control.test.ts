@@ -251,10 +251,12 @@ describe("fresh authenticated session baseline", () => {
         message,
       ),
     ).toThrow();
+    // An unfinished live first line is pending, never a minted baseline.
+    for (const content of [meta.trimEnd(), "{"])
+      expect(baseline([record(content)])).toBeUndefined();
     for (const records of [
       [],
       [record(meta), record(meta, 3n)],
-      [record(meta.trimEnd())],
       [record("{\n")],
       [record(`${terminal}${meta}`)],
       [record(`${meta}${meta}`)],
