@@ -685,7 +685,8 @@ export class BoundedTerminalEmulator {
   #cursorVisible = true;
   #synchronizedOutputModeEnabled = false;
   #paletteNotificationModeEnabled = false;
-  #normalMouseReportingModeEnabled = false;
+  #mouseTrackingMode: 0 | 1000 | 1002 = 0;
+  #sgrMouseEncodingEnabled = false;
   #savedColumn = 0;
   #savedRow = 0;
   #savedBold = false;
@@ -1674,7 +1675,9 @@ export class BoundedTerminalEmulator {
     else if (mode === 1049) enabled = this.#alternateScreen;
     else if (mode === 2026) enabled = this.#synchronizedOutputModeEnabled;
     else if (mode === 2031) enabled = this.#paletteNotificationModeEnabled;
-    else if (mode === 1000) enabled = this.#normalMouseReportingModeEnabled;
+    else if (mode === 1000 || mode === 1002)
+      enabled = this.#mouseTrackingMode === mode;
+    else if (mode === 1006) enabled = this.#sgrMouseEncodingEnabled;
     else return 0;
     return enabled ? 1 : 2;
   }
@@ -1764,7 +1767,11 @@ export class BoundedTerminalEmulator {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
         // 2031 subscribes to palette changes; this immutable palette never changes.
-        else if (![7, 12, 1000, 1004, 1007, 2004, 2026, 2031].includes(mode)) {
+        else if (
+          ![7, 12, 1000, 1002, 1004, 1006, 1007, 2004, 2026, 2031].includes(
+            mode,
+          )
+        ) {
           this.#recordUnsupportedControl(
             hasOwn(rejectedPrivateModeReasons, mode)
               ? rejectedPrivateModeReasons[
@@ -1779,9 +1786,7 @@ export class BoundedTerminalEmulator {
         this.#synchronizedOutputModeEnabled = final === "h";
       if (values.includes(2031))
         this.#paletteNotificationModeEnabled = final === "h";
-      // Reports require pointer events; this transport has no pointer input source.
-      if (values.includes(1000))
-        this.#normalMouseReportingModeEnabled = final === "h";
+      this.#applyMouseModes(final, values);
       return;
     }
     if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
@@ -1796,6 +1801,15 @@ export class BoundedTerminalEmulator {
     this.#recordUnsupportedControl(
       this.#extendedCsiRefusalReason(final, prefix, values),
     );
+  }
+
+  #applyMouseModes(final: "h" | "l", values: readonly number[]): void {
+    // Reports require pointer events; this transport has no pointer input source.
+    for (const mode of values) {
+      if (mode === 1000 || mode === 1002)
+        this.#mouseTrackingMode = final === "h" ? mode : 0;
+      else if (mode === 1006) this.#sgrMouseEncodingEnabled = final === "h";
+    }
   }
 
   #extendedCsiRefusalReason(

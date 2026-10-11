@@ -605,6 +605,22 @@ describe("fixed rejected CSI parameter transport", () => {
 });
 
 describe("normal mouse subscription through selected transport", () => {
+  it.each([
+    "\u001b[?1002h",
+    "\u001b[?1006h",
+    "\u001b[?1002;1006h\u001b[?1002$p\u001b[?1006$p",
+  ])("drives button tracking and SGR encoding %j", async (sequence) => {
+    await expect(
+      executeWithControl(
+        sequence,
+        sequence.endsWith("$p") ? "\u001b[?1002;1$y\u001b[?1006;1$y" : "",
+      ),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
   it.each(["\u001b[?1000h", "\u001b[?1000l", "\u001b[?1000h\u001b[?1000$p"])(
     "drives normal mouse subscription without inventing pointer input %j",
     async (sequence) => {
@@ -690,10 +706,10 @@ describe("fixed extended-CSI selected transport refusals", () => {
   );
   it.each([
     1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
-    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1002, 1003, 1005, 1006, 1010, 1011,
-    1014, 1015, 1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039,
-    1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052,
-    1053, 1060, 1061, 2001, 2002, 2003, 2005, 2006,
+    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1003, 1005, 1010, 1011, 1014, 1015,
+    1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039, 1040, 1041,
+    1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052, 1053, 1060,
+    1061, 2001, 2002, 2003, 2005, 2006,
   ])(
     "retains documented rejected mode %s through actual selected transport",
     async (mode) => {
