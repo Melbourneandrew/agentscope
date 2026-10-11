@@ -24,6 +24,7 @@ describe("truthful bounded DECRQM responses", () => {
     ["?9001$p", "?9001;4"],
     ["?2026$p", "?2026;2"],
     ["?2031$p", "?2031;2"],
+    ["?1000$p", "?1000;2"],
     ["?12$p", "?12;0"],
     ["?1004$p", "?1004;0"],
     ["?1007$p", "?1007;0"],
@@ -48,7 +49,7 @@ describe("truthful bounded DECRQM responses", () => {
       expect(terminal.requiredTerminalProtocolReady()).toBe(false);
     },
   );
-  it.each([7, 25, 1049, 2026, 2031])(
+  it.each([7, 25, 1000, 1049, 2026, 2031])(
     "reports actual current private mode %s",
     (mode) => {
       const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
@@ -103,6 +104,34 @@ describe("truthful bounded DECRQM responses", () => {
       new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
     );
   });
+});
+
+describe("normal mouse reporting subscription without pointer input", () => {
+  it("preserves screen and semantic authority across fragmented enable and reset", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("ordinary ASCII"));
+    const before = terminal.snapshot();
+    const sequence = "\u001b[?1000h\u001b[?1000l";
+    for (const character of sequence) terminal.write(bytes(character));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes(sequence).length,
+    });
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.requiredTerminalProtocolReady()).toBe(false);
+  });
+  it.each(["1006", "9999"])(
+    "refuses companion %s without committing subscription",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[?1000;${mode}h\u001b[?1000$p`));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        "\u001b[?1000;2$y",
+      );
+    },
+  );
 });
 
 describe("fixed rejected CSI parameter syntax", () => {
@@ -316,10 +345,10 @@ describe("fixed rejected extended-CSI legacy identities", () => {
   });
   it.each([
     1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
-    45, 46, 47, 66, 67, 69, 80, 95, 1000, 1001, 1002, 1003, 1005, 1006, 1010,
-    1011, 1014, 1015, 1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037,
-    1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051,
-    1052, 1053, 1060, 1061, 2001, 2002, 2003, 2005, 2006,
+    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1002, 1003, 1005, 1006, 1010, 1011,
+    1014, 1015, 1016, 1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039,
+    1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052,
+    1053, 1060, 1061, 2001, 2002, 2003, 2005, 2006,
   ])(
     "identifies documented rejected private mode %s without admitting it",
     (mode) => {
@@ -361,7 +390,7 @@ describe("fixed rejected extended-CSI legacy identities", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes("\u0000\u001b[?25;1000;1006h\u001b[>q"));
     expect(terminal.unsupportedControlReason()).toBe(
-      "extended-csi-private-mode-1000",
+      "extended-csi-private-mode-1006",
     );
     expect(terminal.malformedControlReason()).toBe("ground-control-0");
   });

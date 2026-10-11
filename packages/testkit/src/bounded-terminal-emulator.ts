@@ -685,6 +685,7 @@ export class BoundedTerminalEmulator {
   #cursorVisible = true;
   #synchronizedOutputModeEnabled = false;
   #paletteNotificationModeEnabled = false;
+  #normalMouseReportingModeEnabled = false;
   #savedColumn = 0;
   #savedRow = 0;
   #savedBold = false;
@@ -1673,6 +1674,7 @@ export class BoundedTerminalEmulator {
     else if (mode === 1049) enabled = this.#alternateScreen;
     else if (mode === 2026) enabled = this.#synchronizedOutputModeEnabled;
     else if (mode === 2031) enabled = this.#paletteNotificationModeEnabled;
+    else if (mode === 1000) enabled = this.#normalMouseReportingModeEnabled;
     else return 0;
     return enabled ? 1 : 2;
   }
@@ -1762,7 +1764,7 @@ export class BoundedTerminalEmulator {
         if (mode === 1049) this.#alternateScreen = final === "h";
         else if (mode === 25) this.#cursorVisible = final === "h";
         // 2031 subscribes to palette changes; this immutable palette never changes.
-        else if (![7, 12, 1004, 1007, 2004, 2026, 2031].includes(mode)) {
+        else if (![7, 12, 1000, 1004, 1007, 2004, 2026, 2031].includes(mode)) {
           this.#recordUnsupportedControl(
             hasOwn(rejectedPrivateModeReasons, mode)
               ? rejectedPrivateModeReasons[
@@ -1777,6 +1779,9 @@ export class BoundedTerminalEmulator {
         this.#synchronizedOutputModeEnabled = final === "h";
       if (values.includes(2031))
         this.#paletteNotificationModeEnabled = final === "h";
+      // Reports require pointer events; this transport has no pointer input source.
+      if (values.includes(1000))
+        this.#normalMouseReportingModeEnabled = final === "h";
       return;
     }
     if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
