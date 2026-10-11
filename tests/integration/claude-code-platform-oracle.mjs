@@ -199,7 +199,14 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
   assert(primary.length <= 2, "model-primary-count");
   if (primary.length === 0) return undefined;
   const first = claudeRequestBody(primary[0].body);
-  assert(first.value.messages.length === 1, "model-first-messages");
+  assert(
+    first.value.messages.length === 1,
+    first.value.messages.length === 0
+      ? "model-first-messages-empty"
+      : first.value.messages.length === 2
+        ? "model-first-messages-two"
+        : "model-first-messages-three",
+  );
   const prompt = claudeMessageBlocks(first.value.messages[0], "user");
   assert(
     prompt.filter(

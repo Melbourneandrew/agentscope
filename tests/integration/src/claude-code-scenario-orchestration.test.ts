@@ -274,7 +274,7 @@ describe("strict model-pair polling preserves immediate refusals", () => {
     [[null], "oracle-model-ledger"],
     [
       [modelRequest({ ...modelInitial(), messages: [] })],
-      "oracle-model-first-messages",
+      "oracle-model-first-messages-empty",
     ],
     [
       [...modelPairRows(), modelRequest(modelInitial())],
@@ -384,7 +384,28 @@ const strictModelGuardCases: readonly [unknown, string][] = [
   [[null], "oracle-model-ledger"],
   [
     [modelRequest({ ...modelInitial(), messages: [] })],
-    "oracle-model-first-messages",
+    "oracle-model-first-messages-empty",
+  ],
+  ...([2, 3] as const).map((count): [unknown, string] => [
+    [
+      modelRequest({
+        ...modelInitial(),
+        messages: Array.from(
+          { length: count },
+          () => modelInitial().messages[0],
+        ),
+      }),
+    ],
+    `oracle-model-first-messages-${count === 2 ? "two" : "three"}`,
+  ]),
+  [
+    [
+      modelRequest({
+        ...modelInitial(),
+        messages: Array.from({ length: 4 }, () => modelInitial().messages[0]),
+      }),
+    ],
+    "oracle-model-messages",
   ],
   [
     [
