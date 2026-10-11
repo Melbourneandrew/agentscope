@@ -256,6 +256,8 @@ const claudeModelPairFailurePredicates = Object.freeze([
   "integration.fixture.claude-oracle-model-messages",
   "integration.fixture.claude-oracle-model-message",
   "integration.fixture.claude-oracle-model-first",
+  "integration.fixture.claude-oracle-model-first-messages",
+  "integration.fixture.claude-oracle-model-first-stimulus",
   "integration.fixture.claude-oracle-model-second",
   "integration.fixture.claude-oracle-model-tool",
   "integration.fixture.claude-oracle-model-tool-result",
@@ -263,7 +265,14 @@ const claudeModelPairFailurePredicates = Object.freeze([
 ]);
 const isClaudeFailurePredicate = (diagnostic) =>
   claudeFailurePredicates.includes(diagnostic) ||
-  claudeModelPairFailurePredicates.includes(diagnostic);
+  claudeModelPairFailurePredicates.includes(diagnostic) ||
+  [
+    "integration.runner.fixture-result-open",
+    "integration.runner.fixture-result-status",
+    "integration.runner.fixture-result-read",
+    "integration.runner.fixture-result-identity",
+    "integration.runner.fixture-result-envelope",
+  ].includes(diagnostic);
 export const claudeScenarioFailureDiagnostic = (error, phase) => {
   if (!types.isProxy(error) && types.isNativeError(error)) {
     const field = Object.getOwnPropertyDescriptor(error, "message");
@@ -283,6 +292,8 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
           "messages",
           "message",
           "first",
+          "first-messages",
+          "first-stimulus",
           "second",
           "tool",
           "tool-result",
@@ -429,6 +440,11 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "integration.fixture.codex-verify-uninstall-during-hook-unclassified",
   "integration.runner.fixture-failed",
   "integration.runner.fixture-result",
+  "integration.runner.fixture-result-open",
+  "integration.runner.fixture-result-status",
+  "integration.runner.fixture-result-read",
+  "integration.runner.fixture-result-identity",
+  "integration.runner.fixture-result-envelope",
   "integration.runner.pty-authority",
   "testkit.headless.kernel.failure",
   "testkit.headless.reconciliation.deadline",

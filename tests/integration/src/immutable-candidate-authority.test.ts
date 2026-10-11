@@ -1363,8 +1363,12 @@ describe("actual runner caught-failure diagnostic routing", () => {
       expect(end).toBeGreaterThan(start);
       const error = new Error(predicate),
         frames: string[] = [];
+      const helperStart = source.indexOf(
+        "const retainedFixtureFailureDiagnostic =",
+      );
+      const helperEnd = source.indexOf("\ntry {", helperStart);
       runInNewContext(
-        `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+        `let interactiveFailureDiagnostic; let recoveryStage = null; ${source.slice(helperStart, helperEnd)} ${source.slice(start, end)}`,
         {
           scenario: { executionMode: "interactive" },
           scenarioId: "codex-tui-trace-smoke",
@@ -3635,6 +3639,41 @@ describe("source-defined Claude failure phases", () => {
   );
 });
 describe("Claude fixed model guard localization", () => {
+  it.each(["open", "status", "read", "identity", "envelope"])(
+    "holds reader stage %s only in the existing Claude failure frame",
+    (stage) => {
+      const predicate = `integration.runner.fixture-result-${stage}`;
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(extractInteractiveChildDiagnostic(frame)).toBe(predicate);
+      expect(
+        encodeInteractiveFailureExitCode(
+          predicate,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBeUndefined();
+      for (const scenarioId of [
+        "claude-interactive-trace-smoke",
+        "codex-tui-trace-smoke",
+      ]) {
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            predicate,
+            scenarioId,
+          }),
+        ).toBe(scenarioId === "claude-interactive-trace-smoke");
+      }
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+        }),
+      ).toBe(false);
+    },
+  );
   it.each([
     "ledger",
     "primary-count",
@@ -3647,6 +3686,8 @@ describe("Claude fixed model guard localization", () => {
     "messages",
     "message",
     "first",
+    "first-messages",
+    "first-stimulus",
     "second",
     "tool",
     "tool-result",

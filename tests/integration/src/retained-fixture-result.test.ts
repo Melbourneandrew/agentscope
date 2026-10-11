@@ -618,6 +618,101 @@ afterEach(() => {
     rmSync(root, { force: true, recursive: true });
 });
 
+describe("literal runner retained-reader refusal localization", () => {
+  it("keeps absent, foreign and unsupported callback stages generic and preserves specific failures", () => {
+    const source = readFileSync(
+      new URL("../runner.mjs", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("const retainedFixtureFailureDiagnostic =");
+    const end = source.indexOf("\ntry {", start);
+    for (const [heldScenario, stage] of [
+      ["claude-interactive-trace-smoke", null],
+      ["claude-interactive-trace-smoke", "private-canary"],
+      ["codex-tui-trace-smoke", "open"],
+      ["fixture-process-smoke", "open"],
+    ]) {
+      const project = runInNewContext(
+        `${source.slice(start, end)}; retainedFixtureFailureDiagnostic;`,
+        { scenarioId: heldScenario, recoveryStage: stage },
+      ) as (value: string) => string;
+      for (const predicate of [
+        "integration.runner.fixture-result",
+        "integration.fixture.claude-model-pair",
+        "testkit.pty.transport.exit",
+      ])
+        expect(project(predicate)).toBe(predicate);
+    }
+  });
+  it.each(["open", "status", "read", "identity", "envelope"] as const)(
+    "localizes actual reader %s through the literal runner catch",
+    (stage) => {
+      const root = createRoot();
+      const path = join(root, "fixture-result.json");
+      const heldScenario = "claude-interactive-trace-smoke";
+      if (stage !== "open")
+        writeResult(
+          path,
+          stage === "envelope"
+            ? "{}"
+            : JSON.stringify({
+                evidenceVersion: 1,
+                scenarioId: heldScenario,
+                encodedEvidence: "exact_evidence",
+              }),
+        );
+      if (stage === "status") chmodSync(path, 0o644);
+      const alter =
+        stage === "read"
+          ? () => {
+              writeResult(path, "x".repeat(1024 * 1024 + 1));
+            }
+          : stage === "identity"
+            ? () => {
+                renameSync(path, join(root, "renamed.json"));
+              }
+            : undefined;
+      const source = readFileSync(
+        new URL("../runner.mjs", import.meta.url),
+        "utf8",
+      );
+      const helperStart = source.indexOf(
+        "const recoverRetainedFixtureOutput =",
+      );
+      const helperEnd = source.indexOf("\ntry {", helperStart);
+      const catchStart = source.indexOf(
+        "    let diagnostic =",
+        source.indexOf("} catch (error) {\n  emitCodexPtyFailureHint();"),
+      );
+      const catchEnd = source.indexOf(
+        "    if (\n      diagnostic ===",
+        catchStart,
+      );
+      expect(catchStart).toBeGreaterThan(helperEnd);
+      const value = runInNewContext(
+        `(() => { let recoveryStage = null; ${source.slice(helperStart, helperEnd)} try { recoverRetainedFixtureOutput(); } catch (error) { const selectedError = error.message; const fixtureFailure = undefined; ${source.slice(catchStart, catchEnd)} return { diagnostic, message: error.message }; } })()`,
+        {
+          join,
+          ledger: root,
+          scenarioId: heldScenario,
+          readRetainedFixtureOutput: (
+            p: string,
+            s: string,
+            _test: undefined,
+            observe: (stage: string) => void,
+          ) => readRetainedFixtureOutput(p, s, alter, observe),
+          selectInteractiveFailureDiagnostic:
+            failureAuthority.selectInteractiveFailureDiagnostic,
+          retainedInteractivePhase: () => undefined,
+        },
+      ) as { diagnostic: string; message: string };
+      expect(value.message).toBe("integration.runner.fixture-result");
+      expect(value.diagnostic).toBe(
+        `integration.runner.fixture-result-${stage}`,
+      );
+    },
+  );
+});
 describe("retained fixture-result authority", () => {
   it.each(["open", "status", "read", "identity", "envelope"] as const)(
     "observes only the fixed %s refusal boundary, preserving rejection when observer throws",

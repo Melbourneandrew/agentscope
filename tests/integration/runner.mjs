@@ -439,6 +439,12 @@ const recoverRetainedFixtureOutput = () =>
       recoveryStage = stage;
     },
   );
+const retainedFixtureFailureDiagnostic = (diagnostic) =>
+  scenarioId === "claude-interactive-trace-smoke" &&
+  diagnostic === "integration.runner.fixture-result" &&
+  ["open", "status", "read", "identity", "envelope"].includes(recoveryStage)
+    ? `integration.runner.fixture-result-${recoveryStage}`
+    : diagnostic;
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -797,6 +803,7 @@ try {
       retainedInteractivePhase(ledger),
       selectedError,
     );
+    diagnostic = retainedFixtureFailureDiagnostic(diagnostic);
     if (
       diagnostic === "testkit.headless.reconciliation.deadline" &&
       trustedErrorCode(error) === diagnostic

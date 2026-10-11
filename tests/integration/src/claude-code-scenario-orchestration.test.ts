@@ -259,6 +259,9 @@ describe("actual model-pair exhaustion localization (synthetic wire only)", () =
       }
     },
   );
+});
+
+describe("strict model-pair polling preserves immediate refusals", () => {
   it("returns the actual valid pair without changing the phase or waiting", async () => {
     const input = modelPollFixture(modelPairRows());
     await expect(input.run()).resolves.toHaveProperty(
@@ -269,7 +272,10 @@ describe("actual model-pair exhaustion localization (synthetic wire only)", () =
   });
   it.each([
     [[null], "oracle-model-ledger"],
-    [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+    [
+      [modelRequest({ ...modelInitial(), messages: [] })],
+      "oracle-model-first-messages",
+    ],
     [
       [...modelPairRows(), modelRequest(modelInitial())],
       "oracle-model-primary-count",
@@ -376,7 +382,24 @@ const strictModelGuardCases: readonly [unknown, string][] = [
   ],
   [[modelRequest({ ...modelInitial(), model: "" })], "oracle-model-body-model"],
   [[null], "oracle-model-ledger"],
-  [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+  [
+    [modelRequest({ ...modelInitial(), messages: [] })],
+    "oracle-model-first-messages",
+  ],
+  [
+    [
+      modelRequest({
+        ...modelInitial(),
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "wrong synthetic stimulus" }],
+          },
+        ],
+      }),
+    ],
+    "oracle-model-first-stimulus",
+  ],
   [
     [...modelPairRows(), modelRequest(modelInitial())],
     "oracle-model-primary-count",
