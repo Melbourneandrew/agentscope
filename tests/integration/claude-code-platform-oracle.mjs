@@ -65,35 +65,64 @@ const assert = (condition, code) => {
 };
 
 const claudeRequestBody = (body) => {
-  const text =
-    typeof body === "string"
-      ? body
-      : body?.type === "STRING"
-        ? body.string
-        : body?.type === "JSON"
-          ? body.json
-          : undefined;
-  assert(
-    typeof text === "string" && Buffer.byteLength(text) <= 65536,
-    "model-body",
-  );
+  const decodeBase64 = (text) => {
+    assert(typeof text === "string", "model-body-envelope");
+    assert(text.length <= 87384, "model-body-bound");
+    const decoded = Buffer.from(text, "base64");
+    assert(decoded.toString("base64") === text, "model-body-envelope");
+    return decoded;
+  };
+  let bytes;
+  if (typeof body === "string") bytes = Buffer.from(body);
+  else {
+    assert(
+      body !== null && typeof body === "object" && !Array.isArray(body),
+      "model-body-envelope",
+    );
+    // The pinned recorded-request serializer retains exact raw bytes beside
+    // a potentially normalized JSON view. Match the final-ledger precedence.
+    if (Object.hasOwn(body, "rawBytes")) bytes = decodeBase64(body.rawBytes);
+    else if (body.type === "BINARY") bytes = decodeBase64(body.base64Bytes);
+    else {
+      const text =
+        body.type === "STRING"
+          ? body.string
+          : body.type === "JSON"
+            ? body.json
+            : undefined;
+      assert(typeof text === "string", "model-body-envelope");
+      bytes = Buffer.from(text);
+    }
+  }
+  assert(bytes.length <= 65536, "model-body-bound");
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch {
+    assert(false, "model-body-envelope");
+  }
   const value = JSON.parse(text);
   assert(
     value !== null && typeof value === "object" && !Array.isArray(value),
-    "model-body",
+    "model-body-object",
   );
+  assert(value.stream === true, "model-body-stream");
   assert(
-    value.stream === true &&
-      typeof value.model === "string" &&
+    typeof value.model === "string" &&
       value.model.length > 0 &&
       value.model.length <= 256,
-    "model-body",
+    "model-body-model",
   );
   assert(
     Array.isArray(value.messages) && value.messages.length <= 3,
     "model-messages",
   );
-  return { value, digest: createHash("sha256").update(text).digest("hex") };
+  return {
+    value,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+  };
 };
 const claudeMessageBlocks = (message, role) => {
   assert(

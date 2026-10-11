@@ -303,88 +303,198 @@ describe("actual model-pair exhaustion localization (synthetic wire only)", () =
   });
 });
 
-describe("actual strict model guard to existing retained wire", () => {
-  it.each([
-    [[null], "oracle-model-ledger"],
-    [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+const strictModelGuardCases: readonly [unknown, string][] = [
+  [
     [
-      [...modelPairRows(), modelRequest(modelInitial())],
-      "oracle-model-primary-count",
+      {
+        ...modelRequest(modelInitial()),
+        body: { type: "BINARY", base64Bytes: "%%%" },
+      },
     ],
+    "oracle-model-body-envelope",
+  ],
+  [
     [
-      [
-        {
-          method: "GET",
-          path: "/aux",
-          headers: { "x-agentscope-final-role": ["private"] },
+      {
+        ...modelRequest(modelInitial()),
+        body: { string: JSON.stringify(modelInitial()) },
+      },
+    ],
+    "oracle-model-body-envelope",
+  ],
+  [
+    [
+      {
+        ...modelRequest(modelInitial()),
+        body: { type: "BINARY", base64Bytes: "e30" },
+      },
+    ],
+    "oracle-model-body-envelope",
+  ],
+  [
+    [
+      {
+        ...modelRequest(modelInitial()),
+        body: {
+          type: "BINARY",
+          base64Bytes: Buffer.alloc(65537).toString("base64"),
         },
-      ],
-      "model-pair-control",
+      },
     ],
-  ])("retains original source guard %s", async (rows, suffix) => {
-    const input = modelPollFixture(rows);
-    let original: unknown;
-    try {
-      await input.run();
-    } catch (error) {
-      original = error;
-    }
-    const message =
-      suffix === "model-pair-control"
-        ? "integration.mockserver.control"
-        : `integration.claude-code.${suffix}`;
-    expect(original).toHaveProperty("message", message);
-    expect(input.counts()).toEqual({ requests: 1, waits: 0 });
-    const diagnostic = claudeScenarioFailureDiagnostic(
-      original,
-      input.context.claudeFailurePhase,
-    );
-    expect(diagnostic).toBe(`integration.fixture.claude-${suffix}`);
-    const ledger = mkdtempSync(join(tmpdir(), "agentscope-model-guard-"));
-    try {
-      writeFileSync(
-        join(ledger, "interactive-failure.txt"),
-        `${diagnostic}\n`,
-        { flag: "wx", mode: 0o600 },
+    "oracle-model-body-bound",
+  ],
+  [
+    [
+      {
+        ...modelRequest(modelInitial()),
+        body: { type: "BINARY", base64Bytes: "/w==" },
+      },
+    ],
+    "oracle-model-body-envelope",
+  ],
+  [
+    [
+      {
+        ...modelRequest(modelInitial()),
+        body: {
+          type: "STRING",
+          string: JSON.stringify(modelInitial()),
+          rawBytes: "%%%",
+        },
+      },
+    ],
+    "oracle-model-body-envelope",
+  ],
+  [
+    [{ ...modelRequest(modelInitial()), body: " ".repeat(65537) }],
+    "oracle-model-body-bound",
+  ],
+  [[modelRequest([])], "oracle-model-body-object"],
+  [
+    [modelRequest({ ...modelInitial(), stream: false })],
+    "oracle-model-body-stream",
+  ],
+  [[modelRequest({ ...modelInitial(), model: "" })], "oracle-model-body-model"],
+  [[null], "oracle-model-ledger"],
+  [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+  [
+    [...modelPairRows(), modelRequest(modelInitial())],
+    "oracle-model-primary-count",
+  ],
+  [
+    [
+      {
+        method: "GET",
+        path: "/aux",
+        headers: { "x-agentscope-final-role": ["private"] },
+      },
+    ],
+    "model-pair-control",
+  ],
+];
+describe("actual strict model guard to existing retained wire", () => {
+  it.each(["STRING", "JSON", "BINARY", "rawBytes", "equivalent", "normalized"])(
+    "preserves original pair bytes through canonical %s envelopes",
+    async (kind) => {
+      const rows = modelPairRows().map((row) => {
+        const original =
+          kind === "normalized"
+            ? JSON.stringify(JSON.parse(row.body), null, 2)
+            : row.body;
+        const base64 = Buffer.from(original).toString("base64");
+        const body =
+          kind === "STRING"
+            ? { type: kind, string: row.body }
+            : kind === "JSON"
+              ? { type: kind, json: row.body }
+              : kind === "BINARY"
+                ? { type: kind, base64Bytes: base64 }
+                : kind === "rawBytes"
+                  ? { rawBytes: base64 }
+                  : kind === "normalized"
+                    ? { type: "JSON", json: row.body, rawBytes: base64 }
+                    : { type: "STRING", string: row.body, rawBytes: base64 };
+        return { ...row, body };
+      });
+      const originals = modelPairRows().map((row) => ({
+        ...row,
+        body:
+          kind === "normalized"
+            ? JSON.stringify(JSON.parse(row.body), null, 2)
+            : row.body,
+      }));
+      const expected = await modelPollFixture(originals).run();
+      await expect(modelPollFixture(rows).run()).resolves.toEqual(expected);
+    },
+  );
+  it.each(strictModelGuardCases)(
+    "retains original source guard %s",
+    async (rows, suffix) => {
+      const input = modelPollFixture(rows);
+      let original: unknown;
+      try {
+        await input.run();
+      } catch (error) {
+        original = error;
+      }
+      const message =
+        suffix === "model-pair-control"
+          ? "integration.mockserver.control"
+          : `integration.claude-code.${suffix}`;
+      expect(original).toHaveProperty("message", message);
+      expect(input.counts()).toEqual({ requests: 1, waits: 0 });
+      const diagnostic = claudeScenarioFailureDiagnostic(
+        original,
+        input.context.claudeFailurePhase,
       );
-      const marker =
-        modelFailureWire.readBoundedInteractiveFailureMarker(ledger);
-      const selected = modelFailureWire.selectInteractiveFailureDiagnostic(
-        marker,
-        "integration.fixture.claude-model-pair",
-        "integration.runner.fixture-failed",
-      );
-      const frame = modelFailureWire.formatInteractiveChildDiagnostic(selected);
-      const predicate =
-        modelFailureWire.selectInteractiveExecutionFailurePredicate(
-          modelFailureWire.extractInteractiveChildDiagnostic(frame),
-          undefined,
-          "claude-interactive-trace-smoke",
+      expect(diagnostic).toBe(`integration.fixture.claude-${suffix}`);
+      const ledger = mkdtempSync(join(tmpdir(), "agentscope-model-guard-"));
+      try {
+        writeFileSync(
+          join(ledger, "interactive-failure.txt"),
+          `${diagnostic}\n`,
+          { flag: "wx", mode: 0o600 },
         );
-      expect(predicate).toBe(diagnostic);
-      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
-      expect(
-        modelFailureWire.validInstalledPtyFailure(
-          JSON.parse(
-            JSON.stringify({
-              receiptVersion: 1,
-              phase: "pty-execution",
-              predicate,
-              scenarioId: "claude-interactive-trace-smoke",
-            }),
+        const marker =
+          modelFailureWire.readBoundedInteractiveFailureMarker(ledger);
+        const selected = modelFailureWire.selectInteractiveFailureDiagnostic(
+          marker,
+          "integration.fixture.claude-model-pair",
+          "integration.runner.fixture-failed",
+        );
+        const frame =
+          modelFailureWire.formatInteractiveChildDiagnostic(selected);
+        const predicate =
+          modelFailureWire.selectInteractiveExecutionFailurePredicate(
+            modelFailureWire.extractInteractiveChildDiagnostic(frame),
+            undefined,
+            "claude-interactive-trace-smoke",
+          );
+        expect(predicate).toBe(diagnostic);
+        expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+        expect(
+          modelFailureWire.validInstalledPtyFailure(
+            JSON.parse(
+              JSON.stringify({
+                receiptVersion: 1,
+                phase: "pty-execution",
+                predicate,
+                scenarioId: "claude-interactive-trace-smoke",
+              }),
+            ),
           ),
-        ),
-      ).toBe(true);
-      expect(
-        encodeInteractiveFailureExitCode(
-          diagnostic,
-          "claude-interactive-trace-smoke",
-        ),
-      ).toBe(223);
-    } finally {
-      rmSync(ledger, { recursive: true, force: true });
-    }
-  });
+        ).toBe(true);
+        expect(
+          encodeInteractiveFailureExitCode(
+            diagnostic,
+            "claude-interactive-trace-smoke",
+          ),
+        ).toBe(223);
+      } finally {
+        rmSync(ledger, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("actual Claude ledger descriptor setup", () => {
