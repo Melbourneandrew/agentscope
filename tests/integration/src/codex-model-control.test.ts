@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import { projectCodexPostJoinTranscript } from "../codex-runtime-evidence.mjs";
 import {
   createCodexModelControlRequest,
   createCodexFailureResearchRecord,
@@ -48,6 +49,147 @@ const {
 };
 const readIntegration = (name: string): string =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
+
+const codexLiveMetadata = `${JSON.stringify({ type: "session_meta", payload: { id: "synthetic-session" } })}\n`;
+const codexLiveTerminal = `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "synthetic-turn", last_agent_message: "synthetic-completion" } })}\n`;
+const observeCodexLiveLedger = (
+  snapshots: readonly (readonly { content: string; ino?: number }[])[],
+): Promise<{ turnId: string; reads: number; baseline: string }> => {
+  const scenario = readIntegration("codex-pty-scenario.mjs");
+  const evidence = readIntegration("codex-runtime-evidence.mjs");
+  const between = (source: string, start: string, end: string): string => {
+    const first = source.indexOf(start),
+      last = source.indexOf(end, first);
+    expect(first).toBeGreaterThan(0);
+    expect(last).toBeGreaterThan(first);
+    return source.slice(first, last).replaceAll("export ", "");
+  };
+  return runInNewContext(
+    `(() => {
+      ${between(evidence, "const plainRecord =", "export const readBoundedJsonResponse")}
+      ${between(evidence, "const codexTurnTerminalId =", "export const projectCodexPostJoinTranscript")}
+      ${between(scenario, "const recordModelBaseline =", "// Retrieval is provisional.")}
+      ${between(scenario, "const waitForCodexTurnTerminal =", "const waitForCodexStopBeforeExit =")}
+      let codexSessionId, codexLedgerBaseline, reads = 0, clock = 0;
+      const expectedAssistantMessage = "synthetic-completion", homeDescriptor = 0;
+      const values = JSON.parse(serialized);
+      const readCodexSessionLedgerRecords = () => values[Math.min(reads++, values.length - 1)].map(value => ({
+        relativePath: ".codex/sessions/2026/01/01/rollout-synthetic.jsonl",
+        dev: 1n, ino: BigInt(value.ino ?? 2), mode: 0o100600n, uid: 1000n, gid: 1000n,
+        content: value.content,
+      }));
+      const bootNow = () => clock;
+      const terminalObservationBeforeDeadline = ({observed, deadline, now}) => {
+        if (now() >= deadline) throw new Error("integration.codex.trace-deadline");
+        return observed;
+      };
+      const waitWithinObservationDeadline = async () => { clock += 100; };
+      const remaining = () => {};
+      return waitForCodexTurnTerminal(300).then(result => ({
+        turnId: result.turnId, reads, baseline: codexLedgerBaseline[0].content,
+      }));
+    })()`,
+    { serialized: JSON.stringify(snapshots), setTimeout },
+    { timeout: 1000 },
+  ) as Promise<{ turnId: string; reads: number; baseline: string }>;
+};
+
+describe("actual Codex live baseline complete-line boundary", () => {
+  it.each([
+    codexLiveMetadata,
+    `${codexLiveMetadata}{"type":`,
+    '{"type":"session_meta",',
+  ])(
+    "binds only complete metadata before the terminal observation",
+    async (content) => {
+      await expect(
+        observeCodexLiveLedger([
+          [{ content }],
+          [{ content: codexLiveMetadata + codexLiveTerminal }],
+        ]),
+      ).resolves.toEqual({
+        turnId: "synthetic-turn",
+        reads: 2,
+        baseline: codexLiveMetadata,
+      });
+    },
+  );
+  it.each([
+    "{\n",
+    `${codexLiveMetadata}{\n`,
+    codexLiveMetadata + codexLiveMetadata,
+    `${JSON.stringify({ type: "other" })}\n${codexLiveMetadata}`,
+    `${JSON.stringify({ type: "session_meta", payload: {} })}\n`,
+  ])("refuses malformed completed lines or metadata", async (content) => {
+    await expect(observeCodexLiveLedger([[{ content }]])).rejects.toThrow(
+      "integration.codex.session-ledger",
+    );
+  });
+  it("refuses multiple live records even before metadata completes", async () => {
+    await expect(
+      observeCodexLiveLedger([[{ content: "{" }, { content: "{" }]]),
+    ).rejects.toThrow("integration.codex.session-ledger");
+  });
+  it.each(
+    [
+      [],
+      [{ content: codexLiveMetadata + codexLiveTerminal, ino: 3 }],
+      [
+        {
+          content:
+            codexLiveMetadata.replace("synthetic-session", "other") +
+            codexLiveTerminal,
+        },
+      ],
+      [
+        {
+          content:
+            codexLiveMetadata +
+            codexLiveTerminal.replace("synthetic-completion", "other"),
+        },
+      ],
+    ].map((next) => ({ next })),
+  )("preserves strict evolution after baseline binding", async ({ next }) => {
+    await expect(
+      observeCodexLiveLedger([[{ content: codexLiveMetadata }], next]),
+    ).rejects.toThrow("integration.codex.session-ledger");
+  });
+  it("does not mint completion when byte-zero metadata remains incomplete", async () => {
+    await expect(observeCodexLiveLedger([[{ content: "{" }]])).rejects.toThrow(
+      "integration.codex.trace-deadline",
+    );
+  });
+  it("keeps final postjoin snapshots strict about unfinished tails", () => {
+    const context = `${JSON.stringify({ type: "turn_context", payload: { turn_id: "synthetic-turn", model: "synthetic-model" } })}\n`;
+    const content = codexLiveMetadata + context + codexLiveTerminal;
+    const record = (value: string) => ({
+      relativePath: ".codex/sessions/2026/01/01/rollout-synthetic.jsonl",
+      dev: 1n,
+      ino: 2n,
+      mode: 0o100600n,
+      uid: 1000n,
+      gid: 1000n,
+      content: value,
+    });
+    const input = {
+      baseline: [record(codexLiveMetadata)],
+      observedRecords: [record(content)],
+      expectedMessage: "synthetic-completion",
+      sessionId: "synthetic-session",
+      turnId: "synthetic-turn",
+      modelName: "synthetic-model",
+    };
+    expect(
+      projectCodexPostJoinTranscript({ ...input, records: [record(content)] }),
+    ).toHaveProperty("exclusiveEndPosition", 3);
+    expect(() =>
+      projectCodexPostJoinTranscript({
+        ...input,
+        records: [record(`${content}{`)],
+      }),
+    ).toThrow("integration.codex.session-ledger");
+  });
+});
 
 describe("actual retained model research marker channel", () => {
   it.each([

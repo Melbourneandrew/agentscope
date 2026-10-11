@@ -736,7 +736,13 @@ console.log(JSON.stringify(await probeMockServerCandidate({runId:${JSON.stringif
 };
 const recordModelBaseline = (records) => {
   if (records.length !== 1) throw new Error("integration.codex.session-ledger");
-  codexSessionId = codexSessionIdentity(records);
+  // Live JSONL appends may leave an unfinished tail in a stable snapshot.
+  // Validate every completed line, but mint nothing before the first LF.
+  const completeEnd = records[0].content.lastIndexOf("\n") + 1;
+  if (completeEnd === 0) return;
+  codexSessionId = codexSessionIdentity([
+    { ...records[0], content: records[0].content.slice(0, completeEnd) },
+  ]);
   const newline = records[0].content.indexOf("\n");
   if (newline < 0) throw new Error("integration.codex.session-ledger");
   const prefix = records[0].content.slice(0, newline + 1);
