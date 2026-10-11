@@ -64,7 +64,7 @@ const assert = (condition, code) => {
   if (!condition) throw new Error(`integration.claude-code.oracle-${code}`);
 };
 
-const claudeRequestBody = (body) => {
+const claudeRequestBody = (body, maximumMessages = 3) => {
   const decodeBase64 = (text) => {
     assert(typeof text === "string", "model-body-envelope");
     assert(text.length <= 87384, "model-body-bound");
@@ -116,7 +116,7 @@ const claudeRequestBody = (body) => {
     "model-body-model",
   );
   assert(
-    Array.isArray(value.messages) && value.messages.length <= 3,
+    Array.isArray(value.messages) && value.messages.length <= maximumMessages,
     "model-messages",
   );
   return {
@@ -143,16 +143,66 @@ const claudeMessageBlocks = (message, role) => {
   );
   return message.content;
 };
-const inspectClaudeReadRequestPair = (first, second, stimulus) => {
+const claudeEffortOnlyMessage = (message) =>
+  message !== null &&
+  typeof message === "object" &&
+  Object.keys(message).sort().join() === "content,output_config,role" &&
+  message.role === "system" &&
+  Array.isArray(message.content) &&
+  message.content.length === 0 &&
+  message.output_config !== null &&
+  typeof message.output_config === "object" &&
+  Object.keys(message.output_config).join() === "effort" &&
+  ["low", "medium", "high", "xhigh", "max"].includes(
+    message.output_config.effort,
+  );
+const claudeUserHistory = (message) => {
+  const blocks = claudeMessageBlocks(message, "user");
+  const content = blocks.map((block, index) => {
+    if (index !== blocks.length - 1 || !Object.hasOwn(block, "cache_control"))
+      return block;
+    const cache = block.cache_control;
+    assert(
+      cache !== null &&
+        typeof cache === "object" &&
+        !Array.isArray(cache) &&
+        cache.type === "ephemeral" &&
+        Object.keys(cache).every((key) => key === "type" || key === "ttl") &&
+        (!Object.hasOwn(cache, "ttl") || cache.ttl === "1h"),
+      "model-message",
+    );
+    const semantic = { ...block };
+    delete semantic.cache_control;
+    return semantic;
+  });
+  return { ...message, content };
+};
+const inspectClaudeReadRequestPair = (
+  first,
+  second,
+  stimulus,
+  effortProfile,
+) => {
+  const offset = effortProfile ? 1 : 0;
   assert(
     second.value.model === first.value.model &&
-      second.value.messages.length === 3 &&
-      JSON.stringify(second.value.messages[0]) ===
-        JSON.stringify(first.value.messages[0]),
+      second.value.messages.length === 3 + offset &&
+      (!effortProfile ||
+        (claudeEffortOnlyMessage(second.value.messages[1]) &&
+          second.value.messages[1].output_config.effort ===
+            first.value.messages[1].output_config.effort)) &&
+      JSON.stringify(claudeUserHistory(second.value.messages[0])) ===
+        JSON.stringify(claudeUserHistory(first.value.messages[0])),
     "model-second",
   );
-  const tools = claudeMessageBlocks(second.value.messages[1], "assistant");
-  const results = claudeMessageBlocks(second.value.messages[2], "user");
+  const tools = claudeMessageBlocks(
+    second.value.messages[1 + offset],
+    "assistant",
+  );
+  const results = claudeMessageBlocks(
+    second.value.messages[2 + offset],
+    "user",
+  );
   assert(
     tools.length === 1 &&
       tools[0].type === "tool_use" &&
@@ -199,8 +249,11 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
   assert(primary.length <= 2, "model-primary-count");
   if (primary.length === 0) return undefined;
   const first = claudeRequestBody(primary[0].body);
+  const effortProfile =
+    first.value.messages.length === 2 &&
+    claudeEffortOnlyMessage(first.value.messages[1]);
   assert(
-    first.value.messages.length === 1,
+    first.value.messages.length === 1 || effortProfile,
     first.value.messages.length === 0
       ? "model-first-messages-empty"
       : first.value.messages.length === 2
@@ -208,6 +261,7 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
         : "model-first-messages-three",
   );
   const prompt = claudeMessageBlocks(first.value.messages[0], "user");
+  claudeUserHistory(first.value.messages[0]);
   assert(
     prompt.filter(
       (block) => block.type === "text" && block.text === stimulus.prompt,
@@ -215,8 +269,8 @@ export const inspectClaudeCodeModelRequests = (bytes, stimulus) => {
     "model-first-stimulus",
   );
   if (primary.length === 1) return undefined;
-  const second = claudeRequestBody(primary[1].body);
-  inspectClaudeReadRequestPair(first, second, stimulus);
+  const second = claudeRequestBody(primary[1].body, effortProfile ? 4 : 3);
+  inspectClaudeReadRequestPair(first, second, stimulus, effortProfile);
   return Object.freeze({
     modelRequestBodySha256: Object.freeze([first.digest, second.digest]),
   });

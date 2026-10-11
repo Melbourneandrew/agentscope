@@ -369,6 +369,64 @@ describe("Claude nonsecret fixture descriptor (mocked filesystem only)", () => {
   });
 });
 
+describe("Claude empty effort-only matcher profile", () => {
+  it("matches only the legacy tuple or one empty effort-only system message", () => {
+    const schemas = claudeCodeReadExpectations("synthetic-model").map(
+      (row) =>
+        JSON.parse(row.httpRequest.body.jsonSchema) as {
+          properties: {
+            messages: {
+              anyOf: {
+                minItems: number;
+                maxItems: number;
+                items: unknown[];
+                additionalItems: boolean;
+              }[];
+            };
+          };
+        },
+    );
+    for (const [index, schema] of schemas.entries()) {
+      const base = index === 0 ? 1 : 3;
+      expect(schema.properties.messages.anyOf).toHaveLength(2);
+      expect(schema.properties.messages.anyOf[0]).toMatchObject({
+        minItems: base,
+        maxItems: base,
+        additionalItems: false,
+      });
+      const profile = schema.properties.messages.anyOf[1]!;
+      expect(profile).toMatchObject({
+        minItems: base + 1,
+        maxItems: base + 1,
+        additionalItems: false,
+      });
+      expect(profile.items[1]).toEqual({
+        type: "object",
+        required: ["role", "content", "output_config"],
+        additionalProperties: false,
+        properties: {
+          role: { const: "system" },
+          content: { type: "array", maxItems: 0 },
+          output_config: {
+            type: "object",
+            required: ["effort"],
+            additionalProperties: false,
+            properties: {
+              effort: { enum: ["low", "medium", "high", "xhigh", "max"] },
+            },
+          },
+        },
+      });
+      expect(profile.items[0]).toEqual(
+        schema.properties.messages.anyOf[0]!.items[0],
+      );
+      expect(profile.items.slice(2)).toEqual(
+        schema.properties.messages.anyOf[0]!.items.slice(1),
+      );
+    }
+  });
+});
+
 describe("Claude ordinary packed CLI sequence (source preparation only)", () => {
   it("guards final SSE with the ordered native Read request tuple, not request count", () => {
     const rows = claudeCodeReadExpectations("synthetic-model");
@@ -383,8 +441,12 @@ describe("Claude ordinary packed CLI sequence (source preparation only)", () => 
     expect(
       rows.every((row) => row.httpRequest.body.type === "JSON_SCHEMA"),
     ).toBe(true);
-    const schema: unknown = JSON.parse(rows[1]!.httpRequest.body.jsonSchema);
-    expect(schema).toMatchObject({
+    const schema = JSON.parse(rows[1]!.httpRequest.body.jsonSchema) as {
+      properties: { messages: { anyOf: unknown[] } };
+    };
+    expect({
+      properties: { messages: schema.properties.messages.anyOf[0] },
+    }).toMatchObject({
       properties: {
         messages: {
           minItems: 3,

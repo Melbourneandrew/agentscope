@@ -268,6 +268,23 @@ export const claudeCodeReadExpectations = (model) => {
       text: { const: claudeCodeReadStimulus.prompt },
     },
   });
+  const effort = {
+    type: "object",
+    required: ["role", "content", "output_config"],
+    additionalProperties: false,
+    properties: {
+      role: { const: "system" },
+      content: { type: "array", maxItems: 0 },
+      output_config: {
+        type: "object",
+        required: ["effort"],
+        additionalProperties: false,
+        properties: {
+          effort: { enum: ["low", "medium", "high", "xhigh", "max"] },
+        },
+      },
+    },
+  };
   const expectation = (messages, response) => ({
     httpRequest: {
       method: "POST",
@@ -281,11 +298,16 @@ export const claudeCodeReadExpectations = (model) => {
           properties: {
             stream: { const: true },
             messages: {
-              type: "array",
-              minItems: messages.length,
-              maxItems: messages.length,
-              items: messages,
-              additionalItems: false,
+              anyOf: [
+                messages,
+                [messages[0], effort, ...messages.slice(1)],
+              ].map((tuple) => ({
+                type: "array",
+                minItems: tuple.length,
+                maxItems: tuple.length,
+                items: tuple,
+                additionalItems: false,
+              })),
             },
           },
         }),

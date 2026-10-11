@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   mkdtempSync,
@@ -306,6 +307,126 @@ describe("strict model-pair polling preserves immediate refusals", () => {
     await expect(input.run()).rejects.toThrow("integration.mockserver.control");
     expect(input.counts()).toEqual({ requests: 1, waits: 0 });
     expect(input.context.claudeFailurePhase).toBe("model-pair");
+  });
+});
+
+type SyntheticRequestBody = {
+  model: string;
+  messages: {
+    role: string;
+    content: Record<string, unknown>[];
+    output_config?: Record<string, unknown>;
+    [key: string]: unknown;
+  }[];
+};
+const effortPairRows = (effort?: string, cached = false) =>
+  modelPairRows().map((row, index) => {
+    const body = JSON.parse(row.body) as SyntheticRequestBody;
+    if (cached && index === 0)
+      body.messages[0]!.content = [
+        {
+          type: "text",
+          text: modelStimulus.prompt,
+          cache_control: { type: "ephemeral", ttl: "1h" },
+        },
+      ];
+    if (effort !== undefined)
+      body.messages.splice(1, 0, {
+        role: "system",
+        content: [],
+        output_config: { effort },
+      });
+    return modelRequest(body);
+  });
+
+describe("native empty per-turn effort profile (synthetic requests)", () => {
+  it.each([undefined, "low", "medium", "high", "xhigh", "max"])(
+    "preserves the exact pair and raw digests with effort %s",
+    async (effort) => {
+      const rows = effortPairRows(effort, true);
+      await expect(modelPollFixture(rows).run()).resolves.toHaveProperty(
+        "pair.modelRequestBodySha256",
+        rows.map((row) => createHash("sha256").update(row.body).digest("hex")),
+      );
+    },
+  );
+  it.each([
+    {
+      role: "system",
+      content: [{ type: "text", text: "wrong context" }],
+      output_config: { effort: "high" },
+    },
+    { role: "system", content: [], output_config: { effort: "unknown" } },
+    {
+      role: "system",
+      content: [],
+      output_config: { effort: "high", other: true },
+    },
+    {
+      role: "system",
+      content: [],
+      output_config: { effort: "high" },
+      other: true,
+    },
+    { role: "system", content: [], output_config: {} },
+  ])(
+    "rejects non-profile second messages without waiving first count",
+    async (message) => {
+      const rows = effortPairRows("high");
+      const body = JSON.parse(rows[0]!.body) as SyntheticRequestBody;
+      body.messages[1] = message;
+      rows[0] = modelRequest(body);
+      await expect(modelPollFixture(rows).run()).rejects.toThrow(
+        "integration.claude-code.oracle-model-first-messages-two",
+      );
+    },
+  );
+  it.each([
+    "missing",
+    "changed",
+    "duplicate",
+    "history",
+    "tool",
+    "result",
+    "model",
+  ])("keeps the second pair strict for %s", async (kind) => {
+    const rows = effortPairRows("high");
+    const body = JSON.parse(rows[1]!.body) as SyntheticRequestBody;
+    if (kind === "missing") body.messages.splice(1, 1);
+    if (kind === "changed") body.messages[1]!.output_config!.effort = "low";
+    if (kind === "duplicate") body.messages.splice(1, 0, body.messages[1]!);
+    if (kind === "history") body.messages[0]!.content[0]!.text = "changed";
+    if (kind === "tool") body.messages[2]!.content[0]!.id = "wrong";
+    if (kind === "result") body.messages[3]!.content[0]!.tool_use_id = "wrong";
+    if (kind === "model") body.model = "changed";
+    rows[1] = modelRequest(body);
+    await expect(modelPollFixture(rows).run()).rejects.toThrow(
+      "integration.claude-code.oracle-model-",
+    );
+  });
+  it("does not promote wrong stimulus or malformed cache annotations", async () => {
+    const rows = effortPairRows("high");
+    const body = JSON.parse(rows[0]!.body) as SyntheticRequestBody;
+    body.messages[0]!.content[0]!.text = "wrong stimulus";
+    rows[0] = modelRequest(body);
+    await expect(modelPollFixture(rows).run()).rejects.toThrow(
+      "integration.claude-code.oracle-model-first-stimulus",
+    );
+    for (const cache_control of [
+      { type: "other" },
+      { type: "ephemeral", ttl: "other" },
+      { type: "ephemeral", other: true },
+    ]) {
+      const malformed = effortPairRows();
+      for (const row of malformed) {
+        const value = JSON.parse(row.body) as SyntheticRequestBody;
+        value.messages[0]!.content[0]!.cache_control = cache_control;
+        row.body = JSON.stringify(value);
+      }
+      await expect(modelPollFixture(malformed).run()).rejects.toThrow(
+        "integration.claude-code.oracle-model-message",
+      );
+    }
   });
 });
 
