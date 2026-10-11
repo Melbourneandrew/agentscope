@@ -105,9 +105,13 @@ const reconciliationRunnerFrame = (
   );
   expect(caught).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
+  const helperStart = source.indexOf(
+    "const retainedFixtureFailureDiagnostic =",
+  );
+  const helperEnd = source.indexOf("\ntry {", helperStart);
   const frames: string[] = [];
   runInNewContext(
-    `let interactiveFailureDiagnostic; ${source.slice(start, end)}`,
+    `let interactiveFailureDiagnostic; let recoveryStage = null; ${source.slice(helperStart, helperEnd)} ${source.slice(start, end)}`,
     {
       error,
       scenario: { executionMode: "interactive" },
