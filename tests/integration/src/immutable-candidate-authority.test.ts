@@ -3634,6 +3634,81 @@ describe("source-defined Claude failure phases", () => {
     },
   );
 });
+describe("Claude fixed model guard localization", () => {
+  it.each([
+    "ledger",
+    "primary-count",
+    "body",
+    "messages",
+    "message",
+    "first",
+    "second",
+    "tool",
+    "tool-result",
+    "control",
+  ])("preserves fixed guard %s through held Claude wire", (guard) => {
+    const message =
+      guard === "control"
+        ? "integration.mockserver.control"
+        : `integration.claude-code.oracle-model-${guard}`;
+    const diagnostic =
+      guard === "control"
+        ? "integration.fixture.claude-model-pair-control"
+        : `integration.fixture.claude-oracle-model-${guard}`;
+    expect(
+      claudeScenarioFailureDiagnostic(new Error(message), "model-pair"),
+    ).toBe(diagnostic);
+    expect(
+      encodeInteractiveFailureExitCode(
+        diagnostic,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(223);
+    expect(
+      decodeInteractiveFailureExitCode(223, "claude-interactive-trace-smoke"),
+    ).toBe("integration.fixture.claude-model-pair");
+    expect(
+      encodeInteractiveFailureExitCode(diagnostic, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    const frame: string = formatInteractiveChildDiagnostic(diagnostic);
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(extractInteractiveChildDiagnostic(frame)).toBe(diagnostic);
+    for (const scenarioId of [
+      "claude-interactive-trace-smoke",
+      "codex-tui-trace-smoke",
+    ]) {
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate: diagnostic,
+          scenarioId,
+        }),
+      ).toBe(scenarioId === "claude-interactive-trace-smoke");
+    }
+    expect(
+      claudeScenarioFailureDiagnostic(new Error(message), "native-final"),
+    ).toBe("integration.fixture.claude-phase-native-final");
+    for (const error of [
+      new Error(`${message}-private`),
+      { message },
+      new Proxy(new Error(message), {}),
+      Object.defineProperty(new Error(), "message", {
+        get() {
+          throw new Error("private getter");
+        },
+      }),
+    ]) {
+      expect(claudeScenarioFailureDiagnostic(error, "model-pair")).toBe(
+        "integration.fixture.claude-phase-model-pair",
+      );
+    }
+    expect(
+      extractInteractiveChildDiagnostic(`${frame.trim()}-private\n`),
+    ).toBeUndefined();
+  });
+});
+
 describe("Claude model-pair alias compatibility", () => {
   it("rejects unknown pending aliases rather than reflecting their suffix", () => {
     expect(

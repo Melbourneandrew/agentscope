@@ -303,6 +303,90 @@ describe("actual model-pair exhaustion localization (synthetic wire only)", () =
   });
 });
 
+describe("actual strict model guard to existing retained wire", () => {
+  it.each([
+    [[null], "oracle-model-ledger"],
+    [[modelRequest({ ...modelInitial(), messages: [] })], "oracle-model-first"],
+    [
+      [...modelPairRows(), modelRequest(modelInitial())],
+      "oracle-model-primary-count",
+    ],
+    [
+      [
+        {
+          method: "GET",
+          path: "/aux",
+          headers: { "x-agentscope-final-role": ["private"] },
+        },
+      ],
+      "model-pair-control",
+    ],
+  ])("retains original source guard %s", async (rows, suffix) => {
+    const input = modelPollFixture(rows);
+    let original: unknown;
+    try {
+      await input.run();
+    } catch (error) {
+      original = error;
+    }
+    const message =
+      suffix === "model-pair-control"
+        ? "integration.mockserver.control"
+        : `integration.claude-code.${suffix}`;
+    expect(original).toHaveProperty("message", message);
+    expect(input.counts()).toEqual({ requests: 1, waits: 0 });
+    const diagnostic = claudeScenarioFailureDiagnostic(
+      original,
+      input.context.claudeFailurePhase,
+    );
+    expect(diagnostic).toBe(`integration.fixture.claude-${suffix}`);
+    const ledger = mkdtempSync(join(tmpdir(), "agentscope-model-guard-"));
+    try {
+      writeFileSync(
+        join(ledger, "interactive-failure.txt"),
+        `${diagnostic}\n`,
+        { flag: "wx", mode: 0o600 },
+      );
+      const marker =
+        modelFailureWire.readBoundedInteractiveFailureMarker(ledger);
+      const selected = modelFailureWire.selectInteractiveFailureDiagnostic(
+        marker,
+        "integration.fixture.claude-model-pair",
+        "integration.runner.fixture-failed",
+      );
+      const frame = modelFailureWire.formatInteractiveChildDiagnostic(selected);
+      const predicate =
+        modelFailureWire.selectInteractiveExecutionFailurePredicate(
+          modelFailureWire.extractInteractiveChildDiagnostic(frame),
+          undefined,
+          "claude-interactive-trace-smoke",
+        );
+      expect(predicate).toBe(diagnostic);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(
+        modelFailureWire.validInstalledPtyFailure(
+          JSON.parse(
+            JSON.stringify({
+              receiptVersion: 1,
+              phase: "pty-execution",
+              predicate,
+              scenarioId: "claude-interactive-trace-smoke",
+            }),
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        encodeInteractiveFailureExitCode(
+          diagnostic,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(223);
+    } finally {
+      rmSync(ledger, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("actual Claude ledger descriptor setup", () => {
   const begin = source.indexOf("const protectClaudeLedger =");
   const body = source.slice(

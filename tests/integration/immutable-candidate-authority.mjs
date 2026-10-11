@@ -245,6 +245,16 @@ const claudeFailurePredicates = Object.freeze([
 const claudeModelPairFailurePredicates = Object.freeze([
   "integration.fixture.claude-model-pair-empty",
   "integration.fixture.claude-model-pair-initial-only",
+  "integration.fixture.claude-oracle-model-ledger",
+  "integration.fixture.claude-oracle-model-primary-count",
+  "integration.fixture.claude-oracle-model-body",
+  "integration.fixture.claude-oracle-model-messages",
+  "integration.fixture.claude-oracle-model-message",
+  "integration.fixture.claude-oracle-model-first",
+  "integration.fixture.claude-oracle-model-second",
+  "integration.fixture.claude-oracle-model-tool",
+  "integration.fixture.claude-oracle-model-tool-result",
+  "integration.fixture.claude-model-pair-control",
 ]);
 const isClaudeFailurePredicate = (diagnostic) =>
   claudeFailurePredicates.includes(diagnostic) ||
@@ -253,6 +263,26 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
   if (!types.isProxy(error) && types.isNativeError(error)) {
     const field = Object.getOwnPropertyDescriptor(error, "message");
     if (field && Object.hasOwn(field, "value")) {
+      if (phase === "model-pair") {
+        if (field.value === "integration.mockserver.control")
+          return "integration.fixture.claude-model-pair-control";
+        const guard = [
+          "ledger",
+          "primary-count",
+          "body",
+          "messages",
+          "message",
+          "first",
+          "second",
+          "tool",
+          "tool-result",
+        ].find(
+          (name) =>
+            field.value === `integration.claude-code.oracle-model-${name}`,
+        );
+        if (guard !== undefined)
+          return `integration.fixture.claude-oracle-model-${guard}`;
+      }
       if (field.value === "integration.claude-code.model-pair") {
         if (phase === "model-pair-empty")
           return "integration.fixture.claude-model-pair-empty";
