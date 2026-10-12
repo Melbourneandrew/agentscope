@@ -5452,12 +5452,15 @@ const selectedPtyRuntimeForTest = (
                   ? safeBufferFrom("\u001b[")
                   : seed === "unsupported-control"
                     ? safeBufferFrom("\u001b[?9999h")
-                    : seed === "challenge-marker-title" &&
-                        readiness.kind === "challenge-marker"
+                    : readiness.kind === "challenge-marker"
                       ? safeBufferFrom(
                           `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
                         )
-                      : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+                      : readiness.kind === "challenge-styled-text"
+                        ? safeBufferFrom(
+                            `${seed === "terminal-post-completion-idle" || seed === "terminal-title-completion-after-idle" || seed === "terminal-post-submission-readiness-revoked" || seed === "terminal-post-submission-idle-missing" || seed === "terminal-idle-before-completion-marker" || seed === "terminal-preenter-buffered-idle" || seed === "terminal-response-after-idle-frame" ? "" : (readiness.postSubmissionResponseText ?? "")}\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
+                          )
+                        : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const ready = safeBufferFrom(
         readiness.kind === "challenge-styled-text"
           ? `AGENTSCOPE_PTY_READY:${readiness.challenge}\r\n\u001b[1m›\u001b[22m ${readiness.requiredText}`
@@ -5834,6 +5837,15 @@ const selectedPtyRuntimeForTest = (
             ),
           );
         else chunks.splice(4, 0, synchronizedPromptRendered);
+        if (
+          seed === "terminal-post-completion-idle" ||
+          seed === "terminal-post-submission-readiness-revoked"
+        )
+          chunks.push(
+            safeBufferFrom(
+              `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${readiness.challenge}\u001b\\`,
+            ),
+          );
       }
       let chunkIndex = 0;
       let chunkOffset = 0;
@@ -5997,6 +6009,19 @@ const selectedPtyRuntimeForTest = (
             terminal = true;
             close({ code: 0, signal: 15 });
           }
+          if (
+            (terminalProtocolNegativeSeed ||
+              seed === "fixed-readiness-spoof" ||
+              seed === "completion-before-readiness" ||
+              seed === "checkpoint-missing-process" ||
+              seed === "checkpoint-process-churn" ||
+              seed === "checkpoint-observer-delay" ||
+              seed === "checkpoint-observer-delay-mismatch" ||
+              seed === "readiness-revoked-after-input" ||
+              seed === "terminal-preenter-frame-late-close") &&
+            (!terminal || processes.size !== 0)
+          )
+            throw new Error("testkit.pty.test-refusal-not-joined");
         },
         eof: () => {
           if (seed === "eof-failure") return fail("testkit.pty.transport");
@@ -6220,9 +6245,42 @@ const selectedPtyRuntimeForTest = (
               bytesWritten: bytes.length,
             };
           }
+          if (terminalProtocolNegativeSeed && terminalQueryAnswered) {
+            const reply = safeBufferFrom(bytes).toString("utf8");
+            const cursor = reply.startsWith("\u001b[")
+              ? /^([1-9][0-9]{0,3});([1-9][0-9]{0,3})R/u.exec(reply.slice(2))
+              : null;
+            if (
+              cursor !== null &&
+              Number(cursor[1]) <= currentGeometry.rows &&
+              Number(cursor[2]) <= currentGeometry.columns &&
+              reply.slice(cursor[0].length + 2) ===
+                terminalResponses
+                  .toString("utf8")
+                  .slice(terminalResponses.indexOf("R") + 1)
+            )
+              return {
+                status: "complete" as const,
+                bytesWritten: bytes.length,
+              };
+          }
           if (seed === "terminal-no-prompt" && inputCalls >= 1)
             throw new Error("testkit.pty.test-prompt-after-terminal-close");
           inputCalls += 1;
+          if (
+            (terminalProtocolNegativeSeed ||
+              seed === "fixed-readiness-spoof" ||
+              seed === "checkpoint-missing-process" ||
+              seed === "checkpoint-process-churn" ||
+              seed === "checkpoint-observer-delay" ||
+              seed === "checkpoint-observer-delay-mismatch") &&
+            (inputCalls !== 1 ||
+              bytes.length !== 65 ||
+              !safeBufferFrom(bytes).equals(
+                safeBufferFrom(request.stdin.subarray(0, 65)),
+              ))
+          )
+            throw new Error("testkit.pty.test-input-before-checkpoint");
           if (seed === "challenge-marker-title")
             markerTitleInputBytes += bytes.length;
           if (inputCalls === 2) promptInputObserved = true;

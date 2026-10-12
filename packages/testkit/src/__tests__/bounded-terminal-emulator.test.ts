@@ -11,6 +11,79 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("challenged completion ignores ordinary printable tokens", () => {
+  it.each(["challenge-marker", "challenge-styled-text"] as const)(
+    "does not complete %s from printable text before or after arming",
+    (kind) => {
+      const challenge = "a".repeat(64);
+      const matcher =
+        kind === "challenge-marker"
+          ? { kind, challenge }
+          : ({
+              kind,
+              challenge,
+              text: "›",
+              requiredText: "fixture-model default",
+              requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+              bold: true,
+              dim: false,
+            } as const);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        matcher,
+      );
+      for (const character of "ordinary AGENTSCOPE_PTY_COMPLETE text")
+        terminal.write(bytes(character));
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.snapshot().semanticState).not.toBe("completed");
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes("\r\nAGENTSCOPE_PTY_COMPLETE\r\n"));
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.end().semanticState).not.toBe("completed");
+    },
+  );
+  it.each([false, true])(
+    "accepts a fresh challenged title after ordinary token (fragmented=%s)",
+    (fragmented) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes("ordinary AGENTSCOPE_PTY_COMPLETE text\r\n"));
+      expect(terminal.completionObserved()).toBe(false);
+      const title = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+      for (const part of fragmented ? [...title] : [title])
+        terminal.write(bytes(part));
+      expect(terminal.completionObserved()).toBe(true);
+      expect(terminal.end()).toMatchObject({
+        semanticState: "completed",
+        unsupportedControlCount: 0,
+      });
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each(["semantic-marker", "styled-text-after-completion"] as const)(
+    "preserves legacy %s printable completion",
+    (kind) => {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        kind === "semantic-marker"
+          ? { kind }
+          : { kind, text: "›", bold: true, dim: false },
+      );
+      terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
+      expect(terminal.completionObserved()).toBe(true);
+      expect(terminal.end().semanticState).toBe("completed");
+    },
+  );
+});
+
 describe("closed OSC refusal partition", () => {
   it("uses captured selector guards after initialization", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
@@ -1730,7 +1803,7 @@ describe("bounded semantic terminal emulator", () => {
     terminal.armPostSubmissionIdleObservation();
     terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
     terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
-    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.completionObserved()).toBe(false);
     expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(
       "title-not-observed",
     );
@@ -1749,6 +1822,7 @@ describe("bounded semantic terminal emulator", () => {
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
     );
     expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+    expect(terminal.completionObserved()).toBe(true);
   });
 
   it("classifies fixed readiness losses at the exact challenged title", () => {

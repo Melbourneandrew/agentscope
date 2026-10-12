@@ -1223,6 +1223,7 @@ const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
       challenge,
       text: "›",
       requiredText: "Ask Codex to do anything",
+      postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
       requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: true,
       dim: false,
@@ -1289,6 +1290,78 @@ const boundedNegativePostSubmissionRequest =
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
+  const observeRefusedCheckpoint = async (
+    selected: SelectedPtyExecutionRequest,
+    seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
+  ) => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    const arm = vi.spyOn(
+      Terminal.prototype,
+      "armPostSubmissionIdleObservation",
+    );
+    const completion = vi.spyOn(Terminal.prototype, "completionObserved");
+    const readiness = vi.spyOn(Terminal.prototype, "readinessObserved");
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const { trustedErrorCode: readCode, readPtySemanticFailure: readFacts } =
+        await import("../internal/kernel-errors.js");
+      const result = await execute(selected, seed).catch(
+        (error: unknown) => error,
+      );
+      return {
+        code: readCode(result),
+        semanticFailure: readFacts(result),
+        armCalls: arm.mock.calls.length,
+        completionSeen: completion.mock.results.some(
+          (result) => result.type === "return" && result.value === true,
+        ),
+        readinessSeen: readiness.mock.results.some(
+          (result) => result.type === "return" && result.value === true,
+        ),
+      };
+    } finally {
+      arm.mockRestore();
+      completion.mockRestore();
+      readiness.mockRestore();
+    }
+  };
+  it("does not let ordinary text poison a fresh challenged checkpoint completion", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        Reflect.apply(write, this, [
+          new TextEncoder().encode("ordinary AGENTSCOPE_PTY_COMPLETE text\r\n"),
+        ]);
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.actions.map(({ action }) => action)).toContain(
+        "wait-for-semantic-completion",
+      );
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it.each(["fixed-readiness-spoof", "checkpoint-missing-process"] as const)(
     "does not arm a command-started turn with %s",
     async (seed) => {
@@ -1296,7 +1369,7 @@ describe("selected PTY transport", () => {
         "claude-interactive-trace-smoke",
       );
       const now = performance.now();
-      const receipt = await executeSelectedPtyTransportForTest(
+      const refusal = await observeRefusedCheckpoint(
         {
           ...selected,
           process: {
@@ -1308,11 +1381,14 @@ describe("selected PTY transport", () => {
         },
         seed,
       );
-      expect(receipt.actions.map(({ action }) => action)).not.toContain(
-        "wait-for-semantic-completion",
+      // The private fixture rejects any input beyond the exact 65-byte
+      // challenge for these no-arm seeds. A genuine completion title cannot
+      // turn their missing readiness/checkpoint into a receipt.
+      expect(refusal.armCalls).toBe(0);
+      expect(refusal.completionSeen).toBe(false);
+      expect(refusal.code).toBe(
+        "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
       );
-      expect(receipt.inputBytesWritten).toBe(65);
-      expect(receipt.outcome).not.toBe("completed");
     },
   );
 
@@ -1661,6 +1737,7 @@ describe("selected PTY transport", () => {
         challenge,
         text: "›",
         requiredText: "Ask Codex to do anything",
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
         requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
@@ -1804,19 +1881,16 @@ describe("selected PTY transport", () => {
       outcome: "input-incomplete",
       readinessObserved: false,
     });
-    await expect(
-      executeChallengeCase(promptRequest, "readiness-revoked-after-input"),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: prompt.length },
-        { action: "input", byteLength: enter.length },
-        { action: "wait-for-semantic-completion" },
-      ],
-      inputBytesWritten: 65 + prompt.length + enter.length,
-      outcome: "input-incomplete",
+    const revoked = await observeRefusedCheckpoint(
+      promptRequest,
+      "readiness-revoked-after-input",
+    );
+    expect(revoked.code).toBe("testkit.pty.transport.semantic-incomplete");
+    expect(revoked.armCalls).toBe(1);
+    expect(revoked.completionSeen).toBe(false);
+    expect(revoked.semanticFailure).toMatchObject({
+      inputJoined: false,
+      allInputBytesWritten: false,
       readinessObserved: false,
     });
     const resizeRevocationRequest: SelectedPtyExecutionRequest = {
@@ -1874,39 +1948,41 @@ describe("selected PTY transport", () => {
         ),
       ).rejects.toThrow("testkit.pty.request");
 
-    await expect(
-      executeChallengeCase(challengeRequest, "fixed-readiness-spoof"),
-    ).resolves.toMatchObject({
-      actions: [{ action: "input", byteLength: 65 }],
-      inputBytesWritten: 65,
-      outcome: "input-incomplete",
-      readinessObserved: false,
+    const spoof = await observeRefusedCheckpoint(
+      challengeRequest,
+      "fixed-readiness-spoof",
+    );
+    expect(spoof).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      armCalls: 0,
+      completionSeen: false,
+      readinessSeen: false,
     });
-    await expect(
-      executeChallengeCase(challengeRequest, "completion-before-readiness"),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-      ],
-      inputBytesWritten: 65,
-      outcome: "input-incomplete",
-      readinessObserved: true,
+    const premature = await observeRefusedCheckpoint(
+      challengeRequest,
+      "completion-before-readiness",
+    );
+    expect(premature).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      completionSeen: false,
     });
     for (const seed of ["checkpoint-missing-process"] as const)
-      await expect(
-        executeChallengeCase(challengeRequest, seed),
-      ).resolves.toMatchObject({
-        actions: [{ action: "input", byteLength: 65 }],
-        inputBytesWritten: 65,
-        outcome: "input-incomplete",
+      expect(
+        await observeRefusedCheckpoint(challengeRequest, seed),
+      ).toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        armCalls: 0,
+        completionSeen: false,
       });
-    await expect(
-      executeChallengeCase(challengeRequest, "checkpoint-process-churn"),
-    ).resolves.toMatchObject({
-      actions: [{ action: "input", byteLength: 65 }],
-      inputBytesWritten: 65,
-      outcome: "transport-failed",
+    expect(
+      await observeRefusedCheckpoint(
+        challengeRequest,
+        "checkpoint-process-churn",
+      ),
+    ).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      armCalls: 0,
+      completionSeen: false,
     });
     await expect(
       executeChallengeCase(
@@ -1968,8 +2044,8 @@ describe("selected PTY transport", () => {
       "checkpoint-observer-delay-mismatch",
     ] as const) {
       const delayedAt = performance.now();
-      await expect(
-        executeSelectedPtyTransportForTest(
+      expect(
+        await observeRefusedCheckpoint(
           {
             ...challengeRequest,
             process: {
@@ -1981,12 +2057,10 @@ describe("selected PTY transport", () => {
           },
           seed,
         ),
-      ).resolves.toMatchObject({
-        actions: [{ action: "input", byteLength: 65 }],
-        cleanup: "clean",
-        inputBytesWritten: 65,
-        outcome: "transport-failed",
-        residualProcessCount: 0,
+      ).toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        armCalls: 0,
+        completionSeen: false,
       });
     }
   }, 60_000);
@@ -2053,9 +2127,7 @@ describe("selected PTY transport", () => {
       postSubmissionIdleDiagnostic: "idle-ready",
     });
     if (seed === "terminal-post-completion-idle")
-      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
-        "title-not-observed",
-      );
+      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe("idle-ready");
     if (seed === "terminal-title-completion-after-idle")
       expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe("idle-ready");
     expect(completed.actions.map(({ action }) => action)).toEqual([
@@ -2073,23 +2145,27 @@ describe("selected PTY transport", () => {
   it("stops before post-turn input when the synthetic terminal closes", async () => {
     const selected = protocolPromptRequest();
     const gated = postSubmissionRequest(selected);
-    const stale = await executeSelectedPtyTransportForTest(
+    const stale = await observeRefusedCheckpoint(
       gated,
       "terminal-preenter-frame-late-close",
     );
-    expect(stale.actions.map(({ action }) => action)).not.toContain(
-      "wait-for-post-submission-idle-prompt",
-    );
-    expect(stale.inputBytesWritten).toBe(137);
-    expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
-    expect(stale.cleanup).toBe("clean");
+    expect(stale.code).toBe("testkit.pty.transport.semantic-incomplete");
+    expect(stale.completionSeen).toBe(false);
+    expect(stale.semanticFailure).toMatchObject({
+      inputJoined: false,
+      allInputBytesWritten: false,
+    });
   });
 
   it("rejects substituted post-turn readiness and action order", async () => {
     const selected = protocolPromptRequest();
     const gated = postSubmissionRequest(selected);
+    const missingResponse = { ...selected.readiness };
+    if (missingResponse.kind !== "challenge-styled-text")
+      throw new Error("test.fixture.readiness");
+    delete missingResponse.postSubmissionResponseText;
     for (const readiness of [
-      selected.readiness,
+      missingResponse,
       {
         ...gated.readiness,
         postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"b".repeat(64)}`,
@@ -2134,7 +2210,7 @@ describe("selected PTY transport", () => {
       boundedNegativePostSubmissionRequest(),
       "terminal-post-submission-idle-missing",
     );
-    expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
+    expect(missingIdle.finalSnapshot.semanticState).not.toBe("completed");
     const actions = missingIdle.actions.map(({ action }) => action);
     expect(actions.slice(0, 5)).toEqual([
       "resize",
@@ -2143,12 +2219,8 @@ describe("selected PTY transport", () => {
       "input",
       "input",
     ]);
-    // Completion may precede a causally post-input semantic wait; neither
-    // observation admits an idle response.
-    expect(
-      actions.length === 5 ||
-        (actions.length === 6 && actions[5] === "wait-for-semantic-completion"),
-    ).toBe(true);
+    expect(actions).not.toContain("wait-for-semantic-completion");
+    expect(actions).toHaveLength(5);
     expect(missingIdle.inputBytesWritten).toBe(137);
     expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
       "response-not-observed",
@@ -2206,7 +2278,7 @@ describe("selected PTY transport", () => {
     async (seed) => {
       const selected = protocolPromptRequest();
       const now = performance.now();
-      const rejected = await executeSelectedPtyTransportForTest(
+      const rejected = await observeRefusedCheckpoint(
         {
           ...selected,
           process: {
@@ -2218,21 +2290,15 @@ describe("selected PTY transport", () => {
         },
         seed,
       );
-      expect(rejected).toMatchObject({
-        actions: [
-          { action: "resize", geometry: { columns: 100, rows: 30 } },
-          { action: "input", byteLength: 65 },
-          ...(seed === "keyboard-protocol-after-readiness"
-            ? [{ action: "checkpoint-process-topology" }]
-            : []),
-        ],
-        inputBytesWritten: 65,
-        outcome: "input-incomplete",
+      expect(rejected.armCalls).toBe(0);
+      expect(rejected.completionSeen).toBe(false);
+      expect(rejected.code).toBe("testkit.pty.transport.semantic-incomplete");
+      // The synthetic runtime forbids post-challenge input for these seeds;
+      // terminal refusal retains genuine private incomplete-input facts.
+      expect(rejected.semanticFailure).toMatchObject({
+        inputJoined: false,
+        allInputBytesWritten: false,
       });
-      if (seed === "keyboard-protocol-missing")
-        expect(rejected.checkpointProgressDiagnostic).toBe("no-live-readiness");
-      if (seed === "keyboard-protocol-after-readiness")
-        expect(rejected.checkpointProgressDiagnostic).toBe("advanced");
     },
     20_000,
   );

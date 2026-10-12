@@ -254,6 +254,9 @@ const maximumTerminalResponseBytes = 4_096;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const readinessChallengePattern = /^[a-f0-9]{64}$/u;
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
+const permitsPrintableCompletion = (
+  kind: PtyTerminalReadinessMatcher["kind"],
+): boolean => kind !== "challenge-marker" && kind !== "challenge-styled-text";
 const defineOwnProperty = Reflect.defineProperty;
 const getPrototypeOf = Reflect.getPrototypeOf;
 const applyFunction = Reflect.apply;
@@ -937,7 +940,9 @@ export class BoundedTerminalEmulator {
         ? "malformed-control"
         : this.#credentialPromptObserved || credentialPromptPattern.test(recent)
           ? "credential-prompt"
-          : this.#completionObserved || containsText(recent, completedMarker)
+          : this.#completionObserved ||
+              (permitsPrintableCompletion(this.#readinessMatcher.kind) &&
+                containsText(recent, completedMarker))
             ? "completed"
             : containsText(recent, readyMarker)
               ? "ready"
@@ -1570,11 +1575,7 @@ export class BoundedTerminalEmulator {
     if (this.#readinessMatcher.kind === "challenge-styled-text")
       this.#readinessChallengeObserved ||=
         this.#readinessTail === readinessMarker;
-    if (this.#characterSetTrusted)
-      this.#completionTail = `${this.#completionTail}${character}`.slice(
-        -completedMarker.length,
-      );
-    this.#completionObserved ||= this.#completionTail === completedMarker;
+    this.#observePrintableCompletion(character);
     if (
       this.#readinessMatcher.kind === "styled-text-after-completion" &&
       this.#characterSetTrusted &&
@@ -1595,6 +1596,16 @@ export class BoundedTerminalEmulator {
       this.#column = 0;
       this.#lineFeed();
     } else this.#column += 1;
+  }
+
+  #observePrintableCompletion(character: string): void {
+    if (this.#characterSetTrusted)
+      this.#completionTail = `${this.#completionTail}${character}`.slice(
+        -completedMarker.length,
+      );
+    this.#completionObserved ||=
+      permitsPrintableCompletion(this.#readinessMatcher.kind) &&
+      this.#completionTail === completedMarker;
   }
 
   #consumeCsi(character: string): void {
