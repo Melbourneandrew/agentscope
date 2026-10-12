@@ -1462,7 +1462,12 @@ export const selectInteractiveExecutionFailurePredicate = (
   retainedDiagnostic,
   scenarioId,
 ) => {
-  const diagnostic = retainedDiagnostic ?? candidate;
+  const diagnostic =
+    scenarioId === "claude-interactive-trace-smoke" &&
+    retainedDiagnostic === "integration.fixture.claude-settings" &&
+    claudeSettingsFailurePredicates.includes(candidate)
+      ? candidate
+      : (retainedDiagnostic ?? candidate);
   if (typeof diagnostic !== "string") return "child-failure";
   if (
     isClaudeFailurePredicate(diagnostic) &&
