@@ -11,6 +11,42 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("exact resource4 modifier controls", () => {
+  it.each([
+    "\u001b[>m",
+    "\u001b[>3;1m",
+    "\u001b[>4;65535m",
+    "\u001b[>4;1;0m",
+    "\u001b[>4:1m",
+    "\u001b[>4;1 m",
+    "\u001b[>4;65536m",
+  ])("retains unsupported or malformed shape %j", (sequence) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.completionObserved()).toBe(false);
+  });
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "admits full and fragmented ordinary control %j without semantic output",
+    (sequence) => {
+      for (const fragmented of [false, true]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        const before = terminal.snapshot();
+        for (const part of fragmented ? [...sequence] : [sequence])
+          terminal.write(bytes(part));
+        expect(terminal.snapshot()).toEqual({
+          ...before,
+          outputBytes: before.outputBytes + bytes(sequence).length,
+        });
+        expect(terminal.readinessObserved()).toBe(false);
+        expect(terminal.completionObserved()).toBe(false);
+        expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      }
+    },
+  );
+});
+
 describe("historical challenged marker readiness", () => {
   it.each([
     "",
@@ -722,7 +758,7 @@ describe("fixed rejected extended-CSI legacy identities", () => {
     ]),
     ["\u001b[1 p", "intermediate"],
     ["\u001b[>32u", "keyboard-shape"],
-    ["\u001b[>4;1m", "modifier-shape"],
+    ["\u001b[>4;65535m", "modifier-shape"],
   ])(
     "identifies refused fixed family %j without accepting it",
     (sequence, reason) => {
@@ -792,6 +828,44 @@ const terminalForCharset = (withProtocol = true) => {
   terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
   return terminal;
 };
+describe("resource4 negotiation preserves live styled authority", () => {
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "does not advance or recover protocol/screen authority with %j",
+    (sequence) => {
+      const terminal = terminalForCharset();
+      terminal.takeTerminalResponses();
+      terminal.write(bytes(frame));
+      const before = terminal.snapshot();
+      const progress = terminal.challengedReadinessProgress();
+      terminal.write(bytes(sequence));
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(sequence).length,
+      });
+      expect(terminal.challengedReadinessProgress()).toEqual(progress);
+      expect(terminal.readinessObserved()).toBe(true);
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      terminal.write(bytes("\u001b(0"));
+      const revoked = terminal.challengedReadinessProgress();
+      terminal.write(bytes(sequence));
+      expect(terminal.challengedReadinessProgress()).toEqual(revoked);
+      expect(terminal.readinessObserved()).toBe(false);
+      const incomplete = terminalForCharset(false);
+      incomplete.write(bytes(frame));
+      const pending = incomplete.challengedReadinessProgress();
+      incomplete.write(bytes(sequence));
+      expect(incomplete.challengedReadinessProgress()).toEqual(pending);
+      expect(incomplete.readinessObserved()).toBe(false);
+      incomplete.write(bytes("\u001b[>8u"));
+      const rejected = incomplete.challengedReadinessProgress();
+      expect(rejected.terminalProtocol).toBe("rejected");
+      incomplete.write(bytes(sequence));
+      expect(incomplete.challengedReadinessProgress()).toEqual(rejected);
+      expect(incomplete.readinessObserved()).toBe(false);
+    },
+  );
+});
 describe("exact palette reset preserves challenge authority", () => {
   it("preserves established readiness without recovering revoked or incomplete trust", () => {
     const reset = bytes("\u001b]104;255\u0007");

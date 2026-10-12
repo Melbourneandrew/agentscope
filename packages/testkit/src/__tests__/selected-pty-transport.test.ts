@@ -734,6 +734,26 @@ describe("fixed extended-CSI selected transport refusals", () => {
       });
     },
   );
+});
+describe("exact resource4 selected transport", () => {
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "completes actual selected transport after resource4 control %j",
+    async (sequence) => {
+      for (const fragmented of [false, true]) {
+        const receipt = await executeWithControl(sequence, "", fragmented);
+        expect(receipt).toMatchObject({
+          outcome: "completed",
+          cleanup: "clean",
+          processJoined: true,
+          terminalInputJoined: true,
+          terminalOutputJoined: true,
+        });
+        expect(receipt.inputBytesWritten).toBe(request().process.stdin.length);
+      }
+    },
+  );
+});
+describe("remaining fixed extended-CSI selected transport refusals", () => {
   it("completes the existing selected transport after exact Win32-input disable", async () => {
     await expect(executeWithControl("\u001b[?9001l")).resolves.toMatchObject({
       outcome: "completed",
@@ -792,7 +812,9 @@ describe("fixed extended-CSI selected transport refusals", () => {
     ["\u001b[?4g", "key-modifier-query"],
     ["\u001b[1 p", "intermediate"],
     ["\u001b[>32u", "keyboard-shape"],
-    ["\u001b[>4;1m", "modifier-shape"],
+    ["\u001b[>4;65535m", "modifier-shape"],
+    ["\u001b[>3;1m", "modifier-shape"],
+    ["\u001b[>4;1;0m", "modifier-shape"],
     ["\u001b[?9999h", "private-mode-unlisted-h-9999"],
     ["\u001b[?0l", "private-mode-unlisted-l-0"],
     ["\u001b[?65535h", "private-mode-unlisted-h-65535"],

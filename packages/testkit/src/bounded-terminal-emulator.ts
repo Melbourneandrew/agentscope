@@ -303,6 +303,13 @@ const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
 type ParserState =
   "ground" | "escape" | "charset" | "csi" | "osc" | "osc-escape";
 
+// The transport supplies fixed bytes, not key events needing modifier encoding.
+const supportedModifyOtherKeys = (values: readonly number[]): boolean =>
+  values[0] === 4 &&
+  (values.length === 1 ||
+    (values.length === 2 &&
+      (values[1] === 0 || values[1] === 1 || values[1] === 2)));
+
 const supportedNonTitleOscMetadata = (
   selector: string,
   payload: string,
@@ -1837,13 +1844,7 @@ export class BoundedTerminalEmulator {
       return;
     }
     if (this.#applyRequiredTerminalProtocolCsi(final, prefix, values)) return;
-    if (
-      prefix === ">" &&
-      final === "m" &&
-      values.length === 2 &&
-      values[0] === 4 &&
-      (values[1] === 0 || values[1] === 2)
-    )
+    if (prefix === ">" && final === "m" && supportedModifyOtherKeys(values))
       return;
     this.#recordUnsupportedControl(
       this.#extendedCsiRefusalReason(final, prefix, values),
