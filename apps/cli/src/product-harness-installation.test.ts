@@ -11,6 +11,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { codexHarnessDescriptor } from "@agentscope/harness-codex";
 import { claudeCodeDescriptor } from "@agentscope/harness-claude-code";
 import {
@@ -59,7 +60,7 @@ describe("native owned launcher association", () => {
     "wrong-mode",
   ])("does not replace missing ownership evidence (%s)", async (present) => {
     const root = await realpath(
-      await mkdtemp("/private/tmp/agentscope-native-owner-unit."),
+      await mkdtemp(join(tmpdir(), "agentscope-native-owner-unit.")),
     );
     const before = await lstat(root);
     try {
