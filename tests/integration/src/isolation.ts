@@ -732,6 +732,30 @@ const checkpointProgressConsistent = (
   );
 };
 
+const ptyReceiptInteractionMatches = (
+  value: PtyTerminalReceiptRecord,
+  historicalCodexReadiness: boolean,
+): boolean => {
+  const failed = value.outcome !== "completed";
+  const requested = value.request.interaction.actions;
+  const expected = failed
+    ? requested.slice(0, value.actions.length)
+    : requested;
+  const finalGeometry = (failed ? value.actions : requested).reduce(
+    (geometry, action) =>
+      action.action === "resize" ? action.geometry : geometry,
+    value.request.initialGeometry,
+  );
+  return (
+    (value.readinessObserved || failed || historicalCodexReadiness) &&
+    JSON.stringify(value.actions.map(({ action }) => action)) ===
+      JSON.stringify(expected.map(({ action }) => action)) &&
+    JSON.stringify(finalGeometry) === JSON.stringify(value.observedGeometry) &&
+    JSON.stringify(value.finalSnapshot.geometry) ===
+      JSON.stringify(value.observedGeometry)
+  );
+};
+
 const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
   (value, context) => {
     const request = value.request.process;
@@ -739,11 +763,6 @@ const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
       value.request.readiness.kind === "challenge-marker" ||
       value.request.readiness.kind === "challenge-process-topology" ||
       value.request.readiness.kind === "challenge-styled-text";
-    const finalGeometry = value.request.interaction.actions.reduce(
-      (geometry, action) =>
-        action.action === "resize" ? action.geometry : geometry,
-      value.request.initialGeometry,
-    );
     const observedActionKinds = value.actions.map(({ action }) => action);
     const requestedActionKinds = value.request.interaction.actions.map(
       ({ action }) => action,
@@ -781,7 +800,7 @@ const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
         value.challengedReadinessProgress,
       ) ||
       !checkpointProgressConsistent(value) ||
-      (!value.readinessObserved && !historicalCodexReadiness) ||
+      !ptyReceiptInteractionMatches(value, historicalCodexReadiness) ||
       (challengeReadiness
         ? value.request.interaction.trigger !== "immediate"
         : value.request.interaction.trigger !== "semantic-ready") ||
@@ -798,12 +817,6 @@ const ptyTerminalReceiptSchema = ptyTerminalReceiptRecordSchema.superRefine(
           (value.outerMonotonicDeadlineMs - value.translationBootAtMs) ||
       value.requestConstructedAtMs < value.translationLocalAtMs ||
       value.returnedAtMs > request.monotonicShutdownDeadlineMs ||
-      JSON.stringify(finalGeometry) !==
-        JSON.stringify(value.observedGeometry) ||
-      JSON.stringify(value.finalSnapshot.geometry) !==
-        JSON.stringify(value.observedGeometry) ||
-      JSON.stringify(observedActionKinds) !==
-        JSON.stringify(requestedActionKinds) ||
       value.actions.some((observed, index) => {
         const requested = value.request.interaction.actions[index];
         if (requested?.action !== observed.action) return true;

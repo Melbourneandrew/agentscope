@@ -2479,6 +2479,21 @@ const processFailureObservation = (error, context, slot) => {
       : {}),
   };
 };
+const ptyReceiptFailureObservation = (receipt) => {
+  // Private projection of the same receipt already authenticated at capture.
+  return Object.freeze({
+    outcome: receipt.outcome,
+    exitCode: receipt.exitCode,
+    signal: receipt.signal,
+    semanticState: receipt.finalSnapshot.semanticState,
+    cleanup: receipt.cleanup,
+    processJoined: receipt.processJoined,
+    inputJoined: receipt.terminalInputJoined,
+    outputJoined: receipt.terminalOutputJoined,
+    transportClosed: receipt.terminalTransportClosed,
+    readinessObserved: receipt.readinessObserved,
+  });
+};
 const publishOperationFailureDiagnostic = (
   slot,
   error,
@@ -2503,6 +2518,9 @@ const publishOperationFailureDiagnostic = (
           : {}),
         clientRetirementRequired:
           preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient),
+        ...(slot === "runtime-original" && processContext?.pty
+          ? { pty: processContext.pty }
+          : {}),
         ...(slot === "join-collector-read" &&
         [
           "held-identity",
@@ -3032,6 +3050,7 @@ const recordInteractiveExecutionFailure = (
   const prior = installedPtyFailures.get(plan.runId);
   if (
     (predicate === "integration.runner.fixture-failed" ||
+      predicate === "integration.runner.fixture-result" ||
       predicate === "child-failure") &&
     prior?.phase === "pty-receipt" &&
     prior.predicate !== "receipt-rejected"
@@ -3095,6 +3114,20 @@ const captureFailedScenarioReceipt = (
   observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured, output);
   registerScenarioReceipt(plan, receipt);
   recordInteractiveReceiptFailure(plan, receipt, fixtureCaptured);
+  try {
+    if (
+      plan.executionMode === "interactive" &&
+      !scenarioReceiptSucceeded(plan, receipt)
+    )
+      publishOperationFailureDiagnostic(
+        "runtime-original",
+        new Error("integration.isolation.scenario-failed"),
+        plan,
+        { pty: ptyReceiptFailureObservation(receipt) },
+      );
+  } catch {
+    // Optional observation cannot replace the authenticated failed receipt.
+  }
   return receipt;
 };
 const captureAvailableFailedScenarioReceipt = (

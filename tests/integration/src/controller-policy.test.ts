@@ -38,6 +38,7 @@ import {
 } from "./controller-failure-diagnostic.js";
 
 type OperationDiagnosticFunctions = {
+  ptyReceiptFailureObservation: (receipt: unknown) => Record<string, unknown>;
   mockServerProducerRefusalObservation: (output: unknown) => unknown;
   joinMockServer: (
     plan: object,
@@ -53,6 +54,9 @@ type OperationDiagnosticFunctions = {
           signal: AbortSignal;
           joinSignal?: AbortSignal;
           deadline?: number;
+        }
+      | {
+          pty: Record<string, unknown>;
         }
       | {
           leakedChild: {
@@ -198,7 +202,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   };
   const container = terminalMockContainer(containerId, runId);
   const functions = runInNewContext(
-    `${source.slice(start, end)}; ({ joinMockServer: (plan, signal, succeeded = true) => joinMockServer(plan, signal, succeeded), publishOperationFailureDiagnostic, mockServerProducerRefusalObservation })`,
+    `${source.slice(start, end)}; ({ joinMockServer: (plan, signal, succeeded = true) => joinMockServer(plan, signal, succeeded), publishOperationFailureDiagnostic, mockServerProducerRefusalObservation, ptyReceiptFailureObservation })`,
     {
       Buffer,
       AbortSignal: {
@@ -790,6 +794,167 @@ describe("hostile completion-copy observation metadata", () => {
     ).rejects.toBe(f.error);
     expect(copyRow(f.output)).not.toHaveProperty("process");
   });
+});
+
+const failedPtyCaptureFixture = (
+  options: {
+    succeeded?: boolean;
+    headless?: boolean;
+    captureFailure?: Error;
+    projectionFails?: boolean;
+    sinkFails?: boolean;
+    outcome?: string;
+    exitCode?: number | null;
+  } = {},
+) => {
+  const f = operationDiagnosticFixture("", options.sinkFails);
+  const source = readIntegration("run-scenarios.mjs");
+  const start = source.indexOf("const captureFailedScenarioReceipt =");
+  const end = source.indexOf(
+    "const captureAvailableFailedScenarioReceipt =",
+    start,
+  );
+  const receipt = Object.freeze({
+    outcome: options.outcome ?? "transport-failed",
+    exitCode: options.exitCode === undefined ? 255 : options.exitCode,
+    signal: "SIGTERM",
+    finalSnapshot: Object.freeze({ semanticState: "credential-prompt" }),
+    cleanup: "uncertain",
+    processJoined: false,
+    terminalInputJoined: false,
+    terminalOutputJoined: false,
+    terminalTransportClosed: false,
+    readinessObserved: false,
+    get request() {
+      throw new Error("PRIVATE request getter");
+    },
+    get actions() {
+      throw new Error("PRIVATE actions getter");
+    },
+    get text() {
+      throw new Error("PRIVATE text getter");
+    },
+  });
+  const calls: string[] = [];
+  const capture = () => {
+    calls.push("authenticated-capture");
+    if (options.captureFailure !== undefined) throw options.captureFailure;
+    return receipt;
+  };
+  const run = runInNewContext(
+    `${source.slice(start, end)}; captureFailedScenarioReceipt`,
+    {
+      Error,
+      captureInteractivePtyReceipt: capture,
+      captureHeadlessReceipt: capture,
+      observeNegativeScenarioReceipt: () => calls.push("negative-observation"),
+      registerScenarioReceipt: () => calls.push("register"),
+      recordInteractiveReceiptFailure: () =>
+        calls.push("receipt-classification"),
+      scenarioReceiptSucceeded: () => options.succeeded === true,
+      ptyReceiptFailureObservation: (value: unknown) => {
+        calls.push("projection");
+        if (options.projectionFails) throw new Error("PRIVATE projection");
+        return f.functions.ptyReceiptFailureObservation(value);
+      },
+      publishOperationFailureDiagnostic:
+        f.functions.publishOperationFailureDiagnostic,
+    },
+  ) as (
+    output: string,
+    plan: object,
+    deadline: number,
+    fixture: boolean,
+  ) => unknown;
+  return {
+    ...f,
+    receipt,
+    calls,
+    run: () =>
+      run(
+        "PRIVATE output",
+        {
+          ...f.plan,
+          executionMode: options.headless ? "headless" : "interactive",
+        },
+        1000,
+        false,
+      ),
+  };
+};
+describe("actual-source authenticated failed PTY receipt observation", () => {
+  it.each([
+    "completed",
+    "signaled",
+    "exited-nonzero",
+    "aborted",
+    "timeout",
+    "output-limit",
+    "transport-failed",
+    "input-incomplete",
+  ])("bounds the longest categorical projection for outcome %s", (outcome) => {
+    const f = failedPtyCaptureFixture({ outcome, exitCode: null });
+    expect(f.run()).toBe(f.receipt);
+    expect(f.output).toHaveLength(1);
+    expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+  });
+  it("projects only categorical fields after capture, registration and classification", () => {
+    const f = failedPtyCaptureFixture();
+    expect(f.run()).toBe(f.receipt);
+    expect(f.calls).toEqual([
+      "authenticated-capture",
+      "negative-observation",
+      "register",
+      "receipt-classification",
+      "projection",
+    ]);
+    expect(f.output).toHaveLength(1);
+    expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+    const row = JSON.parse(f.output[0]!.split(":").slice(1).join(":")) as {
+      pty: unknown;
+    };
+    expect(row.pty).toEqual({
+      outcome: "transport-failed",
+      exitCode: 255,
+      signal: "SIGTERM",
+      semanticState: "credential-prompt",
+      cleanup: "uncertain",
+      processJoined: false,
+      inputJoined: false,
+      outputJoined: false,
+      transportClosed: false,
+      readinessObserved: false,
+    });
+    expect(f.output[0]).not.toContain("PRIVATE");
+  });
+  it.each(["missing", "malformed", "getter"])(
+    "never observes a %s receipt rejected by the capture boundary",
+    (kind) => {
+      const original = new Error(`capture rejects ${kind}`);
+      const f = failedPtyCaptureFixture({ captureFailure: original });
+      expect(f.run).toThrow(original);
+      expect(f.calls).toEqual(["authenticated-capture"]);
+      expect(f.output).toEqual([]);
+    },
+  );
+  it.each([{ succeeded: true }, { headless: true }])(
+    "does not publish for successful or headless captures: %j",
+    (options) => {
+      const f = failedPtyCaptureFixture(options);
+      expect(f.run()).toBe(f.receipt);
+      expect(f.calls).not.toContain("projection");
+      expect(f.output).toEqual([]);
+    },
+  );
+  it.each([{ projectionFails: true }, { sinkFails: true }])(
+    "does not replace the failed receipt when optional observation fails: %j",
+    (options) => {
+      const f = failedPtyCaptureFixture(options);
+      expect(f.run()).toBe(f.receipt);
+      expect(f.calls).toContain("receipt-classification");
+      expect(f.output).toEqual([]);
+    },
+  );
 });
 
 const leakedChildPredicateFixture = (

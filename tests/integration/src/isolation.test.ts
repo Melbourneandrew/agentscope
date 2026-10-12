@@ -1758,6 +1758,149 @@ describe("selected headless backend evidence", () => {
   });
 });
 
+describe("failed PTY readiness and exact action-prefix evidence", () => {
+  it.each(["readiness", "prefix", "both", "before-resize"])(
+    "retains %s failure without replacing it with receipt validation",
+    async (variant) => {
+      const plan = planFor("0123456789abcdef", "interactive");
+      const fixture = driver();
+      const original = ptyReceiptFor(plan.runId, plan.scenarioId);
+      const geometry =
+        variant === "before-resize"
+          ? original.request.initialGeometry
+          : original.observedGeometry;
+      const receipt = {
+        ...original,
+        outcome: "timeout" as const,
+        readinessObserved: variant === "prefix",
+        actions:
+          variant === "readiness"
+            ? original.actions
+            : original.actions.slice(0, variant === "before-resize" ? 0 : 1),
+        observedGeometry: geometry,
+        finalSnapshot: { ...original.finalSnapshot, geometry },
+      };
+      fixture.runScenario.mockResolvedValueOnce({ receipt, succeeded: false });
+      await expect(
+        executeIsolationPlan(
+          plan,
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("integration.isolation.scenario-failed");
+      expect(fixture.recordEvidence.mock.calls[0]?.[0]).toMatchObject({
+        outcome: "failed",
+        cleanup: { outcome: "complete" },
+        ptyTerminalReceipt: receipt,
+      });
+    },
+  );
+});
+describe("failed PTY prefix mutation refusal", () => {
+  it("refuses prefix payload, order, authority, time and geometry substitutions and completed incomplete controls", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const original = ptyReceiptFor();
+    const receipt = {
+      ...original,
+      outcome: "timeout" as const,
+      readinessObserved: false,
+      actions: original.actions.slice(0, 2),
+    };
+    const interactive = {
+      ...evidence,
+      outcome: "failed",
+      scenarioId: original.scenarioId,
+      executionMode: "interactive",
+      terminalAction: "eof",
+      executionPolicy: executionPolicyFor(original.scenarioId),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toMatchObject({
+      outcome: "failed",
+    });
+    const variants = [
+      { ...receipt, actions: [...receipt.actions, ...original.actions] },
+      { ...receipt, actions: [...receipt.actions].reverse() },
+      { ...receipt, actions: [original.actions[1]] },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "input"
+            ? { ...action, inputSha256: "f".repeat(64) }
+            : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "input" ? { ...action, byteLength: 3 } : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "resize"
+            ? { ...action, geometry: { columns: 99, rows: 30 } }
+            : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) => ({
+          ...action,
+          monotonicAtMs: 999,
+        })),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) => ({
+          ...action,
+          monotonicAtMs: receipt.returnedAtMs + 1,
+        })),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action, index) => ({
+          ...action,
+          monotonicAtMs: 2_100 - index,
+        })),
+      },
+      { ...receipt, observedGeometry: { columns: 80, rows: 24 } },
+      {
+        ...receipt,
+        finalSnapshot: {
+          ...receipt.finalSnapshot,
+          geometry: { columns: 80, rows: 24 },
+        },
+      },
+      { ...receipt, inputSha256: "f".repeat(64) },
+      { ...receipt, requestFingerprint: `sha256:${"f".repeat(64)}` },
+      { ...receipt, processRequestFingerprint: `sha256:${"f".repeat(64)}` },
+      {
+        ...receipt,
+        returnedAtMs: receipt.request.process.monotonicShutdownDeadlineMs + 1,
+      },
+      { ...receipt, outcome: "completed" },
+      { ...original, readinessObserved: false },
+      { ...original, actions: original.actions.slice(0, 1) },
+    ];
+    for (const ptyTerminalReceipt of variants)
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, outcome: "passed" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+  });
+});
+
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY backend evidence", () => {
   it("retains the authenticated Codex checkpoint after live prompt readiness is revoked", () => {

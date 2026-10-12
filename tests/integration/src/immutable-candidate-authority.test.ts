@@ -366,6 +366,7 @@ it.each([
 
 it.each([
   ["completion-state", "integration.runner.fixture-failed", true],
+  ["completion-state", "integration.runner.fixture-result", true],
   ["completion-state", undefined, true],
   ["completion-state", "integration.fixture.claude-vendor-terminal", false],
   ["completion-state", "testkit.pty.transport.semantic-incomplete", false],
