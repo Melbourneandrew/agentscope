@@ -73,6 +73,14 @@ export const claudeModelLedger = (rows, routes, scenarioId) => ({
                 : row.method === "GET" && row.path === "/mockserver/ready"
                   ? "unclassified-other-ready"
                   : "unclassified-other-remaining";
+        if (cause === "unclassified-other-remaining")
+          cause =
+            row.method === "POST" && row.path === "/v1/messages"
+              ? "unclassified-other-remaining-primary"
+              : row.method === "POST" &&
+                  row.path === "/api/event_logging/v2/batch"
+                ? "unclassified-other-remaining-batch"
+                : "unclassified-other-remaining-rest";
         throw new Error("integration.claude-code.model-route", {
           cause,
         });

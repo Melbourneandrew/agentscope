@@ -1017,6 +1017,9 @@ describe("actual runner and outer catch retain only matching Claude refinements"
       "unclassified-other-get-control",
       "unclassified-other-ready",
       "unclassified-other-remaining",
+      "unclassified-other-remaining-primary",
+      "unclassified-other-remaining-batch",
+      "unclassified-other-remaining-rest",
     ].map(
       (cause) =>
         [`integration.fixture.claude-model-route-${cause}`, 210] as const,
@@ -1130,6 +1133,9 @@ describe("model route failure-only partition preserves generic210", () => {
     "unclassified-other-get-control",
     "unclassified-other-ready",
     "unclassified-other-remaining",
+    "unclassified-other-remaining-primary",
+    "unclassified-other-remaining-batch",
+    "unclassified-other-remaining-rest",
   ])(
     "binds only fixed cause %s to the existing outer failure transport",
     (cause) => {

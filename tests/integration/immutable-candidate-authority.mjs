@@ -312,6 +312,9 @@ const claudeModelRouteFailureCauses = Object.freeze([
   "unclassified-other-get-control",
   "unclassified-other-ready",
   "unclassified-other-remaining",
+  "unclassified-other-remaining-primary",
+  "unclassified-other-remaining-batch",
+  "unclassified-other-remaining-rest",
 ]);
 const claudeModelRouteFailurePredicates = Object.freeze(
   claudeModelRouteFailureCauses.map(

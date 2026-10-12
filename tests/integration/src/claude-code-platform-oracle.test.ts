@@ -2,6 +2,10 @@ import type * as NodeFs from "node:fs";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
+import {
+  MODEL_PROTOCOL_ROUTES,
+  createMockServerInitialization,
+} from "@agentscope/testkit";
 
 // @ts-expect-error private checksum-bound scenario module has no declaration
 import * as scenarioModule from "../claude-code-scenario.mjs";
@@ -84,7 +88,12 @@ describe("Claude model route failure partition", () => {
   );
   it.each([
     ["PUT", "/mockserver/status", "data-plane", "data-plane-control"],
-    ["POST", "/unknown-auxiliary", undefined, "unclassified-other-remaining"],
+    [
+      "POST",
+      "/unknown-auxiliary",
+      undefined,
+      "unclassified-other-remaining-rest",
+    ],
     ["POST", "/unknown-auxiliary", "data-plane", "data-plane-other"],
     ["GET", "/mockserver/status", undefined, "unclassified-other-get-control"],
     [
@@ -98,9 +107,27 @@ describe("Claude model route failure partition", () => {
       "GET",
       "/v1/messages/count_tokens",
       undefined,
-      "unclassified-other-remaining",
+      "unclassified-other-remaining-rest",
     ],
-    ["POST", "/mockserver/ready", undefined, "unclassified-other-remaining"],
+    [
+      "POST",
+      "/mockserver/ready",
+      undefined,
+      "unclassified-other-remaining-rest",
+    ],
+    [
+      "POST",
+      "/api/event_logging/v2/batch",
+      undefined,
+      "unclassified-other-remaining-batch",
+    ],
+    [
+      "GET",
+      "/api/event_logging/v2/batch",
+      undefined,
+      "unclassified-other-remaining-rest",
+    ],
+    ["POST", "/api/event_logging/v2/batch", "data-plane", "data-plane-other"],
     ["POST", "/v1/messages/count_tokens", "data-plane", "data-plane-other"],
   ])(
     "refuses unmatched %s rows with only fixed cause %s",
@@ -120,6 +147,9 @@ describe("Claude model route failure partition", () => {
       );
     },
   );
+});
+describe("Claude duplicate route refusal", () => {
+  const { run, project } = modelRoutePartitionFixture();
   it("retains duplicate-route refusal, including unrelated provider tuples", () => {
     const fixture = {
       routeIds: ["response-one", "response-two"],
@@ -148,6 +178,69 @@ describe("Claude model route failure partition", () => {
     expect(() =>
       run(project("POST", "/v1/messages/count_tokens"), fixture),
     ).toThrowError(
+      expect.objectContaining({
+        message: "integration.claude-code.model-route",
+        cause: "ambiguous",
+      }),
+    );
+  });
+});
+
+describe("Claude primary route and prepared producer JSON shape", () => {
+  const { run, project } = modelRoutePartitionFixture();
+  const prepared = () =>
+    JSON.parse(
+      JSON.stringify({
+        routeFixtureVersion: 1,
+        routeIds: MODEL_PROTOCOL_ROUTES.map((route) => route.routeId),
+        routes: MODEL_PROTOCOL_ROUTES,
+        mockServerInitialization: createMockServerInitialization(),
+      }),
+    ) as {
+      routeIds: string[];
+      routes: Array<{ provider: string; method: string; path: string }>;
+    };
+  it("maps both primary rows through the real flat producer JSON", () => {
+    const row = project("POST", "/v1/messages")[0];
+    expect(run([row, row], prepared()).entries).toEqual(
+      Array.from({ length: 2 }, () => ({
+        routeId: "anthropic-messages",
+        provider: "anthropic",
+        method: "POST",
+        path: "/v1/messages",
+        bodyBytes: 0,
+      })),
+    );
+  });
+  it.each(["empty", "wrong-method", "wrong-path"])(
+    "keeps %s catalog mismatch refused as primary",
+    (change) => {
+      const fixture = prepared();
+      if (change === "empty") {
+        fixture.routes = [];
+        fixture.routeIds = [];
+      } else {
+        const index = fixture.routeIds.indexOf("anthropic-messages");
+        expect(index).toBeGreaterThanOrEqual(0);
+        const route = fixture.routes[index]!;
+        if (change === "wrong-method") route.method = "GET";
+        else route.path = "/wrong";
+      }
+      expect(() => run(project("POST", "/v1/messages"), fixture)).toThrowError(
+        expect.objectContaining({
+          message: "integration.claude-code.model-route",
+          cause: "unclassified-other-remaining-primary",
+        }),
+      );
+    },
+  );
+  it("keeps duplicated primary catalog entries ambiguous", () => {
+    const fixture = prepared();
+    fixture.routes.push({
+      ...fixture.routes[fixture.routeIds.indexOf("anthropic-messages")]!,
+    });
+    fixture.routeIds.push("duplicate-primary");
+    expect(() => run(project("POST", "/v1/messages"), fixture)).toThrowError(
       expect.objectContaining({
         message: "integration.claude-code.model-route",
         cause: "ambiguous",
