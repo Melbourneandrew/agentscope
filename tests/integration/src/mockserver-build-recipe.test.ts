@@ -43,6 +43,7 @@ describe("fixed conventional MockServer supplier recipe", () => {
       "mockserver-netty",
       "--also-make",
       "-DskipTests",
+      "-Dmaven.test.skip=true",
       "package",
     ]);
     expect(plan.cwd).toBe(mockServerSupplierLayout.reactor);

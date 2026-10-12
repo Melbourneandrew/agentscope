@@ -102,6 +102,7 @@ const commonArguments = Object.freeze([
   "mockserver-netty",
   "--also-make",
   "-DskipTests",
+  "-Dmaven.test.skip=true",
   "package",
 ]);
 const environment = Object.freeze({
