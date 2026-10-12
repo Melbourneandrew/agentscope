@@ -294,6 +294,8 @@ const claudeSettingsFailureCauses = Object.freeze([
   "profile-timeout-kind",
   "profile-timeout-bound",
   "profile-command",
+  "document-hooks",
+  "document-other",
 ]);
 const claudeSettingsFailurePredicates = Object.freeze(
   claudeSettingsFailureCauses.map(

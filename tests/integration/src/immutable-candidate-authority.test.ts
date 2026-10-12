@@ -976,6 +976,8 @@ describe("actual outer settings alias persistence after decoded207", () => {
     "profile",
     "commands",
     "document",
+    "document-hooks",
+    "document-other",
   ])(
     "retains source alias %s through literal outer catch, selector and persisted guard",
     (cause) => {
@@ -1041,6 +1043,86 @@ describe("actual outer settings alias persistence after decoded207", () => {
   });
 });
 
+describe("document partition preserves closed provenance and precedence", () => {
+  it.each(["document-hooks", "document-other"])(
+    "refuses hostile or mismatched %s observations",
+    (cause) => {
+      const scenario = "claude-interactive-trace-smoke";
+      const generic = "integration.fixture.claude-settings";
+      const predicate = `${generic}-${cause}`;
+      const frame = formatInteractiveChildDiagnostic(predicate);
+      expect(outerSettingsFailure("", scenario).predicate).toBe(generic);
+      expect(outerSettingsFailure(frame + frame, scenario).predicate).toBe(
+        generic,
+      );
+      expect(
+        outerSettingsFailure(frame, "codex-tui-trace-smoke").predicate,
+      ).toBe("child-failure");
+      expect(outerSettingsFailure(frame, scenario, 200).predicate).toBe(
+        "integration.fixture.claude-environment",
+      );
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          predicate,
+          "integration.fixture.claude-vendor-terminal",
+          scenario,
+        ),
+      ).toBe("integration.fixture.claude-vendor-terminal");
+      for (const suffix of ["-unknown", "\n", "\r\n", " PRIVATE"])
+        expect(
+          validInstalledPtyFailure({
+            receiptVersion: 1,
+            phase: "pty-execution",
+            scenarioId: scenario,
+            predicate: predicate + suffix,
+          }),
+        ).toBe(false);
+      for (const unknown of [cause + "\n", cause + "\r\n", cause + " PRIVATE"])
+        expect(
+          claudeScenarioFailureDiagnostic(
+            new Error("integration.claude-code.settings", { cause: unknown }),
+            "retirement",
+          ),
+        ).toBe(generic);
+      const inherited = new Error("integration.claude-code.settings");
+      Object.setPrototypeOf(
+        inherited,
+        Object.create(Error.prototype, {
+          cause: { value: cause },
+        }) as object,
+      );
+      expect(claudeScenarioFailureDiagnostic(inherited, "retirement")).toBe(
+        generic,
+      );
+      let reflections = 0;
+      const accessor = new Error("integration.claude-code.settings");
+      Object.defineProperty(accessor, "cause", {
+        get: () => {
+          reflections++;
+          throw new Error("PRIVATE");
+        },
+      });
+      expect(claudeScenarioFailureDiagnostic(accessor, "retirement")).toBe(
+        generic,
+      );
+      const proxy = new Proxy(
+        new Error("integration.claude-code.settings", {
+          cause,
+        }),
+        {
+          getOwnPropertyDescriptor: () => {
+            reflections++;
+            throw new Error("PRIVATE");
+          },
+        },
+      );
+      expect(claudeScenarioFailureDiagnostic(proxy, "retirement")).toBe(
+        "integration.fixture.claude-phase-retirement",
+      );
+      expect(reflections).toBe(0);
+    },
+  );
+});
 describe("profile conjunction aliases through actual outer persistence", () => {
   it.each([
     "groups",
@@ -1126,6 +1208,8 @@ describe("closed settings refusal site classification", () => {
     "profile",
     "commands",
     "document",
+    "document-hooks",
+    "document-other",
   ])("accepts only fixed own cause %s in existing phases", (cause) => {
     const error = new Error("integration.claude-code.settings", { cause });
     const predicate = `integration.fixture.claude-settings-${cause}`;

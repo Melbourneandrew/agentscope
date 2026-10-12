@@ -166,13 +166,18 @@ export const retireClaudeCodePackedCli = async (
   deadline,
 ) => {
   // Preserve every setting value, not the vendor's JSON whitespace/key order.
-  if (
-    !isDeepStrictEqual(
-      JSON.parse(readClaudeCodeInstalledSettings().toString("utf8")),
-      JSON.parse(settings.toString("utf8")),
-    )
-  )
-    throw new Error("integration.claude-code.settings", { cause: "document" });
+  const current = JSON.parse(
+    readClaudeCodeInstalledSettings().toString("utf8"),
+  );
+  const held = JSON.parse(settings.toString("utf8"));
+  if (!isDeepStrictEqual(current, held))
+    throw new Error("integration.claude-code.settings", {
+      // Changed hooks may coexist with other changes; equal hooks localize
+      // the existing full-document refusal outside that subtree only.
+      cause: isDeepStrictEqual(current.hooks, held.hooks)
+        ? "document-other"
+        : "document-hooks",
+    });
   const doctor = await claudeMachine(
     commands[5],
     deadline,

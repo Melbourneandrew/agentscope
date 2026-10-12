@@ -806,6 +806,61 @@ type InstalledSettingsFixture = {
     }>
   >;
 };
+describe("Claude document refusal partition", () => {
+  it.each(["hooks", "other", "both"])(
+    "retains whole-document refusal for %s changes",
+    async (change) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const value = JSON.parse(
+        settings.toString("utf8"),
+      ) as InstalledSettingsFixture;
+      if (change !== "other")
+        for (const groups of Object.values(value.hooks))
+          groups[0]!.hooks[0]!.command = "/other/owned-hook";
+      if (change !== "hooks") value.theme = "synthetic-theme";
+      synthetic.settings = Buffer.from(JSON.stringify(value));
+      let original: unknown;
+      try {
+        await retireClaudeCodePackedCli(commands, settings, 1500);
+      } catch (error) {
+        original = error;
+      }
+      const cause = change === "other" ? "document-other" : "document-hooks";
+      expect(original).toMatchObject({
+        message: "integration.claude-code.settings",
+        cause,
+      });
+      expect(synthetic.calls).toHaveLength(0);
+      const predicate = `integration.fixture.claude-settings-${cause}`;
+      expect(
+        settingsWire.claudeScenarioFailureDiagnostic(original, "retirement"),
+      ).toBe(predicate);
+      expect(
+        settingsWire.encodeInteractiveFailureExitCode(
+          predicate,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(207);
+      const frame = settingsWire.formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(
+        settingsWire.readInteractiveChildFailureObservation(frame),
+      ).toEqual({
+        predicate,
+      });
+      const persisted = JSON.stringify({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        scenarioId: "claude-interactive-trace-smoke",
+        predicate,
+      });
+      expect(Buffer.byteLength(persisted)).toBeLessThanOrEqual(512);
+      expect(settingsWire.validInstalledPtyFailure(JSON.parse(persisted))).toBe(
+        true,
+      );
+    },
+  );
+});
 describe("Claude retirement settings representation", () => {
   it("accepts the native-only current candidate before and after retirement", async () => {
     const { commands } = prepareRetirementFixture();
@@ -1198,7 +1253,12 @@ describe("actual settings refusal sites preserve the existing failure wire", () 
         original = error;
       }
       expect(original).toBeInstanceOf(Error);
-      const cause = site === "profile" ? "profile-args-count" : site;
+      const cause =
+        site === "profile"
+          ? "profile-args-count"
+          : site === "document"
+            ? "document-other"
+            : site;
       expect(original).toMatchObject({
         message: "integration.claude-code.settings",
         cause,
