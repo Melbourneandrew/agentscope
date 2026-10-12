@@ -968,6 +968,153 @@ const outerSettingsFailure = (
   );
   return JSON.parse(JSON.stringify(failures.get(plan.runId)));
 };
+const actualRunnerFailureFrame = (
+  predicate: string | undefined,
+  code: number,
+  scenarioId = "claude-interactive-trace-smoke",
+) => {
+  const source = readIntegration("runner.mjs");
+  const start = source.indexOf(
+    "      const fixtureRecord = readBoundedInteractiveFailureRecord(ledger);",
+  );
+  const end = source.indexOf("      fixtureFailure =", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  let frame = "";
+  const context = {
+    ledger: "synthetic",
+    receipt: { exitCode: code },
+    scenarioId,
+    readBoundedInteractiveFailureRecord: () =>
+      predicate === undefined ? undefined : { predicate },
+    decodeScenarioFailureExitCode: (exitCode: number) =>
+      decodeInteractiveFailureExitCode(exitCode, scenarioId),
+    retainedInteractivePhase: () => undefined,
+    encodeInteractiveFailureExitCode,
+    selectInteractiveFailureDiagnostic,
+    formatInteractiveChildDiagnostic,
+    interactiveFailureDiagnostic: undefined,
+    process: {
+      stdout: {
+        write: (value: string) => {
+          frame += value;
+        },
+      },
+    },
+  };
+  runInNewContext(source.slice(start, end), context);
+  return frame;
+};
+describe("actual runner and outer catch retain only matching Claude refinements", () => {
+  it.each([
+    ...[
+      "unclassified-control",
+      "unclassified-other",
+      "data-plane-control",
+      "data-plane-other",
+      "ambiguous",
+    ].map(
+      (cause) =>
+        [`integration.fixture.claude-model-route-${cause}`, 210] as const,
+    ),
+    ...[
+      "status",
+      "read-stability",
+      "events",
+      "profile",
+      "commands",
+      "document",
+      "document-hooks",
+      "document-other",
+      "profile-groups",
+      "profile-handlers",
+      "profile-event",
+      "profile-contract",
+      "profile-harness",
+      "profile-identity",
+      "profile-keys",
+      "profile-owner",
+      "profile-type",
+      "profile-args-kind",
+      "profile-args-count",
+      "profile-timeout-kind",
+      "profile-timeout-bound",
+      "profile-command",
+    ].map(
+      (cause) => [`integration.fixture.claude-settings-${cause}`, 207] as const,
+    ),
+    ["integration.fixture.claude-model-route", 210] as const,
+    ["integration.fixture.claude-settings", 207] as const,
+  ])(
+    "retains %s at its original generic exit %i across both real hops",
+    (predicate, code) => {
+      const frame = actualRunnerFailureFrame(predicate, code);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      const record = outerSettingsFailure(
+        frame,
+        "claude-interactive-trace-smoke",
+        code,
+      );
+      expect(record.predicate).toBe(predicate);
+      expect(validInstalledPtyFailure(record)).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThanOrEqual(
+        512,
+      );
+    },
+  );
+  it.each([
+    [
+      "integration.fixture.claude-model-route-ambiguous",
+      207,
+      "integration.fixture.claude-settings",
+    ],
+    [
+      "integration.fixture.claude-settings-document-hooks",
+      210,
+      "integration.fixture.claude-model-route",
+    ],
+    [
+      "integration.fixture.claude-model-route-ambiguous",
+      200,
+      "integration.fixture.claude-environment",
+    ],
+    [
+      "integration.fixture.claude-model-route-ambiguous",
+      228,
+      "integration.fixture.claude-vendor-terminal",
+    ],
+    [undefined, 210, "integration.fixture.claude-model-route"],
+    [
+      "integration.fixture.claude-model-route-unknown",
+      210,
+      "integration.fixture.claude-model-route",
+    ],
+    [
+      "integration.fixture.claude-model-route-ambiguous PRIVATE",
+      210,
+      "integration.fixture.claude-model-route",
+    ],
+  ] as const)(
+    "keeps decoded precedence for mismatched marker %s / %i",
+    (predicate, code, expected) => {
+      const frame = actualRunnerFailureFrame(predicate, code);
+      expect(
+        outerSettingsFailure(frame, "claude-interactive-trace-smoke", code)
+          .predicate,
+      ).toBe(expected);
+    },
+  );
+  it("never promotes a Claude alias under another held scenario", () => {
+    const frame = actualRunnerFailureFrame(
+      "integration.fixture.claude-model-route-ambiguous",
+      210,
+      "codex-tui-trace-smoke",
+    );
+    expect(
+      outerSettingsFailure(frame, "codex-tui-trace-smoke", 210).predicate,
+    ).toBe("child-failure");
+  });
+});
 describe("model route failure-only partition preserves generic210", () => {
   it.each([
     "unclassified-control",
