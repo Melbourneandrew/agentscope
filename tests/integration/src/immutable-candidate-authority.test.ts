@@ -1041,6 +1041,81 @@ describe("actual outer settings alias persistence after decoded207", () => {
   });
 });
 
+describe("profile conjunction aliases through actual outer persistence", () => {
+  it.each([
+    "groups",
+    "handlers",
+    "event",
+    "contract",
+    "harness",
+    "identity",
+    "keys",
+    "owner",
+    "type",
+    "args-kind",
+    "args-count",
+    "timeout-kind",
+    "timeout-bound",
+    "command",
+  ])("retains fixed profile-%s at same207", (term) => {
+    const predicate = `integration.fixture.claude-settings-profile-${term}`;
+    const error = new Error("integration.claude-code.settings", {
+      cause: `profile-${term}`,
+    });
+    expect(claudeScenarioFailureDiagnostic(error, "retirement")).toBe(
+      predicate,
+    );
+    expect(
+      encodeInteractiveFailureExitCode(
+        predicate,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBe(207);
+    expect(
+      decodeInteractiveFailureExitCode(207, "claude-interactive-trace-smoke"),
+    ).toBe("integration.fixture.claude-settings");
+    const frame = formatInteractiveChildDiagnostic(predicate) as string;
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    const record = outerSettingsFailure(frame);
+    expect(record.predicate).toBe(predicate);
+    expect(validInstalledPtyFailure(record)).toBe(true);
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        "integration.fixture.claude-settings",
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+  });
+  it.each([
+    "profile-unknown",
+    "profile-args-count\n",
+    "profile-args-count\r\n",
+    "profile-args-count PRIVATE",
+  ])("does not reflect unknown cause %j", (cause) => {
+    const predicate = `integration.fixture.claude-settings-${cause}`;
+    expect(
+      claudeScenarioFailureDiagnostic(
+        new Error("integration.claude-code.settings", { cause }),
+        "retirement",
+      ),
+    ).toBe("integration.fixture.claude-settings");
+    expect(
+      encodeInteractiveFailureExitCode(
+        predicate,
+        "claude-interactive-trace-smoke",
+      ),
+    ).toBeUndefined();
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        scenarioId: "claude-interactive-trace-smoke",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+});
 describe("closed settings refusal site classification", () => {
   const scenario = "claude-interactive-trace-smoke";
   const generic = "integration.fixture.claude-settings";

@@ -383,29 +383,43 @@ export const readClaudeCodeInstalledSettings = () => {
       const groups = value.hooks[event],
         group = groups?.[0],
         hook = group?.hooks?.[0];
-      if (
-        groups?.length !== 1 ||
-        group?.hooks?.length !== 1 ||
-        group?.agentscope?.event !== event ||
-        group.agentscope.contractVersion !== 1 ||
-        group.agentscope.harnessType !== "@agentscope/harness-claude-code" ||
-        !/^agentscope-hook-v1-sha256-[a-f0-9]{64}$/u.test(
-          group.agentscope.ownershipIdentity,
-        ) ||
-        Object.keys(group.agentscope).sort().join("\0") !==
-          "contractVersion\0event\0harnessType\0ownershipIdentity" ||
-        group.agentscope.ownershipIdentity !==
-          value.hooks.SessionStart[0].agentscope.ownershipIdentity ||
-        hook?.type !== "command" ||
-        !Array.isArray(hook.args) ||
-        hook.args.length !== 0 ||
-        !Number.isSafeInteger(hook.timeout) ||
-        hook.timeout < 1 ||
-        typeof hook.command !== "string"
-      )
-        throw new Error("integration.claude-code.settings", {
-          cause: "profile",
-        });
+      const cause =
+        groups?.length !== 1
+          ? "profile-groups"
+          : group?.hooks?.length !== 1
+            ? "profile-handlers"
+            : group?.agentscope?.event !== event
+              ? "profile-event"
+              : group.agentscope.contractVersion !== 1
+                ? "profile-contract"
+                : group.agentscope.harnessType !==
+                    "@agentscope/harness-claude-code"
+                  ? "profile-harness"
+                  : !/^agentscope-hook-v1-sha256-[a-f0-9]{64}$/u.test(
+                        group.agentscope.ownershipIdentity,
+                      )
+                    ? "profile-identity"
+                    : Object.keys(group.agentscope).sort().join("\0") !==
+                        "contractVersion\0event\0harnessType\0ownershipIdentity"
+                      ? "profile-keys"
+                      : group.agentscope.ownershipIdentity !==
+                          value.hooks.SessionStart[0].agentscope
+                            .ownershipIdentity
+                        ? "profile-owner"
+                        : hook?.type !== "command"
+                          ? "profile-type"
+                          : !Array.isArray(hook.args)
+                            ? "profile-args-kind"
+                            : hook.args.length !== 0
+                              ? "profile-args-count"
+                              : !Number.isSafeInteger(hook.timeout)
+                                ? "profile-timeout-kind"
+                                : hook.timeout < 1
+                                  ? "profile-timeout-bound"
+                                  : typeof hook.command !== "string"
+                                    ? "profile-command"
+                                    : undefined;
+      if (cause) throw new Error("integration.claude-code.settings", { cause });
       return hook.command;
     });
     if (new Set(commands).size !== 1 || commands[0].length === 0)

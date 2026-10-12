@@ -280,6 +280,20 @@ const claudeSettingsFailureCauses = Object.freeze([
   "profile",
   "commands",
   "document",
+  "profile-groups",
+  "profile-handlers",
+  "profile-event",
+  "profile-contract",
+  "profile-harness",
+  "profile-identity",
+  "profile-keys",
+  "profile-owner",
+  "profile-type",
+  "profile-args-kind",
+  "profile-args-count",
+  "profile-timeout-kind",
+  "profile-timeout-bound",
+  "profile-command",
 ]);
 const claudeSettingsFailurePredicates = Object.freeze(
   claudeSettingsFailureCauses.map(

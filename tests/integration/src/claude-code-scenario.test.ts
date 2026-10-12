@@ -951,6 +951,155 @@ describe("Claude retirement keeps strict lifecycle failure", () => {
     },
   );
 });
+const profileFaults = [
+  "groups",
+  "handlers",
+  "event",
+  "contract",
+  "harness",
+  "identity",
+  "keys",
+  "owner",
+  "type",
+  "args-kind",
+  "args-count",
+  "timeout-kind",
+  "timeout-bound",
+  "command",
+];
+const profileFaultFixture = (fault: string) => {
+  const fixture = prepareRetirementFixture();
+  const value = JSON.parse(
+    fixture.settings.toString("utf8"),
+  ) as InstalledSettingsFixture;
+  const group = value.hooks.Stop![0]!;
+  const metadata = group.agentscope as Record<string, unknown>;
+  const hook = group.hooks[0]!;
+  switch (fault) {
+    case "groups":
+      value.hooks.Stop = [];
+      break;
+    case "handlers":
+      group.hooks = [];
+      break;
+    case "event":
+      metadata.event = "SessionStart";
+      break;
+    case "contract":
+      metadata.contractVersion = 2;
+      break;
+    case "harness":
+      metadata.harnessType = "@agentscope/harness-codex";
+      break;
+    case "identity":
+      metadata.ownershipIdentity = "invalid";
+      break;
+    case "keys":
+      metadata.extra = "synthetic";
+      break;
+    case "owner":
+      metadata.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
+      break;
+    case "type":
+      hook.type = "http";
+      break;
+    case "args-kind":
+      delete hook.args;
+      break;
+    case "args-count":
+      hook.args = ["synthetic"];
+      break;
+    case "timeout-kind":
+      hook.timeout = "10";
+      break;
+    case "timeout-bound":
+      hook.timeout = 0;
+      break;
+    case "command":
+      hook.command = 1;
+      break;
+    default:
+      throw new Error("unknown synthetic fault");
+  }
+  synthetic.settings = Buffer.from(JSON.stringify(value));
+  return fixture;
+};
+describe("actual profile conjunction first failure", () => {
+  it.each(profileFaults)(
+    "reports only failed original term %s",
+    async (fault) => {
+      const { commands, settings } = profileFaultFixture(fault);
+      let original: unknown;
+      try {
+        await retireClaudeCodePackedCli(commands, settings, 1500);
+      } catch (error) {
+        original = error;
+      }
+      expect(original).toMatchObject({
+        message: "integration.claude-code.settings",
+        cause: `profile-${fault}`,
+      });
+      expect(synthetic.calls).toHaveLength(0);
+      const predicate = settingsWire.claudeScenarioFailureDiagnostic(
+        original,
+        "retirement",
+      );
+      expect(predicate).toBe(
+        `integration.fixture.claude-settings-profile-${fault}`,
+      );
+      expect(
+        settingsWire.encodeInteractiveFailureExitCode(
+          predicate,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(207);
+      expect(
+        settingsWire.readInteractiveChildFailureObservation(
+          settingsWire.formatInteractiveChildDiagnostic(predicate),
+        ),
+      ).toEqual({ predicate });
+    },
+  );
+  it("keeps earlier cardinality before multiple later malformed terms", async () => {
+    const { commands, settings } = profileFaultFixture("handlers");
+    const value = JSON.parse(
+      synthetic.settings.toString("utf8"),
+    ) as InstalledSettingsFixture;
+    value.hooks.Stop![0]!.agentscope =
+      null as unknown as InstalledSettingsFixture["hooks"][string][number]["agentscope"];
+    synthetic.settings = Buffer.from(JSON.stringify(value));
+    await expect(
+      retireClaudeCodePackedCli(commands, settings, 1500),
+    ).rejects.toMatchObject({
+      message: "integration.claude-code.settings",
+      cause: "profile-handlers",
+    });
+    expect(synthetic.calls).toHaveLength(0);
+  });
+  it("preserves native expression errors instead of making a categorical success", async () => {
+    const { commands, settings } = prepareRetirementFixture();
+    const value = JSON.parse(
+      settings.toString("utf8"),
+    ) as InstalledSettingsFixture;
+    const metadata = value.hooks.Stop![0]!.agentscope as Record<
+      string,
+      unknown
+    >;
+    metadata.ownershipIdentity = { toString: null, valueOf: null };
+    synthetic.settings = Buffer.from(JSON.stringify(value));
+    let original: unknown;
+    try {
+      await retireClaudeCodePackedCli(commands, settings, 1500);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(TypeError);
+    expect(
+      settingsWire.claudeScenarioFailureDiagnostic(original, "retirement"),
+    ).toBe("integration.fixture.claude-phase-retirement");
+    expect(synthetic.calls).toHaveLength(0);
+  });
+});
 describe("actual settings refusal sites preserve the existing failure wire", () => {
   it.each([
     "status",
@@ -982,12 +1131,13 @@ describe("actual settings refusal sites preserve the existing failure wire", () 
         original = error;
       }
       expect(original).toBeInstanceOf(Error);
+      const cause = site === "profile" ? "profile-args-count" : site;
       expect(original).toMatchObject({
         message: "integration.claude-code.settings",
-        cause: site,
+        cause,
       });
       expect(synthetic.calls).toHaveLength(0);
-      const predicate = `integration.fixture.claude-settings-${site}`;
+      const predicate = `integration.fixture.claude-settings-${cause}`;
       for (const phase of ["retirement", "packed-settings"]) {
         expect(
           settingsWire.claudeScenarioFailureDiagnostic(original, phase),
