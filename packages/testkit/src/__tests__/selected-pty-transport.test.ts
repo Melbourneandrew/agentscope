@@ -2201,6 +2201,102 @@ describe("selected PTY transport", () => {
   }, 60_000);
 
   it.each([
+    ["semantic-marker", "terminal-query-handshake"],
+    ["semantic-marker", "terminal-query-partial"],
+    ["semantic-marker", "terminal-query-blocked"],
+    ["challenge-marker", "terminal-query-handshake"],
+    ["challenge-marker", "terminal-query-partial"],
+    ["challenge-marker", "terminal-query-blocked"],
+  ] as const)(
+    "settles late ordinary replies after historical %s readiness with %s",
+    async (kind, seed) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          Reflect.apply(write, this, [chunk]);
+          if (
+            new TextDecoder().decode(chunk).startsWith("AGENTSCOPE_PTY_READY")
+          )
+            // The existing handshake fake expects the real CPR at row2/column1.
+            Reflect.apply(write, this, [new TextEncoder().encode("\r\n")]);
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        const challenge = "a".repeat(64);
+        const initialInput =
+          kind === "challenge-marker"
+            ? new TextEncoder().encode(`${challenge}\n`)
+            : new Uint8Array([121, 101, 115, 10]);
+        // This existing fake closes on a written Ctrl-D, not its eof() witness.
+        // It proves generic fixed-input progress, not the actual Claude plan.
+        const stdin = new Uint8Array([...initialInput, 4]);
+        const selected = request({ stdin });
+        const receipt = await execute(
+          {
+            ...selected,
+            readiness:
+              kind === "challenge-marker" ? { kind, challenge } : { kind },
+            initialGeometry: { columns: 100, rows: 30 },
+            interaction: {
+              trigger:
+                kind === "challenge-marker" ? "immediate" : "semantic-ready",
+              actions: [
+                {
+                  action: "input",
+                  byteLength: initialInput.length,
+                  inputSha256: createHash("sha256")
+                    .update(initialInput)
+                    .digest("hex"),
+                },
+                ...(kind === "challenge-marker"
+                  ? [
+                      {
+                        action: "checkpoint-process-topology" as const,
+                        topology: "root-with-contained-process-set" as const,
+                      },
+                    ]
+                  : []),
+                { action: "wait-for-semantic-completion" },
+                {
+                  action: "input",
+                  byteLength: 1,
+                  inputSha256: createHash("sha256")
+                    .update(new Uint8Array([4]))
+                    .digest("hex"),
+                },
+              ],
+            },
+          },
+          seed,
+        );
+        expect(receipt).toMatchObject({
+          outcome: "completed",
+          cleanup: "clean",
+          readinessObserved: true,
+          processJoined: true,
+          terminalInputJoined: true,
+          terminalOutputJoined: true,
+          terminalTransportClosed: true,
+          eofByteWritten: false,
+          inputBytesWritten: stdin.length,
+          finalSnapshot: { semanticState: "completed" },
+        });
+        expect(receipt.actions.at(-2)?.action).toBe(
+          "wait-for-semantic-completion",
+        );
+        expect(receipt.actions.at(-1)?.action).toBe("input");
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+  it.each([
     "terminal-query-handshake",
     "terminal-query-partial",
     "terminal-query-blocked",

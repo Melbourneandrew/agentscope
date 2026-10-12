@@ -2972,6 +2972,9 @@ const armSelectedPty = (
             ]);
             collectTerminalResponse();
             if (
+              request.readiness.kind === "challenge-styled-text" &&
+              request.readiness.requiredTerminalProtocol ===
+                "csi-u-flags-7-query-v1" &&
               readinessObservedBeforeCaptured &&
               pendingTerminalResponse.length > 0
             )
