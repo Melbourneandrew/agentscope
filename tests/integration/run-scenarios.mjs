@@ -325,11 +325,12 @@ const isNativeTraceScenario = (plan) =>
     plan.scenarioId,
   );
 const isGateCapableMockServer = (scenario) =>
-  scenario.modelRoutes.length === 1 &&
-  ((scenario.scenarioId === "codex-tui-trace-smoke" &&
+  (scenario.scenarioId === "codex-tui-trace-smoke" &&
+    scenario.modelRoutes.length === 1 &&
     scenario.modelRoutes[0] === "codex-tui-responses") ||
-    (scenario.scenarioId === "claude-interactive-trace-smoke" &&
-      scenario.modelRoutes[0] === "anthropic-messages"));
+  (scenario.scenarioId === "claude-interactive-trace-smoke" &&
+    JSON.stringify(scenario.modelRoutes) ===
+      JSON.stringify(["anthropic-messages", "anthropic-connectivity-probe"]));
 const confinementArguments = (plan) => [
   "--network",
   plan.networkName,

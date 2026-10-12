@@ -6,15 +6,29 @@ import {
 } from "../model-routes.js";
 
 describe("model protocol routes", () => {
+  it("declares only the exact version-bound Claude connectivity probe", () => {
+    const route = MODEL_PROTOCOL_ROUTES.find(
+      (entry) => entry.routeId === "anthropic-connectivity-probe",
+    );
+    expect(route).toMatchObject({
+      provider: "anthropic",
+      method: "HEAD",
+      path: "/api/hello",
+      headers: {},
+      responseBodyText: "",
+    });
+    expect(route).not.toHaveProperty("requestBody");
+  });
   it("defines the exact extensible provider inventory", () => {
     expect(MODEL_PROTOCOL_ROUTES.map(({ routeId }) => routeId)).toEqual([
       "codex-tui-responses",
       "openai-responses",
       "openai-chat-completions",
       "anthropic-messages",
+      "anthropic-connectivity-probe",
       "gemini-generate-content",
     ]);
-    expect(new Set(MODEL_PROTOCOL_ROUTES.map(({ path }) => path)).size).toBe(4);
+    expect(new Set(MODEL_PROTOCOL_ROUTES.map(({ path }) => path)).size).toBe(5);
     expect(MODEL_PROTOCOL_ROUTES.every(Object.isFrozen)).toBe(true);
     expect(
       MODEL_PROTOCOL_ROUTES.every(

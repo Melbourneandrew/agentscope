@@ -52,6 +52,52 @@ const modelRoutePartitionFixture = () => {
   };
   return { run, project, marked };
 };
+describe("Claude complete connectivity route ledger", () => {
+  it("retains the exact connectivity probe in the complete model ledger", () => {
+    const { run, project } = modelRoutePartitionFixture();
+    const fixture = {
+      routeIds: ["anthropic-messages", "anthropic-connectivity-probe"],
+      routes: [
+        { provider: "anthropic", method: "POST", path: "/v1/messages" },
+        { provider: "anthropic", method: "HEAD", path: "/api/hello" },
+      ],
+    };
+    const primary = project("POST", "/v1/messages")[0];
+    const probe = project("HEAD", "/api/hello")[0];
+    expect(run([probe, primary, primary], fixture).entries).toEqual([
+      {
+        routeId: "anthropic-connectivity-probe",
+        provider: "anthropic",
+        method: "HEAD",
+        path: "/api/hello",
+        bodyBytes: 0,
+      },
+      {
+        routeId: "anthropic-messages",
+        provider: "anthropic",
+        method: "POST",
+        path: "/v1/messages",
+        bodyBytes: 0,
+      },
+      {
+        routeId: "anthropic-messages",
+        provider: "anthropic",
+        method: "POST",
+        path: "/v1/messages",
+        bodyBytes: 0,
+      },
+    ]);
+    for (const row of [
+      ...project("GET", "/api/hello"),
+      ...project("HEAD", "/api/hello?extra=1"),
+      ...project("HEAD", "/api/other"),
+      { ...(probe as Record<string, unknown>), bodyBytes: 1 },
+    ])
+      expect(() => run([row, primary, primary], fixture)).toThrow(
+        "integration.claude-code.model-route",
+      );
+  });
+});
 describe("Claude model route failure partition", () => {
   const { run, project, marked } = modelRoutePartitionFixture();
   it("keeps marked controls excluded and admits the same two model rows", () => {

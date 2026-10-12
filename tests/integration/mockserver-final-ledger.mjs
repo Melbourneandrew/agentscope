@@ -146,7 +146,8 @@ export const snapshotMockServerTraffic = (value, runId) => {
     if (
       typeof row.method !== "string" ||
       typeof row.path !== "string" ||
-      !/^(?:GET|PUT|POST)$/u.test(row.method) ||
+      (!(row.method === "HEAD" && row.path === "/api/hello") &&
+        !/^(?:GET|PUT|POST)$/u.test(row.method)) ||
       !/^\/[a-zA-Z0-9._/:-]{1,255}$/u.test(row.path) ||
       ![
         "allowed",
@@ -272,6 +273,18 @@ export const projectMockServerRequests = (bytes, promptSha256) => {
         failure();
       const body = bodyBytes(entry.body);
       if (body.length > maximumBytes) failure();
+      if (entry.method === "HEAD" && entry.path === "/api/hello") {
+        if (body.length !== 0) failure();
+        const query = entry.queryStringParameters;
+        if (
+          query !== undefined &&
+          (query === null ||
+            typeof query !== "object" ||
+            Array.isArray(query) ||
+            Object.keys(query).length !== 0)
+        )
+          failure();
+      }
       const headers = entry.headers ?? {};
       const metadata = finalMetadata(headers, body);
       let occurrences = 0;
@@ -319,12 +332,28 @@ const assertClaudeFinalModelLedger = (
   const routes = routeFixture.routes.filter(
     (route) => route.routeId === "anthropic-messages",
   );
+  const probeRoutes = routeFixture.routes.filter(
+    (route) => route.routeId === "anthropic-connectivity-probe",
+  );
+  const primary = ledger.filter(
+    (entry) => entry.method === "POST" && entry.path === "/v1/messages",
+  );
+  const probe = ledger.filter(
+    (entry) => entry.method === "HEAD" && entry.path === "/api/hello",
+  );
   if (
-    scenario.modelRoutes.length !== 1 ||
-    scenario.modelRoutes[0] !== "anthropic-messages" ||
+    JSON.stringify(scenario.modelRoutes) !==
+      JSON.stringify(["anthropic-messages", "anthropic-connectivity-probe"]) ||
     routes.length !== 1 ||
     routes[0].method !== "POST" ||
     routes[0].path !== "/v1/messages" ||
+    probeRoutes.length !== 1 ||
+    probeRoutes[0].method !== "HEAD" ||
+    probeRoutes[0].path !== "/api/hello" ||
+    probe.length !== 1 ||
+    probe[0].status !== 200 ||
+    probe[0].bodyBytes !== 0 ||
+    probe[0].bodySha256 !== digest(Buffer.alloc(0)) ||
     native?.kind !== "claude-code-native" ||
     !Array.isArray(hashes) ||
     hashes.length !== 2 ||
@@ -333,8 +362,9 @@ const assertClaudeFinalModelLedger = (
         typeof hashes[index] !== "string" ||
         !/^[a-f0-9]{64}$/u.test(hashes[index]),
     ) ||
-    ledger.length !== 2 ||
-    ledger.some(
+    ledger.length !== 3 ||
+    primary.length !== 2 ||
+    primary.some(
       (entry, index) =>
         entry.method !== routes[0].method ||
         entry.path !== routes[0].path ||

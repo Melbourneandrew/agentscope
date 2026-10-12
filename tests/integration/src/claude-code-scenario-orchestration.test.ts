@@ -57,6 +57,42 @@ const source = readFileSync(
   new URL("../claude-code-scenario.mjs", import.meta.url),
   "utf8",
 );
+describe("closed native MockServer route selection", () => {
+  it("retains protected control only for the exact native route tuples", () => {
+    const runner = readFileSync(
+      new URL("../run-scenarios.mjs", import.meta.url),
+      "utf8",
+    );
+    const start = runner.indexOf("const isGateCapableMockServer =");
+    const end = runner.indexOf("const confinementArguments =", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const select = runInNewContext(
+      runner.slice(start, end) + "isGateCapableMockServer;",
+    ) as (scenario: { scenarioId: string; modelRoutes: string[] }) => boolean;
+    expect(
+      select({
+        scenarioId: "codex-tui-trace-smoke",
+        modelRoutes: ["codex-tui-responses"],
+      }),
+    ).toBe(true);
+    expect(
+      select({
+        scenarioId: "claude-interactive-trace-smoke",
+        modelRoutes: ["anthropic-messages", "anthropic-connectivity-probe"],
+      }),
+    ).toBe(true);
+    for (const modelRoutes of [
+      ["anthropic-messages"],
+      ["anthropic-connectivity-probe"],
+      ["anthropic-connectivity-probe", "anthropic-messages"],
+      ["anthropic-messages", "anthropic-connectivity-probe", "unknown"],
+    ])
+      expect(
+        select({ scenarioId: "claude-interactive-trace-smoke", modelRoutes }),
+      ).toBe(false);
+  });
+});
 const start = source.indexOf("const waitForClaudeModelPair =");
 const end = source.indexOf("\nconst isClaudeScenarioMain =", start);
 if (start < 0 || end < 0) throw new Error("synthetic-main-source-boundary");
@@ -1443,7 +1479,10 @@ describe("Claude selected material and completion ordering", () => {
       },
     });
     expect(scenario.destinations).toEqual(["langfuse"]);
-    expect(scenario.modelRoutes).toEqual(["anthropic-messages"]);
+    expect(scenario.modelRoutes).toEqual([
+      "anthropic-messages",
+      "anthropic-connectivity-probe",
+    ]);
     expect(
       scenario.runtimeArtifacts.map(
         (row: { destination: string }) => row.destination,

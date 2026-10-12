@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-c69a9c4c65f4599b345ce3ea1709b18feda12774c16ea7c13c5c709f174a1dae",
+  "manifestIdentity": "sha256-29e27c6fcdff512dabecdf750f4eac1cdd399a164b2f84c19ea182fcf4e1e48f",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -335,7 +335,7 @@
       "outputContract": "semantic-pty",
       "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
-      "modelRoutes": ["anthropic-messages"],
+      "modelRoutes": ["anthropic-messages", "anthropic-connectivity-probe"],
       "tags": ["claude-code", "interactive", "pr"],
       "destinations": ["langfuse"],
       "fixtureAdapter": {
@@ -344,11 +344,11 @@
       },
       "scenarioOracle": {
         "path": "claude-code-platform-oracle.mjs",
-        "sha256": "07c8a735f082cf112bd16f14cbbe7fcb883ba557bc170ac97dacbefe4cb8f6b9"
+        "sha256": "6f370fe8c420bd415d6ea3cc310185a72c013202e13fe7f6fb0cab7e164e42a9"
       },
       "scenarioProcess": {
         "path": "claude-code-scenario.mjs",
-        "sha256": "d6cec8b97e9dba863fd1467b6a0a7bc81992483e95998c75a8be46f48cd14c8f"
+        "sha256": "1b1a3e84a2af40357a44957c8c6eacd4f559f7b632c4fc8596dce60a95fe585c"
       },
       "runtimeArtifacts": [
         {

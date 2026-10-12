@@ -403,21 +403,23 @@ describe("Claude nonsecret fixture descriptor (mocked filesystem only)", () => {
 
 describe("Claude empty effort-only matcher profile", () => {
   it("matches only the legacy tuple or one empty effort-only system message", () => {
-    const schemas = claudeCodeReadExpectations("synthetic-model").map(
-      (row) =>
-        JSON.parse(row.httpRequest.body.jsonSchema) as {
-          properties: {
-            messages: {
-              anyOf: {
-                minItems: number;
-                maxItems: number;
-                items: unknown[];
-                additionalItems: boolean;
-              }[];
+    const schemas = claudeCodeReadExpectations("synthetic-model")
+      .slice(0, 2)
+      .map(
+        (row) =>
+          JSON.parse(row.httpRequest.body.jsonSchema) as {
+            properties: {
+              messages: {
+                anyOf: {
+                  minItems: number;
+                  maxItems: number;
+                  items: unknown[];
+                  additionalItems: boolean;
+                }[];
+              };
             };
-          };
-        },
-    );
+          },
+      );
     for (const [index, schema] of schemas.entries()) {
       const base = index === 0 ? 1 : 3;
       expect(schema.properties.messages.anyOf).toHaveLength(
@@ -463,21 +465,23 @@ describe("Claude empty effort-only matcher profile", () => {
 
 describe("Claude ordinary system context matcher profile", () => {
   it("adds only closed native context tuples beside unchanged legacy and effort tuples", () => {
-    const schemas = claudeCodeReadExpectations("synthetic-model").map(
-      (row) =>
-        JSON.parse(row.httpRequest.body.jsonSchema) as {
-          properties: {
-            messages: {
-              anyOf: {
-                minItems: number;
-                maxItems: number;
-                additionalItems: boolean;
-                items: unknown[];
-              }[];
+    const schemas = claudeCodeReadExpectations("synthetic-model")
+      .slice(0, 2)
+      .map(
+        (row) =>
+          JSON.parse(row.httpRequest.body.jsonSchema) as {
+            properties: {
+              messages: {
+                anyOf: {
+                  minItems: number;
+                  maxItems: number;
+                  additionalItems: boolean;
+                  items: unknown[];
+                }[];
+              };
             };
-          };
-        },
-    );
+          },
+      );
     for (const [index, schema] of schemas.entries()) {
       const tuples = schema.properties.messages.anyOf;
       const ordinary = tuples[2]!;
@@ -540,16 +544,25 @@ describe("Claude ordinary system context matcher profile", () => {
 describe("Claude ordinary packed CLI sequence (source preparation only)", () => {
   it("guards final SSE with the ordered native Read request tuple, not request count", () => {
     const rows = claudeCodeReadExpectations("synthetic-model");
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toEqual({
+      httpRequest: { method: "HEAD", path: "/api/hello" },
+      httpResponse: { statusCode: 200, body: "" },
+      times: { remainingTimes: 1, unlimited: false },
+    });
     expect(
-      rows.every(
-        (row) =>
-          row.httpRequest.method === "POST" &&
-          row.httpRequest.path === "/v1/messages",
-      ),
+      rows
+        .slice(0, 2)
+        .every(
+          (row) =>
+            row.httpRequest.method === "POST" &&
+            row.httpRequest.path === "/v1/messages",
+        ),
     ).toBe(true);
     expect(
-      rows.every((row) => row.httpRequest.body.type === "JSON_SCHEMA"),
+      rows
+        .slice(0, 2)
+        .every((row) => row.httpRequest.body.type === "JSON_SCHEMA"),
     ).toBe(true);
     const schema = JSON.parse(rows[1]!.httpRequest.body.jsonSchema) as {
       properties: { messages: { anyOf: unknown[] } };

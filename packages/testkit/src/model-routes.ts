@@ -4,7 +4,7 @@ export type ModelProtocolProvider =
 export interface ModelProtocolRoute {
   readonly routeId: string;
   readonly provider: ModelProtocolProvider;
-  readonly method: "POST";
+  readonly method: "POST" | "HEAD";
   readonly path: string;
   readonly query?: Readonly<Record<string, string>>;
   readonly headers: Readonly<Record<string, string>>;
@@ -188,6 +188,14 @@ export const MODEL_PROTOCOL_ROUTES = deepFreeze([
       ],
       usage: { input_tokens: 11, output_tokens: 3 },
     },
+  },
+  {
+    routeId: "anthropic-connectivity-probe",
+    provider: "anthropic",
+    method: "HEAD",
+    path: "/api/hello",
+    headers: {},
+    responseBodyText: "",
   },
   {
     routeId: "gemini-generate-content",

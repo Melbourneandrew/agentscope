@@ -47,6 +47,12 @@ export const claudeModelLedger = (rows, routes, scenarioId) => ({
       const matches = routes.routes.filter(
         (route) => route.method === row.method && route.path === row.path,
       );
+      if (
+        row.method === "HEAD" &&
+        row.path === "/api/hello" &&
+        row.bodyBytes !== 0
+      )
+        throw new Error("integration.claude-code.model-route");
       if (matches.length !== 1) {
         // Failure-only partition using the existing closed control paths.
         // No unmatched row is discarded or accepted as model evidence.

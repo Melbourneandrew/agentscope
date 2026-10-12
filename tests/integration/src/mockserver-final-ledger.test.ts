@@ -570,8 +570,8 @@ const claudeLedgerFixture = () => {
   ];
   const ledger = projectMockServerRequests(
     Buffer.from(
-      JSON.stringify(
-        bodies.map((body) => ({
+      JSON.stringify([
+        ...bodies.map((body) => ({
           method: "POST",
           path: "/v1/messages",
           body,
@@ -580,7 +580,15 @@ const claudeLedgerFixture = () => {
             "x-agentscope-final-status": ["200"],
           },
         })),
-      ),
+        {
+          method: "HEAD",
+          path: "/api/hello",
+          headers: {
+            "x-agentscope-final-role": ["data-plane"],
+            "x-agentscope-final-status": ["200"],
+          },
+        },
+      ]),
     ),
   );
   const native = {
@@ -589,10 +597,15 @@ const claudeLedgerFixture = () => {
   };
   const routes = [
     { routeId: "anthropic-messages", method: "POST", path: "/v1/messages" },
+    {
+      routeId: "anthropic-connectivity-probe",
+      method: "HEAD",
+      path: "/api/hello",
+    },
   ];
   const scenario = {
     scenarioId: "claude-interactive-trace-smoke",
-    modelRoutes: ["anthropic-messages"],
+    modelRoutes: ["anthropic-messages", "anthropic-connectivity-probe"],
   };
   // Rebind local traffic AND the fixture model view to each candidate ledger.
   // Refusals below therefore exercise the independent native/route oracle.
@@ -673,6 +686,83 @@ describe("existing Codex final ledger", () => {
     expect(() => {
       check(hash("other"));
     }).toThrow();
+  });
+});
+describe("Claude exact connectivity probe final ledger", () => {
+  it("retains one exact empty connectivity probe separately from the primary pair", () => {
+    const { ledger, check } = claudeLedgerFixture();
+    const probe = ledger[2]!;
+    expect(() => {
+      check([probe, ...ledger.slice(0, 2)]);
+    }).not.toThrow();
+    for (const rows of [
+      ledger.slice(0, 2),
+      [...ledger, probe],
+      [...ledger.slice(0, 2), { ...probe, method: "GET" }],
+      [...ledger.slice(0, 2), { ...probe, status: 404 }],
+      [...ledger.slice(0, 2), { ...probe, path: "/api/hello?extra=1" }],
+      [...ledger.slice(0, 2), { ...probe, path: "/api/other" }],
+      [
+        ...ledger.slice(0, 2),
+        { ...probe, bodyBytes: 1, bodySha256: hash("x") },
+      ],
+    ])
+      expect(() => {
+        check(rows);
+      }).toThrow("integration.mockserver.control");
+  });
+  it.each([null, [], { beta: ["true"] }, { inherited: null }, "PRIVATE"])(
+    "refuses nonempty or malformed raw probe query %j before ledger projection",
+    (queryStringParameters) => {
+      expect(() =>
+        projectMockServerRequests(
+          Buffer.from(
+            JSON.stringify([
+              { method: "HEAD", path: "/api/hello", queryStringParameters },
+            ]),
+          ),
+        ),
+      ).toThrow("integration.mockserver.control");
+    },
+  );
+  it("projects only the exact empty raw probe without changing primary query handling", () => {
+    for (const queryStringParameters of [undefined, {}]) {
+      const rows = projectMockServerRequests(
+        Buffer.from(
+          JSON.stringify([
+            { method: "HEAD", path: "/api/hello", queryStringParameters },
+          ]),
+        ),
+      );
+      expect(rows[0]).toMatchObject({
+        method: "HEAD",
+        path: "/api/hello",
+        bodyBytes: 0,
+        bodySha256: hash(""),
+      });
+    }
+    expect(() =>
+      projectMockServerRequests(
+        Buffer.from(
+          JSON.stringify([
+            { method: "HEAD", path: "/api/hello", body: "PRIVATE" },
+          ]),
+        ),
+      ),
+    ).toThrow("integration.mockserver.control");
+    expect(() =>
+      projectMockServerRequests(
+        Buffer.from(
+          JSON.stringify([
+            {
+              method: "POST",
+              path: "/v1/messages",
+              queryStringParameters: { beta: ["true"] },
+            },
+          ]),
+        ),
+      ),
+    ).not.toThrow();
   });
 });
 describe("Claude native two-request final ledger", () => {

@@ -364,6 +364,11 @@ export const claudeCodeReadExpectations = (model) => {
   return Object.freeze([
     expectation([initial], responses.toolResponse),
     expectation([initial, tool, result], responses.finalResponse),
+    {
+      httpRequest: { method: "HEAD", path: "/api/hello" },
+      httpResponse: { statusCode: 200, body: "" },
+      times: { remainingTimes: 1, unlimited: false },
+    },
   ]);
 };
 export { claudeCodeLifecycleCommands, runClaudeCodeLifecycleCommand };
