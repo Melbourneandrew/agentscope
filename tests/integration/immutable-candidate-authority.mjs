@@ -308,6 +308,10 @@ const claudeModelRouteFailureCauses = Object.freeze([
   "data-plane-control",
   "data-plane-other",
   "ambiguous",
+  "unclassified-other-count-tokens",
+  "unclassified-other-get-control",
+  "unclassified-other-ready",
+  "unclassified-other-remaining",
 ]);
 const claudeModelRouteFailurePredicates = Object.freeze(
   claudeModelRouteFailureCauses.map(

@@ -50,22 +50,31 @@ export const claudeModelLedger = (rows, routes, scenarioId) => ({
       if (matches.length !== 1) {
         // Failure-only partition using the existing closed control paths.
         // No unmatched row is discarded or accepted as model evidence.
-        const control =
-          row.method === "PUT" &&
-          [
-            "/mockserver/expectation",
-            "/mockserver/retrieve",
-            "/mockserver/configuration",
-            "/mockserver/status",
-            "/mockserver/stop",
-            "/mockserver/dashboard",
-            "/_mockserver_callback_websocket",
-          ].includes(row.path);
+        const controlPaths = [
+          "/mockserver/expectation",
+          "/mockserver/retrieve",
+          "/mockserver/configuration",
+          "/mockserver/status",
+          "/mockserver/stop",
+          "/mockserver/dashboard",
+          "/_mockserver_callback_websocket",
+        ];
+        const control = row.method === "PUT" && controlPaths.includes(row.path);
+        let cause =
+          matches.length > 1
+            ? "ambiguous"
+            : `${row.role === undefined ? "unclassified" : "data-plane"}-${control ? "control" : "other"}`;
+        if (cause === "unclassified-other")
+          cause =
+            row.method === "POST" && row.path === "/v1/messages/count_tokens"
+              ? "unclassified-other-count-tokens"
+              : row.method === "GET" && controlPaths.includes(row.path)
+                ? "unclassified-other-get-control"
+                : row.method === "GET" && row.path === "/mockserver/ready"
+                  ? "unclassified-other-ready"
+                  : "unclassified-other-remaining";
         throw new Error("integration.claude-code.model-route", {
-          cause:
-            matches.length > 1
-              ? "ambiguous"
-              : `${row.role === undefined ? "unclassified" : "data-plane"}-${control ? "control" : "other"}`,
+          cause,
         });
       }
       const index = routes.routes.indexOf(matches[0]);

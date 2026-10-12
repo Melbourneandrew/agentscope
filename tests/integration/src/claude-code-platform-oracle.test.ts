@@ -17,7 +17,7 @@ const { projectMockServerRequests } = finalLedgerModule as {
   projectMockServerRequests: (bytes: Buffer) => unknown[];
 };
 
-describe("Claude model route failure partition", () => {
+const modelRoutePartitionFixture = () => {
   const routes = {
     routeIds: ["anthropic-messages"],
     routes: [{ provider: "anthropic", method: "POST", path: "/v1/messages" }],
@@ -46,6 +46,10 @@ describe("Claude model route failure partition", () => {
     "x-agentscope-final-bytes": ["0"],
     "x-agentscope-final-sha256": ["a".repeat(64)],
   };
+  return { run, project, marked };
+};
+describe("Claude model route failure partition", () => {
+  const { run, project, marked } = modelRoutePartitionFixture();
   it("keeps marked controls excluded and admits the same two model rows", () => {
     expect(run(project("PUT", "/mockserver/status", marked)).entries).toEqual(
       [],
@@ -80,9 +84,24 @@ describe("Claude model route failure partition", () => {
   );
   it.each([
     ["PUT", "/mockserver/status", "data-plane", "data-plane-control"],
-    ["POST", "/unknown-auxiliary", undefined, "unclassified-other"],
+    ["POST", "/unknown-auxiliary", undefined, "unclassified-other-remaining"],
     ["POST", "/unknown-auxiliary", "data-plane", "data-plane-other"],
-    ["GET", "/mockserver/status", undefined, "unclassified-other"],
+    ["GET", "/mockserver/status", undefined, "unclassified-other-get-control"],
+    [
+      "POST",
+      "/v1/messages/count_tokens",
+      undefined,
+      "unclassified-other-count-tokens",
+    ],
+    ["GET", "/mockserver/ready", undefined, "unclassified-other-ready"],
+    [
+      "GET",
+      "/v1/messages/count_tokens",
+      undefined,
+      "unclassified-other-remaining",
+    ],
+    ["POST", "/mockserver/ready", undefined, "unclassified-other-remaining"],
+    ["POST", "/v1/messages/count_tokens", "data-plane", "data-plane-other"],
   ])(
     "refuses unmatched %s rows with only fixed cause %s",
     (method, path, role, cause) => {
@@ -111,6 +130,24 @@ describe("Claude model route failure partition", () => {
       })),
     };
     expect(() => run(project("POST", "/v1/responses"), fixture)).toThrowError(
+      expect.objectContaining({
+        message: "integration.claude-code.model-route",
+        cause: "ambiguous",
+      }),
+    );
+  });
+  it("prioritizes ambiguity even for a known diagnostic endpoint", () => {
+    const fixture = {
+      routeIds: ["count-one", "count-two"],
+      routes: [1, 2].map(() => ({
+        provider: "anthropic",
+        method: "POST",
+        path: "/v1/messages/count_tokens",
+      })),
+    };
+    expect(() =>
+      run(project("POST", "/v1/messages/count_tokens"), fixture),
+    ).toThrowError(
       expect.objectContaining({
         message: "integration.claude-code.model-route",
         cause: "ambiguous",
