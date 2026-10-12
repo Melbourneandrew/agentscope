@@ -343,7 +343,7 @@ const assertClaudeFinalModelLedger = (
   );
   if (
     JSON.stringify(scenario.modelRoutes) !==
-      JSON.stringify(["anthropic-messages", "anthropic-connectivity-probe"]) ||
+      JSON.stringify(["anthropic-connectivity-probe", "anthropic-messages"]) ||
     routes.length !== 1 ||
     routes[0].method !== "POST" ||
     routes[0].path !== "/v1/messages" ||

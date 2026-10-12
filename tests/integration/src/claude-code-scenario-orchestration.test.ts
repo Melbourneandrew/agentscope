@@ -79,13 +79,13 @@ describe("closed native MockServer route selection", () => {
     expect(
       select({
         scenarioId: "claude-interactive-trace-smoke",
-        modelRoutes: ["anthropic-messages", "anthropic-connectivity-probe"],
+        modelRoutes: ["anthropic-connectivity-probe", "anthropic-messages"],
       }),
     ).toBe(true);
     for (const modelRoutes of [
       ["anthropic-messages"],
       ["anthropic-connectivity-probe"],
-      ["anthropic-connectivity-probe", "anthropic-messages"],
+      ["anthropic-messages", "anthropic-connectivity-probe"],
       ["anthropic-messages", "anthropic-connectivity-probe", "unknown"],
     ])
       expect(
@@ -1480,8 +1480,8 @@ describe("Claude selected material and completion ordering", () => {
     });
     expect(scenario.destinations).toEqual(["langfuse"]);
     expect(scenario.modelRoutes).toEqual([
-      "anthropic-messages",
       "anthropic-connectivity-probe",
+      "anthropic-messages",
     ]);
     expect(
       scenario.runtimeArtifacts.map(

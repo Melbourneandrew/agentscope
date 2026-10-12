@@ -4,6 +4,10 @@ import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
+  capabilityManifestIdentity,
+  compileCapabilityManifest,
+} from "./manifest.js";
+import {
   assertMockServerFinalLedger,
   projectMockServerRequests,
   snapshotMockServerTraffic,
@@ -605,7 +609,7 @@ const claudeLedgerFixture = () => {
   ];
   const scenario = {
     scenarioId: "claude-interactive-trace-smoke",
-    modelRoutes: ["anthropic-messages", "anthropic-connectivity-probe"],
+    modelRoutes: ["anthropic-connectivity-probe", "anthropic-messages"],
   };
   // Rebind local traffic AND the fixture model view to each candidate ledger.
   // Refusals below therefore exercise the independent native/route oracle.
@@ -686,6 +690,109 @@ describe("existing Codex final ledger", () => {
     expect(() => {
       check(hash("other"));
     }).toThrow();
+  });
+});
+describe("actual compiled Claude route composition", () => {
+  it("passes the actual manifest compiler through protected selection and final oracle", () => {
+    const compiled = compileCapabilityManifest(
+      JSON.parse(
+        readFileSync(
+          new URL("../capability-manifest.json", import.meta.url),
+          "utf8",
+        ),
+      ),
+    );
+    const scenario = compiled.scenarios.find(
+      (entry) => entry.scenarioId === "claude-interactive-trace-smoke",
+    )!;
+    const source = readFileSync(
+      new URL("../run-scenarios.mjs", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("const isGateCapableMockServer =");
+    const end = source.indexOf("const confinementArguments =", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const select = runInNewContext(
+      source.slice(start, end) + "isGateCapableMockServer;",
+    ) as (scenario: unknown) => boolean;
+    expect(select(scenario)).toBe(true);
+    const { ledger, native, routes, check } = claudeLedgerFixture();
+    expect(() => {
+      check(ledger, native, routes, scenario);
+    }).not.toThrow();
+  });
+  it("accepts the compiler's canonical selected routes at the final oracle", () => {
+    const compiled = compileCapabilityManifest(
+      JSON.parse(
+        readFileSync(
+          new URL("../capability-manifest.json", import.meta.url),
+          "utf8",
+        ),
+      ),
+    );
+    const scenario = compiled.scenarios.find(
+      (entry) => entry.scenarioId === "claude-interactive-trace-smoke",
+    )!;
+    const { ledger, native, routes, check } = claudeLedgerFixture();
+    expect(() => {
+      check(ledger, native, routes, scenario);
+    }).not.toThrow();
+  });
+});
+describe("actual compiled Claude route refusals", () => {
+  it("rejects duplicate compilation and nonmatching compiled route membership", () => {
+    const baseline = JSON.parse(
+      readFileSync(
+        new URL("../capability-manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ) as Parameters<typeof capabilityManifestIdentity>[0];
+    const source = readFileSync(
+      new URL("../run-scenarios.mjs", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("const isGateCapableMockServer =");
+    const end = source.indexOf("const confinementArguments =", start);
+    const select = runInNewContext(
+      source.slice(start, end) + "isGateCapableMockServer;",
+    ) as (scenario: unknown) => boolean;
+    for (const modelRoutes of [
+      ["anthropic-messages"],
+      ["anthropic-connectivity-probe"],
+      ["anthropic-connectivity-probe", "anthropic-messages", "unknown"],
+    ]) {
+      const input = structuredClone(baseline);
+      input.scenarios.find(
+        (entry) => entry.scenarioId === "claude-interactive-trace-smoke",
+      )!.modelRoutes = modelRoutes;
+      const compiled = compileCapabilityManifest({
+        ...input,
+        manifestIdentity: capabilityManifestIdentity(input),
+      });
+      const scenario = compiled.scenarios.find(
+        (entry) => entry.scenarioId === "claude-interactive-trace-smoke",
+      )!;
+      expect(select(scenario)).toBe(false);
+      const { ledger, native, routes, check } = claudeLedgerFixture();
+      expect(() => {
+        check(ledger, native, routes, scenario);
+      }).toThrow("integration.mockserver.control");
+    }
+    const duplicated = structuredClone(baseline);
+    duplicated.scenarios.find(
+      (entry) => entry.scenarioId === "claude-interactive-trace-smoke",
+    )!.modelRoutes = [
+      "anthropic-connectivity-probe",
+      "anthropic-messages",
+      "anthropic-messages",
+    ];
+    expect(() =>
+      compileCapabilityManifest({
+        ...duplicated,
+        manifestIdentity: capabilityManifestIdentity(duplicated),
+      }),
+    ).toThrow("integration.manifest.invalid");
   });
 });
 describe("Claude exact connectivity probe final ledger", () => {

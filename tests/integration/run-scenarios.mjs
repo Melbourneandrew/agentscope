@@ -330,7 +330,7 @@ const isGateCapableMockServer = (scenario) =>
     scenario.modelRoutes[0] === "codex-tui-responses") ||
   (scenario.scenarioId === "claude-interactive-trace-smoke" &&
     JSON.stringify(scenario.modelRoutes) ===
-      JSON.stringify(["anthropic-messages", "anthropic-connectivity-probe"]));
+      JSON.stringify(["anthropic-connectivity-probe", "anthropic-messages"]));
 const confinementArguments = (plan) => [
   "--network",
   plan.networkName,
