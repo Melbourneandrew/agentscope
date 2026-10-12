@@ -144,7 +144,7 @@ describe("actual selected pump operation placement", () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         completion: { kind: "semantic-marker" },
-        readiness: { kind: "challenge-marker", challenge },
+        readiness: { kind: "challenge-process-topology", challenge },
         initialGeometry: { columns: 40, rows: 12 },
         interpreter: {
           path: "/usr/local/bin/node",

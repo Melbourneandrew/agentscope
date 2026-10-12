@@ -1291,7 +1291,8 @@ const boundedNegativePostSubmissionRequest =
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
   const observeRefusedCheckpoint = async (
-    selected: SelectedPtyExecutionRequest,
+    createSelected: () =>
+      SelectedPtyExecutionRequest | Promise<SelectedPtyExecutionRequest>,
     seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
   ) => {
     vi.resetModules();
@@ -1308,6 +1309,7 @@ describe("selected PTY transport", () => {
         await import("../internal/headless-supervisor-backend.js");
       const { trustedErrorCode: readCode, readPtySemanticFailure: readFacts } =
         await import("../internal/kernel-errors.js");
+      const selected = await createSelected();
       const result = await execute(selected, seed).catch(
         (error: unknown) => error,
       );
@@ -1328,6 +1330,35 @@ describe("selected PTY transport", () => {
       readiness.mockRestore();
     }
   };
+  it("creates refusal deadlines once after actual test-loader preparation", async () => {
+    let factoryCalls = 0;
+    const factory = async () => {
+      factoryCalls += 1;
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      for (const method of [
+        "armPostSubmissionIdleObservation",
+        "completionObserved",
+        "readinessObserved",
+      ])
+        expect(
+          vi.isMockFunction(
+            Object.getOwnPropertyDescriptor(Terminal.prototype, method)?.value,
+          ),
+        ).toBe(true);
+      return compiledManifestRequest("claude-interactive-trace-smoke");
+    };
+    const observed = await observeRefusedCheckpoint(
+      factory,
+      "fixed-readiness-spoof",
+    );
+    expect(factoryCalls).toBe(1);
+    expect(observed).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      armCalls: 0,
+      completionSeen: false,
+    });
+  });
   it("does not let ordinary text poison a fresh challenged checkpoint completion", async () => {
     vi.resetModules();
     const { BoundedTerminalEmulator: Terminal } =
@@ -1368,9 +1399,9 @@ describe("selected PTY transport", () => {
       const selected = compiledManifestRequest(
         "claude-interactive-trace-smoke",
       );
-      const now = performance.now();
-      const refusal = await observeRefusedCheckpoint(
-        {
+      const refusal = await observeRefusedCheckpoint(() => {
+        const now = performance.now();
+        return {
           ...selected,
           process: {
             ...selected.process,
@@ -1378,9 +1409,8 @@ describe("selected PTY transport", () => {
             monotonicExecutionDeadlineMs: now + 200,
             monotonicShutdownDeadlineMs: now + 700,
           },
-        },
-        seed,
-      );
+        };
+      }, seed);
       // The private fixture rejects any input beyond the exact 65-byte
       // challenge for these no-arm seeds. A genuine completion title cannot
       // turn their missing readiness/checkpoint into a receipt.
@@ -1761,24 +1791,23 @@ describe("selected PTY transport", () => {
         ],
       },
     };
+    const prepareChallengeCase = (selected: SelectedPtyExecutionRequest) => {
+      const caseNow = performance.now();
+      return {
+        ...selected,
+        process: {
+          ...selected.process,
+          monotonicStartupDeadlineMs: caseNow + 5_000,
+          monotonicExecutionDeadlineMs: caseNow + 10_000,
+          monotonicShutdownDeadlineMs: caseNow + 15_000,
+        },
+      };
+    };
     const executeChallengeCase = (
       selected: SelectedPtyExecutionRequest,
       seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
-    ) => {
-      const caseNow = performance.now();
-      return executeSelectedPtyTransportForTest(
-        {
-          ...selected,
-          process: {
-            ...selected.process,
-            monotonicStartupDeadlineMs: caseNow + 5_000,
-            monotonicExecutionDeadlineMs: caseNow + 10_000,
-            monotonicShutdownDeadlineMs: caseNow + 15_000,
-          },
-        },
-        seed,
-      );
-    };
+    ) =>
+      executeSelectedPtyTransportForTest(prepareChallengeCase(selected), seed);
 
     await expect(
       executeChallengeCase(promptRequest, "clean"),
@@ -1882,7 +1911,7 @@ describe("selected PTY transport", () => {
       readinessObserved: false,
     });
     const revoked = await observeRefusedCheckpoint(
-      promptRequest,
+      () => prepareChallengeCase(promptRequest),
       "readiness-revoked-after-input",
     );
     expect(revoked.code).toBe("testkit.pty.transport.semantic-incomplete");
@@ -1949,7 +1978,7 @@ describe("selected PTY transport", () => {
       ).rejects.toThrow("testkit.pty.request");
 
     const spoof = await observeRefusedCheckpoint(
-      challengeRequest,
+      () => prepareChallengeCase(challengeRequest),
       "fixed-readiness-spoof",
     );
     expect(spoof).toMatchObject({
@@ -1959,7 +1988,7 @@ describe("selected PTY transport", () => {
       readinessSeen: false,
     });
     const premature = await observeRefusedCheckpoint(
-      challengeRequest,
+      () => prepareChallengeCase(challengeRequest),
       "completion-before-readiness",
     );
     expect(premature).toMatchObject({
@@ -1968,7 +1997,10 @@ describe("selected PTY transport", () => {
     });
     for (const seed of ["checkpoint-missing-process"] as const)
       expect(
-        await observeRefusedCheckpoint(challengeRequest, seed),
+        await observeRefusedCheckpoint(
+          () => prepareChallengeCase(challengeRequest),
+          seed,
+        ),
       ).toMatchObject({
         code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
         armCalls: 0,
@@ -1976,7 +2008,7 @@ describe("selected PTY transport", () => {
       });
     expect(
       await observeRefusedCheckpoint(
-        challengeRequest,
+        () => prepareChallengeCase(challengeRequest),
         "checkpoint-process-churn",
       ),
     ).toMatchObject({
@@ -2043,10 +2075,10 @@ describe("selected PTY transport", () => {
       "checkpoint-observer-delay",
       "checkpoint-observer-delay-mismatch",
     ] as const) {
-      const delayedAt = performance.now();
       expect(
-        await observeRefusedCheckpoint(
-          {
+        await observeRefusedCheckpoint(() => {
+          const delayedAt = performance.now();
+          return {
             ...challengeRequest,
             process: {
               ...challengeRequest.process,
@@ -2054,9 +2086,8 @@ describe("selected PTY transport", () => {
               monotonicExecutionDeadlineMs: delayedAt + 100,
               monotonicShutdownDeadlineMs: delayedAt + 500,
             },
-          },
-          seed,
-        ),
+          };
+        }, seed),
       ).toMatchObject({
         code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
         armCalls: 0,
@@ -2144,9 +2175,8 @@ describe("selected PTY transport", () => {
 
   it("stops before post-turn input when the synthetic terminal closes", async () => {
     const selected = protocolPromptRequest();
-    const gated = postSubmissionRequest(selected);
     const stale = await observeRefusedCheckpoint(
-      gated,
+      () => postSubmissionRequest(selected),
       "terminal-preenter-frame-late-close",
     );
     expect(stale.code).toBe("testkit.pty.transport.semantic-incomplete");
@@ -2277,9 +2307,9 @@ describe("selected PTY transport", () => {
     "rejects terminal protocol negative %s",
     async (seed) => {
       const selected = protocolPromptRequest();
-      const now = performance.now();
-      const rejected = await observeRefusedCheckpoint(
-        {
+      const rejected = await observeRefusedCheckpoint(() => {
+        const now = performance.now();
+        return {
           ...selected,
           process: {
             ...selected.process,
@@ -2287,9 +2317,8 @@ describe("selected PTY transport", () => {
             monotonicExecutionDeadlineMs: now + 10_000,
             monotonicShutdownDeadlineMs: now + 15_000,
           },
-        },
-        seed,
-      );
+        };
+      }, seed);
       expect(rejected.armCalls).toBe(0);
       expect(rejected.completionSeen).toBe(false);
       expect(rejected.code).toBe("testkit.pty.transport.semantic-incomplete");
