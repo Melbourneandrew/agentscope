@@ -968,6 +968,130 @@ const outerSettingsFailure = (
   );
   return JSON.parse(JSON.stringify(failures.get(plan.runId)));
 };
+describe("model route failure-only partition preserves generic210", () => {
+  it.each([
+    "unclassified-control",
+    "unclassified-other",
+    "data-plane-control",
+    "data-plane-other",
+    "ambiguous",
+  ])(
+    "binds only fixed cause %s to the existing outer failure transport",
+    (cause) => {
+      const scenario = "claude-interactive-trace-smoke";
+      const generic = "integration.fixture.claude-model-route";
+      const predicate = `${generic}-${cause}`;
+      const error = new Error("integration.claude-code.model-route", { cause });
+      expect(claudeScenarioFailureDiagnostic(error, "result")).toBe(predicate);
+      expect(claudeScenarioFailureDiagnostic(error, "model-pair")).toBe(
+        generic,
+      );
+      expect(encodeInteractiveFailureExitCode(predicate, scenario)).toBe(210);
+      expect(decodeInteractiveFailureExitCode(210, scenario)).toBe(generic);
+      const frame: string = formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      const retained = outerSettingsFailure(frame, scenario, 210);
+      expect(retained.predicate).toBe(predicate);
+      expect(Buffer.byteLength(JSON.stringify(retained))).toBeLessThanOrEqual(
+        512,
+      );
+      expect(validInstalledPtyFailure(retained)).toBe(true);
+      expect(outerSettingsFailure("", scenario, 210).predicate).toBe(generic);
+      expect(outerSettingsFailure(frame + frame, scenario, 210).predicate).toBe(
+        generic,
+      );
+      expect(outerSettingsFailure(frame, scenario, 200).predicate).toBe(
+        "integration.fixture.claude-environment",
+      );
+      expect(
+        outerSettingsFailure(frame, "codex-tui-trace-smoke", 210).predicate,
+      ).toBe("child-failure");
+      expect(
+        encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
+      ).toBeUndefined();
+      expect(
+        selectInteractiveExecutionFailurePredicate(
+          predicate,
+          "integration.fixture.claude-vendor-terminal",
+          scenario,
+        ),
+      ).toBe("integration.fixture.claude-vendor-terminal");
+      for (const suffix of ["-unknown", "\n", "\r\n", " PRIVATE"]) {
+        expect(
+          claudeScenarioFailureDiagnostic(
+            new Error("integration.claude-code.model-route", {
+              cause: cause + suffix,
+            }),
+            "result",
+          ),
+        ).toBe(generic);
+        expect(
+          validInstalledPtyFailure({
+            ...retained,
+            predicate: predicate + suffix,
+          }),
+        ).toBe(false);
+        expect(
+          selectInteractiveExecutionFailurePredicate(
+            predicate + suffix,
+            generic,
+            scenario,
+          ),
+        ).toBe(generic);
+      }
+      for (const mismatch of [
+        { ...retained, scenarioId: "codex-tui-trace-smoke" },
+        { ...retained, phase: "wrong" },
+        { ...retained, extra: true },
+      ])
+        expect(validInstalledPtyFailure(mismatch)).toBe(false);
+    },
+  );
+});
+describe("model route partition keeps native error provenance", () => {
+  it("does not evaluate inherited/getter/proxy error observations or accept unknown causes", () => {
+    const generic = "integration.fixture.claude-model-route";
+    let reflected = 0;
+    const inherited = new Error("integration.claude-code.model-route");
+    Object.setPrototypeOf(
+      inherited,
+      Object.assign(Object.create(Error.prototype) as object, {
+        cause: "ambiguous",
+      }),
+    );
+    const accessor = new Error("integration.claude-code.model-route");
+    Object.defineProperty(accessor, "cause", {
+      get() {
+        reflected++;
+        throw new Error("synthetic");
+      },
+    });
+    for (const error of [
+      inherited,
+      accessor,
+      new Error("integration.claude-code.model-route", { cause: "unknown" }),
+      new Error("other", { cause: "ambiguous" }),
+    ])
+      expect(claudeScenarioFailureDiagnostic(error, "result")).toBe(
+        error.message === "other"
+          ? "integration.fixture.claude-phase-result"
+          : generic,
+      );
+    const proxy = new Proxy(
+      new Error("integration.claude-code.model-route", { cause: "ambiguous" }),
+      {
+        getOwnPropertyDescriptor() {
+          reflected++;
+          throw new Error("synthetic");
+        },
+      },
+    );
+    expect(claudeScenarioFailureDiagnostic(proxy, "result")).toBe(
+      "integration.fixture.claude-phase-result",
+    );
+    expect(reflected).toBe(0);
+  });
+});
 describe("actual outer settings alias persistence after decoded207", () => {
   it.each([
     "status",

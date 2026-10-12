@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-ecf35392f08498a23cdc94622105a0e650e2b847da964bb59204960b743dc564",
+  "manifestIdentity": "sha256-032e3772ad0d063d104ce4f802a981bcfe8894b490c158a5c5424f014fea5a04",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -344,7 +344,7 @@
       },
       "scenarioOracle": {
         "path": "claude-code-platform-oracle.mjs",
-        "sha256": "8a6713a30c98a6f2355b37f7eb0f8600eb06fec76d76279975459f65e50e3011"
+        "sha256": "fca471577e8bc94e3c71eba1ca0b4453472e9ac482fc6dca8afbe52900c16247"
       },
       "scenarioProcess": {
         "path": "claude-code-scenario.mjs",

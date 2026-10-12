@@ -11,6 +11,113 @@ const { claudeCodeReadStimulus } = scenarioModule as {
 
 // @ts-expect-error private checksum-bound scenario module has no declaration
 import * as oracleModule from "../claude-code-platform-oracle.mjs";
+// @ts-expect-error private checksum-bound module has no declaration
+import * as finalLedgerModule from "../mockserver-final-ledger.mjs";
+const { projectMockServerRequests } = finalLedgerModule as {
+  projectMockServerRequests: (bytes: Buffer) => unknown[];
+};
+
+describe("Claude model route failure partition", () => {
+  const routes = {
+    routeIds: ["anthropic-messages"],
+    routes: [{ provider: "anthropic", method: "POST", path: "/v1/messages" }],
+  };
+  const run = (rows: unknown[], fixture = routes) =>
+    (
+      oracleModule as {
+        claudeModelLedger: (
+          rows: unknown[],
+          fixture: typeof routes,
+          scenario: string,
+        ) => { entries: unknown[] };
+      }
+    ).claudeModelLedger(rows, fixture, "claude-interactive-trace-smoke");
+  const project = (
+    method: string,
+    path: string,
+    headers: Record<string, string[]> = {},
+  ) =>
+    projectMockServerRequests(
+      Buffer.from(JSON.stringify([{ method, path, headers, body: "" }])),
+    );
+  const marked = {
+    "x-agentscope-final-role": ["allowed"],
+    "x-agentscope-final-status": ["200"],
+    "x-agentscope-final-bytes": ["0"],
+    "x-agentscope-final-sha256": ["a".repeat(64)],
+  };
+  it("keeps marked controls excluded and admits the same two model rows", () => {
+    expect(run(project("PUT", "/mockserver/status", marked)).entries).toEqual(
+      [],
+    );
+    const row = project("POST", "/v1/messages")[0];
+    expect(run([row, row]).entries).toHaveLength(2);
+  });
+  it.each(["title-case", "unmarked"])(
+    "refuses %s control rows without normalizing headers or dropping rows",
+    (form) => {
+      const headers =
+        form === "unmarked"
+          ? {}
+          : Object.fromEntries(
+              Object.entries(marked).map(([name, values]) => [
+                name
+                  .split("-")
+                  .map((part) => part[0]!.toUpperCase() + part.slice(1))
+                  .join("-"),
+                values,
+              ]),
+            );
+      expect(() =>
+        run(project("PUT", "/mockserver/status", headers)),
+      ).toThrowError(
+        expect.objectContaining({
+          message: "integration.claude-code.model-route",
+          cause: "unclassified-control",
+        }),
+      );
+    },
+  );
+  it.each([
+    ["PUT", "/mockserver/status", "data-plane", "data-plane-control"],
+    ["POST", "/unknown-auxiliary", undefined, "unclassified-other"],
+    ["POST", "/unknown-auxiliary", "data-plane", "data-plane-other"],
+    ["GET", "/mockserver/status", undefined, "unclassified-other"],
+  ])(
+    "refuses unmatched %s rows with only fixed cause %s",
+    (method, path, role, cause) => {
+      const headers =
+        role === undefined
+          ? {}
+          : {
+              "x-agentscope-final-role": [role],
+              "x-agentscope-final-status": ["200"],
+            };
+      expect(() => run(project(method, path, headers))).toThrowError(
+        expect.objectContaining({
+          message: "integration.claude-code.model-route",
+          cause,
+        }),
+      );
+    },
+  );
+  it("retains duplicate-route refusal, including unrelated provider tuples", () => {
+    const fixture = {
+      routeIds: ["response-one", "response-two"],
+      routes: [1, 2].map(() => ({
+        provider: "openai-responses",
+        method: "POST",
+        path: "/v1/responses",
+      })),
+    };
+    expect(() => run(project("POST", "/v1/responses"), fixture)).toThrowError(
+      expect.objectContaining({
+        message: "integration.claude-code.model-route",
+        cause: "ambiguous",
+      }),
+    );
+  });
+});
 
 const lifecycleSource = readFileSync(
   new URL("../claude-code-lifecycle.mjs", import.meta.url),

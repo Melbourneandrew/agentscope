@@ -302,10 +302,23 @@ const claudeSettingsFailurePredicates = Object.freeze(
     (cause) => `integration.fixture.claude-settings-${cause}`,
   ),
 );
+const claudeModelRouteFailureCauses = Object.freeze([
+  "unclassified-control",
+  "unclassified-other",
+  "data-plane-control",
+  "data-plane-other",
+  "ambiguous",
+]);
+const claudeModelRouteFailurePredicates = Object.freeze(
+  claudeModelRouteFailureCauses.map(
+    (cause) => `integration.fixture.claude-model-route-${cause}`,
+  ),
+);
 const isClaudeFailurePredicate = (diagnostic) =>
   claudeFailurePredicates.includes(diagnostic) ||
   claudeModelPairFailurePredicates.includes(diagnostic) ||
   claudeSettingsFailurePredicates.includes(diagnostic) ||
+  claudeModelRouteFailurePredicates.includes(diagnostic) ||
   [
     "integration.runner.fixture-result-open",
     "integration.runner.fixture-result-status",
@@ -317,6 +330,17 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
   if (!types.isProxy(error) && types.isNativeError(error)) {
     const field = Object.getOwnPropertyDescriptor(error, "message");
     if (field && Object.hasOwn(field, "value")) {
+      if (
+        field.value === "integration.claude-code.model-route" &&
+        phase === "result"
+      ) {
+        const cause = Object.getOwnPropertyDescriptor(error, "cause");
+        const index =
+          cause && Object.hasOwn(cause, "value")
+            ? claudeModelRouteFailureCauses.indexOf(cause.value)
+            : -1;
+        if (index >= 0) return claudeModelRouteFailurePredicates[index];
+      }
       if (
         field.value === "integration.claude-code.settings" &&
         (phase === "retirement" || phase === "packed-settings")
@@ -390,6 +414,7 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   ...claudeFailurePredicates,
   ...claudeModelPairFailurePredicates,
   ...claudeSettingsFailurePredicates,
+  ...claudeModelRouteFailurePredicates,
   "child-failure",
   "integration.fixture.codex-bootstrap",
   "integration.fixture.codex-bootstrap-arguments",
@@ -1480,8 +1505,10 @@ export const selectInteractiveExecutionFailurePredicate = (
 ) => {
   const diagnostic =
     scenarioId === "claude-interactive-trace-smoke" &&
-    retainedDiagnostic === "integration.fixture.claude-settings" &&
-    claudeSettingsFailurePredicates.includes(candidate)
+    ((retainedDiagnostic === "integration.fixture.claude-settings" &&
+      claudeSettingsFailurePredicates.includes(candidate)) ||
+      (retainedDiagnostic === "integration.fixture.claude-model-route" &&
+        claudeModelRouteFailurePredicates.includes(candidate)))
       ? candidate
       : (retainedDiagnostic ?? candidate);
   if (typeof diagnostic !== "string") return "child-failure";
@@ -1514,6 +1541,8 @@ export const selectInteractiveExecutionFailurePredicate = (
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (claudeModelRouteFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke" ? 210 : undefined;
   if (claudeSettingsFailurePredicates.includes(diagnostic))
     return scenarioId === "claude-interactive-trace-smoke" ? 207 : undefined;
   if (claudeModelPairFailurePredicates.includes(diagnostic))

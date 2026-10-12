@@ -47,8 +47,27 @@ export const claudeModelLedger = (rows, routes, scenarioId) => ({
       const matches = routes.routes.filter(
         (route) => route.method === row.method && route.path === row.path,
       );
-      if (matches.length !== 1)
-        throw new Error("integration.claude-code.model-route");
+      if (matches.length !== 1) {
+        // Failure-only partition using the existing closed control paths.
+        // No unmatched row is discarded or accepted as model evidence.
+        const control =
+          row.method === "PUT" &&
+          [
+            "/mockserver/expectation",
+            "/mockserver/retrieve",
+            "/mockserver/configuration",
+            "/mockserver/status",
+            "/mockserver/stop",
+            "/mockserver/dashboard",
+            "/_mockserver_callback_websocket",
+          ].includes(row.path);
+        throw new Error("integration.claude-code.model-route", {
+          cause:
+            matches.length > 1
+              ? "ambiguous"
+              : `${row.role === undefined ? "unclassified" : "data-plane"}-${control ? "control" : "other"}`,
+        });
+      }
       const index = routes.routes.indexOf(matches[0]);
       return {
         routeId: routes.routeIds[index],
