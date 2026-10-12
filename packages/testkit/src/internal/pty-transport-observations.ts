@@ -140,6 +140,10 @@ export const classifyPtyPumpFailure = (
       return "observer-read";
     case "testkit.headless.observer.identity":
       return "observer-identity";
+    case "testkit.headless.observer.signal":
+      return "observer-signal";
+    case "testkit.headless.observer.process-set":
+      return "observer-process-set";
     case "testkit.pty.transport":
       return "transport";
     case "testkit.pty.geometry":

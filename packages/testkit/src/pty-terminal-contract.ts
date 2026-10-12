@@ -89,6 +89,8 @@ export type SelectedPtyExecutionReceipt = Readonly<{
     category:
       | "observer-read"
       | "observer-identity"
+      | "observer-signal"
+      | "observer-process-set"
       | "transport"
       | "geometry"
       | "checkpoint-witness"

@@ -1930,6 +1930,18 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    for (const category of ["observer-signal", "observer-process-set"]) {
+      const categorized = {
+        ...interactive,
+        ptyTerminalReceipt: {
+          ...receipt,
+          pumpFailureDiagnostic: { ...receipt.pumpFailureDiagnostic, category },
+        },
+      };
+      expect(compileWithPreparedAuthority(categorized, evidence)).toEqual(
+        categorized,
+      );
+    }
     for (const ptyTerminalReceipt of [
       refingerprintPtyActions(
         receipt,

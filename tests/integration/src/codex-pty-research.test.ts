@@ -100,22 +100,27 @@ describe("Codex final native capture lifecycle placement", () => {
 });
 
 describe("returned receipt failure research retention", () => {
-  it("preserves the same optional pump observation in versions five and six", () => {
-    const receipt = {
-      outcome: "transport-failed",
-      checkpointProgressDiagnostic: "advanced",
-      pumpFailureDiagnostic: {
-        operation: "read",
-        category: "transport",
-        originalExecutionDeadlineExhausted: false,
-      },
-    };
-    const fifth = projectUntrustedCodexPtyReceipt(receipt, 5);
-    const sixth = projectUntrustedCodexPtyReceipt(receipt, 6);
-    expect(sixth).toEqual(fifth);
-    expect(sixth?.pumpFailureDiagnostic).toEqual(receipt.pumpFailureDiagnostic);
-    expect(validUntrustedCodexPtyReceipt(sixth, 6)).toBe(true);
-  });
+  it.each(["transport", "observer-signal", "observer-process-set"])(
+    "preserves optional %s observation in versions five and six",
+    (category) => {
+      const receipt = {
+        outcome: "transport-failed",
+        checkpointProgressDiagnostic: "advanced",
+        pumpFailureDiagnostic: {
+          operation: category === "transport" ? "read" : "checkpoint-freeze",
+          category,
+          originalExecutionDeadlineExhausted: false,
+        },
+      };
+      const fifth = projectUntrustedCodexPtyReceipt(receipt, 5);
+      const sixth = projectUntrustedCodexPtyReceipt(receipt, 6);
+      expect(sixth).toEqual(fifth);
+      expect(sixth?.pumpFailureDiagnostic).toEqual(
+        receipt.pumpFailureDiagnostic,
+      );
+      expect(validUntrustedCodexPtyReceipt(sixth, 6)).toBe(true);
+    },
+  );
   it.each([
     "completed",
     "signaled",
@@ -207,6 +212,24 @@ describe("returned receipt failure research retention", () => {
     expect(validUntrustedCodexPtyReceipt(null)).toBe(true);
   });
 });
+it.each(["observer-signal", "observer-process-set"])(
+  "rejects extended pump category %s without reflecting content",
+  (category) => {
+    expect(
+      projectUntrustedCodexPtyReceipt(
+        {
+          outcome: "transport-failed",
+          pumpFailureDiagnostic: {
+            operation: "checkpoint-freeze",
+            category: `${category}-extra`,
+            originalExecutionDeadlineExhausted: false,
+          },
+        },
+        6,
+      ),
+    ).toBeUndefined();
+  },
+);
 const stages = [
   "authority",
   "observer",

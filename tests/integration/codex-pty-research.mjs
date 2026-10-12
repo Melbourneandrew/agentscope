@@ -274,6 +274,8 @@ const pumpOperations = Object.freeze([
 const pumpCategories = Object.freeze([
   "observer-read",
   "observer-identity",
+  "observer-signal",
+  "observer-process-set",
   "transport",
   "geometry",
   "checkpoint-witness",

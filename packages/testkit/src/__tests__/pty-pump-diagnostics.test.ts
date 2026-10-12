@@ -46,6 +46,8 @@ describe("first owned PTY pump diagnostic", () => {
   it.each([
     ["testkit.headless.observer.read", "observer-read"],
     ["testkit.headless.observer.identity", "observer-identity"],
+    ["testkit.headless.observer.signal", "observer-signal"],
+    ["testkit.headless.observer.process-set", "observer-process-set"],
     ["testkit.pty.transport", "transport"],
     ["testkit.pty.geometry", "geometry"],
     ["testkit.pty.checkpoint-witness", "checkpoint-witness"],
@@ -83,6 +85,9 @@ describe("first owned PTY pump diagnostic", () => {
         },
       ),
       { code: "testkit.pty.transport" },
+      new Error("testkit.headless.observer.signal"),
+      { code: "testkit.headless.observer.process-set" },
+      Object.assign({}, kernelError("testkit.headless.observer.signal")),
       null,
     ])
       expect(classifyPtyPumpFailure(error)).toBe("unknown");
@@ -196,7 +201,7 @@ describe("actual selected pump operation placement", () => {
       inputBytesWritten: 65,
       pumpFailureDiagnostic: {
         operation: "checkpoint-freeze",
-        category: "unknown",
+        category: "observer-process-set",
         originalExecutionDeadlineExhausted: false,
       },
     });
