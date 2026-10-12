@@ -518,6 +518,7 @@ const request = (
 const executeWithControl = async (
   sequence: string,
   expectedResponse?: string,
+  fragmented = false,
 ) => {
   vi.resetModules();
   const { BoundedTerminalEmulator: Terminal } =
@@ -540,7 +541,8 @@ const executeWithControl = async (
     .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
       if (!inserted) {
         inserted = true;
-        Reflect.apply(write, this, [new TextEncoder().encode(sequence)]);
+        for (const part of fragmented ? [...sequence] : [sequence])
+          Reflect.apply(write, this, [new TextEncoder().encode(part)]);
       }
       Reflect.apply(write, this, [chunk]);
     });
@@ -556,6 +558,35 @@ const executeWithControl = async (
       expect(responseBytes).toBe(expectedResponse);
   }
 };
+describe("exact native palette reset through selected transport", () => {
+  it.each([
+    ["\u0007", false],
+    ["\u0007", true],
+    ["\u001b\\", false],
+    ["\u001b\\", true],
+  ] as const)(
+    "retains ordinary completion for exact reset (%j, %j)",
+    async (end, fragmented) => {
+      await expect(
+        executeWithControl(`\u001b]104;255${end}`, "", fragmented),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+  it.each(["104;254", "104;255;1", "52;c;synthetic", "999;unknown"])(
+    "keeps neighboring OSC %j refused",
+    async (control) => {
+      await expect(
+        executeWithControl(`\u001b]${control}\u0007`),
+      ).rejects.toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-osc",
+      });
+    },
+  );
+});
 describe("bounded DECRQM selected transport", () => {
   it.each([
     ["?65536$p", "range"],

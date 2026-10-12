@@ -291,6 +291,15 @@ const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
 type ParserState =
   "ground" | "escape" | "charset" | "csi" | "osc" | "osc-escape";
 
+const supportedNonTitleOscMetadata = (
+  selector: string,
+  payload: string,
+): boolean =>
+  selector === "8" ||
+  // The pinned renderer resets palette entry 255. Palette metadata grants
+  // no text, title, response, readiness or completion authority.
+  (selector === "104" && payload === "255");
+
 const fail = (code: string): never => {
   throw new BoundedTerminalEmulatorError(code);
 };
@@ -1950,7 +1959,7 @@ export class BoundedTerminalEmulator {
       (selector !== "0" &&
         selector !== "2" &&
         !((selector === "10" || selector === "11") && title === "?") &&
-        selector !== "8") ||
+        !supportedNonTitleOscMetadata(selector, title)) ||
       Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
     )
       this.#recordUnsupportedControl("osc");

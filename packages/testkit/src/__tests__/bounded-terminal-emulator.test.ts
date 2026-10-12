@@ -11,6 +11,70 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("exact native OSC indexed palette reset", () => {
+  it.each([
+    ["\u0007", false],
+    ["\u0007", true],
+    ["\u001b\\", false],
+    ["\u001b\\", true],
+  ])(
+    "accepts the exact reset without semantic authority (%j, %j)",
+    (end, fragmented) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary text"));
+      const before = terminal.snapshot();
+      const sequence = `\u001b]104;255${end}`;
+      for (const part of fragmented ? [...sequence] : [sequence])
+        terminal.write(bytes(part));
+      expect(terminal.end()).toMatchObject({
+        cursor: before.cursor,
+        screenSha256: before.screenSha256,
+        titleSha256: before.titleSha256,
+        titlePresent: before.titlePresent,
+        semanticState: "active",
+        unsupportedControlCount: 0,
+        malformedControlCount: 0,
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each([
+    "104",
+    "104;254",
+    "104;0255",
+    "104;255;1",
+    "104;255?",
+    "104;255AGENTSCOPE_PTY_READY",
+    "52;c;synthetic",
+    "999;unknown",
+  ])("keeps unrelated OSC payload %j refused", (control) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(`\u001b]${control}\u0007`));
+    expect(terminal.end().unsupportedControlCount).toBe(1);
+    expect(terminal.unsupportedControlReason()).toBe("osc");
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("preserves title/control bounds and unfinished sequence refusal", () => {
+    const smallTitle = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumTitleBytes: 2,
+      },
+    );
+    smallTitle.write(bytes("\u001b]104;255\u0007"));
+    expect(smallTitle.end().unsupportedControlCount).toBe(1);
+    const overflow = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    overflow.write(bytes(`\u001b]104;255${"x".repeat(512)}\u0007`));
+    expect(overflow.end().malformedControlCount).toBeGreaterThan(0);
+    expect(overflow.malformedControlReason()).toBe("control-limit");
+    const unfinished = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    unfinished.write(bytes("\u001b]104;255\u001b"));
+    expect(unfinished.end().malformedControlCount).toBeGreaterThan(0);
+  });
+});
+
 describe("truthful bounded DECRQM responses", () => {
   it.each([
     ["$p", "0;0"],
@@ -490,7 +554,7 @@ describe("fixed rejected extended-CSI legacy identities", () => {
 });
 const frame =
   "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";
-const terminalForCharset = () => {
+const terminalForCharset = (withProtocol = true) => {
   const challenge = "a".repeat(64);
   const terminal = new BoundedTerminalEmulator(
     { columns: 100, rows: 8 },
@@ -505,14 +569,45 @@ const terminalForCharset = () => {
       dim: false,
     },
   );
-  terminal.write(
-    bytes(
-      "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
-    ),
-  );
+  if (withProtocol)
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
   terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
   return terminal;
 };
+describe("exact palette reset preserves challenge authority", () => {
+  it("preserves established readiness without recovering revoked or incomplete trust", () => {
+    const reset = bytes("\u001b]104;255\u0007");
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    terminal.write(reset);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + reset.length,
+    });
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    terminal.write(bytes("\u001b(0"));
+    const revoked = terminal.challengedReadinessProgress();
+    terminal.write(reset);
+    expect(terminal.challengedReadinessProgress()).toEqual(revoked);
+    expect(terminal.readinessObserved()).toBe(false);
+    const incomplete = terminalForCharset(false);
+    incomplete.write(bytes(frame));
+    const pending = incomplete.challengedReadinessProgress();
+    incomplete.write(reset);
+    expect(incomplete.challengedReadinessProgress()).toEqual(pending);
+    expect(incomplete.readinessObserved()).toBe(false);
+    expect(incomplete.takeTerminalResponses()).toHaveLength(0);
+  });
+});
 describe("DECRQM preserves existing challenge authority", () => {
   it("does not disturb an active styled frame or recover revoked trust", () => {
     const terminal = terminalForCharset();
