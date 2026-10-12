@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-2216466086a45439bc7c684406857ece63be250641b4d326a6bc24488ee217d5",
+  "manifestIdentity": "sha256-bddfc75df6619145fb462c70c4cb89b95140597d6bfc62732d943363cd9e0023",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -119,7 +119,7 @@
           },
           "adapterArtifact": {
             "path": "packages/harnesses/claude-code/src/testing.ts",
-            "sha256": "435277c25b97ec727bd2bbde2448ea116a37d633f3bdf57f09dec388c2f2a0a9"
+            "sha256": "81fb69ab0cfd905cb66278bfdbe42a98bb94fc4c923f0067196d6dfac2fee475"
           },
           "mappingArtifact": {
             "path": "packages/harnesses/claude-code/src/mapping.ts",

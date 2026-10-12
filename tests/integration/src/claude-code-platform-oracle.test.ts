@@ -29,12 +29,6 @@ const installedSettingsFixture = () => {
         event,
         [
           {
-            agentscope: {
-              contractVersion: 1,
-              event,
-              harnessType: "@agentscope/harness-claude-code",
-              ownershipIdentity: `agentscope-hook-v1-sha256-${"a".repeat(64)}`,
-            },
             hooks: [
               {
                 type: "command",
@@ -90,22 +84,31 @@ const installedSettingsFixture = () => {
 };
 
 describe("Claude installed launcher snapshot", () => {
-  it("holds the exact four CLI-owned metadata/command bytes and closes the descriptor", () => {
+  it("holds the exact four native CLI-owned command blocks and closes the descriptor", () => {
     const fixture = installedSettingsFixture();
     expect(fixture.read()).toEqual(fixture.bytes());
     expect(fixture.closed).toEqual([41]);
   });
-  it("refuses event, ownership, contract and command substitutions without exporting settings", () => {
+  it("refuses extra legacy metadata and command substitutions without exporting settings", () => {
     for (const mutate of [
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.event = "SessionEnd";
-      },
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
-      },
-      (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
-        value.hooks.Stop![0]!.agentscope.contractVersion = 2;
-      },
+      ...[
+        { event: "Stop", contractVersion: 1, identity: "a" },
+        { event: "SessionEnd", contractVersion: 1, identity: "a" },
+        { event: "Stop", contractVersion: 1, identity: "b" },
+        { event: "Stop", contractVersion: 2, identity: "a" },
+      ].map(
+        (metadata) =>
+          (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
+            Object.assign(value.hooks.Stop![0]!, {
+              agentscope: {
+                contractVersion: metadata.contractVersion,
+                event: metadata.event,
+                harnessType: "@agentscope/harness-claude-code",
+                ownershipIdentity: `agentscope-hook-v1-sha256-${metadata.identity.repeat(64)}`,
+              },
+            });
+          },
+      ),
       (value: ReturnType<typeof installedSettingsFixture>["value"]) => {
         value.hooks.Stop![0]!.hooks[0]!.command = "/replacement";
       },
