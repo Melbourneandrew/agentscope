@@ -12,7 +12,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import {
   claudePackedInstallFailurePhase,
   parseCodexMachineOutput,
@@ -165,7 +165,13 @@ export const retireClaudeCodePackedCli = async (
   settings,
   deadline,
 ) => {
-  if (!readClaudeCodeInstalledSettings().equals(settings))
+  // Preserve every setting value, not the vendor's JSON whitespace/key order.
+  if (
+    !isDeepStrictEqual(
+      JSON.parse(readClaudeCodeInstalledSettings().toString("utf8")),
+      JSON.parse(settings.toString("utf8")),
+    )
+  )
     throw new Error("integration.claude-code.settings");
   const doctor = await claudeMachine(
     commands[5],

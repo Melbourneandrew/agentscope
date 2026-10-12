@@ -16,11 +16,23 @@ const synthetic = vi.hoisted(() => ({
   commandFailure: undefined as Error | undefined,
   failAt: -1,
   settings: Buffer.alloc(0),
+  settingsFailure: "",
   nativeBytes: Buffer.alloc(0),
   nativeFailure: "",
   nativeOwnerSensitive: false,
   nativeUid: 0,
 }));
+const settingsStatus = (named = false) => ({
+  isFile: () => synthetic.settingsFailure !== "file",
+  uid: synthetic.settingsFailure === "owner" ? 0 : 1000,
+  nlink: synthetic.settingsFailure === "link" ? 2 : 1,
+  mode: synthetic.settingsFailure === "mode" ? 0o644 : 0o600,
+  size: synthetic.settings.length,
+  dev: 1,
+  ino: named && synthetic.settingsFailure === "drift" ? 2 : 1,
+  mtimeMs: 1,
+  ctimeMs: 1,
+});
 function nativeStatus(descriptor: number, named = false) {
   return {
     isFile: () =>
@@ -118,34 +130,13 @@ vi.mock("node:fs", async () => {
       synthetic.fileCalls.push({ action: "close", descriptor });
     },
     fstatSync: (descriptor: number) =>
-      descriptor >= 42
-        ? nativeStatus(descriptor)
-        : {
-            isFile: () => true,
-            uid: 1000,
-            nlink: 1,
-            mode: 0o600,
-            size: synthetic.settings.length,
-            dev: 1,
-            ino: 1,
-            mtimeMs: 1,
-            ctimeMs: 1,
-          },
+      descriptor >= 42 ? nativeStatus(descriptor) : settingsStatus(),
     lstatSync: (path: string) =>
       path === "/harness-home" ||
       path === "/worktree" ||
       path === "/harness-home/.claude.json"
         ? nativeStatus(path === "/harness-home/.claude.json" ? 44 : 42, true)
-        : {
-            uid: 1000,
-            nlink: 1,
-            mode: 0o600,
-            size: synthetic.settings.length,
-            dev: 1,
-            ino: 1,
-            mtimeMs: 1,
-            ctimeMs: 1,
-          },
+        : settingsStatus(true),
     readSync: (
       _fd: number,
       bytes: Buffer,
@@ -186,6 +177,13 @@ const { prepareClaudeCodePackedCli } = lifecycleModule as {
     deadline: number,
     note?: (phase: string) => void,
   ) => Promise<{ commands: readonly (readonly string[])[]; settings: Buffer }>;
+};
+const { retireClaudeCodePackedCli } = lifecycleModule as {
+  retireClaudeCodePackedCli: (
+    commands: readonly (readonly string[])[],
+    settings: Buffer,
+    deadline: number,
+  ) => Promise<void>;
 };
 
 const {
@@ -634,6 +632,7 @@ const resetPackedLifecycleFixture = () => {
     }),
   );
   synthetic.commandFailure = undefined;
+  synthetic.settingsFailure = "";
   synthetic.failAt = -1;
   synthetic.writeError = false;
   synthetic.nativeFailure = "";
@@ -765,6 +764,178 @@ describe("Claude native fixture ownership handoff (synthetic capability model)",
         descriptor,
       });
   });
+});
+const prepareRetirementFixture = () => {
+  resetPackedLifecycleFixture();
+  const commands = claudeCodeLifecycleCommands({
+    endpoint: "https://collector:4318",
+  });
+  synthetic.commandOutputs = [
+    ["agentscope doctor", [{ summary: { errors: 0 }, findings: [] }]],
+    [
+      "agentscope uninstall",
+      [
+        {
+          harness: "claude-code",
+          operation: "uninstall",
+          applied: true,
+          disposition: "committed",
+        },
+      ],
+    ],
+    ["agentscope harness status", [{ installation: "ready" }]],
+  ].map(([command, records]) =>
+    JSON.stringify({ command, completion: "complete", records }),
+  );
+  return { commands, settings: Buffer.from(synthetic.settings) };
+};
+type InstalledSettingsFixture = {
+  theme?: string;
+  hooks: Record<
+    string,
+    Array<{
+      agentscope: { ownershipIdentity: string };
+      hooks: Array<Record<string, unknown>>;
+    }>
+  >;
+};
+describe("Claude retirement settings representation", () => {
+  it.each(["format", "key-order"])(
+    "accepts only representational %s changes in the complete document",
+    async (change) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const value = JSON.parse(
+        settings.toString("utf8"),
+      ) as InstalledSettingsFixture;
+      if (change === "key-order")
+        value.hooks = Object.fromEntries(Object.entries(value.hooks).reverse());
+      synthetic.settings = Buffer.from(JSON.stringify(value, null, 2) + "\n");
+      expect(synthetic.settings.equals(settings)).toBe(false);
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).resolves.toBeUndefined();
+      expect(synthetic.calls).toHaveLength(3);
+    },
+  );
+  it("retains the unchanged document and the original lifecycle", async () => {
+    const { commands, settings } = prepareRetirementFixture();
+    await expect(
+      retireClaudeCodePackedCli(commands, settings, 1500),
+    ).resolves.toBeUndefined();
+    expect(synthetic.calls.map((call) => call.arguments_)).toEqual(
+      commands.slice(5).map((command) => [...command, "--output", "json"]),
+    );
+  });
+  it.each(["nonhook", "command", "timeout", "identity", "args", "event"])(
+    "refuses semantic mutation %s before Doctor",
+    async (change) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const value = JSON.parse(
+        settings.toString("utf8"),
+      ) as InstalledSettingsFixture;
+      if (change === "nonhook") value.theme = "synthetic-theme";
+      else if (change === "event") delete value.hooks.Stop;
+      else if (change === "identity") {
+        for (const entries of Object.values(value.hooks))
+          entries[0]!.agentscope.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
+      } else {
+        for (const entries of Object.values(value.hooks))
+          entries[0]!.hooks[0]![change] =
+            change === "command"
+              ? "/other/launcher"
+              : change === "timeout"
+                ? 11
+                : ["synthetic-arg"];
+      }
+      synthetic.settings = Buffer.from(JSON.stringify(value));
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toThrow("integration.claude-code.settings");
+      expect(synthetic.calls).toHaveLength(0);
+    },
+  );
+});
+describe("Claude retirement keeps strict lifecycle failure", () => {
+  it.each(["file", "owner", "link", "mode", "drift"])(
+    "keeps settings %s refusal before Doctor",
+    async (failure) => {
+      const { commands, settings } = prepareRetirementFixture();
+      synthetic.settingsFailure = failure;
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toThrow("integration.claude-code.settings");
+      expect(synthetic.calls).toHaveLength(0);
+    },
+  );
+  it("does not adopt malformed settings", async () => {
+    const { commands, settings } = prepareRetirementFixture();
+    synthetic.settings = Buffer.from("{");
+    await expect(
+      retireClaudeCodePackedCli(commands, settings, 1500),
+    ).rejects.toThrow();
+    expect(synthetic.calls).toHaveLength(0);
+  });
+  it.each([0, 1, 2])(
+    "keeps command %i refusal and the SAME original error",
+    async (index) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const original = new Error("synthetic-command-refusal");
+      synthetic.failAt = index;
+      synthetic.commandFailure = original;
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toBe(original);
+      expect(synthetic.calls).toHaveLength(index + 1);
+    },
+  );
+  it("retains the original cutoff", async () => {
+    const { commands, settings } = prepareRetirementFixture();
+    await expect(
+      retireClaudeCodePackedCli(commands, settings, 1000),
+    ).rejects.toThrow("integration.claude-code.deadline");
+    expect(synthetic.calls).toHaveLength(0);
+  });
+  it.each([
+    [
+      0,
+      "agentscope doctor",
+      [{ summary: { errors: 1 }, findings: [] }],
+      "doctor",
+    ],
+    [
+      1,
+      "agentscope uninstall",
+      [
+        {
+          harness: "claude-code",
+          operation: "uninstall",
+          applied: false,
+          disposition: "committed",
+        },
+      ],
+      "uninstall",
+    ],
+    [
+      2,
+      "agentscope harness status",
+      [{ installation: "unchanged" }],
+      "uninstall",
+    ],
+  ] as const)(
+    "keeps stage %i machine-oracle refusal",
+    async (index, command, records, code) => {
+      const { commands, settings } = prepareRetirementFixture();
+      synthetic.commandOutputs[index] = JSON.stringify({
+        command,
+        completion: "complete",
+        records,
+      });
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toThrow(`integration.claude-code.${code}`);
+      expect(synthetic.calls).toHaveLength(index + 1);
+    },
+  );
 });
 describe("Claude actual packed lifecycle (synthetic CLI and owned settings)", () => {
   beforeEach(resetPackedLifecycleFixture);
