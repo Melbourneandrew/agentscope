@@ -515,6 +515,122 @@ const request = (
       .digest("hex"),
   };
 };
+
+describe("pending checkpoint through the sole selected PTY pump", () => {
+  const checkpointRequest = (): SelectedPtyExecutionRequest => {
+    const challenge = "a".repeat(64);
+    const stdin = new TextEncoder().encode(`${challenge}\n\u0004`);
+    const now = performance.now();
+    return {
+      ...request({
+        stdin,
+        monotonicStartupDeadlineMs: now + 50,
+        monotonicExecutionDeadlineMs: now + 100,
+        monotonicShutdownDeadlineMs: now + 500,
+      }),
+      readiness: { kind: "challenge-marker", challenge },
+      interaction: {
+        trigger: "immediate",
+        actions: [
+          {
+            action: "input",
+            byteLength: 65,
+            inputSha256: createHash("sha256")
+              .update(stdin.subarray(0, 65))
+              .digest("hex"),
+          },
+          {
+            action: "checkpoint-process-topology",
+            topology: "root-with-contained-process-set",
+          },
+          { action: "wait-for-semantic-completion" },
+          {
+            action: "input",
+            byteLength: 1,
+            inputSha256: createHash("sha256")
+              .update(stdin.subarray(65))
+              .digest("hex"),
+          },
+        ],
+      },
+    };
+  };
+
+  it("drains output while pending, then releases and advances only the settled checkpoint", async () => {
+    const selected = checkpointRequest();
+    const receipt = await executeSelectedPtyTransportForTest(
+      selected,
+      "checkpoint-stop-pending",
+    );
+    const challenge = "a".repeat(64);
+    const output = `AGENTSCOPE_PTY_READY:${challenge}.\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      processJoined: true,
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+      inputBytesWritten: 66,
+      outputBytes: Buffer.byteLength(output),
+      outputSha256: createHash("sha256").update(output).digest("hex"),
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+    });
+    expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+    expect(receipt.actions[1]!.monotonicAtMs).toBeLessThan(
+      selected.process.monotonicExecutionDeadlineMs,
+    );
+  });
+
+  it.each(["timeout", "aborted"] as const)(
+    "joins pending stopped work on %s with no checkpoint or later input",
+    async (outcome) => {
+      const selected = checkpointRequest();
+      const controller = new AbortController();
+      // Zero-delay cancellation runs when the existing pump first yields;
+      // the admitted challenge and pending checkpoint are already observed.
+      const timer =
+        outcome === "aborted"
+          ? setTimeout(() => {
+              controller.abort();
+            }, 0)
+          : undefined;
+      try {
+        const receipt = await executeSelectedPtyTransportForTest(
+          selected,
+          "checkpoint-stop-never",
+          { signal: controller.signal },
+        );
+        expect(receipt).toMatchObject({
+          outcome,
+          cleanup: "clean",
+          processJoined: true,
+          terminalInputJoined: false,
+          terminalOutputJoined: true,
+          terminalTransportClosed: true,
+          residualProcessCount: 0,
+          signal: "SIGKILL",
+          inputBytesWritten: 65,
+          actions: [{ action: "input", byteLength: 65 }],
+        });
+        expect(receipt.actions).toHaveLength(1);
+        expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+        if (outcome === "timeout")
+          expect(performance.now()).toBeGreaterThanOrEqual(
+            selected.process.monotonicExecutionDeadlineMs,
+          );
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+  );
+});
+
 const executeWithControl = async (
   sequence: string,
   expectedResponse?: string,

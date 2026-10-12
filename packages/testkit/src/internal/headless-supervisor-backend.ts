@@ -1275,36 +1275,34 @@ const stopProcessForCheckpoint = (identity: ProcessSnapshot): void => {
 const freezeContainerProcessSet = (
   namespaceIdentity: string,
   monotonicDeadlineMs: number,
-): readonly ProcessSnapshot[] => {
+): readonly ProcessSnapshot[] | undefined => {
   assertNamespaceIdentity(namespaceIdentity);
-  for (let attempt = 0; attempt < 64; attempt += 1) {
-    if (
-      safeReflectApply(performanceNow, performance, []) >= monotonicDeadlineMs
+  if (safeReflectApply(performanceNow, performance, []) >= monotonicDeadlineMs)
+    return fail("testkit.headless.execution.deadline");
+  const before = strictContainerProcessSnapshot(monotonicDeadlineMs);
+  if (before === undefined) return undefined;
+  for (const identity of before) stopProcessForCheckpoint(identity);
+  const after = strictContainerProcessSnapshot(monotonicDeadlineMs);
+  if (
+    after !== undefined &&
+    after.every(
+      ({ state }) => state === "T" || state === "t" || state === "Z",
+    ) &&
+    sameProcessSnapshotSet(
+      before.map((identity) => ({
+        ...identity,
+        state: identity.state === "Z" ? "Z" : "T",
+      })),
+      after.map((identity) => ({
+        ...identity,
+        state: identity.state === "t" ? "T" : identity.state,
+      })),
     )
-      return fail("testkit.headless.execution.deadline");
-    const before = strictContainerProcessSnapshot(monotonicDeadlineMs);
-    if (before === undefined) continue;
-    for (const identity of before) stopProcessForCheckpoint(identity);
-    const after = strictContainerProcessSnapshot(monotonicDeadlineMs);
-    if (
-      after !== undefined &&
-      after.every(
-        ({ state }) => state === "T" || state === "t" || state === "Z",
-      ) &&
-      sameProcessSnapshotSet(
-        before.map((identity) => ({
-          ...identity,
-          state: identity.state === "Z" ? "Z" : "T",
-        })),
-        after.map((identity) => ({
-          ...identity,
-          state: identity.state === "t" ? "T" : identity.state,
-        })),
-      )
-    )
-      return after;
-  }
-  return fail("testkit.headless.observer.process-set");
+  )
+    return after;
+  // SIGSTOP dispatch is not stop acknowledgement. Leave the checkpoint pending
+  // so the sole pump can drain output and yield under its original cutoff.
+  return undefined;
 };
 
 const releaseFrozenContainerProcessSet = (
@@ -1458,7 +1456,7 @@ type PtyRuntime = Readonly<{
   freezeProcessSet: (
     namespaceIdentity: string,
     monotonicDeadlineMs: number,
-  ) => readonly ProcessSnapshot[];
+  ) => readonly ProcessSnapshot[] | undefined;
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
   readProcess: (pid: number) => ProcessSnapshot | undefined;
   publishTopologyCheckpoint?: (
@@ -3180,6 +3178,7 @@ const armSelectedPty = (
               composition.namespaceIdentity,
               processRequest.monotonicExecutionDeadlineMs,
             );
+            if (processSet === undefined) return;
             pumpOperation = "checkpoint-classify";
             const topology = classifyCheckpointTopology(processSet, root);
             if (
@@ -5112,6 +5111,8 @@ type SelectedPtyTestSeed =
   | "checkpoint-owned-descendant"
   | "checkpoint-owned-sidecar"
   | "checkpoint-process-churn"
+  | "checkpoint-stop-pending"
+  | "checkpoint-stop-never"
   | "checkpoint-transient-extra-process"
   | "control-eof-substitution"
   | "control-write-substitution"
@@ -5224,6 +5225,10 @@ const selectedPtyRuntimeForTest = (
   // eslint-disable-next-line max-lines-per-function
 ): PtyRuntime => {
   let matchedCheckpointResumed = false;
+  const pendingCheckpointStop =
+    seed === "checkpoint-stop-pending" || seed === "checkpoint-stop-never";
+  let checkpointFreezeCalls = 0;
+  let pendingCheckpointOutputDrained = false;
   const root: ProcessSnapshot = {
     parentPid: 1,
     pid: 42_001,
@@ -5284,6 +5289,15 @@ const selectedPtyRuntimeForTest = (
         return fail("testkit.headless.observer.identity");
     },
     freezeProcessSet: (_namespaceIdentity, monotonicDeadlineMs) => {
+      checkpointFreezeCalls += 1;
+      if (
+        pendingCheckpointStop &&
+        (seed === "checkpoint-stop-never" || checkpointFreezeCalls < 3)
+      ) {
+        // Some tasks acknowledge the stop while another remains pending.
+        processes.set(root.pid, { ...root, state: "T" });
+        return undefined;
+      }
       if (
         seed === "checkpoint-observer-delay" ||
         seed === "checkpoint-observer-delay-mismatch"
@@ -5341,6 +5355,13 @@ const selectedPtyRuntimeForTest = (
       rootPid,
       notifyRoot,
     ) => {
+      if (
+        pendingCheckpointStop &&
+        (seed === "checkpoint-stop-never" ||
+          checkpointFreezeCalls < 3 ||
+          !pendingCheckpointOutputDrained)
+      )
+        throw new Error("testkit.pty.test-unsettled-checkpoint-release");
       if (seed === "checkpoint-observer-delay-mismatch")
         releasedAfterDelayedMismatch = true;
       const ordered = [...expectedProcesses].sort((left, right) => {
@@ -5367,6 +5388,12 @@ const selectedPtyRuntimeForTest = (
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
       if (seed === "residual" && pid === descendant.pid) return;
+      if (
+        pendingCheckpointStop &&
+        processes.get(pid)?.state === "T" &&
+        signal === "SIGTERM"
+      )
+        return;
       if (
         seed === "kill-escalation" &&
         pid === root.pid &&
@@ -5948,6 +5975,7 @@ const selectedPtyRuntimeForTest = (
           processes.set(descendant.pid, descendant);
         if (
           !requiresCausalPromptRedraw &&
+          !pendingCheckpointStop &&
           seed !== "timeout" &&
           seed !== "identity-substitution" &&
           seed !== "output-limit" &&
@@ -6018,6 +6046,7 @@ const selectedPtyRuntimeForTest = (
               seed === "completion-before-readiness" ||
               seed === "checkpoint-missing-process" ||
               seed === "checkpoint-process-churn" ||
+              pendingCheckpointStop ||
               seed === "checkpoint-observer-delay" ||
               seed === "checkpoint-observer-delay-mismatch" ||
               seed === "readiness-revoked-after-input" ||
@@ -6067,6 +6096,19 @@ const selectedPtyRuntimeForTest = (
           }
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
+          if (pendingCheckpointStop && terminal)
+            return { status: "eio" as const };
+          if (
+            pendingCheckpointStop &&
+            chunkIndex >= 1 &&
+            !matchedCheckpointResumed
+          ) {
+            if (checkpointFreezeCalls > 0 && !pendingCheckpointOutputDrained) {
+              pendingCheckpointOutputDrained = true;
+              return { status: "data" as const, bytes: safeBufferFrom(".") };
+            }
+            return { status: "would-block" as const };
+          }
           if (
             seed === "challenge-marker-title" &&
             chunkIndex === chunks.length &&
@@ -6276,7 +6318,8 @@ const selectedPtyRuntimeForTest = (
               seed === "checkpoint-missing-process" ||
               seed === "checkpoint-process-churn" ||
               seed === "checkpoint-observer-delay" ||
-              seed === "checkpoint-observer-delay-mismatch") &&
+              seed === "checkpoint-observer-delay-mismatch" ||
+              (pendingCheckpointStop && !matchedCheckpointResumed)) &&
             (inputCalls !== 1 ||
               bytes.length !== 65 ||
               !safeBufferFrom(bytes).equals(
@@ -6308,7 +6351,11 @@ const selectedPtyRuntimeForTest = (
             terminal = true;
             close({ code: 0, signal: 0 });
           }
-          if (terminalQueryHandshake && bytes.length === 1 && bytes[0] === 4) {
+          if (
+            (terminalQueryHandshake || pendingCheckpointStop) &&
+            bytes.length === 1 &&
+            bytes[0] === 4
+          ) {
             processes.clear();
             terminal = true;
             close({ code: 0, signal: 0 });
