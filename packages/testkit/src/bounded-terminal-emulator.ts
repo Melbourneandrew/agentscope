@@ -171,6 +171,12 @@ export type PtyUnsupportedControlReason =
   | `osc-selector-${number}`
   | "osc-title-bound"
   | "osc-challenge-completion"
+  | "osc-challenge-completion-selector"
+  | "osc-challenge-completion-readiness"
+  | "osc-challenge-completion-not-armed"
+  | "osc-challenge-completion-started-before-arm"
+  | "osc-challenge-completion-duplicate"
+  | "osc-challenge-completion-mismatch"
   | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
   | "extended-csi-secondary-device-attributes"
   | "extended-csi-tertiary-device-attributes"
@@ -2006,15 +2012,12 @@ export class BoundedTerminalEmulator {
         this.#readinessMatcher.kind === "challenge-marker" &&
         containsText(title, completedMarker)
       ) {
-        if (
-          selector !== "2" ||
-          !this.#readinessObserved ||
-          !this.#postSubmissionIdleObservationArmed ||
-          !this.#controlStartedAfterSubmission ||
-          this.#completionObserved ||
-          title !== `${completedMarker}:${this.#readinessMatcher.challenge}`
-        )
-          this.#recordUnsupportedControl("osc-challenge-completion");
+        const refusal = this.#challengeCompletionRefusal(
+          selector,
+          title,
+          this.#readinessMatcher,
+        );
+        if (refusal !== undefined) this.#recordUnsupportedControl(refusal);
         else this.#completionObserved = true;
       }
       // The selected Codex fixture publishes its challenge-bound completion
@@ -2035,6 +2038,23 @@ export class BoundedTerminalEmulator {
     }
     this.#control = "";
     this.#state = "ground";
+  }
+
+  #challengeCompletionRefusal(
+    selector: string,
+    title: string,
+    matcher: Extract<PtyTerminalReadinessMatcher, { kind: "challenge-marker" }>,
+  ): PtyUnsupportedControlReason | undefined {
+    if (selector !== "2") return "osc-challenge-completion-selector";
+    if (!this.#readinessObserved) return "osc-challenge-completion-readiness";
+    if (!this.#postSubmissionIdleObservationArmed)
+      return "osc-challenge-completion-not-armed";
+    if (!this.#controlStartedAfterSubmission)
+      return "osc-challenge-completion-started-before-arm";
+    if (this.#completionObserved) return "osc-challenge-completion-duplicate";
+    if (title !== `${completedMarker}:${matcher.challenge}`)
+      return "osc-challenge-completion-mismatch";
+    return undefined;
   }
 
   #appendRecent(character: string): void {

@@ -21,6 +21,30 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+describe("closed challenged completion suffixes", () => {
+  it.each(["unknown", "mismatch-private", "readiness\n", "readiness\r\n"])(
+    "refuses unrecognized challenged suffix %j",
+    (suffix) => {
+      const predicate = `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${suffix}`;
+      expect(
+        immutableAuthority.selectInteractiveFailureDiagnostic(
+          undefined,
+          undefined,
+          predicate,
+        ),
+      ).toBeUndefined();
+      expect(
+        immutableAuthority.validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: "claude-interactive-trace-smoke",
+        }),
+      ).toBe(false);
+    },
+  );
+});
+
 describe("closed OSC refusal wire domain", () => {
   it("captures selector guards and requires the entire primitive", () => {
     const source = readIntegration("immutable-candidate-authority.mjs");
@@ -44,6 +68,12 @@ describe("closed OSC refusal wire domain", () => {
     "osc",
     "osc-title-bound",
     "osc-challenge-completion",
+    "osc-challenge-completion-selector",
+    "osc-challenge-completion-readiness",
+    "osc-challenge-completion-not-armed",
+    "osc-challenge-completion-started-before-arm",
+    "osc-challenge-completion-duplicate",
+    "osc-challenge-completion-mismatch",
     "osc-selector-0",
     "osc-selector-52",
     "osc-selector-65535",
@@ -94,6 +124,12 @@ describe("closed OSC refusal wire domain", () => {
       immutableAuthority.validInstalledPtyFailure({
         ...record,
         phase: "private",
+      }),
+    ).toBe(false);
+    expect(
+      immutableAuthority.validInstalledPtyFailure({
+        ...record,
+        scenarioId: "foreign-scenario",
       }),
     ).toBe(false);
   });

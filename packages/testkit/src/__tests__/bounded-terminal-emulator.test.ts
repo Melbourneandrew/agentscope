@@ -157,7 +157,7 @@ describe("closed OSC refusal partition", () => {
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\u001b\\`),
     );
     expect(terminal.unsupportedControlReason()).toBe(
-      "osc-challenge-completion",
+      "osc-challenge-completion-readiness",
     );
     expect(terminal.end().semanticState).toBe("malformed-control");
     expect(terminal.readinessObserved()).toBe(false);
@@ -1171,13 +1171,13 @@ describe("bounded semantic terminal emulator", () => {
   });
 
   it.each([
-    "pre-submission",
-    "no-readiness",
-    "foreign",
-    "malformed",
-    "duplicate",
-    "wrong-selector",
-  ])("refuses %s challenged completion titles", (kind) => {
+    ["pre-submission", "not-armed"],
+    ["no-readiness", "readiness"],
+    ["foreign", "mismatch"],
+    ["malformed", "mismatch"],
+    ["duplicate", "duplicate"],
+    ["wrong-selector", "selector"],
+  ])("refuses %s challenged completion titles", (kind, reason) => {
     const challenge = "a".repeat(64);
     const terminal = new BoundedTerminalEmulator(
       { columns: 40, rows: 8 },
@@ -1192,6 +1192,9 @@ describe("bounded semantic terminal emulator", () => {
     terminal.write(bytes(sequence));
     if (kind === "duplicate") terminal.write(bytes(sequence));
     expect(terminal.end().semanticState).not.toBe("completed");
+    expect(terminal.unsupportedControlReason()).toBe(
+      `osc-challenge-completion-${reason}`,
+    );
   });
 
   it("keeps unrelated titles inert for challenged completion", () => {
@@ -1228,8 +1231,35 @@ describe("bounded semantic terminal emulator", () => {
       terminal.armPostSubmissionIdleObservation();
       terminal.write(bytes(sequence.slice(prefix)));
       expect(terminal.end().semanticState).not.toBe("completed");
+      expect(terminal.unsupportedControlReason()).toBe(
+        "osc-challenge-completion-started-before-arm",
+      );
     },
   );
+
+  it("keeps original challenged guard priority, count and first latch", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge: "a".repeat(64) },
+    );
+    terminal.write(
+      bytes(
+        `\u001b]0;AGENTSCOPE_PTY_COMPLETE:${"b".repeat(64)}PRIVATE_CANARY\u001b\\`,
+      ),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-selector",
+    );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\u001b\\`),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-selector",
+    );
+    expect(terminal.end().unsupportedControlCount).toBe(2);
+    expect(JSON.stringify(terminal.snapshot())).not.toContain("PRIVATE_CANARY");
+  });
 
   it("holds challenged input until the exact styled TUI prompt", () => {
     const challenge = "a".repeat(64);

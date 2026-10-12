@@ -1354,7 +1354,7 @@ describe("selected PTY transport", () => {
     );
     expect(factoryCalls).toBe(1);
     expect(observed).toMatchObject({
-      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
       armCalls: 0,
       completionSeen: false,
     });
@@ -1417,7 +1417,7 @@ describe("selected PTY transport", () => {
       expect(refusal.armCalls).toBe(0);
       expect(refusal.completionSeen).toBe(false);
       expect(refusal.code).toBe(
-        "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${seed === "fixed-readiness-spoof" ? "readiness" : "not-armed"}`,
       );
     },
   );
@@ -1462,7 +1462,51 @@ describe("selected PTY transport", () => {
             "challenge-marker-title",
           ),
         ).rejects.toThrow(
-          "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+          `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${kind === "complete" ? "not-armed" : "started-before-arm"}`,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["selector", "mismatch", "duplicate"] as const)(
+    "retains genuine selected challenged-title refusal %s",
+    async (reason) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          const text = new TextDecoder().decode(chunk);
+          if (!text.includes("AGENTSCOPE_PTY_COMPLETE:")) {
+            Reflect.apply(write, this, [chunk]);
+            return;
+          }
+          if (reason === "duplicate") {
+            Reflect.apply(write, this, [chunk]);
+            Reflect.apply(write, this, [chunk]);
+            return;
+          }
+          Reflect.apply(write, this, [
+            new TextEncoder().encode(
+              `\u001b]${reason === "selector" ? "0" : "2"};AGENTSCOPE_PTY_COMPLETE:${(reason === "mismatch" ? "b" : "a").repeat(64)}\u001b\\`,
+            ),
+          ]);
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        await expect(
+          execute(
+            compiledManifestRequest("claude-interactive-trace-smoke"),
+            "challenge-marker-title",
+          ),
+        ).rejects.toThrow(
+          `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${reason}`,
         );
       } finally {
         spy.mockRestore();
@@ -1982,7 +2026,7 @@ describe("selected PTY transport", () => {
       "fixed-readiness-spoof",
     );
     expect(spoof).toMatchObject({
-      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
       armCalls: 0,
       completionSeen: false,
       readinessSeen: false,
@@ -1992,7 +2036,7 @@ describe("selected PTY transport", () => {
       "completion-before-readiness",
     );
     expect(premature).toMatchObject({
-      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
       completionSeen: false,
     });
     for (const seed of ["checkpoint-missing-process"] as const)
@@ -2002,7 +2046,7 @@ describe("selected PTY transport", () => {
           seed,
         ),
       ).toMatchObject({
-        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
         armCalls: 0,
         completionSeen: false,
       });
@@ -2012,7 +2056,7 @@ describe("selected PTY transport", () => {
         "checkpoint-process-churn",
       ),
     ).toMatchObject({
-      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
       armCalls: 0,
       completionSeen: false,
     });
@@ -2089,7 +2133,7 @@ describe("selected PTY transport", () => {
           };
         }, seed),
       ).toMatchObject({
-        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
         armCalls: 0,
         completionSeen: false,
       });
