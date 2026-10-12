@@ -576,13 +576,27 @@ describe("exact native palette reset through selected transport", () => {
       });
     },
   );
-  it.each(["104;254", "104;255;1", "52;c;synthetic", "999;unknown"])(
-    "keeps neighboring OSC %j refused",
-    async (control) => {
+  it.each([
+    ["104;254", "osc-selector-104"],
+    ["104;255;1", "osc-selector-104"],
+    ["52;c;synthetic", "osc-selector-52"],
+    ["999;unknown", "osc-selector-999"],
+  ])("keeps neighboring OSC %j refused", async (control, reason) => {
+    await expect(
+      executeWithControl(`\u001b]${control}\u0007`),
+    ).rejects.toMatchObject({
+      code: `testkit.pty.transport.semantic-unsupported-${reason}`,
+    });
+  });
+});
+describe("closed OSC refusal partition through selected transport", () => {
+  it.each([52, 104, 65535])(
+    "retains only selector %s in actual rejection",
+    async (selector) => {
       await expect(
-        executeWithControl(`\u001b]${control}\u0007`),
+        executeWithControl(`\u001b]${selector};PRIVATE_PAYLOAD\u0007`),
       ).rejects.toMatchObject({
-        code: "testkit.pty.transport.semantic-unsupported-osc",
+        code: `testkit.pty.transport.semantic-unsupported-osc-selector-${selector}`,
       });
     },
   );
@@ -1341,7 +1355,9 @@ describe("selected PTY transport", () => {
             compiledManifestRequest("claude-interactive-trace-smoke"),
             "challenge-marker-title",
           ),
-        ).rejects.toThrow("testkit.pty.transport.semantic-unsupported-osc");
+        ).rejects.toThrow(
+          "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
+        );
       } finally {
         spy.mockRestore();
       }

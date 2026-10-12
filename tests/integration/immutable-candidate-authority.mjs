@@ -644,6 +644,8 @@ export const ptyExecutionFailurePredicates = Object.freeze([
   "testkit.pty.transport.semantic-unsupported-extended-csi-keyboard-shape",
   "testkit.pty.transport.semantic-unsupported-extended-csi-modifier-shape",
   "testkit.pty.transport.semantic-unsupported-osc",
+  "testkit.pty.transport.semantic-unsupported-osc-title-bound",
+  "testkit.pty.transport.semantic-unsupported-osc-challenge-completion",
   "testkit.pty.transport.semantic-unsupported-unknown",
   "integration.fixture.codex-tui-exit-before-checkpoint",
   "integration.fixture.codex-tui-checkpoint-not-witnessed",
@@ -666,6 +668,8 @@ const unlistedModeNumber = Number;
 const unlistedModeSafeInteger = Number.isSafeInteger;
 const unlistedModePattern =
   /^testkit\.pty\.transport\.semantic-unsupported-extended-csi-private-mode-unlisted-[hl]-(0|[1-9][0-9]{0,4})$/u;
+const oscSelectorPredicatePattern =
+  /^testkit\.pty\.transport\.semantic-unsupported-osc-selector-(0|[1-9][0-9]{0,4})$/u;
 const unlistedModeMatch = RegExp.prototype.exec;
 const unlistedModeApply = Reflect.apply;
 const validPtyExecutionFailurePredicate = (value) => {
@@ -674,10 +678,21 @@ const validPtyExecutionFailurePredicate = (value) => {
   const match = unlistedModeApply(unlistedModeMatch, unlistedModePattern, [
     value,
   ]);
+  if (match !== null)
+    return (
+      unlistedModeSafeInteger(unlistedModeNumber(match[1])) &&
+      unlistedModeNumber(match[1]) <= 65535
+    );
+  const oscMatch = unlistedModeApply(
+    unlistedModeMatch,
+    oscSelectorPredicatePattern,
+    [value],
+  );
   return (
-    match !== null &&
-    unlistedModeSafeInteger(unlistedModeNumber(match[1])) &&
-    unlistedModeNumber(match[1]) <= 65535
+    oscMatch !== null &&
+    oscMatch[0] === value &&
+    unlistedModeSafeInteger(unlistedModeNumber(oscMatch[1])) &&
+    unlistedModeNumber(oscMatch[1]) <= 65535
   );
 };
 

@@ -11,6 +11,87 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("closed OSC refusal partition", () => {
+  it("uses captured selector guards after initialization", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    const guard = vi.spyOn(Number, "isSafeInteger").mockImplementation(() => {
+      throw Error("substituted guard");
+    });
+    try {
+      terminal.write(bytes("\u001b]65535;PRIVATE\u0007"));
+      expect(terminal.unsupportedControlReason()).toBe("osc-selector-65535");
+    } finally {
+      guard.mockRestore();
+    }
+  });
+  it.each([52, 104, 65535])(
+    "retains only canonical selector %s",
+    (selector) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `\u001b]${selector};PRIVATE_PAYLOAD\u0007`)
+        terminal.write(bytes(character));
+      expect(terminal.unsupportedControlReason()).toBe(
+        `osc-selector-${selector}`,
+      );
+      expect(terminal.end().semanticState).toBe("malformed-control");
+    },
+  );
+  it.each([
+    "00052",
+    "-1",
+    "+52",
+    "52.0",
+    " 52",
+    "52\n",
+    "52\r\n",
+    "private",
+    "65536",
+    "999999",
+  ])("keeps noncanonical selector %j generic", (selector) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(`\u001b]${selector};52\u0007`));
+    expect(terminal.unsupportedControlReason()).toBe("osc");
+  });
+  it("preserves short-circuit priority and first reason/count", () => {
+    const limits = {
+      ...defaultPtyTerminalEmulatorLimits,
+      maximumTitleBytes: 2,
+    };
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      limits,
+    );
+    terminal.write(bytes("\u001b]52;PRIVATE\u0007\u001b]0;PRIVATE\u0007"));
+    expect(terminal.unsupportedControlReason()).toBe("osc-selector-52");
+    expect(terminal.end().unsupportedControlCount).toBe(2);
+    const admitted = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      limits,
+    );
+    admitted.write(bytes("\u001b]0;PRIVATE\u0007"));
+    expect(admitted.unsupportedControlReason()).toBe("osc-title-bound");
+  });
+  it("partitions challenged title misuse without completing or echoing it", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-marker",
+        challenge: "a".repeat(64),
+      },
+    );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\u001b\\`),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion",
+    );
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+});
+
 describe("exact native OSC indexed palette reset", () => {
   it.each([
     ["\u0007", false],
@@ -40,19 +121,19 @@ describe("exact native OSC indexed palette reset", () => {
     },
   );
   it.each([
-    "104",
-    "104;254",
-    "104;0255",
-    "104;255;1",
-    "104;255?",
-    "104;255AGENTSCOPE_PTY_READY",
-    "52;c;synthetic",
-    "999;unknown",
-  ])("keeps unrelated OSC payload %j refused", (control) => {
+    ["104", "osc"],
+    ["104;254", "osc-selector-104"],
+    ["104;0255", "osc-selector-104"],
+    ["104;255;1", "osc-selector-104"],
+    ["104;255?", "osc-selector-104"],
+    ["104;255AGENTSCOPE_PTY_READY", "osc-selector-104"],
+    ["52;c;synthetic", "osc-selector-52"],
+    ["999;unknown", "osc-selector-999"],
+  ])("keeps unrelated OSC payload %j refused", (control, reason) => {
     const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
     terminal.write(bytes(`\u001b]${control}\u0007`));
     expect(terminal.end().unsupportedControlCount).toBe(1);
-    expect(terminal.unsupportedControlReason()).toBe("osc");
+    expect(terminal.unsupportedControlReason()).toBe(reason);
     expect(terminal.readinessObserved()).toBe(false);
   });
   it("preserves title/control bounds and unfinished sequence refusal", () => {

@@ -21,6 +21,113 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const readIntegration = (name: string) =>
   readFileSync(resolve(import.meta.dirname, "..", name), "utf8");
 
+describe("closed OSC refusal wire domain", () => {
+  it("captures selector guards and requires the entire primitive", () => {
+    const source = readIntegration("immutable-candidate-authority.mjs");
+    const start = source.indexOf("const unlistedModeNumber =");
+    const end = source.indexOf(
+      "export const selectInteractiveFailureDiagnostic =",
+      start,
+    );
+    const result = runInNewContext(
+      `${source.slice(start, end)}
+      Number.isSafeInteger = () => true;
+      Number = () => 0;
+      RegExp.prototype.exec = () => ["forged", "0"];
+      Reflect.apply = () => ["forged", "0"];
+      ["0", "65535", "65536", "52\\n", "52\\r\\n"].map(suffix => validPtyExecutionFailurePredicate("testkit.pty.transport.semantic-unsupported-osc-selector-" + suffix));`,
+      { ptyExecutionFailurePredicates: [] },
+    );
+    expect(result).toEqual([true, true, false, false, false]);
+  });
+  it.each([
+    "osc",
+    "osc-title-bound",
+    "osc-challenge-completion",
+    "osc-selector-0",
+    "osc-selector-52",
+    "osc-selector-65535",
+  ])("retains fixed or canonical reason %s", (reason) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-${reason}`;
+    const frame: string =
+      immutableAuthority.formatInteractiveChildDiagnostic(predicate);
+    expect(immutableAuthority.extractInteractiveChildDiagnostic(frame)).toBe(
+      predicate,
+    );
+    expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+    expect(
+      immutableAuthority.selectInteractiveFailureDiagnostic(
+        undefined,
+        undefined,
+        predicate,
+      ),
+    ).toBe(predicate);
+    const record = {
+      receiptVersion: 1,
+      phase: "pty-execution",
+      predicate,
+      scenarioId: "claude-interactive-trace-smoke",
+    };
+    expect(
+      immutableAuthority.validInstalledPtyFailure(
+        JSON.parse(JSON.stringify(record)),
+      ),
+    ).toBe(true);
+    expect(
+      immutableAuthority.validInstalledPtyFailure(new Proxy(record, {})),
+    ).toBe(false);
+    expect(
+      immutableAuthority.validInstalledPtyFailure({
+        ...record,
+        get predicate() {
+          throw Error("private getter");
+        },
+      }),
+    ).toBe(false);
+    expect(
+      immutableAuthority.validInstalledPtyFailure({
+        ...record,
+        raw: "PRIVATE",
+      }),
+    ).toBe(false);
+    expect(
+      immutableAuthority.validInstalledPtyFailure({
+        ...record,
+        phase: "private",
+      }),
+    ).toBe(false);
+  });
+  it.each([
+    "-1",
+    "+52",
+    "0052",
+    "52.0",
+    " 52",
+    "52\n",
+    "52\r\n",
+    "65536",
+    "999999",
+    "52-private",
+  ])("refuses noncanonical selector suffix %j", (suffix) => {
+    const predicate = `testkit.pty.transport.semantic-unsupported-osc-selector-${suffix}`;
+    expect(
+      immutableAuthority.selectInteractiveFailureDiagnostic(
+        undefined,
+        undefined,
+        predicate,
+      ),
+    ).toBeUndefined();
+    expect(
+      immutableAuthority.validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "claude-interactive-trace-smoke",
+      }),
+    ).toBe(false);
+  });
+});
+
 const reconciliationStages = [
   "authority",
   "observer",

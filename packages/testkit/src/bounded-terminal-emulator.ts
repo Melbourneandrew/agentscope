@@ -168,6 +168,9 @@ export type PtyUnsupportedControlReason =
   | `extended-csi-private-mode-unlisted-${"h" | "l"}-${number}`
   | "extended-csi-residual-shape"
   | "osc"
+  | `osc-selector-${number}`
+  | "osc-title-bound"
+  | "osc-challenge-completion"
   | (typeof rejectedPrivateModeReasons)[keyof typeof rejectedPrivateModeReasons]
   | "extended-csi-secondary-device-attributes"
   | "extended-csi-tertiary-device-attributes"
@@ -299,6 +302,22 @@ const supportedNonTitleOscMetadata = (
   // The pinned renderer resets palette entry 255. Palette metadata grants
   // no text, title, response, readiness or completion authority.
   (selector === "104" && payload === "255");
+
+const oscSelectorNumber = Number;
+const oscSelectorSafeInteger = Number.isSafeInteger;
+const oscSelectorPattern = /^(0|[1-9][0-9]{0,4})$/u;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const oscSelectorExec = RegExp.prototype.exec;
+const unsupportedOscSelectorReason = (
+  selector: string,
+): PtyUnsupportedControlReason => {
+  const match = applyFunction(oscSelectorExec, oscSelectorPattern, [selector]);
+  if (match === null || match[0] !== selector) return "osc";
+  const value = oscSelectorNumber(match[1]);
+  return oscSelectorSafeInteger(value) && value <= 65535
+    ? `osc-selector-${value}`
+    : "osc";
+};
 
 const fail = (code: string): never => {
   throw new BoundedTerminalEmulatorError(code);
@@ -1956,13 +1975,14 @@ export class BoundedTerminalEmulator {
     const selector = separator < 0 ? "" : this.#control.slice(0, separator);
     const title = separator < 0 ? "" : this.#control.slice(separator + 1);
     if (
-      (selector !== "0" &&
-        selector !== "2" &&
-        !((selector === "10" || selector === "11") && title === "?") &&
-        !supportedNonTitleOscMetadata(selector, title)) ||
-      Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes
+      selector !== "0" &&
+      selector !== "2" &&
+      !((selector === "10" || selector === "11") && title === "?") &&
+      !supportedNonTitleOscMetadata(selector, title)
     )
-      this.#recordUnsupportedControl("osc");
+      this.#recordUnsupportedControl(unsupportedOscSelectorReason(selector));
+    else if (Buffer.byteLength(title, "utf8") > this.#limits.maximumTitleBytes)
+      this.#recordUnsupportedControl("osc-title-bound");
     else if (selector === "10" && title === "?") {
       this.#observeRequiredTerminalProtocolStep(3);
       this.#enqueueTerminalResponse("\u001b]10;rgb:ffff/ffff/ffff\u001b\\");
@@ -1983,7 +2003,7 @@ export class BoundedTerminalEmulator {
           this.#completionObserved ||
           title !== `${completedMarker}:${this.#readinessMatcher.challenge}`
         )
-          this.#recordUnsupportedControl("osc");
+          this.#recordUnsupportedControl("osc-challenge-completion");
         else this.#completionObserved = true;
       }
       // The selected Codex fixture publishes its challenge-bound completion
