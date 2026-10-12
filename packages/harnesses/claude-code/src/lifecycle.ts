@@ -919,6 +919,7 @@ const editHooks = (
   const budget: HookBudget = { remainingBytes: maximumHookUtf8Bytes };
   let legacyCount = 0;
   let currentCount = 0;
+  let nativeCount = 0;
   const recognized = new Set<unknown>();
   if (Object.keys(target).length > everyHookEvent.size) return "conflict";
   for (const [event, entries] of Object.entries(target)) {
@@ -938,6 +939,7 @@ const editHooks = (
       eventOwned ||= profile !== null;
       legacyCount += Number(profile === "legacy");
       currentCount += Number(profile === "current");
+      nativeCount += Number(profile === "native");
       if (profile !== null) recognized.add(entry);
       if (
         profile === null &&
@@ -947,7 +949,8 @@ const editHooks = (
         return "conflict";
     }
   }
-  if (!profileCountsAreValid(legacyCount, currentCount)) return "conflict";
+  if (!profileCountsAreValid(legacyCount, currentCount, nativeCount))
+    return "conflict";
   let changed = false;
   for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
     const entries = target[event];
@@ -1045,11 +1048,11 @@ export const createClaudeCodeInstallationPlanner = (
     if (operation === "uninstall") {
       if (!exists || bytes === null) return { kind: "unchanged" };
       if (
-        [false, true].some(
-          (legacy) =>
+        (["legacy", "current", "native"] as const).some(
+          (profile) =>
             JSON.stringify(canonical(settings)) ===
             JSON.stringify(
-              canonical(ownedSettings(invocation, command, legacy)),
+              canonical(ownedSettings(invocation, command, profile)),
             ),
         )
       )

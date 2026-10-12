@@ -56,6 +56,173 @@ const decisionText = (decision: HarnessTargetDecision) => {
   return new TextDecoder().decode(decision.bytes);
 };
 
+const profileFixture = (kind: "legacy" | "current" | "native") => ({
+  hooks: Object.fromEntries(
+    CLAUDE_CODE_LIFECYCLE_EVENTS.filter(
+      (event) => kind === "legacy" || event !== "SessionEnd",
+    ).map((event) => [
+      event,
+      [
+        {
+          ...(kind === "native"
+            ? {}
+            : {
+                agentscope: {
+                  contractVersion: invocation.contractVersion,
+                  event,
+                  harnessType: invocation.harnessType,
+                  ownershipIdentity: invocation.ownershipIdentity,
+                },
+              }),
+          hooks: [
+            {
+              type: "command",
+              command: invocation.launcherPath,
+              args: [],
+              ...(kind === "legacy" ? {} : { timeout: 4 }),
+            },
+          ],
+        },
+      ],
+    ]),
+  ),
+});
+
+describe("native-only owned profile compatibility", () => {
+  it("emits only the native handler representation", () => {
+    const text = decisionText(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(false),
+      )(target()),
+    );
+    expect(JSON.parse(text)).toEqual(profileFixture("native"));
+    expect(text).not.toContain('"agentscope"');
+  });
+  it("recognizes exact native ownership without a custom group member", () => {
+    const text = JSON.stringify(profileFixture("native"));
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(text)),
+    ).toEqual({ kind: "unchanged" });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "uninstall",
+        invocation,
+        emptyInventory(),
+      )(target(text)),
+    ).toEqual({ kind: "remove" });
+  });
+  it.each(["legacy", "current"] as const)(
+    "upgrades exact %s metadata ownership without losing foreign settings",
+    (kind) => {
+      const old = { theme: "dark", ...profileFixture(kind) };
+      const text = decisionText(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(JSON.stringify(old))),
+      );
+      expect(JSON.parse(text)).toEqual({
+        theme: "dark",
+        ...profileFixture("native"),
+      });
+      const removed = decisionText(
+        createClaudeCodeInstallationPlanner(
+          "uninstall",
+          invocation,
+          emptyInventory(),
+        )(target(JSON.stringify(old))),
+      );
+      expect(JSON.parse(removed)).toEqual({ hooks: {}, theme: "dark" });
+    },
+  );
+});
+
+type MutableProfile = { hooks: Record<string, Array<Record<string, unknown>>> };
+const alteredProfile = (
+  kind: "legacy" | "current" | "native",
+  fault: string,
+) => {
+  const value = profileFixture(kind) as MutableProfile;
+  const group = value.hooks.Stop![0]!;
+  const hook = (group.hooks as Array<Record<string, unknown>>)[0]!;
+  switch (fault) {
+    case "partial":
+      delete value.hooks.Stop;
+      break;
+    case "duplicate":
+      value.hooks.Stop!.push(group);
+      break;
+    case "mixed":
+      value.hooks.Stop = profileFixture(
+        kind === "native" ? "current" : "native",
+      ).hooks.Stop!;
+      break;
+    case "command":
+      hook.command = "/other/launcher";
+      break;
+    case "args":
+      hook.args = ["extra"];
+      break;
+    case "timeout":
+      hook.timeout = 5;
+      break;
+    case "group-extra":
+      group.matcher = "*";
+      break;
+    case "handler-extra":
+      hook.once = true;
+      break;
+    case "metadata":
+      group.agentscope = { contractVersion: 2 };
+      break;
+    default:
+      throw new Error("unknown profile fault");
+  }
+  return JSON.stringify(value);
+};
+describe.each(["legacy", "current", "native"] as const)(
+  "complete uniform %s ownership",
+  (kind) => {
+    it("removes only the exact standalone representation", () => {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "uninstall",
+          invocation,
+          emptyInventory(),
+        )(target(JSON.stringify(profileFixture(kind)))),
+      ).toEqual({ kind: "remove" });
+    });
+    it.each([
+      "partial",
+      "duplicate",
+      "mixed",
+      "command",
+      "args",
+      "timeout",
+      "group-extra",
+      "handler-extra",
+      "metadata",
+    ])("refuses %s without adopting owned-looking mutations", (fault) => {
+      const changed = alteredProfile(kind, fault);
+      for (const operation of ["install", "uninstall"] as const)
+        expect(
+          createClaudeCodeInstallationPlanner(
+            operation,
+            invocation,
+            emptyInventory(),
+          )(target(changed)),
+        ).toEqual({ kind: "conflict" });
+    });
+  },
+);
+
 describe("Claude ADR008 owned profile", () => {
   const legacy = (): { hooks: Record<string, unknown[]> } => ({
     hooks: Object.fromEntries(

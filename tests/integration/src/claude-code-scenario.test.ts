@@ -653,7 +653,6 @@ const resetPackedLifecycleFixture = () => {
   synthetic.nativeOwnerSensitive = false;
   synthetic.nativeUid = 0;
   synthetic.nativeBytes = Buffer.alloc(0);
-  const identity = `agentscope-hook-v1-sha256-${"a".repeat(64)}`;
   synthetic.settings = Buffer.from(
     JSON.stringify({
       hooks: Object.fromEntries(
@@ -661,12 +660,6 @@ const resetPackedLifecycleFixture = () => {
           event,
           [
             {
-              agentscope: {
-                event,
-                contractVersion: 1,
-                harnessType: "@agentscope/harness-claude-code",
-                ownershipIdentity: identity,
-              },
               hooks: [
                 {
                   type: "command",
@@ -808,12 +801,29 @@ type InstalledSettingsFixture = {
   hooks: Record<
     string,
     Array<{
-      agentscope: { ownershipIdentity: string };
+      agentscope?: Record<string, unknown>;
       hooks: Array<Record<string, unknown>>;
     }>
   >;
 };
 describe("Claude retirement settings representation", () => {
+  it("accepts the native-only current candidate before and after retirement", async () => {
+    const { commands } = prepareRetirementFixture();
+    const value = JSON.parse(
+      synthetic.settings.toString("utf8"),
+    ) as InstalledSettingsFixture;
+    for (const groups of Object.values(value.hooks)) {
+      delete (groups[0] as { agentscope?: unknown }).agentscope;
+    }
+    synthetic.settings = Buffer.from(JSON.stringify(value));
+    await expect(
+      retireClaudeCodePackedCli(
+        commands,
+        Buffer.from(synthetic.settings),
+        1500,
+      ),
+    ).resolves.toBeUndefined();
+  });
   it.each(["format", "key-order"])(
     "accepts only representational %s changes in the complete document",
     async (change) => {
@@ -851,7 +861,9 @@ describe("Claude retirement settings representation", () => {
       else if (change === "event") delete value.hooks.Stop;
       else if (change === "identity") {
         for (const entries of Object.values(value.hooks))
-          entries[0]!.agentscope.ownershipIdentity = `agentscope-hook-v1-sha256-${"b".repeat(64)}`;
+          entries[0]!.agentscope = {
+            ownershipIdentity: `agentscope-hook-v1-sha256-${"b".repeat(64)}`,
+          };
       } else {
         for (const entries of Object.values(value.hooks))
           entries[0]!.hooks[0]![change] =
@@ -973,7 +985,18 @@ const profileFaultFixture = (fault: string) => {
     fixture.settings.toString("utf8"),
   ) as InstalledSettingsFixture;
   const group = value.hooks.Stop![0]!;
-  const metadata = group.agentscope as Record<string, unknown>;
+  const metadata: Record<string, unknown> = {
+    event: "Stop",
+    contractVersion: 1,
+    harnessType: "@agentscope/harness-claude-code",
+    ownershipIdentity: `agentscope-hook-v1-sha256-${"a".repeat(64)}`,
+  };
+  if (
+    ["event", "contract", "harness", "identity", "keys", "owner"].includes(
+      fault,
+    )
+  )
+    group.agentscope = metadata;
   const hook = group.hooks[0]!;
   switch (fault) {
     case "groups":
@@ -1024,9 +1047,42 @@ const profileFaultFixture = (fault: string) => {
   synthetic.settings = Buffer.from(JSON.stringify(value));
   return fixture;
 };
-describe("actual profile conjunction first failure", () => {
+describe("actual native profile first refusal", () => {
+  it.each(["metadata", "matcher", "handler-extra"])(
+    "refuses current-candidate extra field %s",
+    async (fault) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const value = JSON.parse(
+        settings.toString("utf8"),
+      ) as InstalledSettingsFixture;
+      const group = value.hooks.Stop![0]!;
+      if (fault === "handler-extra") group.hooks[0]!.once = true;
+      else
+        Object.assign(
+          group,
+          fault === "matcher"
+            ? { matcher: "*" }
+            : {
+                agentscope: {
+                  event: "Stop",
+                  contractVersion: 1,
+                  harnessType: "@agentscope/harness-claude-code",
+                  ownershipIdentity: `agentscope-hook-v1-sha256-${"a".repeat(64)}`,
+                },
+              },
+        );
+      synthetic.settings = Buffer.from(JSON.stringify(value));
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toMatchObject({
+        message: "integration.claude-code.settings",
+        cause: "profile",
+      });
+      expect(synthetic.calls).toHaveLength(0);
+    },
+  );
   it.each(profileFaults)(
-    "reports only failed original term %s",
+    "rejects malformed native profile member %s",
     async (fault) => {
       const { commands, settings } = profileFaultFixture(fault);
       let original: unknown;
@@ -1035,18 +1091,26 @@ describe("actual profile conjunction first failure", () => {
       } catch (error) {
         original = error;
       }
+      const cause = [
+        "event",
+        "contract",
+        "harness",
+        "identity",
+        "keys",
+        "owner",
+      ].includes(fault)
+        ? "profile"
+        : `profile-${fault}`;
       expect(original).toMatchObject({
         message: "integration.claude-code.settings",
-        cause: `profile-${fault}`,
+        cause,
       });
       expect(synthetic.calls).toHaveLength(0);
       const predicate = settingsWire.claudeScenarioFailureDiagnostic(
         original,
         "retirement",
       );
-      expect(predicate).toBe(
-        `integration.fixture.claude-settings-profile-${fault}`,
-      );
+      expect(predicate).toBe(`integration.fixture.claude-settings-${cause}`);
       expect(
         settingsWire.encodeInteractiveFailureExitCode(
           predicate,
@@ -1065,8 +1129,10 @@ describe("actual profile conjunction first failure", () => {
     const value = JSON.parse(
       synthetic.settings.toString("utf8"),
     ) as InstalledSettingsFixture;
-    value.hooks.Stop![0]!.agentscope =
-      null as unknown as InstalledSettingsFixture["hooks"][string][number]["agentscope"];
+    value.hooks.Stop![0]!.agentscope = null as unknown as Record<
+      string,
+      unknown
+    >;
     synthetic.settings = Buffer.from(JSON.stringify(value));
     await expect(
       retireClaudeCodePackedCli(commands, settings, 1500),
@@ -1076,16 +1142,14 @@ describe("actual profile conjunction first failure", () => {
     });
     expect(synthetic.calls).toHaveLength(0);
   });
-  it("preserves native expression errors instead of making a categorical success", async () => {
+  it("refuses unrecognized metadata without evaluating its claimed identity", async () => {
     const { commands, settings } = prepareRetirementFixture();
     const value = JSON.parse(
       settings.toString("utf8"),
     ) as InstalledSettingsFixture;
-    const metadata = value.hooks.Stop![0]!.agentscope as Record<
-      string,
-      unknown
-    >;
-    metadata.ownershipIdentity = { toString: null, valueOf: null };
+    value.hooks.Stop![0]!.agentscope = {
+      ownershipIdentity: { toString: null, valueOf: null },
+    };
     synthetic.settings = Buffer.from(JSON.stringify(value));
     let original: unknown;
     try {
@@ -1093,10 +1157,13 @@ describe("actual profile conjunction first failure", () => {
     } catch (error) {
       original = error;
     }
-    expect(original).toBeInstanceOf(TypeError);
+    expect(original).toMatchObject({
+      message: "integration.claude-code.settings",
+      cause: "profile",
+    });
     expect(
       settingsWire.claudeScenarioFailureDiagnostic(original, "retirement"),
-    ).toBe("integration.fixture.claude-phase-retirement");
+    ).toBe("integration.fixture.claude-settings-profile");
     expect(synthetic.calls).toHaveLength(0);
   });
 });

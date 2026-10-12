@@ -388,37 +388,24 @@ export const readClaudeCodeInstalledSettings = () => {
           ? "profile-groups"
           : group?.hooks?.length !== 1
             ? "profile-handlers"
-            : group?.agentscope?.event !== event
-              ? "profile-event"
-              : group.agentscope.contractVersion !== 1
-                ? "profile-contract"
-                : group.agentscope.harnessType !==
-                    "@agentscope/harness-claude-code"
-                  ? "profile-harness"
-                  : !/^agentscope-hook-v1-sha256-[a-f0-9]{64}$/u.test(
-                        group.agentscope.ownershipIdentity,
-                      )
-                    ? "profile-identity"
-                    : Object.keys(group.agentscope).sort().join("\0") !==
-                        "contractVersion\0event\0harnessType\0ownershipIdentity"
-                      ? "profile-keys"
-                      : group.agentscope.ownershipIdentity !==
-                          value.hooks.SessionStart[0].agentscope
-                            .ownershipIdentity
-                        ? "profile-owner"
-                        : hook?.type !== "command"
-                          ? "profile-type"
-                          : !Array.isArray(hook.args)
-                            ? "profile-args-kind"
-                            : hook.args.length !== 0
-                              ? "profile-args-count"
-                              : !Number.isSafeInteger(hook.timeout)
-                                ? "profile-timeout-kind"
-                                : hook.timeout < 1
-                                  ? "profile-timeout-bound"
-                                  : typeof hook.command !== "string"
-                                    ? "profile-command"
-                                    : undefined;
+            : Object.keys(group).join("\0") !== "hooks"
+              ? "profile"
+              : hook?.type !== "command"
+                ? "profile-type"
+                : !Array.isArray(hook.args)
+                  ? "profile-args-kind"
+                  : hook.args.length !== 0
+                    ? "profile-args-count"
+                    : !Number.isSafeInteger(hook.timeout)
+                      ? "profile-timeout-kind"
+                      : hook.timeout < 1
+                        ? "profile-timeout-bound"
+                        : typeof hook.command !== "string"
+                          ? "profile-command"
+                          : Object.keys(hook).sort().join("\0") !==
+                              "args\0command\0timeout\0type"
+                            ? "profile"
+                            : undefined;
       if (cause) throw new Error("integration.claude-code.settings", { cause });
       return hook.command;
     });
