@@ -37,6 +37,32 @@ const routeDiagnosticFixture = () => {
   return { route, unknown, catalog: { routes: [route] } };
 };
 describe("joined unmatched route content-free projection", () => {
+  it.each([false, true])(
+    "projects the real upstream serializer with marked=%s",
+    (marked) => {
+      const { unknown, catalog } = routeDiagnosticFixture();
+      const rows = projectMockServerRequests(
+        Buffer.from(
+          JSON.stringify([
+            {
+              method: unknown.method,
+              path: unknown.path,
+              headers: marked
+                ? {
+                    "x-agentscope-final-role": ["data-plane"],
+                    "x-agentscope-final-status": ["404"],
+                  }
+                : {},
+            },
+          ]),
+        ),
+      );
+      expect(Object.hasOwn(rows[0]!, "role")).toBe(marked);
+      expect(projectFirstUnmatchedModelRoute(rows, catalog)).toEqual(
+        projectFirstUnmatchedModelRoute([unknown], catalog),
+      );
+    },
+  );
   it("hashes only the exact unnormalized tuple with its domain separator", () => {
     const { unknown, catalog } = routeDiagnosticFixture();
     const value = projectFirstUnmatchedModelRoute([unknown], catalog);
@@ -84,10 +110,14 @@ describe("joined unmatched route content-free projection", () => {
       }),
     ).toBeUndefined();
   });
+});
+describe("unavailable joined route diagnostic input", () => {
   it.each([
     "method",
     "path",
     "role",
+    "role-accessor",
+    "role-undefined",
     "sparse",
     "row-bound",
     "catalog-bound",
@@ -104,6 +134,16 @@ describe("joined unmatched route content-free projection", () => {
       if (fault === "method") rows = [{ ...unknown, method: "get" }];
       if (fault === "path") rows = [{ ...unknown, path: "x".repeat(4097) }];
       if (fault === "role") rows = [{ ...unknown, role: "unknown" }];
+      if (fault === "role-undefined") rows = [{ ...unknown, role: undefined }];
+      if (fault === "role-accessor")
+        rows = [
+          Object.defineProperty({ ...unknown }, "role", {
+            get() {
+              reflected++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ];
       if (fault === "sparse") rows = new Array(1);
       if (fault === "row-bound")
         rows = Array.from({ length: 17 }, () => unknown);
@@ -153,6 +193,7 @@ const joinedDiagnosticHarness = ({
   scenario = "claude-interactive-trace-smoke",
   succeeded = false,
   failure = "",
+  marked = false,
 } = {}) => {
   const source = readFileSync(
     new URL("../run-scenarios.mjs", import.meta.url),
@@ -204,9 +245,22 @@ const joinedDiagnosticHarness = ({
     readMockServerFinalLedger: () => {
       events.push("authenticated-read");
       if (failure === "read") throw new Error("original-read");
-      return Buffer.alloc(1);
+      return Buffer.from(
+        JSON.stringify([
+          {
+            method: unknown.method,
+            path: unknown.path,
+            headers: marked
+              ? {
+                  "x-agentscope-final-role": ["data-plane"],
+                  "x-agentscope-final-status": ["404"],
+                }
+              : {},
+          },
+        ]),
+      );
     },
-    projectMockServerRequests: () => [{ ...unknown }],
+    projectMockServerRequests,
     projectFirstUnmatchedModelRoute: (rows: unknown, routes: unknown) => {
       events.push("projection");
       if (failure === "projection") throw new Error("PRIVATE");
@@ -225,43 +279,46 @@ const joinedDiagnosticHarness = ({
   return { execute, events, output };
 };
 describe("literal joined final ledger failure diagnostic emission", () => {
-  it("emits only after wait, inspect, terminal authentication and final-ledger read", async () => {
-    const input = joinedDiagnosticHarness();
-    await expect(input.execute()).resolves.toBeUndefined();
-    expect(input.events).toEqual([
-      "wait",
-      "inspect",
-      "terminal",
-      "producer-refusal",
-      "copy",
-      "copy",
-      "authenticated-read",
-      "projection",
-      "emission",
-    ]);
-    expect(input.output).toHaveLength(1);
-    expect(Buffer.byteLength(input.output[0]!)).toBeLessThanOrEqual(256);
-    const value = JSON.parse(
-      input.output[0]!.slice(
-        "integration.isolation.mockserver-ledger-diagnostic:".length,
-      ),
-    ) as Record<string, unknown>;
-    expect(Object.keys(value).sort()).toEqual([
-      "matchCount",
-      "method",
-      "runId",
-      "stage",
-      "tupleSha256",
-    ]);
-    expect(value.stage).toBe("joined-unmatched-route");
-    for (const canary of [
-      "PRIVATE_PATH",
-      "PRIVATE_BODY",
-      "PRIVATE_HEADER",
-      "canary=",
-    ])
-      expect(input.output[0]).not.toContain(canary);
-  });
+  it.each([false, true])(
+    "emits only after authenticated join/read with marked=%s",
+    async (marked) => {
+      const input = joinedDiagnosticHarness({ marked });
+      await expect(input.execute()).resolves.toBeUndefined();
+      expect(input.events).toEqual([
+        "wait",
+        "inspect",
+        "terminal",
+        "producer-refusal",
+        "copy",
+        "copy",
+        "authenticated-read",
+        "projection",
+        "emission",
+      ]);
+      expect(input.output).toHaveLength(1);
+      expect(Buffer.byteLength(input.output[0]!)).toBeLessThanOrEqual(256);
+      const value = JSON.parse(
+        input.output[0]!.slice(
+          "integration.isolation.mockserver-ledger-diagnostic:".length,
+        ),
+      ) as Record<string, unknown>;
+      expect(Object.keys(value).sort()).toEqual([
+        "matchCount",
+        "method",
+        "runId",
+        "stage",
+        "tupleSha256",
+      ]);
+      expect(value.stage).toBe("joined-unmatched-route");
+      for (const canary of [
+        "PRIVATE_PATH",
+        "PRIVATE_BODY",
+        "PRIVATE_HEADER",
+        "canary=",
+      ])
+        expect(input.output[0]).not.toContain(canary);
+    },
+  );
   it.each([{ succeeded: true }, { scenario: "codex-tui-trace-smoke" }])(
     "does not project successful or other selected scenarios %j",
     async (options) => {

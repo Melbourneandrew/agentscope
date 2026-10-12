@@ -58,26 +58,28 @@ export const projectFirstUnmatchedModelRoute = (rows, routeFixture) => {
     if (received === undefined || routes === undefined) return undefined;
     const catalog = routes.map(diagnosticTuple);
     if (catalog.some((route) => route === undefined)) return undefined;
-    const observed = received.map((row) => ({
-      tuple: diagnosticTuple(row),
-      role: diagnosticValue(row, "role"),
-    }));
-    if (
-      observed.some(
-        (row) =>
-          row.tuple === undefined ||
-          ![
-            "allowed",
-            "forbidden",
-            "unauthenticated",
-            "readiness",
-            "data-plane",
-          ].includes(row.role),
-      )
-    )
-      return undefined;
+    const observed = received.map((row) => {
+      const tuple = diagnosticTuple(row);
+      if (tuple === undefined) return { tuple, roleValid: false };
+      const descriptor = Object.getOwnPropertyDescriptor(row, "role");
+      return {
+        tuple,
+        role: descriptor?.value,
+        roleValid:
+          descriptor === undefined ||
+          (Object.hasOwn(descriptor, "value") &&
+            [
+              "allowed",
+              "forbidden",
+              "unauthenticated",
+              "readiness",
+              "data-plane",
+            ].includes(descriptor.value)),
+      };
+    });
+    if (observed.some((row) => !row.roleValid)) return undefined;
     for (const row of observed) {
-      if (row.role !== "data-plane") continue;
+      if (row.role !== undefined && row.role !== "data-plane") continue;
       const matches = catalog.filter(
         (route) =>
           route.method === row.tuple.method && route.path === row.tuple.path,
