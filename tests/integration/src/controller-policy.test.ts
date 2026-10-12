@@ -20,6 +20,11 @@ import { describe, expect, it } from "vitest";
 import { runSupervisedProcess } from "../supervisor.mjs";
 import { writeExactRegularFile } from "../exact-file.mjs";
 import {
+  assertMockServerFinalLedger,
+  projectMockServerRequests,
+  snapshotMockServerTraffic,
+} from "../mockserver-control.mjs";
+import {
   leakedChildReadinessIsValid,
   leakedChildReadinessWasObserved,
   SUBSTRATE_CERTIFICATION_CASES,
@@ -34,7 +39,11 @@ import {
 
 type OperationDiagnosticFunctions = {
   mockServerProducerRefusalObservation: (output: unknown) => unknown;
-  joinMockServer: (plan: object, signal: AbortSignal) => Promise<void>;
+  joinMockServer: (
+    plan: object,
+    signal: AbortSignal,
+    succeeded?: boolean,
+  ) => Promise<void>;
   publishOperationFailureDiagnostic: (
     slot: string,
     error: unknown,
@@ -127,6 +136,28 @@ const diagnosticDockerFixture =
       },
     );
   };
+const diagnosticLedgerOperations = (
+  state: { malformedLedger: boolean; missingFixtureOracle: boolean },
+  step: (slot: string) => unknown,
+  plan: object,
+  runId: string,
+) => ({
+  projectMockServerRequests: (value: unknown) =>
+    state.malformedLedger
+      ? projectMockServerRequests(Buffer.alloc(1024 * 1024 + 1))
+      : value,
+  assertMockServerFinalLedger: () => {
+    step("join-ledger-assert");
+    if (state.missingFixtureOracle)
+      Reflect.apply(assertMockServerFinalLedger, undefined, [
+        [],
+        undefined,
+        {},
+        plan,
+        { traffic: { runId, entries: [] }, runId },
+      ]);
+  },
+});
 const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   const source = readIntegration("run-scenarios.mjs");
   const start = source.indexOf("const operationFailureSlots =");
@@ -153,6 +184,8 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
     afterLogs: undefined as (() => void) | undefined,
     signals: [] as AbortSignal[],
     timeouts: [] as number[],
+    missingFixtureOracle: false,
+    malformedLedger: false,
   };
   const step = (slot: string, value?: unknown) => {
     calls.push(slot);
@@ -165,7 +198,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   };
   const container = terminalMockContainer(containerId, runId);
   const functions = runInNewContext(
-    `${source.slice(start, end)}; ({ joinMockServer, publishOperationFailureDiagnostic, mockServerProducerRefusalObservation })`,
+    `${source.slice(start, end)}; ({ joinMockServer: (plan, signal, succeeded = true) => joinMockServer(plan, signal, succeeded), publishOperationFailureDiagnostic, mockServerProducerRefusalObservation })`,
     {
       Buffer,
       AbortSignal: {
@@ -223,8 +256,7 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
         expect(input.deadline).toBe(1000);
         return step("join-ledger-read", []);
       },
-      projectMockServerRequests: (value: unknown) => value,
-      assertMockServerFinalLedger: () => step("join-ledger-assert"),
+      ...diagnosticLedgerOperations(state, step, plan, runId),
       fixtureResults: new Map(),
       modelRoutes: {},
       fixtureTrafficObservations: new Map(),
@@ -243,6 +275,74 @@ const operationDiagnosticFixture = (failAt = "", sinkFails = false) => {
   ) as OperationDiagnosticFunctions;
   return { source, functions, plan, error, calls, output, state, container };
 };
+
+describe("failed scenario service join without semantic promotion", () => {
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "joins and parses %s without requiring an absent failed fixture",
+    async (scenarioId) => {
+      const f = operationDiagnosticFixture();
+      f.plan.scenarioId = scenarioId;
+      f.state.missingFixtureOracle = true;
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal, false),
+      ).resolves.toBeUndefined();
+      expect(f.calls).toContain("join-control-boundary");
+      expect(f.calls).toContain("join-control-stop");
+      expect(f.calls).toContain("join-container-wait");
+      expect(f.calls).toContain("join-container-inspect");
+      expect(f.calls).toContain("join-ledger-requests");
+      expect(f.calls).toContain("join-ledger-complete");
+      expect(f.calls.at(-1)).toBe("join-ledger-read");
+      expect(f.calls).not.toContain("join-ledger-assert");
+      expect(f.calls).not.toContain("join-collector-read");
+      expect(f.calls).not.toContain("join-collector-project");
+      expect(f.output).toEqual([]);
+      expect(f.state.timeouts).toEqual([900]);
+    },
+  );
+  it.each([false, true])(
+    "keeps the actual bounded parser mandatory for succeeded=%s",
+    async (succeeded) => {
+      const f = operationDiagnosticFixture();
+      f.state.malformedLedger = true;
+      await expect(
+        f.functions.joinMockServer(
+          f.plan,
+          new AbortController().signal,
+          succeeded,
+        ),
+      ).rejects.toThrow("integration.mockserver.control");
+      expect(f.calls.at(-1)).toBe("join-ledger-read");
+      expect(f.calls).not.toContain("join-ledger-assert");
+    },
+  );
+  it.each([
+    "join-control-boundary",
+    "join-control-stop",
+    "join-container-wait",
+    "join-ledger-complete",
+    "join-ledger-read",
+  ])("still rejects failed rows when %s fails", async (slot) => {
+    const f = operationDiagnosticFixture(slot);
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal, false),
+    ).rejects.toBe(f.error);
+  });
+  it("still requires the exact terminal witness for a failed row", async () => {
+    const f = operationDiagnosticFixture();
+    f.container.State.ExitCode = 1;
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal, false),
+    ).rejects.toThrow("integration.isolation.mockserver-terminal");
+    expect(f.calls).not.toContain("join-ledger-read");
+  });
+  it("keeps the successful semantic assertion mandatory", async () => {
+    const f = operationDiagnosticFixture("join-ledger-assert");
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal, true),
+    ).rejects.toBe(f.error);
+  });
+});
 
 describe("actual-source optional original operation diagnostics", () => {
   it.each([
@@ -1177,7 +1277,6 @@ describe("actual-source original versus final cleanup precedence", () => {
     ]);
   });
 });
-import { snapshotMockServerTraffic } from "../mockserver-control.mjs";
 
 const mixedArtifactPartialOutput = () => {
   const platform = readFileSync(

@@ -2757,7 +2757,7 @@ const createFinalMockServerLedgerDirectory = (plan) => {
   mkdirSync(directory, { mode: 0o700 });
   return directory;
 };
-const joinMockServer = async (plan, signal) => {
+const joinMockServer = async (plan, signal, scenarioSucceeded) => {
   let failureSlot = "join-identity";
   let deadline, joinSignal, containerId, refusal;
   let collectorPhase, collectorHttpsFailure;
@@ -2830,6 +2830,9 @@ const joinMockServer = async (plan, signal) => {
         now: linuxBootMonotonicMilliseconds,
       }),
     );
+    // Failed rows still settle the service and parse its complete bounded ledger,
+    // but have no successful fixture semantics to compare or complete.
+    if (scenarioSucceeded === false) return;
     failureSlot = "join-ledger-assert";
     assertMockServerFinalLedger(
       ledger,

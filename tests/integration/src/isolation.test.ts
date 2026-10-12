@@ -948,6 +948,44 @@ describe("scenario isolation", () => {
   });
 });
 
+describe("scenario result boolean delivered before service semantic join", () => {
+  it.each([false, true])(
+    "delivers owned succeeded=%s once to the real executor join",
+    async (succeeded) => {
+      const plan = planFor("0123456789abcdef");
+      const fixture = driver();
+      fixture.runScenario.mockResolvedValueOnce({
+        receipt: headlessReceiptFor(plan.runId),
+        succeeded,
+      });
+      const seen: unknown[] = [];
+      vi.spyOn(fixture.implementation, "joinMockServer").mockImplementationOnce(
+        (...args: unknown[]) => {
+          seen.push(args[2]);
+          if (args[2] !== succeeded)
+            throw new Error("integration.mockserver.control");
+          return Promise.resolve();
+        },
+      );
+      const execution = executeIsolationPlan(
+        plan,
+        fixture.implementation,
+        new AbortController().signal,
+      );
+      if (succeeded)
+        await expect(execution).resolves.toMatchObject({ outcome: "passed" });
+      else
+        await expect(execution).rejects.toThrow(
+          "integration.isolation.scenario-failed",
+        );
+      expect(seen).toEqual([succeeded]);
+      const evidence = fixture.recordEvidence.mock.calls[0]?.[0];
+      expect(evidence?.outcome).toBe(succeeded ? "passed" : "failed");
+      expect(evidence?.cleanup.outcome).toBe("complete");
+    },
+  );
+});
+
 describe("scenario isolation outcomes", () => {
   it("tears down and records failure and interruption outcomes", async () => {
     const failed = driver();

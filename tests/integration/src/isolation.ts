@@ -1044,7 +1044,11 @@ export interface IsolationDriver {
   startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
-  joinMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  joinMockServer(
+    plan: IsolationPlan,
+    signal: AbortSignal,
+    scenarioSucceeded: boolean,
+  ): Promise<void>;
   runScenario(
     plan: IsolationPlan,
     signal: AbortSignal,
@@ -1432,8 +1436,9 @@ export const executeIsolationPlan = async (
     await driver.startMockServer(plan, signal);
     originalWorkPhase = "run-scenario";
     const scenarioResult = await driver.runScenario(plan, signal);
+    const scenarioSucceeded = scenarioResult.succeeded;
     originalWorkPhase = "join-mock";
-    await driver.joinMockServer(plan, signal);
+    await driver.joinMockServer(plan, signal, scenarioSucceeded);
     originalWorkPhase = "receipt-validation";
     if (plan.executionMode === "interactive")
       ptyTerminalReceipt = ptyTerminalReceiptSchema.parse(
@@ -1443,7 +1448,7 @@ export const executeIsolationPlan = async (
       headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
         scenarioResult.receipt,
       );
-    if (!scenarioResult.succeeded)
+    if (!scenarioSucceeded)
       throw new Error("integration.isolation.scenario-failed");
     workOutcome = "passed";
   } catch (error) {
