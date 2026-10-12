@@ -28,7 +28,7 @@ import {
 import { readImageRequestDiagnostic } from "../image-preparation/boundary.mjs";
 import { verifyBootstrapArchive } from "./bootstrap-archive.mjs";
 import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
-import { prepareMockServerBootstrap } from "./prepare-bootstrap.mjs";
+import { prepareMockServerBootstrap as prepareBootstrap } from "./prepare-bootstrap.mjs";
 import { verifyMockServerSourceArchive } from "./source-archive.mjs";
 import {
   publishBootstrapGpgObservation,
@@ -287,7 +287,7 @@ const prepareSupplier = async (input, service) => {
   try {
     // Bootstrap owns its own cutoff at this same absolute deadline. Its original
     // caller signal must remain usable during reserved late-image retirement.
-    const bootstrap = await prepareMockServerBootstrap(input);
+    const bootstrap = await prepareBootstrap(input, (next) => (phase = next));
     check(workSignal, deadline - reserve);
     phase = "supplier-context";
     publishMaterialResearchPhase("supplier-context");

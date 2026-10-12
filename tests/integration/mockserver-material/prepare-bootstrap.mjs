@@ -83,7 +83,11 @@ const checkedObject = (bytes, pin) => {
   return bytes;
 };
 
-const acquire = async (signal, deadline) => {
+const acquire = async (
+  signal,
+  deadline,
+  note = publishMaterialResearchPhase,
+) => {
   const archives = {};
   for (const [kind, pin] of [
     ["source", source.archive],
@@ -91,23 +95,23 @@ const acquire = async (signal, deadline) => {
     ["node", bootstrap.node.archive],
   ]) {
     check(signal, deadline);
-    publishMaterialResearchPhase(`download-${kind}`);
+    note(`download-${kind}`);
     archives[kind] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
     );
   }
-  publishMaterialResearchPhase("download-jdk");
+  note("download-jdk");
   archives.jdk = await downloadMockServerJdkArchive(signal, deadline);
   check(signal, deadline);
   // These return owned copies, with SHA512 additionally required for Maven.
-  publishMaterialResearchPhase("verify-archives");
+  note("verify-archives");
   archives.source = verifyMockServerSourceArchive(archives.source);
   archives.maven = verifyMavenArchiveBytes(archives.maven);
   archives.node = verifyBootstrapArchive("node", archives.node);
   archives.jdk = verifyBootstrapArchive("jdk", archives.jdk);
   const metadata = {};
-  publishMaterialResearchPhase("pinned-metadata");
+  note("pinned-metadata");
   for (const [name, pin] of Object.entries(bootstrap.metadata)) {
     check(signal, deadline);
     metadata[name] = verifyBootstrapMetadata(
@@ -120,7 +124,7 @@ const acquire = async (signal, deadline) => {
     ["maven-signature", maven.signature],
   ]) {
     check(signal, deadline);
-    publishMaterialResearchPhase(`download-${name}`);
+    note(`download-${name}`);
     metadata[name] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
@@ -242,7 +246,13 @@ const cleanup = (owned, deadline) => {
   check({ aborted: false }, deadline);
 };
 
-const verifyInputs = async (input, owned, objects, workSignal) => {
+const verifyInputs = async (
+  input,
+  owned,
+  objects,
+  workSignal,
+  note = publishMaterialResearchPhase,
+) => {
   const { deadline, dockerClient, runId, signal } = input;
   const workDeadline = deadline - reserveMilliseconds;
   check(workSignal, workDeadline);
@@ -256,7 +266,7 @@ const verifyInputs = async (input, owned, objects, workSignal) => {
   const tag = `agentscope-bootstrap:${runId}-verification`;
   // Existing first-kind phase denotes this one combined verifier operation;
   // it is not three independently observed image builds or retirements.
-  publishMaterialResearchPhase("verify-maven");
+  note("verify-maven");
   const imageId = await buildPreparedDockerImage(dockerClient, {
     buildArguments: {},
     baseImage: base,
@@ -283,7 +293,7 @@ const verifyInputs = async (input, owned, objects, workSignal) => {
     throw error;
   });
   // Retire a successfully created reference even after late work completion.
-  publishMaterialResearchPhase("retire-maven");
+  note("retire-maven");
   await retirePreparedDockerImage(dockerClient, {
     deadline: Math.min(deadline - 1_000, performance.now() + 5_000),
     imageId,
@@ -295,8 +305,19 @@ const verifyInputs = async (input, owned, objects, workSignal) => {
 };
 
 /** Mutable returned archives must be reauthenticated before supplier staging. */
-export const prepareMockServerBootstrap = async (input) => {
-  publishMaterialResearchPhase("bootstrap-preflight");
+export const prepareMockServerBootstrap = async (
+  input,
+  entered = () => undefined,
+) => {
+  const note = (phase) => {
+    publishMaterialResearchPhase(phase);
+    try {
+      entered(phase);
+    } catch {
+      // Optional same-controller observation cannot replace work outcomes.
+    }
+  };
+  note("bootstrap-preflight");
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserveMilliseconds - performance.now();
   if (
@@ -345,9 +366,19 @@ export const prepareMockServerBootstrap = async (input) => {
     rootCreated = true;
     owned = { parent, root: exactDirectory(rootPath), contexts: [] };
     if (owned.root.dev !== parent.dev) fail();
-    const objects = await acquire(workSignal, deadline - reserveMilliseconds);
-    const verifications = await verifyInputs(input, owned, objects, workSignal);
-    publishMaterialResearchPhase("bootstrap-cleanup");
+    const objects = await acquire(
+      workSignal,
+      deadline - reserveMilliseconds,
+      note,
+    );
+    const verifications = await verifyInputs(
+      input,
+      owned,
+      objects,
+      workSignal,
+      note,
+    );
+    note("bootstrap-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     rootCreated = false;
