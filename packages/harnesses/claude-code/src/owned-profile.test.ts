@@ -49,7 +49,11 @@ const createClaudeCodeInstallationPlanner = (
   operation: Parameters<typeof planner>[0],
   owned: Parameters<typeof planner>[1],
   inventory: Parameters<typeof planner>[2],
-) => planner(operation, owned, inventory, dialect);
+  files: Parameters<typeof planner>[4] = [
+    { targetPath: owned.launcherPath, exists: true },
+    { targetPath: `${owned.launcherPath}.metadata.json`, exists: true },
+  ],
+) => planner(operation, owned, inventory, dialect, files);
 const decisionText = (decision: HarnessTargetDecision) => {
   if (decision.kind !== "replace" && decision.kind !== "replace-overlap")
     throw Error("expected replacement");
@@ -89,6 +93,34 @@ const profileFixture = (kind: "legacy" | "current" | "native") => ({
 });
 
 describe("native-only owned profile compatibility", () => {
+  it.each([
+    { paths: [] },
+    { paths: [invocation.launcherPath] },
+    { paths: [`${invocation.launcherPath}.metadata.json`] },
+  ])(
+    "does not adopt native ownership with incomplete held artifacts %j",
+    ({ paths }) => {
+      const files = paths.map((targetPath) => ({ targetPath, exists: true }));
+      for (const operation of ["install", "uninstall"] as const)
+        expect(
+          createClaudeCodeInstallationPlanner(
+            operation,
+            invocation,
+            emptyInventory(),
+            files,
+          )(target(JSON.stringify(profileFixture("native")))),
+        ).toEqual({ kind: "conflict" });
+      for (const kind of ["legacy", "current"] as const)
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "uninstall",
+            invocation,
+            emptyInventory(),
+            files,
+          )(target(JSON.stringify(profileFixture(kind)))),
+        ).toEqual({ kind: "remove" });
+    },
+  );
   it("emits only the native handler representation", () => {
     const text = decisionText(
       createClaudeCodeInstallationPlanner(

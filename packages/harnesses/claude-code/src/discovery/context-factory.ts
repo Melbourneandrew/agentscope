@@ -284,6 +284,7 @@ export const prepareClaudeCodeInstallationContext = (
           directories,
         ),
         dialectAuthority,
+        files,
       );
     },
   });

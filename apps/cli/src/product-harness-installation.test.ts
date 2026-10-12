@@ -5,9 +5,14 @@ import {
   readdir,
   unlink,
   writeFile,
+  mkdtemp,
+  lstat,
+  realpath,
+  rm,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { codexHarnessDescriptor } from "@agentscope/harness-codex";
+import { claudeCodeDescriptor } from "@agentscope/harness-claude-code";
 import {
   applyHarnessInstallation,
   inspectHarnessInstallation,
@@ -15,6 +20,7 @@ import {
 } from "@agentscope/harnesses-core";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createProductHarnessInstallationInput } from "./product-harness-installation.js";
+import { createOwnedHookLauncherArtifacts } from "./hook-launcher.js";
 import {
   createProductInstallationFixtures,
   digest,
@@ -24,6 +30,136 @@ import {
 } from "./__tests__/product-installation-fixture.js";
 
 const { fixture, withElection } = createProductInstallationFixtures();
+
+const removeOwnedFixture = async (
+  root: string,
+  before: Awaited<ReturnType<typeof lstat>>,
+) => {
+  const after = await lstat(root);
+  if (
+    !after.isDirectory() ||
+    after.isSymbolicLink() ||
+    after.dev !== before.dev ||
+    after.ino !== before.ino ||
+    after.uid !== before.uid ||
+    (await realpath(root)) !== root
+  )
+    throw new Error("fixture.root-identity-changed");
+  await rm(root, { recursive: true });
+};
+
+// Source factory + actual Core planning only; no bundle/vendor/native execution.
+describe("native owned launcher association", () => {
+  it.each([
+    "none",
+    "metadata",
+    "launcher",
+    "both",
+    "wrong-bytes",
+    "wrong-mode",
+  ])("does not replace missing ownership evidence (%s)", async (present) => {
+    const root = await realpath(
+      await mkdtemp("/private/tmp/agentscope-native-owner-unit."),
+    );
+    const before = await lstat(root);
+    try {
+      await mkdir(join(root, "bin"));
+      await mkdir(join(root, "mutations"));
+      const launcher = createOwnedHookLauncherArtifacts({
+        agentscopeHome: root,
+        harnessType: "@agentscope/harness-claude-code",
+        hookDeadlineMilliseconds: 2000,
+        machineEntryPath: join(root, "machine.js"),
+        nodeExecutable: process.execPath,
+        platform: "posix",
+        releaseIdentity: "0.1.0",
+      });
+      const bytes = encode(
+        JSON.stringify({
+          hooks: Object.fromEntries(
+            ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map(
+              (event) => [
+                event,
+                [
+                  {
+                    hooks: [
+                      {
+                        type: "command",
+                        command: launcher.launcherPath,
+                        args: [],
+                        timeout: 4,
+                      },
+                    ],
+                  },
+                ],
+              ],
+            ),
+          ),
+        }),
+      );
+      const settingsPath = join(root, "settings.json");
+      await writeFile(settingsPath, bytes, { mode: 0o600 });
+      if (["metadata", "both", "wrong-bytes", "wrong-mode"].includes(present))
+        await writeFile(launcher.metadataPath, launcher.metadataBytes, {
+          mode: 0o600,
+        });
+      if (["launcher", "both", "wrong-bytes", "wrong-mode"].includes(present)) {
+        await writeFile(
+          launcher.launcherPath,
+          present === "wrong-bytes"
+            ? encode("not-owned")
+            : launcher.launcherBytes,
+          { mode: 0o700 },
+        );
+        if (present === "wrong-mode") await chmod(launcher.launcherPath, 0o600);
+      }
+      for (const operation of ["install", "uninstall"] as const) {
+        const input = createProductHarnessInstallationInput({
+          agentscopeHome: root,
+          hookConfigurationPath: settingsPath,
+          hookDeadlineMilliseconds: 2000,
+          machineEntryPath: join(root, "machine.js"),
+          mutationDirectory: join(root, "mutations"),
+          nodeExecutable: process.execPath,
+          operation,
+          releaseIdentity: "0.1.0",
+          harness: "claude-code",
+          observedDiscovery: {
+            configurationLocations: [{ locationIndex: 0, present: true }],
+            harnessType: claudeCodeDescriptor.harnessType,
+            reason: "compatible",
+            state: "installed",
+            version: "2.1.245",
+          },
+          pluginInventory: {
+            settingsLayers: [
+              {
+                scope: "user",
+                targetPath: settingsPath,
+                targetDigest: digest(bytes),
+                targetExists: true,
+                enabledPlugins: {},
+              },
+            ],
+            installedPlugins: [],
+          },
+          readGuards: [],
+        });
+        const plan = await inspectHarnessInstallation(input);
+        expect(plan.disposition).toBe(
+          present === "both"
+            ? operation === "install"
+              ? "unchanged"
+              : "ready"
+            : "conflict",
+        );
+        expect(await readFile(settingsPath)).toEqual(Buffer.from(bytes));
+      }
+    } finally {
+      await removeOwnedFixture(root, before);
+    }
+  });
+});
 
 describe("actual private installation bundle composition", () => {
   let value: Awaited<ReturnType<typeof fixture>>;

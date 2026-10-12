@@ -62,6 +62,13 @@ const createClaudeCodeInstallationPlanner = (
     ownedInvocation,
     inventory,
     dialectAuthority,
+    [
+      { targetPath: ownedInvocation.launcherPath, exists: true },
+      {
+        targetPath: `${ownedInvocation.launcherPath}.metadata.json`,
+        exists: true,
+      },
+    ],
   );
 
 const target = (
