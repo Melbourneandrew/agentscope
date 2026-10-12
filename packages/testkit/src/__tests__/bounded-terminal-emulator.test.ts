@@ -11,6 +11,66 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("historical challenged marker readiness", () => {
+  it.each([
+    "",
+    "AGENTSCOPE_PTY_READY",
+    `AGENTSCOPE_PTY_READY:${"b".repeat(64)}`,
+    `AGENTSCOPE_PTY_READY:${"a".repeat(63)}`,
+  ])("does not create readiness from an unproved marker %j", (marker) => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(marker));
+    terminal.write(bytes("\u001b(B"));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+    );
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.completionObserved()).toBe(false);
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-readiness",
+    );
+  });
+  it.each([
+    "\u001b(B",
+    "\u000f",
+    "\u001b[?1049h\u001b[?1049l",
+    "\u001b7\u001b8",
+    "\t",
+  ])(
+    "survives admitted screen revocation %j before exact completion",
+    (control) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      for (const character of `AGENTSCOPE_PTY_READY:${challenge}\r\n`)
+        terminal.write(bytes(character));
+      expect(terminal.readinessObserved()).toBe(true);
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(control));
+      expect(terminal.challengedReadinessProgress().screenRevoked).toBe(true);
+      expect(terminal.readinessObserved()).toBe(true);
+      expect(terminal.completionObserved()).toBe(false);
+      for (const character of `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`)
+        terminal.write(bytes(character));
+      expect(terminal.end()).toMatchObject({
+        semanticState: "completed",
+        malformedControlCount: 0,
+        unsupportedControlCount: 0,
+      });
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+});
+
 describe("challenged completion ignores ordinary printable tokens", () => {
   it.each(["challenge-marker", "challenge-styled-text"] as const)(
     "does not complete %s from printable text before or after arming",

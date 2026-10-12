@@ -1558,6 +1558,44 @@ describe("selected PTY transport", () => {
     });
     expect(receipt.inputBytesWritten).toBe(71);
   });
+  it("retains historical challenged readiness through actual post-checkpoint redraw", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    let redraws = 0;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        if (
+          new TextDecoder().decode(chunk).includes("AGENTSCOPE_PTY_COMPLETE:")
+        ) {
+          redraws += 1;
+          Reflect.apply(write, this, [new TextEncoder().encode("\u001b(B")]);
+        }
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(redraws).toBe(1);
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        processJoined: true,
+        readinessObserved: true,
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it("accepts a fragmented fresh command-started title after checkpoint", async () => {
     vi.resetModules();
     const { BoundedTerminalEmulator: Terminal } =
