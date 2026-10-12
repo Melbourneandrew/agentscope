@@ -172,6 +172,20 @@ vi.mock("node:child_process", () => ({
 import * as scenarioModule from "../claude-code-scenario.mjs";
 // @ts-expect-error private checksum-bound lifecycle module has no declaration
 import * as lifecycleModule from "../claude-code-lifecycle.mjs";
+// @ts-expect-error private checksum-bound module has no published declaration
+import * as settingsFailureAuthority from "../immutable-candidate-authority.mjs";
+const settingsWire = settingsFailureAuthority as {
+  claudeScenarioFailureDiagnostic: (error: unknown, phase: string) => string;
+  encodeInteractiveFailureExitCode: (
+    predicate: string,
+    scenario: string,
+  ) => number | undefined;
+  formatInteractiveChildDiagnostic: (predicate: string) => string;
+  readInteractiveChildFailureObservation: (
+    frame: string,
+  ) => { predicate: string } | undefined;
+  validInstalledPtyFailure: (value: unknown) => boolean;
+};
 const { prepareClaudeCodePackedCli } = lifecycleModule as {
   prepareClaudeCodePackedCli: (
     deadline: number,
@@ -934,6 +948,74 @@ describe("Claude retirement keeps strict lifecycle failure", () => {
         retireClaudeCodePackedCli(commands, settings, 1500),
       ).rejects.toThrow(`integration.claude-code.${code}`);
       expect(synthetic.calls).toHaveLength(index + 1);
+    },
+  );
+});
+describe("actual settings refusal sites preserve the existing failure wire", () => {
+  it.each([
+    "status",
+    "read-stability",
+    "events",
+    "profile",
+    "commands",
+    "document",
+  ])(
+    "localizes only source site %s with SAME generic error and207",
+    async (site) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const value = JSON.parse(
+        settings.toString("utf8"),
+      ) as InstalledSettingsFixture;
+      if (site === "status") synthetic.settingsFailure = "mode";
+      else if (site === "read-stability") synthetic.settingsFailure = "drift";
+      else if (site === "events") delete value.hooks.Stop;
+      else if (site === "profile")
+        value.hooks.Stop![0]!.hooks[0]!.args = ["synthetic"];
+      else if (site === "commands")
+        value.hooks.Stop![0]!.hooks[0]!.command = "/other/launcher";
+      else value.theme = "synthetic-theme";
+      synthetic.settings = Buffer.from(JSON.stringify(value));
+      let original: unknown;
+      try {
+        await retireClaudeCodePackedCli(commands, settings, 1500);
+      } catch (error) {
+        original = error;
+      }
+      expect(original).toBeInstanceOf(Error);
+      expect(original).toMatchObject({
+        message: "integration.claude-code.settings",
+        cause: site,
+      });
+      expect(synthetic.calls).toHaveLength(0);
+      const predicate = `integration.fixture.claude-settings-${site}`;
+      for (const phase of ["retirement", "packed-settings"]) {
+        expect(
+          settingsWire.claudeScenarioFailureDiagnostic(original, phase),
+        ).toBe(predicate);
+      }
+      expect(
+        settingsWire.encodeInteractiveFailureExitCode(
+          predicate,
+          "claude-interactive-trace-smoke",
+        ),
+      ).toBe(207);
+      const frame = settingsWire.formatInteractiveChildDiagnostic(predicate);
+      expect(Buffer.byteLength(frame)).toBeLessThanOrEqual(256);
+      expect(
+        settingsWire.readInteractiveChildFailureObservation(frame),
+      ).toEqual({ predicate });
+      expect(
+        settingsWire.validInstalledPtyFailure(
+          JSON.parse(
+            JSON.stringify({
+              receiptVersion: 1,
+              phase: "pty-execution",
+              scenarioId: "claude-interactive-trace-smoke",
+              predicate,
+            }),
+          ),
+        ),
+      ).toBe(true);
     },
   );
 });

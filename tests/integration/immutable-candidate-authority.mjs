@@ -273,9 +273,23 @@ const claudeModelPairFailurePredicates = Object.freeze([
   "integration.fixture.claude-oracle-model-tool-result",
   "integration.fixture.claude-model-pair-control",
 ]);
+const claudeSettingsFailureCauses = Object.freeze([
+  "status",
+  "read-stability",
+  "events",
+  "profile",
+  "commands",
+  "document",
+]);
+const claudeSettingsFailurePredicates = Object.freeze(
+  claudeSettingsFailureCauses.map(
+    (cause) => `integration.fixture.claude-settings-${cause}`,
+  ),
+);
 const isClaudeFailurePredicate = (diagnostic) =>
   claudeFailurePredicates.includes(diagnostic) ||
   claudeModelPairFailurePredicates.includes(diagnostic) ||
+  claudeSettingsFailurePredicates.includes(diagnostic) ||
   [
     "integration.runner.fixture-result-open",
     "integration.runner.fixture-result-status",
@@ -287,6 +301,17 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
   if (!types.isProxy(error) && types.isNativeError(error)) {
     const field = Object.getOwnPropertyDescriptor(error, "message");
     if (field && Object.hasOwn(field, "value")) {
+      if (
+        field.value === "integration.claude-code.settings" &&
+        (phase === "retirement" || phase === "packed-settings")
+      ) {
+        const cause = Object.getOwnPropertyDescriptor(error, "cause");
+        const index =
+          cause && Object.hasOwn(cause, "value")
+            ? claudeSettingsFailureCauses.indexOf(cause.value)
+            : -1;
+        if (index >= 0) return claudeSettingsFailurePredicates[index];
+      }
       if (phase === "model-pair") {
         if (field.value === "integration.mockserver.control")
           return "integration.fixture.claude-model-pair-control";
@@ -348,6 +373,7 @@ export const claudeScenarioFailureDiagnostic = (error, phase) => {
 export const ptyExecutionFailurePredicates = Object.freeze([
   ...claudeFailurePredicates,
   ...claudeModelPairFailurePredicates,
+  ...claudeSettingsFailurePredicates,
   "child-failure",
   "integration.fixture.codex-bootstrap",
   "integration.fixture.codex-bootstrap-arguments",
@@ -1467,6 +1493,8 @@ export const selectInteractiveExecutionFailurePredicate = (
 };
 
 export const encodeInteractiveFailureExitCode = (diagnostic, scenarioId) => {
+  if (claudeSettingsFailurePredicates.includes(diagnostic))
+    return scenarioId === "claude-interactive-trace-smoke" ? 207 : undefined;
   if (claudeModelPairFailurePredicates.includes(diagnostic))
     return scenarioId === "claude-interactive-trace-smoke" ? 223 : undefined;
   if (claudeFailurePredicates.includes(diagnostic))

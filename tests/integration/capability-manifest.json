@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-91223b71fc6bd56c7901a38ca97a8967a33bca9f0fa3e4676ecdb1fe2305f05c",
+  "manifestIdentity": "sha256-5c113327c542e11cc12e47cb25332afd9defe0b0c61189457d365a51c9ea7595",
   "requiredRepresentativeIds": [
     "fixture-process-v1",
     "codex-0-149-1",
@@ -365,7 +365,7 @@
             "path": "claude-code-lifecycle.mjs"
           },
           "destination": "claude-code-lifecycle.mjs",
-          "sha256": "dcd9ef19416edec84c45508eb33670647f49b344597f15efa1e38c78e0567924"
+          "sha256": "aa9be74c48edc977ed24621862634ae1e24a985747d882e7fd49ff5aee7e3c91"
         },
         {
           "source": {

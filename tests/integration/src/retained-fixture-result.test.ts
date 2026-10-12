@@ -42,6 +42,7 @@ const createRoot = () => {
   return root;
 };
 const failureAuthority = importedFailureAuthority as {
+  validInstalledPtyFailure: (input: unknown) => boolean;
   decodeInteractiveFailureExitCode: (
     exit: unknown,
     scenario: string,
@@ -216,6 +217,68 @@ describe("actual runner returned interactive failure diagnostics", () => {
     expect(
       failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
     ).toEqual({ predicate });
+  });
+});
+describe("settings refusal site aliases through actual returned runner207", () => {
+  it.each([
+    "status",
+    "read-stability",
+    "events",
+    "profile",
+    "commands",
+    "document",
+  ])("preserves heldClaude %s without recovering a failed output", (site) => {
+    const predicate = `integration.fixture.claude-settings-${site}`;
+    const f = returnedInteractiveFixture(`${predicate}\n`, 207);
+    expect(
+      failureAuthority.readBoundedInteractiveFailureRecord(f.root),
+    ).toMatchObject({ predicate });
+    expect(f.interactiveFailureDiagnostic).toBe(predicate);
+    expect(
+      failureAuthority.readInteractiveChildFailureObservation(f.lines[0]!),
+    ).toEqual({ predicate });
+  });
+  it.each([
+    undefined,
+    "integration.fixture.claude-settings\n",
+    "integration.fixture.claude-settings-unknown\n",
+    "integration.fixture.claude-settings-status PRIVATE\n",
+  ])("retains generic207 for absent or nonmatching marker %j", (content) => {
+    expect(
+      returnedInteractiveFixture(content, 207).interactiveFailureDiagnostic,
+    ).toBe("integration.fixture.claude-settings");
+  });
+  it("keeps another decoded code ahead of a settings alias", () => {
+    expect(
+      returnedInteractiveFixture(
+        "integration.fixture.claude-settings-status\n",
+        200,
+      ).interactiveFailureDiagnostic,
+    ).toBe("integration.fixture.claude-environment");
+  });
+  it("cannot promote a marker-derived alias from the wrong scenario", () => {
+    const predicate = "integration.fixture.claude-settings-status";
+    const scenario = "codex-tui-trace-smoke";
+    const f = returnedInteractiveFixture(
+      `${predicate}\n`,
+      207,
+      undefined,
+      scenario,
+    );
+    expect(
+      failureAuthority.encodeInteractiveFailureExitCode(
+        f.interactiveFailureDiagnostic!,
+        scenario,
+      ),
+    ).toBeUndefined();
+    expect(
+      failureAuthority.validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        scenarioId: scenario,
+        predicate: f.interactiveFailureDiagnostic,
+      }),
+    ).toBe(false);
   });
 });
 const writeResult = (path: string, content = record()) => {

@@ -707,7 +707,17 @@ try {
       const decoded = decodeScenarioFailureExitCode(receipt.exitCode);
       const retainedPhase =
         decoded === undefined ? retainedInteractivePhase(ledger) : undefined;
+      const settingsRefinement =
+        scenarioId === "claude-interactive-trace-smoke" &&
+        decoded === "integration.fixture.claude-settings" &&
+        encodeInteractiveFailureExitCode(
+          fixtureRecord?.predicate,
+          scenarioId,
+        ) === 207
+          ? fixtureRecord.predicate
+          : undefined;
       const diagnostic =
+        settingsRefinement ??
         decoded ??
         selectInteractiveFailureDiagnostic(
           fixtureRecord?.predicate,

@@ -172,7 +172,7 @@ export const retireClaudeCodePackedCli = async (
       JSON.parse(settings.toString("utf8")),
     )
   )
-    throw new Error("integration.claude-code.settings");
+    throw new Error("integration.claude-code.settings", { cause: "document" });
   const doctor = await claudeMachine(
     commands[5],
     deadline,
@@ -336,7 +336,7 @@ export const readClaudeCodeInstalledSettings = () => {
       before.size < 1 ||
       before.size > 65536
     )
-      throw new Error("integration.claude-code.settings");
+      throw new Error("integration.claude-code.settings", { cause: "status" });
     const bytes = Buffer.alloc(before.size + 1);
     let length = 0;
     while (length < bytes.length) {
@@ -365,7 +365,9 @@ export const readClaudeCodeInstalledSettings = () => {
         ].some((key) => before[key] !== after[key]),
       )
     )
-      throw new Error("integration.claude-code.settings");
+      throw new Error("integration.claude-code.settings", {
+        cause: "read-stability",
+      });
     const value = JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
         bytes.subarray(0, length),
@@ -376,7 +378,7 @@ export const readClaudeCodeInstalledSettings = () => {
       JSON.stringify(Object.keys(value.hooks ?? {}).sort()) !==
       JSON.stringify([...events].sort())
     )
-      throw new Error("integration.claude-code.settings");
+      throw new Error("integration.claude-code.settings", { cause: "events" });
     const commands = events.map((event) => {
       const groups = value.hooks[event],
         group = groups?.[0],
@@ -401,11 +403,15 @@ export const readClaudeCodeInstalledSettings = () => {
         hook.timeout < 1 ||
         typeof hook.command !== "string"
       )
-        throw new Error("integration.claude-code.settings");
+        throw new Error("integration.claude-code.settings", {
+          cause: "profile",
+        });
       return hook.command;
     });
     if (new Set(commands).size !== 1 || commands[0].length === 0)
-      throw new Error("integration.claude-code.settings");
+      throw new Error("integration.claude-code.settings", {
+        cause: "commands",
+      });
     return bytes.subarray(0, length);
   } finally {
     closeSync(descriptor);

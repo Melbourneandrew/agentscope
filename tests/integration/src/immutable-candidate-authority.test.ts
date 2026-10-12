@@ -921,6 +921,134 @@ const {
   validateImmutableScenarioContainer,
 } = immutableAuthority;
 
+describe("closed settings refusal site classification", () => {
+  const scenario = "claude-interactive-trace-smoke";
+  const generic = "integration.fixture.claude-settings";
+  it.each([
+    "status",
+    "read-stability",
+    "events",
+    "profile",
+    "commands",
+    "document",
+  ])("accepts only fixed own cause %s in existing phases", (cause) => {
+    const error = new Error("integration.claude-code.settings", { cause });
+    const predicate = `integration.fixture.claude-settings-${cause}`;
+    for (const phase of ["retirement", "packed-settings"])
+      expect(claudeScenarioFailureDiagnostic(error, phase)).toBe(predicate);
+    expect(claudeScenarioFailureDiagnostic(error, "native-final")).toBe(
+      generic,
+    );
+    expect(encodeInteractiveFailureExitCode(predicate, scenario)).toBe(207);
+    expect(decodeInteractiveFailureExitCode(207, scenario)).toBe(generic);
+    expect(
+      encodeInteractiveFailureExitCode(predicate, "codex-tui-trace-smoke"),
+    ).toBeUndefined();
+    expect(
+      selectInteractiveExecutionFailurePredicate(
+        predicate,
+        predicate,
+        "codex-tui-trace-smoke",
+      ),
+    ).toBe("child-failure");
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+        scenarioId: "codex-tui-trace-smoke",
+      }),
+    ).toBe(false);
+    expect(
+      validInstalledPtyFailure({
+        receiptVersion: 1,
+        phase: "pty-execution",
+        predicate,
+      }),
+    ).toBe(false);
+  });
+  it.each([
+    undefined,
+    "unknown",
+    "status\n",
+    "status\r\n",
+    "status PRIVATE",
+    {},
+    1,
+  ])("keeps unknown cause %j generic without disclosure", (cause) => {
+    expect(
+      claudeScenarioFailureDiagnostic(
+        new Error("integration.claude-code.settings", { cause }),
+        "retirement",
+      ),
+    ).toBe(generic);
+  });
+  it("does not invoke getters or reflect a proxy", () => {
+    let calls = 0;
+    const accessor = new Error("integration.claude-code.settings");
+    Object.defineProperty(accessor, "cause", {
+      get: () => {
+        calls++;
+        throw new Error("PRIVATE");
+      },
+    });
+    expect(claudeScenarioFailureDiagnostic(accessor, "retirement")).toBe(
+      generic,
+    );
+    const proxy = new Proxy(
+      new Error("integration.claude-code.settings", { cause: "status" }),
+      {
+        getOwnPropertyDescriptor: () => {
+          calls++;
+          throw new Error("PRIVATE");
+        },
+        get: () => {
+          calls++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    expect(claudeScenarioFailureDiagnostic(proxy, "retirement")).toBe(
+      "integration.fixture.claude-phase-retirement",
+    );
+    expect(calls).toBe(0);
+  });
+});
+describe("settings refusal site inherited and unknown controls", () => {
+  const scenario = "claude-interactive-trace-smoke";
+  const generic = "integration.fixture.claude-settings";
+  it("rejects inherited causes, substituted messages and unknown retained aliases", () => {
+    const inherited = new Error("integration.claude-code.settings");
+    Object.setPrototypeOf(
+      inherited,
+      Object.create(Error.prototype, { cause: { value: "status" } }) as object,
+    );
+    expect(claudeScenarioFailureDiagnostic(inherited, "retirement")).toBe(
+      generic,
+    );
+    expect(
+      claudeScenarioFailureDiagnostic(
+        new Error("PRIVATE", { cause: "status" }),
+        "retirement",
+      ),
+    ).toBe("integration.fixture.claude-phase-retirement");
+    for (const suffix of ["unknown", "status-raw", "status\n", "status\r\n"]) {
+      const predicate = `integration.fixture.claude-settings-${suffix}`;
+      expect(
+        encodeInteractiveFailureExitCode(predicate, scenario),
+      ).toBeUndefined();
+      expect(
+        validInstalledPtyFailure({
+          receiptVersion: 1,
+          phase: "pty-execution",
+          predicate,
+          scenarioId: scenario,
+        }),
+      ).toBe(false);
+    }
+  });
+});
+
 const packedInstallError = () =>
   Object.assign(new Error("PRIVATE_NOT_RETAINED"), {
     code: 5,
