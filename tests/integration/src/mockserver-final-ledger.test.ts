@@ -1,13 +1,294 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import {
   assertMockServerFinalLedger,
   projectMockServerRequests,
   snapshotMockServerTraffic,
 } from "../mockserver-control.mjs";
+// @ts-expect-error private integration module has no published declaration
+import * as finalLedgerModule from "../mockserver-final-ledger.mjs";
+const { projectFirstUnmatchedModelRoute } = finalLedgerModule as {
+  projectFirstUnmatchedModelRoute: (
+    rows: unknown,
+    routes: unknown,
+  ) =>
+    | Readonly<{
+        method: string;
+        tupleSha256: string;
+        matchCount: number;
+      }>
+    | undefined;
+};
 const runId = "0123456789abcdef";
 const hash = (bytes: string | Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
+const routeDiagnosticFixture = () => {
+  const route = { method: "POST", path: "/v1/messages" };
+  const unknown = {
+    method: "GET",
+    path: "/private-synthetic?canary=PRIVATE_PATH",
+    role: "data-plane",
+    body: "PRIVATE_BODY",
+    headers: { secret: "PRIVATE_HEADER" },
+  };
+  return { route, unknown, catalog: { routes: [route] } };
+};
+describe("joined unmatched route content-free projection", () => {
+  it("hashes only the exact unnormalized tuple with its domain separator", () => {
+    const { unknown, catalog } = routeDiagnosticFixture();
+    const value = projectFirstUnmatchedModelRoute([unknown], catalog);
+    expect(value).toEqual({
+      method: "GET",
+      matchCount: 0,
+      tupleSha256: hash(
+        "agentscope.integration.unmatched-model-route.v1\0" +
+          JSON.stringify([unknown.method, unknown.path]),
+      ),
+    });
+    expect(Object.isFrozen(value)).toBe(true);
+    for (const canary of [
+      "PRIVATE_PATH",
+      "PRIVATE_BODY",
+      "PRIVATE_HEADER",
+      "path",
+      "headers",
+    ])
+      expect(JSON.stringify(value)).not.toContain(canary);
+    expect(
+      projectFirstUnmatchedModelRoute(
+        [{ ...unknown, path: unknown.path + "/" }],
+        catalog,
+      )?.tupleSha256,
+    ).not.toBe(value?.tupleSha256);
+  });
+  it("skips control, matched and ambiguous tuples without admitting them", () => {
+    const { route, unknown } = routeDiagnosticFixture();
+    const rows = [
+      { ...unknown, role: "allowed" },
+      { ...route, role: "data-plane" },
+      unknown,
+    ];
+    const catalog = { routes: [route, { ...route }] };
+    expect(projectFirstUnmatchedModelRoute(rows, catalog)).toEqual(
+      projectFirstUnmatchedModelRoute([unknown], catalog),
+    );
+    expect(
+      projectFirstUnmatchedModelRoute(rows.slice(0, 2), catalog),
+    ).toBeUndefined();
+    expect(
+      projectFirstUnmatchedModelRoute([{ ...route, role: "data-plane" }], {
+        routes: [route],
+      }),
+    ).toBeUndefined();
+  });
+  it.each([
+    "method",
+    "path",
+    "role",
+    "sparse",
+    "row-bound",
+    "catalog-bound",
+    "route",
+    "accessor",
+    "proxy",
+  ])(
+    "makes unsafe %s projection unavailable without reading content",
+    (fault) => {
+      const { unknown, catalog } = routeDiagnosticFixture();
+      let rows: unknown = [unknown],
+        fixture: unknown = catalog,
+        reflected = 0;
+      if (fault === "method") rows = [{ ...unknown, method: "get" }];
+      if (fault === "path") rows = [{ ...unknown, path: "x".repeat(4097) }];
+      if (fault === "role") rows = [{ ...unknown, role: "unknown" }];
+      if (fault === "sparse") rows = new Array(1);
+      if (fault === "row-bound")
+        rows = Array.from({ length: 17 }, () => unknown);
+      if (fault === "catalog-bound")
+        fixture = {
+          routes: Array.from({ length: 65 }, () => catalog.routes[0]),
+        };
+      if (fault === "route")
+        fixture = { routes: [{ method: "POST", path: "" }] };
+      if (fault === "accessor")
+        rows = [
+          Object.defineProperty({ ...unknown }, "path", {
+            get() {
+              reflected++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ];
+      if (fault === "proxy")
+        rows = [
+          new Proxy(unknown, {
+            getOwnPropertyDescriptor() {
+              reflected++;
+              throw new Error("PRIVATE");
+            },
+          }),
+        ];
+      expect(projectFirstUnmatchedModelRoute(rows, fixture)).toBeUndefined();
+      expect(reflected).toBe(0);
+    },
+  );
+  it("never reads body/header getters or parses their values", () => {
+    const { unknown, catalog } = routeDiagnosticFixture();
+    let reflected = 0;
+    for (const key of ["body", "headers"])
+      Object.defineProperty(unknown, key, {
+        get() {
+          reflected++;
+          throw new Error("PRIVATE");
+        },
+      });
+    expect(projectFirstUnmatchedModelRoute([unknown], catalog)).toBeDefined();
+    expect(reflected).toBe(0);
+  });
+});
+const joinedDiagnosticHarness = ({
+  scenario = "claude-interactive-trace-smoke",
+  succeeded = false,
+  failure = "",
+} = {}) => {
+  const source = readFileSync(
+    new URL("../run-scenarios.mjs", import.meta.url),
+    "utf8",
+  );
+  const publisherStart = source.indexOf("const publishMockServerDiagnostic =");
+  const publisherEnd = source.indexOf(
+    "/* eslint-disable complexity -- exact closed container terminal witness */",
+    publisherStart,
+  );
+  const start = source.indexOf('    failureSlot = "join-container-wait";');
+  const end = source.indexOf('    failureSlot = "join-ledger-assert";', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const events: string[] = [],
+    output: string[] = [];
+  const { unknown, catalog } = routeDiagnosticFixture();
+  const context = {
+    Buffer,
+    resolve,
+    plan: { runId, scenarioId: scenario },
+    containerId: "synthetic",
+    joinSignal: {},
+    deadline: 1000,
+    linuxBootMonotonicMilliseconds: () => 1,
+    scenarioSucceeded: succeeded,
+    modelRoutes: catalog,
+    failureSlot: "",
+    refusal: undefined,
+    dockerWithSignal: (args: string[]) => {
+      events.push(
+        args[1] === "wait"
+          ? "wait"
+          : args[1] === "inspect"
+            ? "inspect"
+            : "copy",
+      );
+      return Promise.resolve({ stdout: "" });
+    },
+    assertJoinedMockServerTerminal: () => {
+      events.push("terminal");
+      if (failure === "terminal") throw new Error("original-terminal");
+    },
+    readProducerRefusal: () => {
+      events.push("producer-refusal");
+      return Promise.resolve(undefined);
+    },
+    createFinalMockServerLedgerDirectory: () => "synthetic",
+    readMockServerFinalLedger: () => {
+      events.push("authenticated-read");
+      if (failure === "read") throw new Error("original-read");
+      return Buffer.alloc(1);
+    },
+    projectMockServerRequests: () => [{ ...unknown }],
+    projectFirstUnmatchedModelRoute: (rows: unknown, routes: unknown) => {
+      events.push("projection");
+      if (failure === "projection") throw new Error("PRIVATE");
+      return projectFirstUnmatchedModelRoute(rows, routes);
+    },
+    writeSync: (_fd: number, bytes: Buffer) => {
+      events.push("emission");
+      if (failure === "write") throw new Error("PRIVATE");
+      output.push(bytes.toString("utf8"));
+    },
+  };
+  const execute = runInNewContext(
+    `${source.slice(publisherStart, publisherEnd)}; (async () => {${source.slice(start, end)}})`,
+    context,
+  ) as () => Promise<void>;
+  return { execute, events, output };
+};
+describe("literal joined final ledger failure diagnostic emission", () => {
+  it("emits only after wait, inspect, terminal authentication and final-ledger read", async () => {
+    const input = joinedDiagnosticHarness();
+    await expect(input.execute()).resolves.toBeUndefined();
+    expect(input.events).toEqual([
+      "wait",
+      "inspect",
+      "terminal",
+      "producer-refusal",
+      "copy",
+      "copy",
+      "authenticated-read",
+      "projection",
+      "emission",
+    ]);
+    expect(input.output).toHaveLength(1);
+    expect(Buffer.byteLength(input.output[0]!)).toBeLessThanOrEqual(256);
+    const value = JSON.parse(
+      input.output[0]!.slice(
+        "integration.isolation.mockserver-ledger-diagnostic:".length,
+      ),
+    ) as Record<string, unknown>;
+    expect(Object.keys(value).sort()).toEqual([
+      "matchCount",
+      "method",
+      "runId",
+      "stage",
+      "tupleSha256",
+    ]);
+    expect(value.stage).toBe("joined-unmatched-route");
+    for (const canary of [
+      "PRIVATE_PATH",
+      "PRIVATE_BODY",
+      "PRIVATE_HEADER",
+      "canary=",
+    ])
+      expect(input.output[0]).not.toContain(canary);
+  });
+  it.each([{ succeeded: true }, { scenario: "codex-tui-trace-smoke" }])(
+    "does not project successful or other selected scenarios %j",
+    async (options) => {
+      const input = joinedDiagnosticHarness(options);
+      await input.execute();
+      expect(input.events).not.toContain("projection");
+      expect(input.output).toEqual([]);
+    },
+  );
+  it.each(["terminal", "read"])(
+    "keeps original %s authentication refusal without emitting",
+    async (failure) => {
+      const input = joinedDiagnosticHarness({ failure });
+      await expect(input.execute()).rejects.toThrow(`original-${failure}`);
+      expect(input.events).not.toContain("projection");
+      expect(input.output).toEqual([]);
+    },
+  );
+  it.each(["projection", "write"])(
+    "keeps failed outcome when optional %s is unavailable",
+    async (failure) => {
+      const input = joinedDiagnosticHarness({ failure });
+      await expect(input.execute()).resolves.toBeUndefined();
+      expect(input.output).toEqual([]);
+    },
+  );
+});
 describe("bounded client pathname projection", () => {
   const observe = (path: string) =>
     snapshotMockServerTraffic(

@@ -79,6 +79,7 @@ import { collectorCa } from "./collector-ca.mjs";
 import { codexResearchDependencies } from "./codex-pty-research.mjs";
 import { createCodexFailureResearchRecord } from "./codex-trace-child-diagnostics.mjs";
 import { prepareMockServerService } from "./mockserver-material/prepare-supplier.mjs";
+import { projectFirstUnmatchedModelRoute } from "./mockserver-final-ledger.mjs";
 import {
   assertMockServerFinalLedger,
   createMockServerControlMaterial,
@@ -2705,20 +2706,40 @@ const readProducerRefusal = async (containerId, signal, deadline) => {
     // Optional read adds bounded work, but cannot renew the original deadline.
   }
 };
-const publishMockServerProducerRefusalDiagnostic = (plan, observation) => {
+const publishMockServerDiagnostic = (plan, observation, rows) => {
   try {
     const runId = plan.runId;
     if (typeof runId !== "string" || !/^[a-f0-9]{16}$/u.test(runId)) return;
+    if (
+      rows !== undefined &&
+      plan.scenarioId !== "claude-interactive-trace-smoke"
+    )
+      return;
+    const route =
+      rows === undefined
+        ? undefined
+        : projectFirstUnmatchedModelRoute(rows, modelRoutes);
+    if (rows !== undefined && route === undefined) return;
     const bytes = Buffer.from(
-      `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify({
-        runId,
-        stage: observation?.stage ?? "unknown",
-        terminal: observation?.terminal ?? null,
-        snapshotAvailable: observation?.snapshotAvailable ?? null,
-        persistenceClosed: observation?.persistenceClosed ?? null,
-        persistenceFailed: observation?.persistenceFailed ?? null,
-        reason: observation?.reason ?? null,
-      })}\n`,
+      `integration.isolation.mockserver-ledger-diagnostic:${JSON.stringify(
+        route === undefined
+          ? {
+              runId,
+              stage: observation?.stage ?? "unknown",
+              terminal: observation?.terminal ?? null,
+              snapshotAvailable: observation?.snapshotAvailable ?? null,
+              persistenceClosed: observation?.persistenceClosed ?? null,
+              persistenceFailed: observation?.persistenceFailed ?? null,
+              reason: observation?.reason ?? null,
+            }
+          : {
+              runId,
+              stage: "joined-unmatched-route",
+              method: route.method,
+              tupleSha256: route.tupleSha256,
+              matchCount: route.matchCount,
+            },
+      )}\n`,
     );
     if (bytes.length <= 256) writeSync(2, bytes);
   } catch {
@@ -2850,7 +2871,8 @@ const joinMockServer = async (plan, signal, scenarioSucceeded) => {
     );
     // Failed rows still settle the service and parse its complete bounded ledger,
     // but have no successful fixture semantics to compare or complete.
-    if (scenarioSucceeded === false) return;
+    if (scenarioSucceeded === false)
+      return publishMockServerDiagnostic(plan, undefined, ledger);
     failureSlot = "join-ledger-assert";
     assertMockServerFinalLedger(
       ledger,
@@ -2891,7 +2913,7 @@ const joinMockServer = async (plan, signal, scenarioSucceeded) => {
     context.collectorHttpsFailure = collectorHttpsFailure;
     publishOperationFailureDiagnostic(failureSlot, error, plan, context);
     if (failureSlot === "join-ledger-complete")
-      publishMockServerProducerRefusalDiagnostic(plan, refusal);
+      publishMockServerDiagnostic(plan, refusal);
     throw error;
   }
 };

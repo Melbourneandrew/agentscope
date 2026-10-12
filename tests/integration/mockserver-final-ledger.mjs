@@ -7,6 +7,95 @@ const failure = () => {
   throw new Error("integration.mockserver.control");
 };
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const diagnosticMethods = Object.freeze([
+  "GET",
+  "HEAD",
+  "POST",
+  "PUT",
+  "DELETE",
+  "PATCH",
+  "OPTIONS",
+  "TRACE",
+  "CONNECT",
+]);
+const diagnosticValue = (record, key) => {
+  if (record === null || typeof record !== "object" || types.isProxy(record))
+    return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor && Object.hasOwn(descriptor, "value")
+    ? descriptor.value
+    : undefined;
+};
+const diagnosticArray = (value, maximum) => {
+  if (types.isProxy(value) || !Array.isArray(value) || value.length > maximum)
+    return undefined;
+  const entries = [];
+  for (let index = 0; index < value.length; index++) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) return undefined;
+    entries.push(descriptor.value);
+  }
+  return entries;
+};
+const diagnosticTuple = (record) => {
+  const method = diagnosticValue(record, "method"),
+    path = diagnosticValue(record, "path");
+  if (
+    !diagnosticMethods.includes(method) ||
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.length > 4096 ||
+    Buffer.byteLength(path) > 4096
+  )
+    return undefined;
+  return { method, path };
+};
+// Content-free debugging only, never a model result or terminal authority.
+export const projectFirstUnmatchedModelRoute = (rows, routeFixture) => {
+  try {
+    const received = diagnosticArray(rows, 16),
+      routes = diagnosticArray(diagnosticValue(routeFixture, "routes"), 64);
+    if (received === undefined || routes === undefined) return undefined;
+    const catalog = routes.map(diagnosticTuple);
+    if (catalog.some((route) => route === undefined)) return undefined;
+    const observed = received.map((row) => ({
+      tuple: diagnosticTuple(row),
+      role: diagnosticValue(row, "role"),
+    }));
+    if (
+      observed.some(
+        (row) =>
+          row.tuple === undefined ||
+          ![
+            "allowed",
+            "forbidden",
+            "unauthenticated",
+            "readiness",
+            "data-plane",
+          ].includes(row.role),
+      )
+    )
+      return undefined;
+    for (const row of observed) {
+      if (row.role !== "data-plane") continue;
+      const matches = catalog.filter(
+        (route) =>
+          route.method === row.tuple.method && route.path === row.tuple.path,
+      );
+      if (matches.length !== 0) continue;
+      return Object.freeze({
+        method: row.tuple.method,
+        tupleSha256: createHash("sha256")
+          .update("agentscope.integration.unmatched-model-route.v1\0")
+          .update(JSON.stringify([row.tuple.method, row.tuple.path]))
+          .digest("hex"),
+        matchCount: 0,
+      });
+    }
+  } catch {
+    // Malformed/unavailable observations cannot replace the original failure.
+  }
+};
 const trafficFields = Object.freeze([
   "method",
   "path",
