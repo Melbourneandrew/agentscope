@@ -165,19 +165,19 @@ export const retireClaudeCodePackedCli = async (
   settings,
   deadline,
 ) => {
-  // Preserve every setting value, not the vendor's JSON whitespace/key order.
+  // The vendor may update its own settings during the turn. Bind the owned
+  // hooks to installation, and preserve the vendor's current foreign values
+  // through Agentscope's uninstall rather than freezing them before launch.
   const current = JSON.parse(
     readClaudeCodeInstalledSettings().toString("utf8"),
   );
   const held = JSON.parse(settings.toString("utf8"));
-  if (!isDeepStrictEqual(current, held))
+  if (!isDeepStrictEqual(current.hooks, held.hooks))
     throw new Error("integration.claude-code.settings", {
-      // Changed hooks may coexist with other changes; equal hooks localize
-      // the existing full-document refusal outside that subtree only.
-      cause: isDeepStrictEqual(current.hooks, held.hooks)
-        ? "document-other"
-        : "document-hooks",
+      cause: "document-hooks",
     });
+  const foreign = { ...current };
+  delete foreign.hooks;
   const doctor = await claudeMachine(
     commands[5],
     deadline,
@@ -203,6 +203,28 @@ export const retireClaudeCodePackedCli = async (
     retired[0].disposition !== "committed"
   )
     throw new Error("integration.claude-code.uninstall");
+  const removedBytes = readClaudeCodeSettingsBytes(
+    Object.keys(foreign).length === 0,
+  );
+  if (removedBytes !== undefined) {
+    const removed = JSON.parse(removedBytes.toString("utf8"));
+    if (
+      removed === null ||
+      typeof removed !== "object" ||
+      Array.isArray(removed)
+    )
+      throw new Error("integration.claude-code.uninstall");
+    const { hooks, ...remainingForeign } = removed;
+    if (
+      (hooks !== undefined &&
+        (hooks === null ||
+          typeof hooks !== "object" ||
+          Array.isArray(hooks) ||
+          Object.keys(hooks).length !== 0)) ||
+      !isDeepStrictEqual(remainingForeign, foreign)
+    )
+      throw new Error("integration.claude-code.uninstall");
+  }
   const status = await claudeMachine(
     commands[7],
     deadline,
@@ -326,11 +348,62 @@ export const readClaudeCodeReadinessChallenge = (deadline, now) =>
 // Snapshot the CLI-owned installed file before vendor launch and again after
 // join. Candidate-controlled symlinks or concurrent replacement are refused.
 export const readClaudeCodeInstalledSettings = () => {
+  const bytes = readClaudeCodeSettingsBytes();
+  const value = JSON.parse(bytes.toString("utf8"));
+  const events = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"];
+  if (
+    JSON.stringify(Object.keys(value.hooks ?? {}).sort()) !==
+    JSON.stringify([...events].sort())
+  )
+    throw new Error("integration.claude-code.settings", { cause: "events" });
+  const commands = events.map((event) => {
+    const groups = value.hooks[event],
+      group = groups?.[0],
+      hook = group?.hooks?.[0];
+    const cause =
+      groups?.length !== 1
+        ? "profile-groups"
+        : group?.hooks?.length !== 1
+          ? "profile-handlers"
+          : Object.keys(group).join("\0") !== "hooks"
+            ? "profile"
+            : hook?.type !== "command"
+              ? "profile-type"
+              : !Array.isArray(hook.args)
+                ? "profile-args-kind"
+                : hook.args.length !== 0
+                  ? "profile-args-count"
+                  : !Number.isSafeInteger(hook.timeout)
+                    ? "profile-timeout-kind"
+                    : hook.timeout < 1
+                      ? "profile-timeout-bound"
+                      : typeof hook.command !== "string"
+                        ? "profile-command"
+                        : Object.keys(hook).sort().join("\0") !==
+                            "args\0command\0timeout\0type"
+                          ? "profile"
+                          : undefined;
+    if (cause) throw new Error("integration.claude-code.settings", { cause });
+    return hook.command;
+  });
+  if (new Set(commands).size !== 1 || commands[0].length === 0)
+    throw new Error("integration.claude-code.settings", {
+      cause: "commands",
+    });
+  return bytes;
+};
+const readClaudeCodeSettingsBytes = (allowAbsent = false) => {
   const path = "/harness-home/settings.json";
-  const descriptor = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-  );
+  let descriptor;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+  } catch (error) {
+    if (allowAbsent && error?.code === "ENOENT") return undefined;
+    throw error;
+  }
   try {
     const before = fstatSync(descriptor);
     if (
@@ -373,51 +446,8 @@ export const readClaudeCodeInstalledSettings = () => {
       throw new Error("integration.claude-code.settings", {
         cause: "read-stability",
       });
-    const value = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(
-        bytes.subarray(0, length),
-      ),
-    );
-    const events = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"];
-    if (
-      JSON.stringify(Object.keys(value.hooks ?? {}).sort()) !==
-      JSON.stringify([...events].sort())
-    )
-      throw new Error("integration.claude-code.settings", { cause: "events" });
-    const commands = events.map((event) => {
-      const groups = value.hooks[event],
-        group = groups?.[0],
-        hook = group?.hooks?.[0];
-      const cause =
-        groups?.length !== 1
-          ? "profile-groups"
-          : group?.hooks?.length !== 1
-            ? "profile-handlers"
-            : Object.keys(group).join("\0") !== "hooks"
-              ? "profile"
-              : hook?.type !== "command"
-                ? "profile-type"
-                : !Array.isArray(hook.args)
-                  ? "profile-args-kind"
-                  : hook.args.length !== 0
-                    ? "profile-args-count"
-                    : !Number.isSafeInteger(hook.timeout)
-                      ? "profile-timeout-kind"
-                      : hook.timeout < 1
-                        ? "profile-timeout-bound"
-                        : typeof hook.command !== "string"
-                          ? "profile-command"
-                          : Object.keys(hook).sort().join("\0") !==
-                              "args\0command\0timeout\0type"
-                            ? "profile"
-                            : undefined;
-      if (cause) throw new Error("integration.claude-code.settings", { cause });
-      return hook.command;
-    });
-    if (new Set(commands).size !== 1 || commands[0].length === 0)
-      throw new Error("integration.claude-code.settings", {
-        cause: "commands",
-      });
+    // Keep the original strict decoding before any parsed comparison.
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
     return bytes.subarray(0, length);
   } finally {
     closeSync(descriptor);

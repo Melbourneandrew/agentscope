@@ -21,6 +21,9 @@ const synthetic = vi.hoisted(() => ({
   nativeFailure: "",
   nativeOwnerSensitive: false,
   nativeUid: 0,
+  settingsMissing: false,
+  afterUninstall: undefined as Buffer | "absent" | undefined,
+  afterUninstallFailure: "",
 }));
 const settingsStatus = (named = false) => ({
   isFile: () => synthetic.settingsFailure !== "file",
@@ -83,6 +86,8 @@ vi.mock("node:fs", async () => {
     openSync: (path: string, flags: number, mode: number) => {
       if (synthetic.writeError) throw new Error("synthetic-existing-path");
       synthetic.fileCalls.push({ action: "open", path, flags, mode });
+      if (path === "/harness-home/settings.json" && synthetic.settingsMissing)
+        throw Object.assign(new Error("synthetic-missing"), { code: "ENOENT" });
       if (path === "/harness-home") {
         if (synthetic.nativeFailure === "missing") throw new Error("missing");
         return 42;
@@ -157,6 +162,21 @@ vi.mock("node:child_process", () => ({
     callback: (error: Error | null, value: { stdout: string }) => void,
   ) => {
     synthetic.calls.push({ executable, arguments_, options });
+    if (arguments_[0] === "uninstall") {
+      synthetic.settingsFailure = synthetic.afterUninstallFailure;
+      if (synthetic.afterUninstall === "absent")
+        synthetic.settingsMissing = true;
+      else if (synthetic.afterUninstall !== undefined)
+        synthetic.settings = Buffer.from(synthetic.afterUninstall);
+      else {
+        const value = JSON.parse(synthetic.settings.toString("utf8")) as Record<
+          string,
+          unknown
+        >;
+        delete value.hooks;
+        synthetic.settings = Buffer.from(JSON.stringify(value));
+      }
+    }
     synthetic.uptime = synthetic.afterCommand;
     const index = synthetic.calls.length - 1;
     callback(
@@ -647,6 +667,9 @@ const resetPackedLifecycleFixture = () => {
   );
   synthetic.commandFailure = undefined;
   synthetic.settingsFailure = "";
+  synthetic.settingsMissing = false;
+  synthetic.afterUninstall = undefined;
+  synthetic.afterUninstallFailure = "";
   synthetic.failAt = -1;
   synthetic.writeError = false;
   synthetic.nativeFailure = "";
@@ -806,9 +829,9 @@ type InstalledSettingsFixture = {
     }>
   >;
 };
-describe("Claude document refusal partition", () => {
-  it.each(["hooks", "other", "both"])(
-    "retains whole-document refusal for %s changes",
+describe("Claude owned-hook refusal partition", () => {
+  it.each(["hooks", "both"])(
+    "retains owned-hook refusal for %s changes",
     async (change) => {
       const { commands, settings } = prepareRetirementFixture();
       const value = JSON.parse(
@@ -825,7 +848,7 @@ describe("Claude document refusal partition", () => {
       } catch (error) {
         original = error;
       }
-      const cause = change === "other" ? "document-other" : "document-hooks";
+      const cause = "document-hooks";
       expect(original).toMatchObject({
         message: "integration.claude-code.settings",
         cause,
@@ -905,15 +928,14 @@ describe("Claude retirement settings representation", () => {
       commands.slice(5).map((command) => [...command, "--output", "json"]),
     );
   });
-  it.each(["nonhook", "command", "timeout", "identity", "args", "event"])(
+  it.each(["command", "timeout", "identity", "args", "event"])(
     "refuses semantic mutation %s before Doctor",
     async (change) => {
       const { commands, settings } = prepareRetirementFixture();
       const value = JSON.parse(
         settings.toString("utf8"),
       ) as InstalledSettingsFixture;
-      if (change === "nonhook") value.theme = "synthetic-theme";
-      else if (change === "event") delete value.hooks.Stop;
+      if (change === "event") delete value.hooks.Stop;
       else if (change === "identity") {
         for (const entries of Object.values(value.hooks))
           entries[0]!.agentscope = {
@@ -933,6 +955,108 @@ describe("Claude retirement settings representation", () => {
         retireClaudeCodePackedCli(commands, settings, 1500),
       ).rejects.toThrow("integration.claude-code.settings");
       expect(synthetic.calls).toHaveLength(0);
+    },
+  );
+});
+describe("Claude retirement preserves current vendor settings", () => {
+  it.each(["added", "changed", "removed"])(
+    "accepts vendor-%s foreign settings and preserves them on uninstall",
+    async (change) => {
+      const { commands, settings } = prepareRetirementFixture();
+      const held = JSON.parse(settings.toString("utf8")) as Record<
+        string,
+        unknown
+      >;
+      held.theme = "before-vendor";
+      const current = JSON.parse(JSON.stringify(held)) as Record<
+        string,
+        unknown
+      >;
+      if (change === "added")
+        current.vendorPreference = { nested: [true, 3, "synthetic"] };
+      else if (change === "changed") current.theme = "after-vendor";
+      else delete current.theme;
+      synthetic.settings = Buffer.from(JSON.stringify(current));
+      await expect(
+        retireClaudeCodePackedCli(
+          commands,
+          Buffer.from(JSON.stringify(held)),
+          1500,
+        ),
+      ).resolves.toBeUndefined();
+      delete current.hooks;
+      expect(JSON.parse(synthetic.settings.toString("utf8"))).toEqual(current);
+      expect(synthetic.calls).toHaveLength(3);
+    },
+  );
+  it.each([
+    "changed",
+    "lost",
+    "added",
+    "owned",
+    "malformed",
+    "array",
+    "null",
+    "absent",
+  ])("rejects post-uninstall %s state before final status", async (change) => {
+    const { commands, settings } = prepareRetirementFixture();
+    const current = JSON.parse(settings.toString("utf8")) as Record<
+      string,
+      unknown
+    >;
+    current.vendorPreference = { nested: ["synthetic", false] };
+    synthetic.settings = Buffer.from(JSON.stringify(current));
+    const removed = { vendorPreference: current.vendorPreference } as Record<
+      string,
+      unknown
+    >;
+    if (change === "changed")
+      removed.vendorPreference = { nested: ["different"] };
+    if (change === "lost") delete removed.vendorPreference;
+    if (change === "added") removed.unexpected = true;
+    if (change === "owned") removed.hooks = current.hooks;
+    synthetic.afterUninstall =
+      change === "absent"
+        ? "absent"
+        : Buffer.from(
+            change === "malformed"
+              ? "{"
+              : change === "array"
+                ? "[]"
+                : change === "null"
+                  ? "null"
+                  : JSON.stringify(removed),
+          );
+    await expect(
+      retireClaudeCodePackedCli(commands, settings, 1500),
+    ).rejects.toThrow();
+    expect(synthetic.calls).toHaveLength(2);
+  });
+  it.each(["absent", "empty-document", "empty-hooks"])(
+    "allows only pure-owned removal as %s",
+    async (removal) => {
+      const { commands, settings } = prepareRetirementFixture();
+      synthetic.afterUninstall =
+        removal === "absent"
+          ? "absent"
+          : Buffer.from(
+              JSON.stringify(removal === "empty-hooks" ? { hooks: {} } : {}),
+            );
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).resolves.toBeUndefined();
+      expect(synthetic.calls).toHaveLength(3);
+    },
+  );
+  it.each(["file", "owner", "link", "mode", "drift"])(
+    "retains physical %s refusal after uninstall",
+    async (failure) => {
+      const { commands, settings } = prepareRetirementFixture();
+      synthetic.afterUninstallFailure = failure;
+      await expect(
+        retireClaudeCodePackedCli(commands, settings, 1500),
+      ).rejects.toThrow("integration.claude-code.settings");
+      expect(synthetic.calls).toHaveLength(2);
     },
   );
 });
@@ -1244,7 +1368,9 @@ describe("actual settings refusal sites preserve the existing failure wire", () 
         value.hooks.Stop![0]!.hooks[0]!.args = ["synthetic"];
       else if (site === "commands")
         value.hooks.Stop![0]!.hooks[0]!.command = "/other/launcher";
-      else value.theme = "synthetic-theme";
+      else
+        for (const groups of Object.values(value.hooks))
+          groups[0]!.hooks[0]!.timeout = 11;
       synthetic.settings = Buffer.from(JSON.stringify(value));
       let original: unknown;
       try {
@@ -1257,7 +1383,7 @@ describe("actual settings refusal sites preserve the existing failure wire", () 
         site === "profile"
           ? "profile-args-count"
           : site === "document"
-            ? "document-other"
+            ? "document-hooks"
             : site;
       expect(original).toMatchObject({
         message: "integration.claude-code.settings",
