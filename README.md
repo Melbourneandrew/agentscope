@@ -12,70 +12,70 @@
   <a href="https://github.com/Melbourneandrew/agentscope/actions/workflows/pr-validation.yml"><img src="https://github.com/Melbourneandrew/agentscope/actions/workflows/pr-validation.yml/badge.svg" alt="Validation" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 22 or later" /></a>
   <a href="https://melbourneandrew.github.io/agentscope/docs"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-4B7F18" alt="Documentation" /></a>
-  <a href="https://github.com/Melbourneandrew/agentscope/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-TBD-6B7280" alt="License to be decided" /></a>
 </p>
 
-> The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
-
-Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into OpenInference-shaped portable traces, then reports them through supported first-party destination packages.
+Agentscope installs reversible integrations for coding-agent CLIs, converts their
+native lifecycle events into portable OpenTelemetry/OpenInference traces, and
+routes those traces to explicit first-party destinations.
 
 ## Status
 
-Agentscope is in its foundation phase. The monorepo, public documentation, CI structure, integration-test blueprint, and initial source migration are in place; the publishable CLI and production reporters are not available yet.
+Agentscope 0.1.0 is under active development and is not published yet. Codex and
+Claude Code are the target harnesses for the first alpha, but neither is a public
+support claim until its packed-CLI actual-binary admission finishes. Cursor and
+the other product-roster harnesses are later work and do not block 0.1.0.
 
-## Documentation
+The source-built CLI exposes the command surface and a Langfuse destination
+descriptor. Local SQLite is deferred from 0.1.0: its descriptor is present for
+development, but the alpha will expose no executable Local SQLite capability or
+support claim. The packed harness registry remains empty until admission.
 
-- [Documentation site](https://melbourneandrew.github.io/agentscope/docs)
+## Start here
+
+- [Getting started](https://melbourneandrew.github.io/agentscope/docs/getting-started)
+- [CLI reference](https://melbourneandrew.github.io/agentscope/docs/cli)
 - [Product requirements](https://melbourneandrew.github.io/agentscope/docs/requirements/product-description)
-- [Integration-test blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration)
-- [Local contributor guide](CONTRIBUTING.md)
+- [Contributing](CONTRIBUTING.md)
 
-## Planned usage
+Do not install an unpublished artifact from an untrusted source. Once the alpha
+is published, use `agentscope-cli@alpha` or the exact `0.1.0` version on a
+platform listed in the release support manifest. A bare package install may
+resolve only the inert ownership bootstrap before the first stable release.
 
-```bash
-# Planned public CLI, not yet published
-npx agentscope-cli init
-agentscope destination configure langfuse
-agentscope install codex
-agentscope doctor
-```
-
-The CLI will use the unhyphenated `agentscope` command. Non-secret machine configuration lives in `~/.agentscope`; credentials use the OS credential store, and `AGENTSCOPE_HOME` is reserved for explicit test/CI isolation.
-
-## Architecture
+## How it works
 
 ```text
-agent harness hook
-  -> harness adapter
-  -> Agentscope Protocol (OpenTelemetry/OpenInference + agentscope.*)
-  -> Agentscope Core (redact, bounded delivery)
-  -> Trace Destination reporter (Langfuse / OTLP / custom destination)
+coding-agent harness hook
+  -> first-party harness adapter
+  -> Agentscope Core (normalize, redact, bounded fail-open delivery)
+  -> explicitly selected trace destination
 ```
 
-Harness adapters own native configuration and extraction. Protocol owns the OpenTelemetry/OpenInference contract; Core owns redaction, configuration, and one bounded fail-open delivery attempt. A failed attempt drops the trace rather than storing it for later retry. Destination packages own destination protocol mapping and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope has no runtime plugin system.
+Agentscope does not infer a destination, retain a failed delivery for retry, or
+replace an overlapping observability hook during ordinary installation. Setup is
+plan-first; mutation requires explicit confirmation, and uninstall removes only
+Agentscope-owned state.
 
-## Packages
-
-| Package                     | Purpose                                                  |
-| --------------------------- | -------------------------------------------------------- |
-| `@agentscope/protocol`      | Private OpenTelemetry/OpenInference contract             |
-| `@agentscope/core`          | Private configuration, redaction, and delivery services  |
-| `agentscope-cli`            | The `agentscope` installation and configuration command  |
-| `@agentscope/harness-*`     | Harness-specific installation and trace extraction       |
-| `@agentscope/destination-*` | First-party trace destinations, starting with Langfuse   |
-| `@agentscope/testkit`       | Hermetic test servers, harness scenarios, and assertions |
+`~/.agentscope` stores non-secret machine configuration. The current CLI accepts
+explicit CI environment references for destination credentials; a secure
+interactive credential setup path is still required before the macOS alpha can
+be offered to ordinary users. `AGENTSCOPE_HOME` is an explicit override for
+portable installations, tests, and CI isolation.
 
 ## Development
 
-Agentscope uses pnpm, Nx, Node.js 22+, and a Fumadocs documentation application.
+The monorepo uses pnpm 9, Nx, Node.js 22 or later, and a Fumadocs site.
 
 ```bash
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 pnpm test:unit
 pnpm dev:docs
 ```
 
-Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration) for the intended matrix.
+Use the governed Nx targets when building a package with workspace dependencies;
+for example, `pnpm nx run agentscope-cli:build`. See [CONTRIBUTING.md](CONTRIBUTING.md)
+before running integration or full validation work.
 
 Mutation-heavy integration is unavailable on workstations and shared Docker
 daemons. GitHub-hosted CI and an already allocated disposable Crabbox guest run
@@ -83,4 +83,13 @@ the same `pnpm test:integration` controller.
 
 ## Contributing
 
-Issues and pull requests are welcome once the initial package contracts settle. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and keep changes scoped; protected branches use PR validation, squash merges, and automatic documentation deployment.
+Crabbox is contributor infrastructure for development and burst testing. GitHub
+CI remains release authority; neither is an end-user installation path.
+
+The [contributor guide](CONTRIBUTING.md) explains how to run the permitted checks.
+
+## Repository packages
+
+Only `agentscope-cli` is intended for public installation. Protocol, Core,
+harness, destination, and Testkit packages are internal implementation units and
+do not create separate public SDK or compatibility promises.

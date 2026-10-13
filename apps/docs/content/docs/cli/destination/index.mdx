@@ -7,7 +7,7 @@ commandContract: sha256:e4344e6e0b317acf331df5558c099328d3eae02ae5fc14c7b2b065a7
 
 Destination commands operate on named connections described by reviewed first-party descriptors. Core owns the outer configuration document, credential references, and routing invariants; provider packages never own terminal output or configuration transactions.
 
-The packed CLI registers the reviewed Langfuse and Local SQLite descriptors. Langfuse uses the remote descriptor path. Local SQLite configuration, unconfiguration, retained deletion, recovery, and Doctor inspection use its package-owned lifecycle handler and remain available only on an exact admitted candidate tuple. Registration alone does not claim Local Reporter, Retriever, or broad platform support.
+The packed CLI registers Langfuse and Local SQLite descriptors. Langfuse uses the remote descriptor path. Local SQLite is deferred from 0.1.0; its configuration and lifecycle operations are unavailable before mutation in the alpha. Descriptor registration does not claim Local Reporter, Retriever, or platform support.
 
 ## Syntax
 
@@ -31,5 +31,4 @@ Leaf command pages list their exact fixed diagnostics. Group parsing failures us
 
 ```bash
 agentscope destination list
-agentscope destination configure local-sqlite --name local-history
 ```

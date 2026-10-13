@@ -1,28 +1,34 @@
 ---
 title: Agentscope
-description: Coding-agent trace observability.
+description: Safe trace observability for coding-agent CLIs.
 ---
 
-Agentscope captures traces from coding-agent CLIs and forwards normalized events to destinations such as Langfuse.
+Agentscope installs reversible coding-agent integrations, converts native
+lifecycle events into portable OpenTelemetry/OpenInference traces, and sends
+them only to destinations you explicitly configure and select.
 
-## Planned quick start
+## Current status
 
-```bash
-npx agentscope-cli init
-agentscope destination configure langfuse
-agentscope install codex
-```
+Agentscope 0.1.0 is not published yet. Codex and Claude Code are the target
+harnesses for the first alpha, but public support begins only after packed-CLI
+actual-binary admission. Cursor and the remaining product-roster harnesses are
+later work and do not block 0.1.0.
 
-The documentation site is scaffolded with a standard Next/Fumadocs dependency stack. Guides and navigation are the next documentation slice.
+The source-built CLI exposes the command surface and a Langfuse destination
+descriptor. Local SQLite is deferred from 0.1.0 and has no executable alpha
+capability or support claim. The packed harness registry remains empty until
+admission completes.
 
-## Foundation documents
+## Start here
 
-- [Product description](/docs/requirements/product-description)
-- [Trace capture](/docs/requirements/trace-capture)
-- [Trace destination connection](/docs/requirements/trace-destination-connection)
-- [Trace retrieval](/docs/requirements/trace-retrieval)
-- [Agentscope Doctor](/docs/requirements/agentscope-doctor)
-- [Harness abstraction](/docs/blueprints/foundations/harness-abstraction)
-- [Canonical trace format](/docs/blueprints/foundations/canonical-trace-format)
-- [Trace Destination architecture](/docs/blueprints/destinations/trace-destination)
-- [Real harness integration testing](/docs/blueprints/testing/real-harness-integration)
+1. Read [Getting started](./docs/getting-started) for installation status and the
+   safe setup sequence.
+2. Use the [CLI reference](./docs/cli) for exact commands, output modes, and
+   diagnostics.
+3. Read the [requirements](./docs/requirements/product-description) for product
+   behavior and the [workspace Blueprint](./docs/blueprints/foundations/workspace-architecture)
+   for an entry point to internal architecture.
+
+Agentscope never selects a destination implicitly, replaces an overlapping
+observability hook during ordinary installation, or treats an unverified harness
+as supported.

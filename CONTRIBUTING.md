@@ -5,7 +5,7 @@ changes use a pull request.
 
 1. Create a focused branch from `main` (for example,
    `codex/andrew/add-codex-fixtures`).
-2. Run the relevant deterministic local checks. Mutation-heavy integration uses
+2. Run focused checks in your isolated worktree. Mutation-heavy integration uses
    `pnpm test:integration` only on an allocated disposable Crabbox guest or in
    GitHub-hosted CI, never on a workstation or shared Docker daemon.
 3. Open a pull request. `Validate` and `Hermetic integration test` must pass;
@@ -18,5 +18,9 @@ is a single-maintainer project, but the PR remains the reviewable integration
 point.
 
 Every durable implementation task must have a Beads issue. Start with
-`bd ready`, claim the issue before editing, and sync Beads with `bd sync` at
-handoff.
+`bd ready` and claim the issue before editing. When a dependency unblocks a
+stalled task, resume it from the exact merged SHA rather than leaving it idle.
+
+The inner hermetic scenario runner is shared across CI and Crabbox execution.
+Crabbox is contributor infrastructure for development and burst testing, while
+GitHub CI remains release authority. Neither is an end-user installation path.
