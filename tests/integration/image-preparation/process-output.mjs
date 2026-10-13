@@ -12,6 +12,7 @@ const supplierStages = [
   "supplier-connected-package-compilation",
   "supplier-connected-package-resolution",
   "supplier-connected-package-frontend",
+  "supplier-connected-package-checkstyle-violation",
   "supplier-connected-package-other",
   "supplier-connected-service-finalization",
   "supplier-connected-inventory",
@@ -36,6 +37,7 @@ const supplierStages = [
   "supplier-package-compilation",
   "supplier-package-resolution",
   "supplier-package-frontend",
+  "supplier-package-checkstyle-violation",
   "supplier-package-other",
   "supplier-service-finalization",
   "supplier-inventory",
@@ -46,7 +48,7 @@ const supplierStages = [
   "supplier-output-write",
 ];
 const supplierFailureStages = supplierStages.filter((stage) =>
-  /-(?:package-compilation|package-resolution|package-frontend|package-other|inventory-read|inventory-guard|inventory-internal|output-create|output-write|parent|type|owner|device|mode|identity|io)$/u.test(
+  /-(?:package-compilation|package-resolution|package-frontend|package-checkstyle-violation|package-other|inventory-read|inventory-guard|inventory-internal|output-create|output-write|parent|type|owner|device|mode|identity|io)$/u.test(
     stage,
   ),
 );
@@ -161,13 +163,24 @@ export const parseMavenFailureObservation = (value) => {
 };
 
 /** Untrusted text observation only; neither markers nor absence grant authority. */
-const validMavenMarker = (stage, family, tuple) =>
-  tuple === undefined ||
-  (/^supplier-(?:connected-)?package-(?:compilation|resolution|frontend|other)$/u.test(
-    stage,
-  ) &&
-    family === "none" &&
-    parseMavenFailureObservation(tuple) !== undefined);
+const validMavenMarker = (stage, family, tuple) => {
+  if (/^supplier-(?:connected-)?package-checkstyle-violation$/u.test(stage)) {
+    const value = parseMavenFailureObservation(tuple);
+    return (
+      family === "none" &&
+      value?.disposition === "identified" &&
+      value.goal === 5
+    );
+  }
+  return (
+    tuple === undefined ||
+    (/^supplier-(?:connected-)?package-(?:compilation|resolution|frontend|other)$/u.test(
+      stage,
+    ) &&
+      family === "none" &&
+      parseMavenFailureObservation(tuple) !== undefined)
+  );
+};
 // BuildKit ExecOp wraps its RUN argv; this is its reported execution result,
 // not the Docker client's close code or a Maven-child/OOM observation.
 const createSupplierExecutionObservation = () => {

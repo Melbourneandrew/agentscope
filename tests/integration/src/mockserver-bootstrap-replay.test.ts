@@ -253,6 +253,38 @@ const observe = (chunks: readonly string[]) => {
   return observation.snapshot();
 };
 const absent = { stderrClass: "unknown" };
+describe("configured Checkstyle marker localization", () => {
+  const tuple = "identified,2,0,5,0,0,0,0";
+  it.each(["", "connected-"])(
+    "binds %s marker to the original known goal tuple",
+    (prefix) => {
+      const stage = `supplier-${prefix}package-checkstyle-violation`;
+      const line = `[agentscope-material:v1 stage=${stage} family=none maven=${tuple}]\n`;
+      const text = `#7 0.193 ${line}0.193 ${line}`;
+      for (let split = 0; split <= text.length; split++)
+        expect(
+          observe([text.slice(0, split), text.slice(split)]),
+        ).toMatchObject({
+          untrustedBootstrapStage: stage,
+          untrustedMavenFailure: {
+            disposition: "identified",
+            goal: 5,
+            unit: 0,
+            reason: 0,
+          },
+        });
+      for (const value of [
+        marker(stage),
+        line.replace(",5,", ",4,"),
+        line.replace("identified", "ambiguous"),
+        line.replace("family=none", "family=input"),
+        text + `0.193 ${line}`,
+        line + marker(`supplier-${prefix}package`),
+      ])
+        expect(observe([value])).toEqual(absent);
+    },
+  );
+});
 const supplierStages = [
   "supplier-connected-entry",
   "supplier-connected-extract",

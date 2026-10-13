@@ -9,6 +9,83 @@ import {
 import { createBuildStderrObservation } from "../image-preparation/process-output.mjs";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+describe("configured Checkstyle failure localization", () => {
+  it.each([false, true])(
+    "keeps the actual primary error and closed phase with connected=%s",
+    async (connected) => {
+      const primary = Object.assign(new Error("PRIVATE_CANARY"), {
+        code: 1,
+        signal: null,
+        stdout: "",
+        stderr:
+          "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check (default) on project mockserver-core:\n[ERROR] /PRIVATE_CANARY/CallbackWebSocketServerHandler.java:42:1: PRIVATE_CANARY [NeedBraces]",
+      });
+      const tuple = classifyPackageFailure(primary).join(",");
+      expect(tuple).toBe("identified,2,0,5,0,0,0,0");
+      const run = vi.fn((file: string) =>
+        file.endsWith("/mvn") ? Promise.reject(primary) : Promise.resolve(),
+      );
+      await expect(
+        connected
+          ? privateWorker(run, "cache-seeding", false)
+          : runMockServerSupplierResearch(run),
+      ).rejects.toBe(primary);
+      expect(state.markers.at(-1)).toBe(
+        supplierMarker(
+          "supplier-package-checkstyle-violation",
+          connected,
+          tuple,
+        ),
+      );
+      const observer = createBuildStderrObservation();
+      observer.consume(Buffer.from(state.markers.at(-1)!));
+      expect(observer.snapshot()).toMatchObject({
+        untrustedBootstrapStage: connected
+          ? "supplier-connected-package-checkstyle-violation"
+          : "supplier-package-checkstyle-violation",
+        untrustedMavenFailure: { goal: 5, unit: 0, reason: 0 },
+      });
+      expect(JSON.stringify(observer.snapshot())).not.toContain(
+        "PRIVATE_CANARY",
+      );
+      expect(state.markers.join("")).not.toContain("PRIVATE_CANARY");
+    },
+  );
+  it.each([
+    "[ERROR] /PRIVATE_CANARY/Unknown.java:42:1: PRIVATE_CANARY [UnknownRule]",
+    "prefix [ERROR] /PRIVATE_CANARY/Unknown.java:42:1: PRIVATE_CANARY [NeedBraces]",
+    "[ERROR] /PRIVATE_CANARY/Unknown.java:0:1: PRIVATE_CANARY [NeedBraces]",
+    "PRIVATE_CANARY plugin failure",
+    "[ERROR] /PRIVATE_CANARY/Unknown.java:42:1: PRIVATE_CANARY [NeedBraces]\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check (other) on project duplicate:",
+    "[ERROR] /PRIVATE_CANARY/Unknown.java:42:1: PRIVATE_CANARY [NeedBraces]\n[ERROR] COMPILATION ERROR :",
+  ])(
+    "does not classify unavailable, malformed or ambiguous violation input",
+    async (text) => {
+      const primary = Object.assign(new Error("PRIVATE_CANARY"), {
+        code: 1,
+        signal: null,
+        stdout: "",
+        stderr:
+          "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-checkstyle-plugin:3.6.0:check (default) on project mockserver-core:\n" +
+          text,
+      });
+      const run = vi.fn((file: string) =>
+        file.endsWith("/mvn") ? Promise.reject(primary) : Promise.resolve(),
+      );
+      await expect(privateWorker(run, "cache-seeding", false)).rejects.toBe(
+        primary,
+      );
+      expect(state.markers.at(-1)).toBe(
+        supplierMarker(
+          "supplier-package-other",
+          true,
+          classifyPackageFailure(primary).join(","),
+        ),
+      );
+      expect(state.markers.join("")).not.toContain("PRIVATE_CANARY");
+    },
+  );
+});
 describe("actual package rejection has only bounded fixed observations", () => {
   it.each([
     ["compilation", "[ERROR] COMPILATION ERROR :"],

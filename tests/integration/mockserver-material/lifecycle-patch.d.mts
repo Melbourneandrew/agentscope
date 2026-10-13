@@ -23,3 +23,4 @@ export function supplierSourceUnit(file: string): number;
 export function firstSupplierCheckstyleObservation(
   text: string,
 ): readonly [number, number, number, number];
+export function hasObservedSupplierCheckstyleViolation(text: unknown): boolean;

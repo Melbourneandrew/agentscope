@@ -27,6 +27,7 @@ import { verifyMavenArchiveBytes } from "./build-tool-archive.mjs";
 import { patchCallbackSource } from "./callback-patch.mjs";
 import {
   firstSupplierCheckstyleObservation,
+  hasObservedSupplierCheckstyleViolation,
   lifecycleSourcePins,
   supplierSourceUnit,
   patchMockServerLifecycleSource,
@@ -149,6 +150,7 @@ const packageFailureStage = (error) => {
   try {
     const text = packageOutput(error);
     if (typeof text !== "string") return "supplier-package-other";
+    const record = packageFailureRecord(error);
     const classes = [
       ["compilation", /^\[ERROR\] COMPILATION ERROR :\s*$/mu],
       [
@@ -158,6 +160,15 @@ const packageFailureStage = (error) => {
       [
         "frontend",
         /^\[ERROR\] Failed to execute goal com\.github\.eirslett:frontend-maven-plugin:[0-9.]+:(?:install-node-and-npm|npm) /mu,
+      ],
+      [
+        "checkstyle-violation",
+        {
+          test: () =>
+            record[0] === "identified" &&
+            record[3] === 5 &&
+            hasObservedSupplierCheckstyleViolation(text),
+        },
       ],
     ].filter(([, pattern]) => pattern.test(text));
     return classes.length === 1

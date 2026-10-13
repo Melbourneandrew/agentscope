@@ -87,10 +87,19 @@ export const supplierCheckstyleRules = Object.freeze([
 export const supplierSourceUnit = (file) =>
   lifecycleSourcePins.findIndex((pin) => pin.path.endsWith(`/${file}`)) + 1;
 /** First supported observation, not first overall or an exhaustive violation set. */
-export const firstSupplierCheckstyleObservation = (text) => {
-  for (const match of text.matchAll(
+const supplierCheckstyleMatches = (text) =>
+  text.matchAll(
     /^(?:\[INFO\] )?\[ERROR\] \/[^\r\n]*\/([A-Za-z]+\.java):([1-9][0-9]{0,5})(?::(0|[1-9][0-9]{0,5}))?: [^\r\n]* \[([A-Za-z]+)\]$/gmu,
-  )) {
+  );
+/** A configured-rule console observation only; no source or outcome authority. */
+export const hasObservedSupplierCheckstyleViolation = (text) => {
+  if (typeof text !== "string" || text.length > 8 * 1024 * 1024) return false;
+  for (const match of supplierCheckstyleMatches(text))
+    if (supplierCheckstyleRules.includes(match[4])) return true;
+  return false;
+};
+export const firstSupplierCheckstyleObservation = (text) => {
+  for (const match of supplierCheckstyleMatches(text)) {
     const [, file, line, column, rule] = match;
     const unit = supplierSourceUnit(file);
     const reason = supplierCheckstyleRules.indexOf(rule) + 1;

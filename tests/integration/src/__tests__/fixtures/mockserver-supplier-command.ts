@@ -204,6 +204,7 @@ import { verifyBootstrapArchive } from "../../../mockserver-material/bootstrap-a
 import { patchCallbackSource } from "../../../mockserver-material/callback-patch.mjs";
 import {
   firstSupplierCheckstyleObservation,
+  hasObservedSupplierCheckstyleViolation,
   lifecycleSourcePins,
   supplierSourceUnit,
   patchMockServerLifecycleSource,
@@ -246,6 +247,7 @@ export const privateWorker = runInNewContext(
     createSupplierGoalObservation,
     Buffer,
     firstSupplierCheckstyleObservation,
+    hasObservedSupplierCheckstyleViolation,
     supplierSourceUnit,
     maximumOutputBytes: 8 * 1024 * 1024,
     verifyMockServerSourceArchive,
