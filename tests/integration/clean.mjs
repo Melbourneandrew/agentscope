@@ -3,8 +3,13 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -24,6 +29,7 @@ import {
   validCodexResearchDiagnostic,
 } from "./immutable-candidate-authority.mjs";
 import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
+import { sanitizeFixtureResult } from "./dist/operations.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -193,6 +199,141 @@ const addDirectory = (targets, relative) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: directoryBytes(path), path, relative });
 };
+const successfulDocuments = Object.freeze([
+  "evidence.json",
+  "fixture-lifecycle.json",
+  "model-ledger.json",
+  "destination-ledger.json",
+  "harness-observation.json",
+]);
+const readSuccessfulDocument = (relative) => {
+  let descriptor;
+  try {
+    remainingIntegrationOperationMilliseconds(30_000, true);
+    const path = resolve(artifactsRoot, relative);
+    if (realpathSync(path) !== resolve(expectedRealArtifactsRoot, relative))
+      throw new Error();
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(descriptor);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      (before.mode & 0o7777) !== 0o600 ||
+      before.size < 1 ||
+      before.size > 1_048_576
+    )
+      throw new Error();
+    const bytes = Buffer.alloc(before.size + 1);
+    const count = readSync(descriptor, bytes, 0, bytes.length, 0);
+    const after = fstatSync(descriptor),
+      named = lstatSync(path);
+    if (
+      count !== before.size ||
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      [
+        "dev",
+        "ino",
+        "mode",
+        "uid",
+        "gid",
+        "nlink",
+        "size",
+        "mtimeMs",
+        "ctimeMs",
+      ].some((key) => before[key] !== after[key] || before[key] !== named[key])
+    )
+      throw new Error();
+    return JSON.parse(bytes.subarray(0, count).toString("utf8"));
+  } catch {
+    throw new Error("integration.cleanup.success-evidence");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+// Registered support bytes were compiled from this controller's completed live
+// authorities. These IDs select cleanup targets, not new admission authority.
+const successfulEvidenceRuns = () => {
+  const retained = new Set();
+  if (!owned.artifactFiles.includes("harness-support-evidence.json"))
+    return retained;
+  if (owned.requiredFailureEvidence.length !== 0)
+    throw new Error("integration.cleanup.success-evidence");
+  const support = readSuccessfulDocument("harness-support-evidence.json");
+  if (
+    !Array.isArray(support.entries) ||
+    support.entries.length < 1 ||
+    support.entries.length > 32
+  )
+    throw new Error("integration.cleanup.success-evidence");
+  for (const entry of support.entries) {
+    const runId = entry.binding?.seed?.runId;
+    if (
+      ![
+        "@agentscope/harness-codex",
+        "@agentscope/harness-claude-code",
+      ].includes(entry.harnessType) ||
+      typeof runId !== "string" ||
+      !/^[a-f0-9]{16}$/u.test(runId) ||
+      !owned.runIds.includes(runId) ||
+      retained.has(runId)
+    )
+      throw new Error("integration.cleanup.success-evidence");
+    const documents = Object.fromEntries(
+      successfulDocuments.map((name) => [
+        name,
+        readSuccessfulDocument(`runs/${runId}/${name}`),
+      ]),
+    );
+    const evidence = documents["evidence.json"];
+    if (
+      evidence.runId !== runId ||
+      evidence.scenarioId !== entry.binding.seed.scenarioId ||
+      evidence.outcome !== "passed" ||
+      evidence.cleanup?.outcome !== "complete" ||
+      evidence.cleanup.removalFailureCount !== 0 ||
+      evidence.cleanup.remaining === null ||
+      Object.values(evidence.cleanup.remaining).some((count) => count !== 0) ||
+      entry.binding.completion?.runId !== runId ||
+      entry.binding.completion.outcome !== "scenario-terminal-clean" ||
+      entry.binding.completion.remainingOwnedResources !== 0
+    )
+      throw new Error("integration.cleanup.success-evidence");
+    const fixture = sanitizeFixtureResult(
+      {
+        ...documents["fixture-lifecycle.json"],
+        modelLedger: documents["model-ledger.json"],
+        destinationLedger: documents["destination-ledger.json"],
+        harnessObservation: documents["harness-observation.json"],
+      },
+      evidence.scenarioId,
+    );
+    if (
+      fixture.resultStatus !== "complete" ||
+      fixture.harnessObservation?.kind !==
+        (entry.harnessType === "@agentscope/harness-codex"
+          ? "codex-tui-trace"
+          : "claude-code-trace")
+    )
+      throw new Error("integration.cleanup.success-evidence");
+    retained.add(runId);
+  }
+  return retained;
+};
+const addSuccessfulRunCleanup = (targets, runId) => {
+  const relative = `runs/${runId}`,
+    root = resolve(artifactsRoot, relative);
+  directoryBytes(root);
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (successfulDocuments.includes(entry.name)) continue;
+    const start = targets.length,
+      child = `${relative}/${entry.name}`;
+    if (entry.isDirectory()) addDirectory(targets, child);
+    else addFile(targets, child, 8 * 1024 * 1024 * 1024);
+    // Keep unknown child names out of the existing content-free cleanup log.
+    for (const target of targets.slice(start)) target.relative = relative;
+  }
+};
 // The exact record validator intentionally checks every durable field together.
 // eslint-disable-next-line complexity
 const assertFailureEvidence = (identity) => {
@@ -287,14 +428,18 @@ try {
     )
   )
     throw new Error("integration.cleanup.failure-evidence");
+  const retainedRuns = successfulEvidenceRuns();
   for (const name of owned.artifactFiles)
-    addFile(diskTargets, name, artifactMaximumBytes[name]);
+    if (name !== "harness-support-evidence.json" || retainedRuns.size === 0)
+      addFile(diskTargets, name, artifactMaximumBytes[name]);
   for (const identity of owned.candidateIdentities)
     addDirectory(diskTargets, `candidates/${identity}`);
   for (const runId of owned.runIds) {
     addDirectory(diskTargets, `contexts/${runId}`);
     if (requiredFailureEvidence.has(runId))
       assertFailureEvidence(failureEvidenceByRunId.get(runId));
+    else if (retainedRuns.has(runId))
+      addSuccessfulRunCleanup(diskTargets, runId);
     else addDirectory(diskTargets, `runs/${runId}`);
     const markerPath = resolve(artifactsRoot, "active", `${runId}.json`);
     if (existsSync(markerPath)) {
