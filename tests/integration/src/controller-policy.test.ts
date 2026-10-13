@@ -2518,7 +2518,7 @@ describe("Codex interactive diagnostic order", () => {
       "const translated = translateCodexNativeObservations(",
     );
     const terminalLedgerRead = scenario.indexOf(
-      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+      "? readCodexSessionLedgerRecords(homeDescriptor)",
       scenario.indexOf("const waitForCodexTurnTerminal ="),
     );
     const terminalDeadlinePrecheck = scenario.lastIndexOf(
