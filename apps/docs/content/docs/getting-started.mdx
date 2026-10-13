@@ -1,0 +1,111 @@
+---
+title: Getting started
+description: Publication status and the safe Agentscope setup sequence.
+---
+
+## Before you begin
+
+Agentscope 0.1.0 is not published yet. Do not install an artifact from an
+untrusted source or treat source-checkout behavior as a support claim. Final
+actual-binary CI evidence has passed for these exact candidate rows:
+
+| Harness     | Version | Execution                           | Mode / output contract     | Destination credentials                                        |
+| ----------- | ------- | ----------------------------------- | -------------------------- | -------------------------------------------------------------- |
+| Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive / semantic PTY | Langfuse OTLP through explicit environment-variable references |
+| Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive / semantic PTY | Langfuse OTLP through explicit environment-variable references |
+
+These are not published support rows. The governed product support manifest,
+release record, and package publication remain pending. Claude Code evidence
+covers `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not
+expose `SessionEnd`, so Agentscope does not claim a native Claude session-end
+event. macOS, Keychain, workstation execution, Local SQLite, Cursor, and other
+harnesses are not 0.1.0 support claims. Shipped assets do not expand this
+table. The public product will be the `agentscope-cli` npm package, which
+exposes the `agentscope` command.
+
+## Install the published alpha
+
+After the release is published, install either its alpha tag or exact version:
+
+```bash
+npm install --global agentscope-cli@alpha
+# Equivalent exact pin for the first alpha:
+npm install --global agentscope-cli@0.1.0
+
+agentscope --version
+```
+
+Before the first stable release, do not use bare/default requests such as
+`agentscope-cli` or `npx agentscope-cli`. They are not a product installation:
+`latest` may resolve to the inert ownership bootstrap or may be absent. Select
+`agentscope-cli@alpha` or an exact product version.
+
+After publication, use only a complete row admitted by that release's support
+manifest. If your exact combination is absent, stop before configuring
+credentials or installing a harness.
+
+## Safe setup sequence
+
+After the alpha is published, for an exact support-manifest row:
+
+1. Run `agentscope init` and inspect the plan. Repeat with `--yes` only when you
+   intend to create the non-secret Agentscope configuration.
+2. Populate `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` from the CI secret
+   manager. Configure a named Langfuse connection using references, never
+   values:
+
+   ```bash
+   agentscope destination configure langfuse --name <name> \
+     --credential-env public-key=LANGFUSE_PUBLIC_KEY \
+     secret-key=LANGFUSE_SECRET_KEY
+   ```
+
+   This command writes the destination immediately. Inspect the saved
+   destination afterward. `--yes` is not a Langfuse dry-run or commit switch.
+
+3. Select that connection explicitly with `agentscope routing set <name>`.
+   Configuring a destination does not enable delivery; a bare `agentscope
+routing set` disables delivery.
+4. Run `agentscope harness list` and `agentscope harness status <harness>`.
+5. Run `agentscope install <harness>` without `--yes` and inspect the plan.
+   Repeat with `--yes` only when the current plan is acceptable.
+6. Run `agentscope doctor` to inspect the resulting setup.
+
+Ordinary installation never replaces an overlapping vendor observability hook.
+If installation reports an overlap, review it before using the separate
+`agentscope harness migrate` command.
+
+## Configuration and credentials
+
+Non-secret configuration lives under `~/.agentscope`. The validated candidate
+rows use explicit CI environment references; Agentscope stores the variable
+names, not credential values, and does not print the values.
+Ordinary installed commands and hooks ignore ambient `AGENTSCOPE_HOME`. It is
+reserved for repository-owned CI, portable, and test launchers that explicitly
+authorize the override, not as a user-facing relocation setting.
+
+Routing is always explicit. Agentscope never chooses the first configured
+destination as a default.
+
+## Inspect and remove an installation
+
+Use `agentscope harness status <harness>` and `agentscope doctor` for read-only
+inspection. `agentscope uninstall <harness>` is plan-first until `--yes` is
+present and removes only an exact Agentscope-owned integration.
+
+Local SQLite persistence and maintenance commands are outside the intended
+0.1.0 alpha. Do not infer their availability from source files or descriptor
+discovery.
+
+## Troubleshooting
+
+- Use `agentscope doctor --output json` for a bounded machine-readable report.
+- Treat `unsupported` and `indeterminate` as distinct from an absent harness.
+- A configured destination is inactive until routing selects it.
+- For a recovery requirement or outcome-unknown state, stop mutation and follow
+  the state-specific action. Doctor reports an action identifier, not a shell
+  command.
+- Never paste credential values into `--settings`, command arguments, issue
+  reports, or logs.
+
+See the [CLI reference](./cli) for exact syntax and stable diagnostics.

@@ -5,7 +5,13 @@ command: agentscope destination recover
 commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8b74c008d
 ---
 
-Recovery is a separate, explicit Local SQLite command. Without authority it performs no mutation. `--yes` writes the content-free plan to stderr before Core claims and dispatches the exact durable intent to the package-owned versioned recovery handler. Doctor may recommend this command but never runs it automatically.
+The 0.1.0 alpha does not admit Local SQLite, so this registered command has no
+supported success path and does not mutate Local state. Its exact failure
+depends on the inspected configuration and lifecycle state; a fresh
+unconfigured home may return `configuration.missing`, while an unavailable
+handler may return `destination.lifecycle-unavailable`. The syntax is reserved
+for future admitted lifecycle work; Doctor does not run an unavailable
+recovery operation.
 
 ## Syntax
 
@@ -15,24 +21,25 @@ agentscope destination recover [--yes] [--output human|json|jsonl]
 
 ## Output and exits
 
-Without `--yes`, `human`, `json`, and `jsonl` report `operation: recover`, `state: planned`, `applied: false`, and the exact pending operation, destination type, opaque connection and operation identities, lifecycle fingerprint, recovery stage, and authorized configuration generations. Applied output uses `agentscope.cli.destination-recover.v1`, retains that inspected plan, and adds only the terminal state, generation, and any opaque retained-delete or backup selector.
+For 0.1.0, no planned or applied-success output is available in `human`,
+`json`, or `jsonl` mode.
 
 ## Automation
 
-Recovery accepts no path, destination callback, native handle, or arbitrary intent identifier. Core read-only inspects one authenticated recoverable intent under the owned configuration transaction and the registered Local lifecycle handler, then mints a one-use plan authority. `--yes` revalidates and consumes that same authority before it claims or dispatches the intent; substitution requires a new inspection and confirmation. A missing, live-owner, mismatched, malformed, or unknown-handler claim fails closed.
+`--yes` does not make an unavailable lifecycle capability available.
 
 ## Diagnostics
 
 - `configuration.conflict`, `configuration.missing`, and `configuration.unavailable` describe the Core configuration boundary.
-- `destination.lifecycle-busy` means a live lifecycle owner or lock still holds authority.
+- `destination.lifecycle-busy` means a lifecycle owner or lock still holds authority.
 - `destination.lifecycle-capacity` reports a bounded maintenance capacity failure.
-- `destination.lifecycle-outcome-unknown` means recovery may have crossed its durable permission boundary without a provable terminal result.
-- `destination.lifecycle-reconciliation-required` means the exact artifact/claim inventory cannot be advanced automatically.
+- `destination.lifecycle-outcome-unknown` and `destination.lifecycle-reconciliation-required` are closed lifecycle outcomes.
 - `destination.lifecycle-unavailable` means no admitted handler or stable inspection authority is available.
 
 ## Examples
 
+The following syntax remains unavailable in 0.1.0:
+
 ```bash
 agentscope destination recover
-agentscope destination recover --yes
 ```

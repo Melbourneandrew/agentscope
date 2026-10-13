@@ -7,7 +7,11 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 `agentscope install <harness>` is plan-first. It discovers the registered first-party harness, checks its descriptor-owned compatibility range, inspects every owned target through Harness Core, and performs no mutation unless `--yes` is present. Ordinary installation never replaces an overlapping vendor observability hook; use the separate migration command after reviewing the conflict.
 
-No concrete adapter is registered in the current packed CLI, so every named install currently returns `harness.adapter-missing`. This page defines the stable contract that the later first-party adapters must satisfy.
+The production CLI registers the `codex` and `claude-code` adapters. Registration
+makes their discovery and installation plans available; it does not by itself
+claim that any version, mode, or platform is supported. Installation proceeds
+only when the adapter's exact discovery and plan checks succeed. Any other
+harness name returns `harness.adapter-missing`.
 
 ## Syntax
 

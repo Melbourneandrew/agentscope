@@ -7,7 +7,10 @@ commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8
 
 `agentscope uninstall <harness>` inspects the adapter-owned configuration and removes only an exact Agentscope-owned integration. It does not require the harness executable to remain installed, and it leaves vendor or unrecognized configuration unchanged.
 
-No concrete adapter is registered in the current packed CLI, so named uninstall requests currently return `harness.adapter-missing`.
+The production CLI registers the `codex` and `claude-code` adapters. Either can
+inspect and remove an exact Agentscope-owned integration even when its harness
+executable is absent. Registration is not a support claim; any other harness
+name returns `harness.adapter-missing`.
 
 ## Syntax
 

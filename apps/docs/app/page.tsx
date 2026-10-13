@@ -10,16 +10,16 @@ export default function Home() {
       nav={{ title: <DocsBrand />, url: "/" }}
     >
       <main className="content homepage">
-        <p className="eyebrow">Coding-agent observability</p>
+        <p className="eyebrow">0.1.0 alpha · publication pending</p>
         <h1>Trace the work your agents actually do.</h1>
         <p className="lead">
-          Agentscope captures coding-agent sessions, normalizes the important
-          events, and sends them to Langfuse or an extensible reporter you
-          control.
+          Candidate evidence is complete for Codex and Claude Code on Linux x64
+          CI with Langfuse. Agentscope is not published yet; start with the
+          exact pre-release scope and safe setup boundary.
         </p>
         <div className="actions">
-          <Link className="button primary" href="/docs">
-            Read the docs
+          <Link className="button primary" href="/docs/getting-started">
+            Check alpha status
           </Link>
           <a
             className="button"
@@ -31,17 +31,17 @@ export default function Home() {
         <div className="grid">
           <section className="card">
             <h2>CLI-first</h2>
-            <p>Install and manage hooks with one global command.</p>
+            <p>Plan and inspect owned integrations through one CLI.</p>
           </section>
           <section className="card">
             <h2>Harness-aware</h2>
             <p>
-              Each coding-agent harness maps native artifacts into one model.
+              Codex and Claude Code have exact, version-bound candidate rows.
             </p>
           </section>
           <section className="card">
-            <h2>Reporter-ready</h2>
-            <p>Start with Langfuse, then add an approved destination.</p>
+            <h2>Destination-bound</h2>
+            <p>Alpha evidence uses the reviewed first-party Langfuse path.</p>
           </section>
         </div>
       </main>

@@ -30,6 +30,7 @@ const authoritativeExamples = [
   ".github/ISSUE_TEMPLATE/bug.md",
   "apps/docs/AGENTS.md",
   "apps/docs/content/docs/index.mdx",
+  "apps/docs/content/docs/getting-started.mdx",
   "apps/docs/content/docs/requirements/example.mdx",
   "apps/docs/content/docs/blueprints/testing/example.mdx",
   "apps/docs/content/docs/cli/example.mdx",
@@ -55,6 +56,7 @@ test("rejects scratch names and non-authoritative locations", () => {
     "packages/example/notes.md",
     "handoff/status.md",
     "packages/example/design.md",
+    "apps/docs/content/docs/quickstart.mdx",
     ".AGENTS/SKILLS/example/random.md",
     "APPS/docs/content/docs/requirements/example.mdx",
   ]) {
