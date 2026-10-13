@@ -192,7 +192,9 @@ const exchangeControlRequest = ({
     });
     req.once("upgrade", (response, socket, head) => {
       upgraded = true;
-      if (!upgrade || response.statusCode !== 101 || head.length !== 0)
+      // Node may coalesce opaque post-handshake bytes into the upgrade head.
+      // The probe observes authenticated upgrade and joined closure, not frames.
+      if (!upgrade || response.statusCode !== 101 || head.length > maximumBytes)
         first ??= new Error("integration.mockserver.control");
       socket.once("close", () => {
         result = { status: response.statusCode, bytes: Buffer.alloc(0) };
