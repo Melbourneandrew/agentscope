@@ -46,6 +46,8 @@ describe("first owned PTY pump diagnostic", () => {
   it.each([
     ["testkit.headless.observer.read", "observer-read"],
     ["testkit.headless.observer.identity", "observer-identity"],
+    ["testkit.headless.observer.signal", "observer-signal"],
+    ["testkit.headless.observer.process-set", "observer-process-set"],
     ["testkit.pty.transport", "transport"],
     ["testkit.pty.geometry", "geometry"],
     ["testkit.pty.checkpoint-witness", "checkpoint-witness"],
@@ -83,6 +85,9 @@ describe("first owned PTY pump diagnostic", () => {
         },
       ),
       { code: "testkit.pty.transport" },
+      new Error("testkit.headless.observer.signal"),
+      { code: "testkit.headless.observer.process-set" },
+      Object.assign({}, kernelError("testkit.headless.observer.signal")),
       null,
     ])
       expect(classifyPtyPumpFailure(error)).toBe("unknown");
@@ -144,7 +149,7 @@ describe("actual selected pump operation placement", () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
         completion: { kind: "semantic-marker" },
-        readiness: { kind: "challenge-marker", challenge },
+        readiness: { kind: "challenge-process-topology", challenge },
         initialGeometry: { columns: 40, rows: 12 },
         interpreter: {
           path: "/usr/local/bin/node",
@@ -196,7 +201,7 @@ describe("actual selected pump operation placement", () => {
       inputBytesWritten: 65,
       pumpFailureDiagnostic: {
         operation: "checkpoint-freeze",
-        category: "unknown",
+        category: "observer-process-set",
         originalExecutionDeadlineExhausted: false,
       },
     });
@@ -418,41 +423,44 @@ describe("actual selected runtime closure", () => {
       { timeout: 1000 },
     ) as string[];
     const root = resolve(import.meta.dirname, "../../dist");
-    const missing = (selected: readonly string[]) => {
-      const absent: string[] = [];
-      for (const name of selected.filter((file) => file.endsWith(".js"))) {
-        const source = createSourceFile(
-          name,
-          readFileSync(resolve(root, name.replace(/^testkit\//u, "")), "utf8"),
-          ScriptTarget.Latest,
-          true,
-          ScriptKind.JS,
-        );
-        const visit = (node: Node): void => {
-          const specifier =
-            isImportDeclaration(node) || isExportDeclaration(node)
-              ? node.moduleSpecifier
-              : isCallExpression(node) &&
-                  node.expression.kind === SyntaxKind.ImportKeyword
-                ? node.arguments[0]
-                : undefined;
-          if (
-            specifier &&
-            isStringLiteral(specifier) &&
-            specifier.text.startsWith(".")
-          ) {
-            const target = resolve(
-              dirname(resolve("/", name)),
-              specifier.text,
-            ).slice(1);
-            if (!selected.includes(target)) absent.push(target);
-          }
-          forEachChild(node, visit);
-        };
-        visit(source);
-      }
-      return absent;
-    };
+    const edges = new Map<string, string[]>();
+    for (const name of files.filter((file) => file.endsWith(".js"))) {
+      const relativeTargets: string[] = [];
+      const source = createSourceFile(
+        name,
+        readFileSync(resolve(root, name.replace(/^testkit\//u, "")), "utf8"),
+        ScriptTarget.Latest,
+        true,
+        ScriptKind.JS,
+      );
+      const visit = (node: Node): void => {
+        const specifier =
+          isImportDeclaration(node) || isExportDeclaration(node)
+            ? node.moduleSpecifier
+            : isCallExpression(node) &&
+                node.expression.kind === SyntaxKind.ImportKeyword
+              ? node.arguments[0]
+              : undefined;
+        if (
+          specifier &&
+          isStringLiteral(specifier) &&
+          specifier.text.startsWith(".")
+        ) {
+          const target = resolve(
+            dirname(resolve("/", name)),
+            specifier.text,
+          ).slice(1);
+          relativeTargets.push(target);
+        }
+        forEachChild(node, visit);
+      };
+      visit(source);
+      edges.set(name, relativeTargets);
+    }
+    const missing = (selected: readonly string[]) =>
+      selected.flatMap((name) =>
+        (edges.get(name) ?? []).filter((target) => !selected.includes(target)),
+      );
     expect(missing(files)).toEqual([]);
     expect(
       missing(

@@ -511,10 +511,15 @@ function assertWorkflowCacheBypass(workflow) {
       .map((step) => step.run)
       .filter((command) => typeof command === "string")
       .join("\n");
-    assert.match(
-      commands,
-      /pnpm (?:lint|test|coverage|build|typecheck|verify:native-candidate)/u,
-    );
+    if (job === "native") {
+      assert.match(
+        commands,
+        /^pnpm nx build agentscope-cli --skip-nx-cache$/mu,
+      );
+      assert.match(commands, /^pnpm verify:cli-artifact$/mu);
+    } else {
+      assert.match(commands, /pnpm (?:lint|test|coverage|build|typecheck)/u);
+    }
   }
 }
 
@@ -537,6 +542,29 @@ test("GitHub release checks cannot consume Nx result-cache evidence", () => {
     (copy) => {
       copy.jobs.native.steps.at(-1).run =
         "NX_SKIP_NX_CACHE=false pnpm verify:native-candidate";
+    },
+    (copy) => {
+      const step = copy.jobs.native.steps.find((item) =>
+        item.run?.startsWith("pnpm nx build"),
+      );
+      step.run = "pnpm nx build agentscope-cli";
+    },
+    (copy) => {
+      const step = copy.jobs.native.steps.find((item) =>
+        item.run?.startsWith("pnpm nx build"),
+      );
+      step.run = "pnpm nx build other-project --skip-nx-cache";
+    },
+    (copy) => {
+      const step = copy.jobs.native.steps.find((item) =>
+        item.run?.startsWith("pnpm nx build"),
+      );
+      step.run = "pnpm nx build agentscope-cli --skip-nx-cache=false";
+    },
+    (copy) => {
+      copy.jobs.native.steps = copy.jobs.native.steps.filter(
+        (step) => step.run !== "pnpm verify:cli-artifact",
+      );
     },
   ]) {
     const changed = structuredClone(workflow);

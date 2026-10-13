@@ -10,6 +10,7 @@ import {
   productionDockerSocket,
   resolveDockerSocket,
   validSocketEvidence,
+  readImageRequestDiagnostic,
 } from "./boundary.mjs";
 import { registryTransport } from "./registry.mjs";
 
@@ -83,6 +84,7 @@ export const createPullOperation =
           expected: [200],
           method: "POST",
           path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}&platform=${encodeURIComponent(platformText(platform))}`,
+          requestPhase: "image-pull",
         },
       );
       const lines = response.body
@@ -137,6 +139,9 @@ export const createPullOperation =
           cleanup: "none",
           trigger,
           reconciliation,
+          ...(readImageRequestDiagnostic(error) === undefined
+            ? {}
+            : { request: readImageRequestDiagnostic(error) }),
         }),
       );
       throw failure;
@@ -197,6 +202,9 @@ export const prepareImageOperation = async (
         cleanup: "none",
         trigger: "unknown",
         reconciliation: "not-attempted",
+        ...(readImageRequestDiagnostic(error) === undefined
+          ? {}
+          : { request: readImageRequestDiagnostic(error) }),
       });
     diagnostics.set(failure, primaryDiagnostic);
   }

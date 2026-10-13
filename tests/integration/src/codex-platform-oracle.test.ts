@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- checksum-bound runtime modules intentionally expose no TypeScript API */
 
 // @ts-expect-error checksum-bound runtime module intentionally has no TS API
-import { correlateCodexPlatformObservations } from "../codex-platform-oracle.mjs";
+import * as oracle from "../codex-platform-oracle.mjs";
 // @ts-expect-error checksum-bound runtime module intentionally has no TS API
-import { translateCodexPlatformObservations } from "../fixtures/codex-platform-adapter.mjs";
+import * as adapter from "../fixtures/codex-platform-adapter.mjs";
+const { correlateCodexNativeObservations, correlateCodexPlatformObservations } =
+  oracle;
+const { translateCodexNativeObservations, translateCodexPlatformObservations } =
+  adapter;
 
 const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
@@ -17,7 +21,7 @@ const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
   prompt,
   promptSha256,
-  mediation: { sessionStartCommandDurationMilliseconds: 125 },
+  mediation: { sessionStartCommandDurationMilliseconds: 125 as number | null },
   modelRequests: [
     {
       method: "POST",
@@ -57,6 +61,130 @@ const raw = () => ({
   },
 });
 type RawObservation = ReturnType<typeof raw>;
+const nativeRaw = () => {
+  const { search: _search, retrieval: _retrieval, ...observations } = raw();
+  void _search;
+  void _retrieval;
+  return {
+    ...observations,
+    native: {
+      sessionId: "session-1",
+      turnId: "turn-1",
+      modelName: "fixture-model",
+    },
+  };
+};
+const correlateNative = (value = nativeRaw()) =>
+  correlateCodexNativeObservations(translateCodexNativeObservations(value), {
+    artifactFileName: "agentscope-cli-0.1.0.tgz",
+    expectedPromptSha256: promptSha256,
+    scenarioId: "codex-tui-trace-smoke",
+  });
+
+const transcriptRange = () => ({
+  nativeFormat: "codex-0.149.1-rollout-jsonl",
+  boundaryKind: "transcript-range",
+  positionKind: "line",
+  availableStartPosition: 0,
+  exclusiveEndPosition: 4,
+  sessionMetaPosition: 0,
+  turnContextPosition: 2,
+  taskCompletePosition: 3,
+  sourceGeneration: null,
+});
+describe("bounded Codex native transcript range translation", () => {
+  it("preserves the frozen content-free projection without asserting full completion", () => {
+    const range = transcriptRange();
+    const raw = nativeRaw();
+    const translated = translateCodexNativeObservations({
+      ...raw,
+      native: { ...raw.native, nativeTranscriptRange: range },
+    });
+    range.turnContextPosition = 99;
+    expect(translated.native.nativeTranscriptRange.turnContextPosition).toBe(2);
+    const result = correlateCodexNativeObservations(translated, {
+      artifactFileName: "agentscope-cli-0.1.0.tgz",
+      expectedPromptSha256: promptSha256,
+      scenarioId: "codex-tui-trace-smoke",
+    });
+    expect(result.resultStatus).toBe("partial");
+    expect(result.harnessObservation.nativeTranscriptRange).toEqual(
+      transcriptRange(),
+    );
+    expect(Object.isFrozen(translated.native.nativeTranscriptRange)).toBe(true);
+  });
+  it.each([
+    { sourceGeneration: 0 },
+    { positionKind: "sequence" },
+    { turnContextPosition: 3 },
+    { taskCompletePosition: 4 },
+    { exclusiveEndPosition: 4097 },
+    { content: "private" },
+  ])("refuses non-observed or non-closed range %j", (delta) => {
+    const raw = nativeRaw();
+    expect(() =>
+      translateCodexNativeObservations({
+        ...raw,
+        native: {
+          ...raw.native,
+          nativeTranscriptRange: { ...transcriptRange(), ...delta },
+        },
+      }),
+    ).toThrow("integration.codex.adapter-observation");
+  });
+});
+
+describe("independently held native completion awaiting outer OTLP join", () => {
+  it("cannot assert destination delivery or CLI retrieval", () => {
+    expect(correlateNative()).toMatchObject({
+      resultStatus: "partial",
+      lifecycle: ["install", "configure", "hook", "execute"],
+      eventKinds: ["hook", "model"],
+      harnessObservation: {
+        kind: "codex-tui-native",
+        nativeSessionId: "session-1",
+        nativeTurnId: "turn-1",
+        nativeModelName: "fixture-model",
+        doctorErrors: 0,
+        uninstallDisposition: "committed",
+      },
+      destinationLedger: { ingestion: [], retrieval: [] },
+    });
+  });
+  it.each(["sessionId", "turnId", "modelName"] as const)(
+    "refuses absent native %s before outer correlation",
+    (field) => {
+      const value = nativeRaw();
+      value.native[field] = "";
+      expect(() => correlateNative(value)).toThrow(
+        "integration.codex.adapter-observation",
+      );
+    },
+  );
+  it("does not manufacture trace identity from native completion", () => {
+    const value = nativeRaw();
+    value.native.modelName = "other";
+    expect(translateCodexNativeObservations(value).native.modelName).toBe(
+      "other",
+    );
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-native",
+    );
+    expect(correlateNative().harnessObservation).not.toHaveProperty("traceId");
+  });
+  it("preserves actual model and retirement failures", () => {
+    const value = nativeRaw();
+    value.modelRequests[0]!.credentialHeaderCount = 1;
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-model-request",
+    );
+    value.modelRequests[0]!.credentialHeaderCount = 0;
+    value.uninstall.uninstall.disposition = "rolled-back";
+    expect(() => correlateNative(value)).toThrow(
+      "integration.codex.oracle-lifecycle",
+    );
+  });
+});
 const correlate = (value = raw()) =>
   correlateCodexPlatformObservations(
     translateCodexPlatformObservations(value),
@@ -69,6 +197,30 @@ const correlate = (value = raw()) =>
 
 // eslint-disable-next-line max-lines-per-function -- one matrix proves translation/oracle separation across every retained observation
 describe("Codex PTY scenario observation boundary", () => {
+  it.each([null, 1_001, 60_001])(
+    "retains diagnostic duration %s without timing certification",
+    (duration) => {
+      const value = raw();
+      value.mediation.sessionStartCommandDurationMilliseconds = duration;
+      expect(
+        correlate(value).harnessObservation
+          .sessionStartCommandDurationMilliseconds,
+      ).toBe(duration);
+      value.search.spanCount = 0;
+      expect(() => correlate(value)).toThrow("integration.codex.oracle-trace");
+    },
+  );
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, undefined])(
+    "rejects malformed diagnostic %s",
+    (duration) => {
+      const value = raw();
+      value.mediation.sessionStartCommandDurationMilliseconds =
+        duration as number;
+      expect(() => translateCodexPlatformObservations(value)).toThrow(
+        "integration.codex.adapter-observation",
+      );
+    },
+  );
   it("reduces exact loopback, trace, Doctor, and uninstall observations", () => {
     expect(correlate()).toMatchObject({
       resultStatus: "complete",

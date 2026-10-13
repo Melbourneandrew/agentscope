@@ -62,6 +62,13 @@ const createClaudeCodeInstallationPlanner = (
     ownedInvocation,
     inventory,
     dialectAuthority,
+    [
+      { targetPath: ownedInvocation.launcherPath, exists: true },
+      {
+        targetPath: `${ownedInvocation.launcherPath}.metadata.json`,
+        exists: true,
+      },
+    ],
   );
 
 const target = (
@@ -203,7 +210,7 @@ describe("Claude Code owned lifecycle", () => {
     expect(installedSettings.theme).toBe("dark");
     expect(installedText).toContain("/usr/bin/printf");
     expect(installedText).toContain(invocation.launcherPath);
-    expect(installedText).toContain(invocation.ownershipIdentity);
+    expect(installedText).not.toContain('"agentscope"');
     expect(install(target(installedText))).toEqual({ kind: "unchanged" });
 
     const uninstall = createClaudeCodeInstallationPlanner(
@@ -666,6 +673,18 @@ describe("Claude Code hostile lifecycle state", () => {
 
     const tampered = parseRecord(installedText);
     const hooks = parseRecord(JSON.stringify(tampered.hooks));
+    // Keep the historical metadata-tamper refusal over an exact prior profile.
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!Array.isArray(groups)) throw new Error("expected owned groups");
+      const group = parseRecord(JSON.stringify(groups[0]));
+      group.agentscope = {
+        contractVersion: invocation.contractVersion,
+        event,
+        harnessType: invocation.harnessType,
+        ownershipIdentity: invocation.ownershipIdentity,
+      };
+      hooks[event] = [group];
+    }
     const stop = hooks.Stop;
     if (!Array.isArray(stop) || stop.length !== 1)
       throw new Error("expected owned Stop hook");

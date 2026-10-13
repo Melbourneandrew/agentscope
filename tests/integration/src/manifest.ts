@@ -14,7 +14,6 @@ const dockerImage = z
   .regex(/^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f\d]{64}$/u);
 const fileDigest = z.string().regex(/^[a-f\d]{64}$/u);
 const sriSha512 = z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/u);
-const sha256Hex = z.string().regex(/^[a-f\d]{64}$/u);
 const npmPackageName = z
   .string()
   .regex(/^@[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/u);
@@ -29,12 +28,20 @@ const relativeEvidencePath = z
   .refine((value) => !value.split("/").includes(".."));
 const relativeAdapterPath = z
   .string()
-  .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
+  .regex(
+    /^(?:fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}|dist\/claude-code-platform-adapter)\.mjs$/u,
+  )
   .refine((value) => !value.split("/").includes(".."));
 const relativeScenarioProcessPath = z
   .string()
   .regex(/^(?:fixtures\/)?[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
   .refine((value) => !value.split("/").includes(".."));
+const scenarioSourceSchema = z.strictObject({
+  path: relativeScenarioProcessPath,
+  sha256: fileDigest,
+});
+const mockServerBaseImage =
+  "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
 const relativeWorkspaceArtifactPath = z
   .string()
   .regex(
@@ -69,7 +76,7 @@ const signedObjectSchema = z.strictObject({
     .int()
     .min(1)
     .max(384 * 1024 * 1024),
-  sha256: sha256Hex,
+  sha256: fileDigest,
 });
 
 const npmMaterialPackageSchema = z.strictObject({
@@ -80,7 +87,7 @@ const npmMaterialPackageSchema = z.strictObject({
       .int()
       .min(1)
       .max(64 * 1024),
-    bundleDigest: sha256Hex,
+    bundleDigest: fileDigest,
   }),
   installName: npmPackageName,
   packageName: npmPackageName,
@@ -155,6 +162,27 @@ const harnessMaterialSchema = z.discriminatedUnion("kind", [
       signatureHashAlgorithm: z.enum(["sha256", "sha384", "sha512"]),
       uid: z.string().min(1).max(256),
     }),
+    platformPackage: z
+      .strictObject({
+        packageName: npmPackageName,
+        version: semver,
+        tarballUrl: httpsUrl,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(312 * 1024 * 1024),
+        sha256: fileDigest,
+        integrity: sriSha512,
+        memberName: z.literal("package/claude"),
+        memberBytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(384 * 1024 * 1024),
+        memberSha256: fileDigest,
+      })
+      .optional(),
   }),
 ]);
 
@@ -203,6 +231,23 @@ const evidenceSchema = z
     )
       context.addIssue({ code: "custom", message: "admission mismatch" });
     if (value.material.kind === "signed-release-manifest") {
+      const platformPackage = value.material.platformPackage;
+      if (
+        (value.material.distributionId === "claude-code" &&
+          platformPackage === undefined) ||
+        (platformPackage !== undefined &&
+          (platformPackage.packageName !==
+            `@anthropic-ai/claude-code-${value.material.platform}` ||
+            platformPackage.version !== value.material.version ||
+            platformPackage.memberBytes !== value.material.binary.bytes ||
+            platformPackage.memberSha256 !== value.material.binary.sha256 ||
+            platformPackage.tarballUrl !==
+              `https://registry.npmjs.org/${platformPackage.packageName}/-/claude-code-${value.material.platform}-${value.material.version}.tgz`))
+      )
+        context.addIssue({
+          code: "custom",
+          message: "platform package mismatch",
+        });
       const origins = [
         value.material.binary.url,
         value.material.manifest.url,
@@ -252,7 +297,7 @@ const scenarioSchema = z
       .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
     mockServerImage: z
       .string()
-      .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
+      .refine((image): boolean => image === mockServerBaseImage),
     modelRoutes: uniqueList(id),
     tags: uniqueList(id),
     destinations: uniqueList(id),
@@ -260,14 +305,8 @@ const scenarioSchema = z
       path: relativeAdapterPath,
       sha256: fileDigest,
     }),
-    scenarioOracle: z.strictObject({
-      path: relativeScenarioProcessPath,
-      sha256: fileDigest,
-    }),
-    scenarioProcess: z.strictObject({
-      path: relativeScenarioProcessPath,
-      sha256: fileDigest,
-    }),
+    scenarioOracle: scenarioSourceSchema,
+    scenarioProcess: scenarioSourceSchema,
     runtimeArtifacts: z
       .array(runtimeArtifactSchema)
       .max(8)
@@ -341,7 +380,11 @@ const scenarioSchema = z
       (value.nativeReadiness?.kind === "challenge-process-topology" ||
         value.nativeReadiness?.kind === "challenge-marker" ||
         value.nativeReadiness?.kind === "codex-challenge-idle-prompt") &&
-      value.harnessEvidenceId !== "codex-0-149-1"
+      value.harnessEvidenceId !== "codex-0-149-1" &&
+      !(
+        value.nativeReadiness.kind === "challenge-marker" &&
+        value.harnessEvidenceId === "claude-code-2-1-245"
+      )
     )
       context.addIssue({
         code: "custom",
@@ -479,6 +522,55 @@ const evidencePath = (root: string, relativePath: string): string => {
   return absolute;
 };
 
+const verifyComponentFixture = (
+  artifactBytes: Buffer,
+  evidence: CapabilityManifest["evidence"][number],
+): void => {
+  let fixture;
+  try {
+    // Only reviewed metadata consumed here; full native grammar is test-only.
+    fixture = z
+      .object({
+        fixtureVersion: z.literal(1),
+        harnessId: id,
+        harnessVersion: semver,
+        governance: z.object({
+          provenance: z.discriminatedUnion("captureKind", [
+            z.object({
+              captureKind: z.literal("synthetic"),
+              artifactAuthority: z.strictObject({
+                status: z.literal("unresolved"),
+                reason: z.literal("independent-integrity-unavailable"),
+              }),
+            }),
+            z.object({
+              captureKind: z.literal("disposable-hermetic"),
+              artifactAuthority: z.strictObject({
+                status: z.literal("authenticated"),
+                digest,
+              }),
+            }),
+          ]),
+          representative: z.object({
+            representativeVersion: semver,
+            scenarioId: id,
+            evidenceSlot: id,
+          }),
+        }),
+      })
+      .parse(JSON.parse(artifactBytes.toString("utf8")));
+  } catch {
+    throw new Error("integration.manifest.fixture-provenance");
+  }
+  if (
+    fixture.harnessId !== evidence.harnessId ||
+    fixture.harnessVersion !== evidence.representativeVersion ||
+    fixture.governance.representative.representativeVersion !==
+      evidence.representativeVersion
+  )
+    throw new Error("integration.manifest.fixture-provenance");
+};
+
 export const verifyManifestEvidence = (
   manifest: CapabilityManifest,
   integrationRoot: string,
@@ -532,11 +624,13 @@ export const verifyManifestEvidence = (
           artifactStatus.size > 16_777_216
         )
           throw new Error("integration.manifest.evidence-file");
-        const artifactDigest = sha256(readFileSync(artifactPath)).slice(
-          "sha256-".length,
-        );
+        const artifactBytes = readFileSync(artifactPath);
+        const artifactDigest = sha256(artifactBytes).slice("sha256-".length);
         if (artifactDigest !== artifact.sha256)
           throw new Error("integration.manifest.evidence-digest");
+        if (artifact === evidence.admission.component.fixture) {
+          verifyComponentFixture(artifactBytes, evidence);
+        }
       }
     }
   }

@@ -39,6 +39,49 @@ export const maximumPrivateStateFileBytes = 8 * 1024 * 1024;
 export const maximumPrivateStateTotalBytes = 64 * 1024 * 1024;
 const processAbsencePollMilliseconds = 10;
 const processDiagnostics = new WeakMap();
+const requestDiagnostics = new WeakMap();
+const requestPhases = new Set([
+  "daemon-version",
+  "daemon-info",
+  "daemon-final-version",
+  "daemon-final-info",
+  "local-image-inspect",
+  "image-pull",
+  "registry-manifest",
+  "registry-auth",
+  "registry-config",
+]);
+const requestOutcomes = new Set([
+  "request-error",
+  "response-error",
+  "incomplete-close",
+  "malformed-response",
+  "unexpected-status",
+]);
+export const readImageRequestDiagnostic = (error) =>
+  (typeof error === "object" && error !== null) || typeof error === "function"
+    ? requestDiagnostics.get(error)
+    : undefined;
+export const recordImageRequestDiagnostic = (error, phase, outcome, status) => {
+  if (
+    ((typeof error === "object" && error !== null) ||
+      typeof error === "function") &&
+    requestPhases.has(phase) &&
+    requestOutcomes.has(outcome) &&
+    !requestDiagnostics.has(error)
+  )
+    requestDiagnostics.set(
+      error,
+      Object.freeze({
+        phase,
+        outcome,
+        ...(Number.isSafeInteger(status) && status >= 100 && status <= 599
+          ? { status }
+          : {}),
+      }),
+    );
+  return error;
+};
 const timeoutSourcesForTesting = new WeakMap();
 export const digestPattern = /^sha256:[a-f\d]{64}$/u;
 export const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
@@ -616,6 +659,7 @@ export const boundedRequest = ({
   signal,
   socketPath,
   maximumBytes,
+  requestPhase,
 }) =>
   new Promise((resolveRequest, rejectRequest) => {
     const remaining = Math.floor(deadline - performance.now());
@@ -636,8 +680,11 @@ export const boundedRequest = ({
       if (error === undefined) resolveRequest(value);
       else rejectRequest(error);
     };
-    const fail = (code, timedOut = false) => {
+    const fail = (code, timedOut = false, outcome) => {
+      const first = terminalError === undefined;
       terminalError ??= fixedError(code, timedOut);
+      if (first && outcome !== undefined)
+        recordImageRequestDiagnostic(terminalError, requestPhase, outcome);
       request?.destroy();
       if (request === undefined) finish(terminalError);
     };
@@ -679,7 +726,9 @@ export const boundedRequest = ({
           fail("integration.images.output");
         } else chunks.push(chunk);
       });
-      response.once("error", () => fail("integration.images.transport"));
+      response.once("error", () =>
+        fail("integration.images.transport", false, "response-error"),
+      );
       response.once("end", () => {
         responseEnded = true;
         responseValue = Object.freeze({
@@ -689,11 +738,19 @@ export const boundedRequest = ({
         });
       });
     });
-    request.once("error", () => fail("integration.images.transport"));
+    request.once("error", () =>
+      fail("integration.images.transport", false, "request-error"),
+    );
     request.once("close", () => {
       if (terminalError !== undefined) finish(terminalError);
       else if (!responseEnded)
-        finish(fixedError("integration.images.transport"));
+        finish(
+          recordImageRequestDiagnostic(
+            fixedError("integration.images.transport"),
+            requestPhase,
+            "incomplete-close",
+          ),
+        );
       else finish(undefined, responseValue);
     });
     if (body !== undefined) request.write(body);
@@ -719,7 +776,17 @@ const responseRecord = (value) => {
   });
 };
 export const requestWith = async (transport, request) => {
-  const response = responseRecord(await transport(request));
+  const value = await transport(request);
+  let response;
+  try {
+    response = responseRecord(value);
+  } catch (error) {
+    throw recordImageRequestDiagnostic(
+      error,
+      request.requestPhase,
+      "malformed-response",
+    );
+  }
   if (response.body.byteLength > request.maximumBytes)
     throw fixedError("integration.images.output");
   return response;

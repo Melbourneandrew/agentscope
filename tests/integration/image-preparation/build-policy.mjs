@@ -81,15 +81,23 @@ export const settledBuildFailure = (authority, failure) => {
   ].includes(diagnostic?.operationKind)
     ? diagnostic.operationKind
     : "unknown-operation";
-  const stderrClass = [
-    "resource-conflict",
-    "build-failed",
-    "bootstrap-failed",
-    "permission-denied",
-    "unknown",
-  ].includes(diagnostic?.process?.stderrClass)
-    ? diagnostic.process.stderrClass
-    : "unknown";
+  const observedClass = diagnostic?.process?.stderrClass;
+  const verifierFailure =
+    typeof observedClass === "string" &&
+    /^verifier-(?:entry|npm-(?:input|version|install|lock|audit|bundles)|platform-(?:archive|inventory|member)|gpg-(?:home|import|list|key-policy|signature|signature-policy))$/u.test(
+      observedClass,
+    );
+  const stderrClass = verifierFailure
+    ? "build-failed"
+    : [
+          "resource-conflict",
+          "build-failed",
+          "bootstrap-failed",
+          "permission-denied",
+          "unknown",
+        ].includes(diagnostic?.process?.stderrClass)
+      ? diagnostic.process.stderrClass
+      : "unknown";
   return fixedError(
     `integration.images.build.${operation}.${stderrClass}`,
     failure?.code === "ETIMEDOUT",
@@ -125,6 +133,7 @@ export const buildArgumentsFor = ({
   const network = selectBuildNetwork(buildNetwork);
   const result = [
     "build",
+    "--progress=plain",
     "--builder",
     builder,
     "--file",

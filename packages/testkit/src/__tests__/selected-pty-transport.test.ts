@@ -1,10 +1,20 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
+import { runInNewContext } from "node:vm";
 
-import { describe, expect, it } from "vitest";
+import { ScriptTarget, transpileModule } from "typescript";
+import { describe, expect, it, vi } from "vitest";
 
 import { BoundedTerminalEmulator } from "../bounded-terminal-emulator.js";
+import {
+  kernelError,
+  readPtySemanticFailure,
+  readPtyExitSignal,
+  readPtyReconciliationStage,
+  trustedErrorCode,
+} from "../internal/kernel-errors.js";
+import { boundedInvoke } from "../internal/kernel-promise.js";
 import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.js";
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
@@ -18,6 +28,415 @@ import {
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const reconciliationRunnerFrame = (
+  error: unknown,
+  fixture?: string,
+  codeReader: typeof trustedErrorCode = trustedErrorCode,
+): string => {
+  const source = readFileSync(
+    new URL("../../../../tests/integration/runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const authority = readFileSync(
+    new URL(
+      "../../../../tests/integration/immutable-candidate-authority.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const predicates = authority.indexOf(
+    "export const ptyExecutionFailurePredicates =",
+  );
+  const selector = authority.indexOf(
+    "export const selectInteractiveFailureDiagnostic =",
+  );
+  const predicateGuard = authority.indexOf("const unlistedModeNumber =");
+  const formatter = authority.indexOf(
+    "export const formatInteractiveChildDiagnostic =",
+  );
+  const wire = runInNewContext(
+    [
+      authority.slice(
+        authority.indexOf("const claudeModelPairFailurePredicates ="),
+        authority.indexOf("const isClaudeFailurePredicate ="),
+      ),
+      authority.slice(predicates, authority.indexOf("]);", predicates) + 3),
+      authority.slice(predicateGuard, selector),
+      authority.slice(
+        selector,
+        authority.indexOf(
+          "const codexProjectionFailureDiagnostics =",
+          selector,
+        ),
+      ),
+      authority.slice(
+        formatter,
+        authority.indexOf(
+          "export const readInteractiveChildFailureObservation =",
+          formatter,
+        ),
+      ),
+      "({selectInteractiveFailureDiagnostic, formatInteractiveChildDiagnostic})",
+    ]
+      .join("\n")
+      .replaceAll("export ", ""),
+    {
+      // Unused native Claude codec dependency; the actual deadline roster is read above.
+      claudeFailurePredicates: [],
+      claudeVendorPredicate: "integration.fixture.claude-vendor-terminal",
+    },
+  ) as {
+    selectInteractiveFailureDiagnostic: (
+      ...values: unknown[]
+    ) => string | undefined;
+    formatInteractiveChildDiagnostic: (...values: unknown[]) => string;
+  };
+  const caught = source.indexOf(
+    "\n} catch (error) {\n  emitCodexPtyFailureHint();",
+  );
+  const start = source.indexOf(
+    '  if (scenario.executionMode === "interactive")',
+    caught,
+  );
+  const end = source.indexOf(
+    '  if (\n    scenario.executionMode === "headless"',
+    start,
+  );
+  expect(caught).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const helperStart = source.indexOf(
+    "const retainedFixtureFailureDiagnostic =",
+  );
+  const helperEnd = source.indexOf("\ntry {", helperStart);
+  const frames: string[] = [];
+  runInNewContext(
+    `let interactiveFailureDiagnostic; let recoveryStage = null; ${source.slice(helperStart, helperEnd)} ${source.slice(start, end)}`,
+    {
+      error,
+      scenario: { executionMode: "interactive" },
+      scenarioId: "claude-interactive-trace-smoke",
+      ledger: "/unused",
+      readBoundedInteractiveFailureRecord: () =>
+        fixture === undefined ? undefined : { predicate: fixture },
+      retainedInteractivePhase: () => undefined,
+      ...wire,
+      trustedErrorCode: codeReader,
+      readPtyReconciliationStage,
+      readPtySemanticFailure,
+      readPtyExitSignal,
+      process: { stdout: { write: (frame: string) => frames.push(frame) } },
+    },
+  );
+  expect(frames).toHaveLength(1);
+  return frames[0]!;
+};
+
+describe("genuine reconciliation stage through public remint and actual runner", () => {
+  it("retains a genuine stage after the actual public wrapper rejects", async () => {
+    const original = kernelError(
+      "testkit.headless.reconciliation.deadline",
+      "output-join",
+    );
+    const source = readFileSync(
+      new URL("../headless-supervisor-kernel.ts", import.meta.url),
+      "utf8",
+    );
+    const start = source.indexOf("export const executeSelectedPtyProcess =");
+    const execute = runInNewContext(
+      transpileModule(`${source.slice(start + 7)}; executeSelectedPtyProcess`, {
+        compilerOptions: { target: ScriptTarget.ES2022 },
+      }).outputText,
+      {
+        executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
+        kernelError,
+        readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+        readPtyReconciliationStage,
+        readPtySemanticFailure,
+        readPtyExitSignal,
+      },
+    ) as (...args: unknown[]) => Promise<unknown>;
+    try {
+      await execute({}, {}, {});
+    } catch (error) {
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtyReconciliationStage(error)).toBe("output-join");
+      expect(reconciliationRunnerFrame(error)).toBe(
+        "integration.runner.interactive-diagnostic:testkit.headless.reconciliation.deadline-output-join\n",
+      );
+      expect(
+        reconciliationRunnerFrame(error, "integration.runner.fixture-result"),
+      ).toBe(
+        "integration.runner.interactive-diagnostic:integration.runner.fixture-result\n",
+      );
+      return;
+    }
+    throw new Error("expected original rejection");
+  });
+  it("keeps missing, substituted and foreign stage fallback without evaluating stage accessors", () => {
+    const predicate = "testkit.headless.reconciliation.deadline";
+    const foreign = new Error(predicate);
+    Object.defineProperty(foreign, "stage", {
+      get: () => {
+        throw new Error("must not read");
+      },
+    });
+    const substituted = kernelError(
+      "testkit.headless.observer.read",
+      "observer-read",
+    );
+    substituted.message = predicate;
+    for (const error of [
+      kernelError(predicate),
+      foreign,
+      new Proxy(foreign, {}),
+      substituted,
+    ])
+      expect(reconciliationRunnerFrame(error)).toBe(
+        `integration.runner.interactive-diagnostic:${predicate}\n`,
+      );
+  });
+});
+
+type CheckpointFacade = {
+  releaseFrozenProcessSet: (
+    namespace: string,
+    set: readonly object[],
+    pid: number,
+    notify: boolean,
+  ) => void;
+};
+type CheckpointProduction = {
+  create: (authority: object, deadline: number) => CheckpointFacade;
+  publish: (
+    runtime: CheckpointFacade,
+    request: object,
+    root: object,
+    set: readonly object[],
+  ) => void;
+};
+
+describe("actual production checkpoint resume composition", () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ] as const)(
+    "resumes without an undeclared root signal (protected callback=%s, substituted identity=%s)",
+    (protectedCallback, substitutedIdentity) => {
+      const source = readFileSync(
+        new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+        "utf8",
+      );
+      const releaseStart = source.indexOf(
+        "const releaseFrozenContainerProcessSet =",
+      );
+      const releaseEnd = source.indexOf("const delay =", releaseStart);
+      const facadeStart = source.indexOf("const productionPtyRuntime =");
+      const facadeEnd = source.indexOf(
+        "/* eslint-enable max-lines-per-function */",
+        facadeStart,
+      );
+      const publishStart = source.indexOf(
+        "const publishTopologyCheckpointIfSelected =",
+      );
+      const publishEnd = source.indexOf("const armSelectedPty =", publishStart);
+      for (const [start, end] of [
+        [releaseStart, releaseEnd],
+        [facadeStart, facadeEnd],
+        [publishStart, publishEnd],
+      ] as const) {
+        expect(start).toBeGreaterThan(0);
+        expect(end).toBeGreaterThan(start);
+      }
+      const root = { pid: 2, parentPid: 1, startIdentity: "2:10", state: "T" },
+        child = { pid: 3, parentPid: 2, startIdentity: "3:11", state: "T" };
+      const processes = Object.freeze([root, child]);
+      const signals: { pid: number; signal: string }[] = [],
+        publications: unknown[][] = [];
+      const compiled = transpileModule(
+        `${source.slice(releaseStart, releaseEnd)}\n${source.slice(facadeStart, facadeEnd)}\n${source.slice(publishStart, publishEnd)}\n({ create: productionPtyRuntime, publish: publishTopologyCheckpointIfSelected });`,
+        { compilerOptions: { target: ScriptTarget.ES2022 } },
+      ).outputText;
+      const production = runInNewContext(compiled, {
+        assertNamespaceIdentity: (namespace: string) => {
+          expect(namespace).toBe("held-namespace");
+        },
+        readProcessSnapshot: (pid: number) => {
+          const entry = processes.find((value) => value.pid === pid);
+          return substitutedIdentity && entry
+            ? { ...entry, startIdentity: "substituted" }
+            : entry;
+        },
+        process: {
+          kill: (pid: number, signal: string) => signals.push({ pid, signal }),
+        },
+        fail: (code: string) => {
+          throw new Error(code);
+        },
+      }) as CheckpointProduction;
+      const authority = {
+        assertFile: () => undefined,
+        assertRuntime: () => undefined,
+        ...(protectedCallback
+          ? {
+              publishTopologyCheckpoint: (...args: unknown[]) =>
+                publications.push(args),
+            }
+          : {}),
+      };
+      const runtime = production.create(authority, 1000);
+      if (substitutedIdentity) {
+        expect(() => {
+          runtime.releaseFrozenProcessSet(
+            "held-namespace",
+            processes,
+            root.pid,
+            true,
+          );
+        }).toThrow("testkit.headless.observer.identity");
+        expect(signals).toEqual([]);
+        expect(publications).toEqual([]);
+        return;
+      }
+      runtime.releaseFrozenProcessSet(
+        "held-namespace",
+        processes,
+        root.pid,
+        true,
+      );
+      production.publish(
+        runtime,
+        { readiness: { challenge: "a".repeat(64) } },
+        root,
+        processes,
+      );
+      expect(publications).toEqual(
+        protectedCallback ? [["a".repeat(64), root, processes]] : [],
+      );
+      expect(signals).toEqual([
+        { pid: child.pid, signal: "SIGCONT" },
+        { pid: root.pid, signal: "SIGCONT" },
+      ]);
+      if (protectedCallback) {
+        expect(() => {
+          production.publish(runtime, { readiness: {} }, root, processes);
+        }).toThrow("testkit.pty.checkpoint-witness");
+        expect(publications).toHaveLength(1);
+      }
+    },
+  );
+});
+
+const compiledManifestRequest = (
+  scenarioId: "codex-tui-trace-smoke" | "claude-interactive-trace-smoke",
+  terminalInput?: string,
+): SelectedPtyExecutionRequest => {
+  const integration = new URL(
+    "../../../../tests/integration/",
+    import.meta.url,
+  );
+  const compilerSource = readFileSync(
+    new URL("src/interactive-pty-actions.ts", integration),
+    "utf8",
+  );
+  const canonicalSource = readFileSync(
+    new URL("src/canonical.ts", integration),
+    "utf8",
+  );
+  const compilerStart = compilerSource.indexOf("const claudeChallenge =");
+  const freezeStart = canonicalSource.indexOf("export const deepFreeze =");
+  expect(compilerStart).toBeGreaterThan(0);
+  expect(freezeStart).toBeGreaterThan(0);
+  const code = transpileModule(
+    `${canonicalSource.slice(freezeStart).replace("export const", "const")}\n${compilerSource.slice(compilerStart).replace("export const", "const")}`,
+    { compilerOptions: { target: ScriptTarget.ES2022 } },
+  ).outputText;
+  const compile = runInNewContext(
+    `${code}\ncompileInteractivePtyActions;`,
+    { Buffer, createHash },
+    { timeout: 1_000 },
+  ) as (
+    scenario: object,
+    input: Uint8Array,
+  ) => SelectedPtyExecutionRequest["interaction"]["actions"];
+  const manifest = JSON.parse(
+    readFileSync(new URL("capability-manifest.json", integration), "utf8"),
+  ) as {
+    scenarios: { scenarioId: string; terminalInputBase64: string }[];
+  };
+  const found = manifest.scenarios.find(
+    (entry) => entry.scenarioId === scenarioId,
+  );
+  if (found === undefined) throw new Error("test.compiler.scenario");
+  const scenario =
+    terminalInput === undefined
+      ? found
+      : {
+          ...found,
+          terminalInputBase64: Buffer.from(terminalInput).toString("base64"),
+        };
+  const challenge = "a".repeat(64);
+  const stdin = new Uint8Array(
+    Buffer.concat([
+      Buffer.from(`${challenge}\n`),
+      Buffer.from(scenario.terminalInputBase64, "base64"),
+    ]),
+  );
+  const now = performance.now();
+  const styledReadiness = protocolPromptRequest().readiness;
+  if (styledReadiness.kind !== "challenge-styled-text")
+    throw new Error("test.compiler.readiness");
+  return {
+    ...request({
+      stdin,
+      monotonicStartupDeadlineMs: now + 5_000,
+      monotonicExecutionDeadlineMs: now + 10_000,
+      monotonicShutdownDeadlineMs: now + 15_000,
+    }),
+    readiness:
+      scenarioId === "claude-interactive-trace-smoke"
+        ? { kind: "challenge-marker", challenge }
+        : {
+            ...styledReadiness,
+            postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
+          },
+    interaction: {
+      trigger: "immediate",
+      // Move the genuine compiler output back to this realm; the production
+      // snapshot requires its ordinary host array, not a VM prototype.
+      actions: structuredClone(compile(scenario, stdin)),
+    },
+  };
+};
+
+const actualImmutablePrincipalProfile = (
+  scenarioId: string,
+  poisonIncludes = false,
+): "ordinary" | "codex-controller" => {
+  const source = readFileSync(
+    new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+    "utf8",
+  );
+  const authorityStart = source.indexOf(
+    "const createImmutableCandidateAuthority =",
+  );
+  const start = source.indexOf("  const profile =", authorityStart);
+  const end = source.indexOf("  const initial =", start);
+  expect(authorityStart).toBeGreaterThan(0);
+  expect(start).toBeGreaterThan(authorityStart);
+  expect(end).toBeGreaterThan(start);
+  const profile: unknown = runInNewContext(
+    `${poisonIncludes ? "Array.prototype.includes = () => true;" : ""}${source.slice(start, end)}; profile`,
+    {
+      record: { scenarioId },
+    },
+  );
+  if (profile !== "ordinary" && profile !== "codex-controller")
+    throw new Error("test.profile.invalid");
+  return profile;
+};
 
 it("classifies only exact frozen checkpoint topology facts", () => {
   const root = { pid: 21, parentPid: 1, startIdentity: "21:1", state: "T" };
@@ -97,6 +516,867 @@ const request = (
   };
 };
 
+const checkpointRequest = (): SelectedPtyExecutionRequest => {
+  const challenge = "a".repeat(64);
+  const stdin = new TextEncoder().encode(`${challenge}\n\u0004`);
+  const now = performance.now();
+  return {
+    ...request({
+      stdin,
+      monotonicStartupDeadlineMs: now + 50,
+      monotonicExecutionDeadlineMs: now + 100,
+      monotonicShutdownDeadlineMs: now + 500,
+    }),
+    readiness: { kind: "challenge-marker", challenge },
+    interaction: {
+      trigger: "immediate",
+      actions: [
+        {
+          action: "input",
+          byteLength: 65,
+          inputSha256: createHash("sha256")
+            .update(stdin.subarray(0, 65))
+            .digest("hex"),
+        },
+        {
+          action: "checkpoint-process-topology",
+          topology: "root-with-contained-process-set",
+        },
+        { action: "wait-for-semantic-completion" },
+        {
+          action: "input",
+          byteLength: 1,
+          inputSha256: createHash("sha256")
+            .update(stdin.subarray(65))
+            .digest("hex"),
+        },
+      ],
+    },
+  };
+};
+
+const executeCheckpointWithClock = async (
+  seed: "checkpoint-stop-pending" | "checkpoint-stop-never",
+  abort = false,
+) => {
+  vi.resetModules();
+  vi.useFakeTimers({ now: 0, toFake: ["setTimeout", "clearTimeout"] });
+  const clock = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => vi.getMockedSystemTime()!.getTime());
+  let settlement: Promise<unknown> | undefined;
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Both the bounded promise and kernel capture their timer/clock functions
+    // at import. Load their fresh graph only after installing the test clock.
+    const { executeSelectedPtyTransportForTest: execute } =
+      await import("../internal/headless-supervisor-backend.js");
+    const selected = checkpointRequest();
+    const controller = new AbortController();
+    if (abort)
+      abortTimer = setTimeout(() => {
+        controller.abort();
+      }, 0);
+    const execution = execute(selected, seed, { signal: controller.signal });
+    // Observe rejection immediately and join this execution even if a timer
+    // advancement or assertion fails; never restore time around live work.
+    settlement = execution.catch(() => undefined);
+    // Three freeze observations use the existing two 10-ms polling yields.
+    // Never-acknowledged work reaches the original 100-ms cutoff; cancellation
+    // is observed at the first 10-ms yield. Both use the existing 50-ms grace.
+    if (seed === "checkpoint-stop-pending")
+      await vi.advanceTimersByTimeAsync(20);
+    else {
+      await vi.advanceTimersByTimeAsync(abort ? 10 : 100);
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    await vi.runAllTimersAsync();
+    const receipt = await execution;
+    expect(vi.getTimerCount()).toBe(0);
+    return { receipt, selected, settledAtMs: performance.now() };
+  } finally {
+    try {
+      await vi.runAllTimersAsync();
+      await settlement;
+      if (abortTimer !== undefined) clearTimeout(abortTimer);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+      vi.resetModules();
+    }
+  }
+};
+
+describe("pending checkpoint through the sole selected PTY pump", () => {
+  it("drains output while pending, then releases and advances only the settled checkpoint", async () => {
+    const { receipt, selected } = await executeCheckpointWithClock(
+      "checkpoint-stop-pending",
+    );
+    const challenge = "a".repeat(64);
+    const output = `AGENTSCOPE_PTY_READY:${challenge}.\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      processJoined: true,
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+      inputBytesWritten: 66,
+      outputBytes: Buffer.byteLength(output),
+      outputSha256: createHash("sha256").update(output).digest("hex"),
+      actions: [
+        { action: "input", byteLength: 65 },
+        { action: "checkpoint-process-topology" },
+        { action: "wait-for-semantic-completion" },
+        { action: "input", byteLength: 1 },
+      ],
+    });
+    expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+    expect(receipt.actions[1]!.monotonicAtMs).toBe(20);
+    expect(receipt.actions[1]!.monotonicAtMs).toBeLessThan(
+      selected.process.monotonicExecutionDeadlineMs,
+    );
+  });
+
+  it.each(["timeout", "aborted"] as const)(
+    "joins pending stopped work on %s with no checkpoint or later input",
+    async (outcome) => {
+      const { receipt, selected, settledAtMs } =
+        await executeCheckpointWithClock(
+          "checkpoint-stop-never",
+          outcome === "aborted",
+        );
+      expect(receipt).toMatchObject({
+        outcome,
+        cleanup: "clean",
+        processJoined: true,
+        terminalInputJoined: false,
+        terminalOutputJoined: true,
+        terminalTransportClosed: true,
+        residualProcessCount: 0,
+        signal: "SIGKILL",
+        inputBytesWritten: 65,
+        actions: [{ action: "input", byteLength: 65 }],
+      });
+      expect(receipt.actions).toHaveLength(1);
+      expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+      if (outcome === "timeout")
+        expect(settledAtMs).toBeGreaterThanOrEqual(
+          selected.process.monotonicExecutionDeadlineMs,
+        );
+    },
+  );
+});
+
+const executeWithControl = async (
+  sequence: string,
+  expectedResponse?: string,
+  fragmented = false,
+) => {
+  vi.resetModules();
+  const { BoundedTerminalEmulator: Terminal } =
+    await import("../bounded-terminal-emulator.js");
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
+  const write = Terminal.prototype.write;
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke captured method with its exact emulator receiver
+  const takeResponses = Terminal.prototype.takeTerminalResponses;
+  let responseBytes = "";
+  const responses = vi
+    .spyOn(Terminal.prototype, "takeTerminalResponses")
+    .mockImplementation(function (this: BoundedTerminalEmulator) {
+      const result = Reflect.apply(takeResponses, this, []);
+      responseBytes += new TextDecoder().decode(result);
+      return result;
+    });
+  let inserted = false;
+  const spy = vi
+    .spyOn(Terminal.prototype, "write")
+    .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+      if (!inserted) {
+        inserted = true;
+        for (const part of fragmented ? [...sequence] : [sequence])
+          Reflect.apply(write, this, [new TextEncoder().encode(part)]);
+      }
+      Reflect.apply(write, this, [chunk]);
+    });
+  try {
+    const { executeSelectedPtyTransportForTest: execute } =
+      await import("../internal/headless-supervisor-backend.js");
+    return await execute(request(), "clean");
+  } finally {
+    expect(inserted).toBe(true);
+    spy.mockRestore();
+    responses.mockRestore();
+    if (expectedResponse !== undefined)
+      expect(responseBytes).toBe(expectedResponse);
+  }
+};
+describe("exact native palette reset through selected transport", () => {
+  it.each([
+    ["\u0007", false],
+    ["\u0007", true],
+    ["\u001b\\", false],
+    ["\u001b\\", true],
+  ] as const)(
+    "retains ordinary completion for exact reset (%j, %j)",
+    async (end, fragmented) => {
+      await expect(
+        executeWithControl(`\u001b]104;255${end}`, "", fragmented),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+  it.each([
+    ["104;254", "osc-selector-104"],
+    ["104;255;1", "osc-selector-104"],
+    ["52;c;synthetic", "osc-selector-52"],
+    ["999;unknown", "osc-selector-999"],
+  ])("keeps neighboring OSC %j refused", async (control, reason) => {
+    await expect(
+      executeWithControl(`\u001b]${control}\u0007`),
+    ).rejects.toMatchObject({
+      code: `testkit.pty.transport.semantic-unsupported-${reason}`,
+    });
+  });
+});
+describe("closed OSC refusal partition through selected transport", () => {
+  it.each([52, 104, 65535])(
+    "retains only selector %s in actual rejection",
+    async (selector) => {
+      await expect(
+        executeWithControl(`\u001b]${selector};PRIVATE_PAYLOAD\u0007`),
+      ).rejects.toMatchObject({
+        code: `testkit.pty.transport.semantic-unsupported-osc-selector-${selector}`,
+      });
+    },
+  );
+});
+describe("bounded DECRQM selected transport", () => {
+  it.each([
+    ["?65536$p", "range"],
+    ["?1;2$p", "intermediate"],
+  ])("preserves neighboring refusal %j", async (control, reason) => {
+    await expect(executeWithControl(`\u001b[${control}`)).rejects.toMatchObject(
+      {
+        code: `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`,
+      },
+    );
+  });
+  it.each([
+    ["\u001b[?25$p", "\u001b[?25;1$y"],
+    ["\u001b[0$p", "\u001b[0;0$y"],
+    ["\u001b[?2026h\u001b[?2026$p", "\u001b[?2026;1$y"],
+  ])(
+    "answers exact mode query %j through actual transport",
+    async (query, response) => {
+      await expect(executeWithControl(query, response)).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+});
+
+describe("fixed rejected CSI parameter transport", () => {
+  it.each([
+    ["38:2::1:2:3m", "colon-sgr"],
+    ["1:2u", "colon-keyboard"],
+    ["?1:2h", "colon-other"],
+    ["?65536$p", "range"],
+    ["1!p", "intermediate"],
+    ["65536m", "range"],
+  ])(
+    "retains rejected CSI syntax %j through actual transport and runner wire",
+    async (control, reason) => {
+      const error = await executeWithControl(`\u001b[${control}`).catch(
+        (failure: unknown) => failure,
+      );
+      const { trustedErrorCode: currentCodeReader } =
+        await import("../internal/kernel-errors.js");
+      const predicate = `testkit.pty.transport.semantic-malformed-csi-parameters-${reason}`;
+      expect(currentCodeReader(error)).toBe(predicate);
+      expect(
+        reconciliationRunnerFrame(error, undefined, currentCodeReader),
+      ).toBe(`integration.runner.interactive-diagnostic:${predicate}\n`);
+    },
+  );
+});
+
+describe("normal mouse subscription through selected transport", () => {
+  it.each([
+    "\u001b[?1003h",
+    "\u001b[?1003l",
+    "\u001b[?1003;1006h\u001b[?1003$p\u001b[?1006$p",
+  ])("drives any-event tracking without pointer input %j", async (sequence) => {
+    await expect(
+      executeWithControl(
+        sequence,
+        sequence.endsWith("$p") ? "\u001b[?1003;1$y\u001b[?1006;1$y" : "",
+      ),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
+  it.each([
+    "\u001b[?1002h",
+    "\u001b[?1006h",
+    "\u001b[?1002;1006h\u001b[?1002$p\u001b[?1006$p",
+  ])("drives button tracking and SGR encoding %j", async (sequence) => {
+    await expect(
+      executeWithControl(
+        sequence,
+        sequence.endsWith("$p") ? "\u001b[?1002;1$y\u001b[?1006;1$y" : "",
+      ),
+    ).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
+  it.each(["\u001b[?1000h", "\u001b[?1000l", "\u001b[?1000h\u001b[?1000$p"])(
+    "drives normal mouse subscription without inventing pointer input %j",
+    async (sequence) => {
+      await expect(
+        executeWithControl(
+          sequence,
+          sequence.endsWith("$p") ? "\u001b[?1000;1$y" : "",
+        ),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+});
+
+describe("fixed extended-CSI selected transport refusals", () => {
+  it.each(["\u001b[>q", "\u001b[>0q"])(
+    "answers terminal identification through the existing transport %j",
+    async (sequence) => {
+      await expect(
+        executeWithControl(
+          sequence,
+          "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\",
+        ),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+  it.each(["\u001b[?2031h", "\u001b[?2031l", "\u001b[?2031h\u001b[?996n"])(
+    "drives documented fixed theme protocol %j",
+    async (sequence) => {
+      await expect(
+        executeWithControl(
+          sequence,
+          sequence.endsWith("996n") ? "\u001b[?997;1n" : "",
+        ),
+      ).resolves.toMatchObject({
+        outcome: "completed",
+        terminalInputJoined: true,
+        terminalOutputJoined: true,
+      });
+    },
+  );
+});
+describe("exact resource4 selected transport", () => {
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "completes actual selected transport after resource4 control %j",
+    async (sequence) => {
+      for (const fragmented of [false, true]) {
+        const receipt = await executeWithControl(sequence, "", fragmented);
+        expect(receipt).toMatchObject({
+          outcome: "completed",
+          cleanup: "clean",
+          processJoined: true,
+          terminalInputJoined: true,
+          terminalOutputJoined: true,
+        });
+        expect(receipt.inputBytesWritten).toBe(request().process.stdin.length);
+      }
+    },
+  );
+});
+describe("remaining fixed extended-CSI selected transport refusals", () => {
+  it("completes the existing selected transport after exact Win32-input disable", async () => {
+    await expect(executeWithControl("\u001b[?9001l")).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
+  it.each([0, 9999, 65535])(
+    "retains genuine unlisted mode %s through the actual runner wire",
+    async (mode) => {
+      for (const final of ["h", "l"]) {
+        const error = await executeWithControl(`\u001b[?${mode}${final}`).then(
+          () => {
+            throw new Error("unsupported mode unexpectedly passed");
+          },
+          (failure: unknown) => failure,
+        );
+        const predicate = `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-${final}-${mode}`;
+        const { trustedErrorCode: currentCodeReader } =
+          await import("../internal/kernel-errors.js");
+        expect(currentCodeReader(error)).toBe(predicate);
+        expect(
+          reconciliationRunnerFrame(error, undefined, currentCodeReader),
+        ).toBe(`integration.runner.interactive-diagnostic:${predicate}\n`);
+      }
+    },
+  );
+  it.each(["\u001b[?9001h", "\u001b[?25;9001l", "\u001b[?9001;25l"])(
+    "retains refused Win32 enable/mixed mode %j",
+    async (sequence) => {
+      await expect(executeWithControl(sequence)).rejects.toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-9001",
+      });
+    },
+  );
+  it.each([
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
+    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1005, 1010, 1011, 1014, 1015, 1016,
+    1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039, 1040, 1041, 1042,
+    1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052, 1053, 1060, 1061,
+    2001, 2002, 2003, 2005, 2006,
+  ])(
+    "retains documented rejected mode %s through actual selected transport",
+    async (mode) => {
+      for (const final of ["h", "l"])
+        await expect(
+          executeWithControl(`\u001b[?${mode}${final}`),
+        ).rejects.toMatchObject({
+          code: `testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-${mode}`,
+        });
+    },
+  );
+  it.each([
+    ["\u001b[>c", "secondary-device-attributes"],
+    ["\u001b[=c", "tertiary-device-attributes"],
+    ["\u001b[?4g", "key-modifier-query"],
+    ["\u001b[1 p", "intermediate"],
+    ["\u001b[>32u", "keyboard-shape"],
+    ["\u001b[>4;65535m", "modifier-shape"],
+    ["\u001b[>3;1m", "modifier-shape"],
+    ["\u001b[>4;1;0m", "modifier-shape"],
+    ["\u001b[?9999h", "private-mode-unlisted-h-9999"],
+    ["\u001b[?0l", "private-mode-unlisted-l-0"],
+    ["\u001b[?65535h", "private-mode-unlisted-h-65535"],
+    ["\u001b[<3p", "residual-shape"],
+  ])(
+    "retains fixed refused family %j through actual selected transport",
+    async (sequence, reason) => {
+      await expect(executeWithControl(sequence)).rejects.toMatchObject({
+        code: `testkit.pty.transport.semantic-unsupported-extended-csi-${reason}`,
+      });
+    },
+  );
+  it("preserves earlier malformed priority and residual refusal", async () => {
+    await expect(
+      executeWithControl("\u0000\u001b[?1000h"),
+    ).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-malformed-ground-control-0",
+    });
+    await expect(executeWithControl("\u001b[>1c")).rejects.toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-extended-csi-residual-shape",
+    });
+  });
+});
+describe("fixed ground-control selected transport refusals", () => {
+  const executeWithControl = async (point: number) => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- invoke the captured method with its exact emulator receiver
+    const write = Terminal.prototype.write;
+    let inserted = false;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        if (!inserted) {
+          inserted = true;
+          Reflect.apply(write, this, [new Uint8Array([point])]);
+        }
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      return await execute(request(), "clean");
+    } finally {
+      expect(inserted).toBe(true);
+      spy.mockRestore();
+    }
+  };
+  it("completes the actual selected transport after documented SI to default ASCII G0", async () => {
+    await expect(executeWithControl(15)).resolves.toMatchObject({
+      outcome: "completed",
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+    });
+  });
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28,
+    29, 30, 31, 127,
+  ])(
+    "preserves rejected control %s from the real emulator through selected transport",
+    async (point) => {
+      await expect(executeWithControl(point)).rejects.toMatchObject({
+        code: `testkit.pty.transport.semantic-malformed-ground-control-${point}`,
+      });
+    },
+  );
+});
+describe("private terminal semantic refusal facts", () => {
+  it("retains final state/input facts from the actual synthetic backend", async () => {
+    const selected = request({ stdin: new Uint8Array() });
+    try {
+      await executeSelectedPtyTransportForTest(
+        {
+          ...selected,
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [{ action: "wait-for-semantic-completion" }],
+          },
+        },
+        "missing-completion",
+      );
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: "testkit.pty.transport.semantic-incomplete",
+      });
+      expect(readPtySemanticFailure(error)).toEqual({
+        finalSemanticState: "ready",
+        inputJoined: false,
+        readinessObserved: true,
+        allInputBytesWritten: true,
+      });
+      return;
+    }
+    throw new Error("expected refusal");
+  });
+  it.each(["sync", "async"])(
+    "preserves private facts through the existing %s promise remint",
+    async (kind) => {
+      const facts = {
+        finalSemanticState: "active" as const,
+        inputJoined: false,
+        readinessObserved: false,
+        allInputBytesWritten: false,
+      };
+      const original = kernelError(
+        "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        facts,
+      );
+      const work =
+        kind === "sync"
+          ? () => {
+              throw original;
+            }
+          : () => Promise.reject(original);
+      try {
+        await boundedInvoke(
+          work,
+          performance.now() + 1000,
+          "testkit.headless.shutdown.deadline",
+        );
+      } catch (error) {
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtySemanticFailure(error)).toEqual(facts);
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+  it.each([false, true])(
+    "preserves private facts through the actual production wrapper catch (exit=%s)",
+    async (exit) => {
+      const facts = {
+        finalSemanticState: "ready" as const,
+        inputJoined: true,
+        readinessObserved: true,
+        allInputBytesWritten: false,
+      };
+      const original = kernelError(
+        exit
+          ? "testkit.pty.transport.exit"
+          : "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        facts,
+        exit ? 1 : undefined,
+      );
+      const source = readFileSync(
+        new URL("../headless-supervisor-kernel.ts", import.meta.url),
+        "utf8",
+      );
+      const start = source.indexOf("export const executeSelectedPtyProcess =");
+      expect(start).toBeGreaterThan(0);
+      const compiled = transpileModule(
+        `${source.slice(start + 7)}; executeSelectedPtyProcess`,
+        { compilerOptions: { target: ScriptTarget.ES2022 } },
+      ).outputText;
+      const execute = runInNewContext(compiled, {
+        executeSelectedPtyProcessWithCapability: () => Promise.reject(original),
+        kernelError,
+        readHeadlessSupervisorKernelErrorCode: trustedErrorCode,
+        readPtyReconciliationStage,
+        readPtySemanticFailure,
+        readPtyExitSignal,
+      }) as (...args: unknown[]) => Promise<unknown>;
+      try {
+        await execute({}, {}, {});
+      } catch (error) {
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtySemanticFailure(error)).toEqual(exit ? undefined : facts);
+        expect(readPtyExitSignal(error)).toBe(exit ? 1 : undefined);
+        return;
+      }
+      throw new Error("expected refusal");
+    },
+  );
+});
+describe("private signal guard is fixed at module initialization", () => {
+  it.each([
+    ["sync", false],
+    ["async", false],
+    ["sync", true],
+    ["async", true],
+  ] as const)(
+    "preserves authentic %s settlement under post-import Number substitution (permissive=%s)",
+    async (kind, permissive) => {
+      const original = kernelError(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        1,
+      );
+      const guard = Number.isSafeInteger;
+      Number.isSafeInteger = permissive
+        ? () => true
+        : () => {
+            throw new Error("PRIVATE");
+          };
+      try {
+        expect(
+          readPtyExitSignal(
+            kernelError(original.code, undefined, undefined, 1.5),
+          ),
+        ).toBeUndefined();
+        const work =
+          kind === "sync"
+            ? () => {
+                throw original;
+              }
+            : () => Promise.reject(original);
+        const deadline = performance.now() + 1000;
+        const error: unknown = await Promise.resolve()
+          .then(() =>
+            boundedInvoke(work, deadline, "testkit.headless.shutdown.deadline"),
+          )
+          .catch((failure: unknown) => failure);
+        expect(performance.now()).toBeLessThan(deadline);
+        expect(trustedErrorCode(error)).toBe(original.code);
+        expect(readPtyExitSignal(error)).toBe(1);
+      } finally {
+        Number.isSafeInteger = guard;
+      }
+    },
+  );
+});
+describe("private unsupported exit signal facts", () => {
+  it("preserves the unsupported signal in the existing backend launch catch", () => {
+    const original = kernelError(
+      "testkit.pty.transport.exit",
+      undefined,
+      undefined,
+      1,
+    );
+    const source = readFileSync(
+      new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+      "utf8",
+    );
+    const entry = source.indexOf(
+      "export const executeSelectedPtyProcessWithCapability =",
+    );
+    const start = source.indexOf("} catch (error: unknown) {", entry);
+    const end = source.indexOf(
+      "\n    }\n    assertPtyReceiptBinding(receipt",
+      start,
+    );
+    expect(entry).toBeGreaterThan(0);
+    expect(start).toBeGreaterThan(entry);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start + "} catch (error: unknown) {".length, end);
+    const reject = runInNewContext(`() => { ${body} }`, {
+      error: original,
+      trustedErrorCode,
+      readPtyReconciliationStage,
+      readPtySemanticFailure,
+      readPtyExitSignal,
+      remaining: () => 1,
+      stableRequest: { process: { monotonicShutdownDeadlineMs: 1 } },
+      fail: (...args: Parameters<typeof kernelError>) => {
+        throw kernelError(...args);
+      },
+    }) as () => unknown;
+    try {
+      reject();
+    } catch (error) {
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtyExitSignal(error)).toBe(1);
+      return;
+    }
+    throw new Error("expected refusal");
+  });
+  it("retains only genuine unsupported exit signals", () => {
+    const code = "testkit.pty.transport.exit";
+    for (const signal of [1, 3, 64])
+      expect(
+        readPtyExitSignal(kernelError(code, undefined, undefined, signal)),
+      ).toBe(signal);
+    let traps = 0;
+    const forged = Object.defineProperty(new Error(code), "exitSignal", {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(kernelError(code, undefined, undefined, 1), {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const value of [
+      forged,
+      proxy,
+      Object.assign(new Error(code), { exitSignal: 1 }),
+    ])
+      expect(readPtyExitSignal(value)).toBeUndefined();
+    for (const signal of [0, 2, 9, 15, -1, 65, 1.5, NaN])
+      expect(
+        readPtyExitSignal(kernelError(code, undefined, undefined, signal)),
+      ).toBeUndefined();
+    expect(
+      readPtyExitSignal(
+        kernelError("testkit.pty.request", undefined, undefined, 1),
+      ),
+    ).toBeUndefined();
+    expect(traps).toBe(0);
+  });
+  it.each(["sync", "async"])(
+    "preserves the unsupported signal through the %s promise remint",
+    async (kind) => {
+      const original = kernelError(
+        "testkit.pty.transport.exit",
+        undefined,
+        undefined,
+        1,
+      );
+      const work =
+        kind === "sync"
+          ? () => {
+              throw original;
+            }
+          : () => Promise.reject(original);
+      const error: unknown = await Promise.resolve()
+        .then(() =>
+          boundedInvoke(
+            work,
+            performance.now() + 1000,
+            "testkit.headless.shutdown.deadline",
+          ),
+        )
+        .catch((failure: unknown) => failure);
+      expect(trustedErrorCode(error)).toBe(original.code);
+      expect(readPtyExitSignal(error)).toBe(1);
+    },
+  );
+});
+describe("private terminal facts reject substituted metadata", () => {
+  it("snapshots only exact scalar data and ignores forged error fields", () => {
+    const facts = {
+      finalSemanticState: "ready" as const,
+      inputJoined: true,
+      readinessObserved: true,
+      allInputBytesWritten: true,
+    };
+    const genuine = kernelError(
+      "testkit.pty.transport.semantic-incomplete",
+      undefined,
+      facts,
+    );
+    facts.inputJoined = false;
+    expect(readPtySemanticFailure(genuine)?.inputJoined).toBe(true);
+    expect(Object.isFrozen(readPtySemanticFailure(genuine))).toBe(true);
+    let traps = 0;
+    const accessor = Object.defineProperty({ ...facts }, "inputJoined", {
+      get() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    const proxy = new Proxy(facts, {
+      ownKeys() {
+        traps++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const candidate of [
+      accessor,
+      proxy,
+      { ...facts, extra: true },
+      { ...facts, finalSemanticState: "completed" },
+      { ...facts, inputJoined: 1 },
+      { ...facts, readinessObserved: 1 },
+      { ...facts, allInputBytesWritten: 1 },
+      null,
+    ]) {
+      const error: unknown = Reflect.apply(kernelError, undefined, [
+        "testkit.pty.transport.semantic-incomplete",
+        undefined,
+        candidate,
+      ]);
+      expect(trustedErrorCode(error)).toBe(
+        "testkit.pty.transport.semantic-incomplete",
+      );
+      expect(readPtySemanticFailure(error)).toBeUndefined();
+    }
+    expect(
+      readPtySemanticFailure(
+        Object.assign(new Error(genuine.message), { semanticFailure: facts }),
+      ),
+    ).toBeUndefined();
+    expect(
+      readPtySemanticFailure(
+        new Proxy(genuine, {
+          get() {
+            traps++;
+            throw new Error("PRIVATE");
+          },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      readPtySemanticFailure(
+        kernelError("testkit.pty.request", undefined, facts),
+      ),
+    ).toBeUndefined();
+    expect(traps).toBe(0);
+  });
+});
+
 const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
   const challenge = "a".repeat(64);
   const challengeInput = new TextEncoder().encode(`${challenge}\n`);
@@ -119,6 +1399,7 @@ const protocolPromptRequest = (): SelectedPtyExecutionRequest => {
       challenge,
       text: "›",
       requiredText: "Ask Codex to do anything",
+      postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
       requiredTerminalProtocol: "csi-u-flags-7-query-v1",
       bold: true,
       dim: false,
@@ -185,6 +1466,452 @@ const boundedNegativePostSubmissionRequest =
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
+  const observeRefusedCheckpoint = async (
+    createSelected: () =>
+      SelectedPtyExecutionRequest | Promise<SelectedPtyExecutionRequest>,
+    seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
+  ) => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    const arm = vi.spyOn(
+      Terminal.prototype,
+      "armPostSubmissionIdleObservation",
+    );
+    const completion = vi.spyOn(Terminal.prototype, "completionObserved");
+    const readiness = vi.spyOn(Terminal.prototype, "readinessObserved");
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const { trustedErrorCode: readCode, readPtySemanticFailure: readFacts } =
+        await import("../internal/kernel-errors.js");
+      const selected = await createSelected();
+      const result = await execute(selected, seed).catch(
+        (error: unknown) => error,
+      );
+      return {
+        code: readCode(result),
+        semanticFailure: readFacts(result),
+        armCalls: arm.mock.calls.length,
+        completionSeen: completion.mock.results.some(
+          (result) => result.type === "return" && result.value === true,
+        ),
+        readinessSeen: readiness.mock.results.some(
+          (result) => result.type === "return" && result.value === true,
+        ),
+      };
+    } finally {
+      arm.mockRestore();
+      completion.mockRestore();
+      readiness.mockRestore();
+    }
+  };
+  it("creates refusal deadlines once after actual test-loader preparation", async () => {
+    let factoryCalls = 0;
+    const factory = async () => {
+      factoryCalls += 1;
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      for (const method of [
+        "armPostSubmissionIdleObservation",
+        "completionObserved",
+        "readinessObserved",
+      ])
+        expect(
+          vi.isMockFunction(
+            Object.getOwnPropertyDescriptor(Terminal.prototype, method)?.value,
+          ),
+        ).toBe(true);
+      return compiledManifestRequest("claude-interactive-trace-smoke");
+    };
+    const observed = await observeRefusedCheckpoint(
+      factory,
+      "fixed-readiness-spoof",
+    );
+    expect(factoryCalls).toBe(1);
+    expect(observed).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
+      armCalls: 0,
+      completionSeen: false,
+    });
+  });
+  it("does not let ordinary text poison a fresh challenged checkpoint completion", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        Reflect.apply(write, this, [
+          new TextEncoder().encode("ordinary AGENTSCOPE_PTY_COMPLETE text\r\n"),
+        ]);
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.actions.map(({ action }) => action)).toContain(
+        "wait-for-semantic-completion",
+      );
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it.each(["fixed-readiness-spoof", "checkpoint-missing-process"] as const)(
+    "does not arm a command-started turn with %s",
+    async (seed) => {
+      const selected = compiledManifestRequest(
+        "claude-interactive-trace-smoke",
+      );
+      const refusal = await observeRefusedCheckpoint(() => {
+        const now = performance.now();
+        return {
+          ...selected,
+          process: {
+            ...selected.process,
+            monotonicStartupDeadlineMs: now + 100,
+            monotonicExecutionDeadlineMs: now + 200,
+            monotonicShutdownDeadlineMs: now + 700,
+          },
+        };
+      }, seed);
+      // The private fixture rejects any input beyond the exact 65-byte
+      // challenge for these no-arm seeds. A genuine completion title cannot
+      // turn their missing readiness/checkpoint into a receipt.
+      expect(refusal.armCalls).toBe(0);
+      expect(refusal.completionSeen).toBe(false);
+      expect(refusal.code).toBe(
+        `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${seed === "fixed-readiness-spoof" ? "readiness" : "not-armed"}`,
+      );
+    },
+  );
+
+  it.each(["complete", "fragmented"] as const)(
+    "rejects a %s title begun before a command-started checkpoint",
+    async (kind) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const title = `]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\x1b\\`;
+      let first = true;
+      let fragmentPending = false;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          if (fragmentPending) {
+            fragmentPending = false;
+            Reflect.apply(write, this, [
+              new TextEncoder().encode(title.slice(3)),
+            ]);
+          }
+          Reflect.apply(write, this, [chunk]);
+          if (first) {
+            first = false;
+            fragmentPending = kind === "fragmented";
+            Reflect.apply(write, this, [
+              new TextEncoder().encode(
+                kind === "complete" ? `\x1b${title}` : "\x1b]2;",
+              ),
+            ]);
+          }
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        await expect(
+          execute(
+            compiledManifestRequest("claude-interactive-trace-smoke"),
+            "challenge-marker-title",
+          ),
+        ).rejects.toThrow(
+          `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${kind === "complete" ? "not-armed" : "started-before-arm"}`,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it.each(["selector", "mismatch", "duplicate"] as const)(
+    "retains genuine selected challenged-title refusal %s",
+    async (reason) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          const text = new TextDecoder().decode(chunk);
+          if (!text.includes("AGENTSCOPE_PTY_COMPLETE:")) {
+            Reflect.apply(write, this, [chunk]);
+            return;
+          }
+          if (reason === "duplicate") {
+            Reflect.apply(write, this, [chunk]);
+            Reflect.apply(write, this, [chunk]);
+            return;
+          }
+          Reflect.apply(write, this, [
+            new TextEncoder().encode(
+              `\u001b]${reason === "selector" ? "0" : "2"};AGENTSCOPE_PTY_COMPLETE:${(reason === "mismatch" ? "b" : "a").repeat(64)}\u001b\\`,
+            ),
+          ]);
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        await expect(
+          execute(
+            compiledManifestRequest("claude-interactive-trace-smoke"),
+            "challenge-marker-title",
+          ),
+        ).rejects.toThrow(
+          `testkit.pty.transport.semantic-unsupported-osc-challenge-completion-${reason}`,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it("completes a command-started turn only after its matched checkpoint", async () => {
+    const selected = compiledManifestRequest("claude-interactive-trace-smoke");
+    const challenge = selected.process.stdin.subarray(0, 65);
+    const exit = Buffer.from("/exit\r");
+    const stdin = new Uint8Array(Buffer.concat([challenge, exit]));
+    const input = (bytes: Uint8Array) => ({
+      action: "input" as const,
+      byteLength: bytes.length,
+      inputSha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...selected,
+        process: {
+          ...selected.process,
+          stdin,
+          monotonicStartupDeadlineMs: now + 500,
+          monotonicExecutionDeadlineMs: now + 1_000,
+          monotonicShutdownDeadlineMs: now + 2_000,
+        },
+        interaction: {
+          trigger: "immediate",
+          actions: [
+            { action: "resize", geometry: { columns: 100, rows: 30 } },
+            input(challenge),
+            {
+              action: "checkpoint-process-topology",
+              topology: "root-with-contained-process-set",
+            },
+            { action: "wait-for-semantic-completion" },
+            ...Array.from(exit, (byte) => input(new Uint8Array([byte]))),
+          ],
+        },
+      },
+      "challenge-marker-title",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      finalSnapshot: { semanticState: "completed" },
+    });
+    expect(receipt.inputBytesWritten).toBe(71);
+  });
+  it("retains historical challenged readiness through actual post-checkpoint redraw", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    let redraws = 0;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        if (
+          new TextDecoder().decode(chunk).includes("AGENTSCOPE_PTY_COMPLETE:")
+        ) {
+          redraws += 1;
+          Reflect.apply(write, this, [new TextEncoder().encode("\u001b(B")]);
+        }
+        Reflect.apply(write, this, [chunk]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(redraws).toBe(1);
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        processJoined: true,
+        readinessObserved: true,
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("accepts a fragmented fresh command-started title after checkpoint", async () => {
+    vi.resetModules();
+    const { BoundedTerminalEmulator: Terminal } =
+      await import("../bounded-terminal-emulator.js");
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+    const write = Terminal.prototype.write;
+    const spy = vi
+      .spyOn(Terminal.prototype, "write")
+      .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+        Reflect.apply(write, this, [chunk.subarray(0, 1)]);
+        Reflect.apply(write, this, [chunk.subarray(1)]);
+      });
+    try {
+      const { executeSelectedPtyTransportForTest: execute } =
+        await import("../internal/headless-supervisor-backend.js");
+      const receipt = await execute(
+        compiledManifestRequest("claude-interactive-trace-smoke"),
+        "challenge-marker-title",
+      );
+      expect(receipt).toMatchObject({
+        outcome: "completed",
+        cleanup: "clean",
+        finalSnapshot: { semanticState: "completed" },
+      });
+      expect(receipt.inputBytesWritten).toBe(71);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("completes the genuine Claude compiler plan through a submitted challenge title", async () => {
+    // Retain the original input-submitted route independently of the new
+    // command-started manifest route.
+    const selected = compiledManifestRequest(
+      "claude-interactive-trace-smoke",
+      "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.\r/exit\r",
+    );
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...selected,
+        process: {
+          ...selected.process,
+          monotonicStartupDeadlineMs: now + 500,
+          monotonicExecutionDeadlineMs: now + 1_000,
+          monotonicShutdownDeadlineMs: now + 2_000,
+        },
+      },
+      "challenge-marker-title",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      cleanup: "clean",
+      readinessObserved: true,
+      finalSnapshot: { semanticState: "completed" },
+    });
+    expect(receipt.actions.map(({ action }) => action)).toEqual(
+      selected.interaction.actions.map(({ action }) => action),
+    );
+    expect(receipt.inputBytesWritten).toBe(selected.process.stdin.length);
+  });
+
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"] as const)(
+    "snapshots the genuine %s compiler request before cancellation",
+    async (scenarioId) => {
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          compiledManifestRequest(scenarioId),
+          "clean",
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow("testkit.headless.aborted");
+    },
+  );
+
+  it.each([
+    ["claude-interactive-trace-smoke", "newline", Buffer.from("\n")],
+    ["claude-interactive-trace-smoke", "arbitrary byte", Buffer.from("x")],
+    ["claude-interactive-trace-smoke", "empty", Buffer.from([])],
+    ["claude-interactive-trace-smoke", "two CR bytes", Buffer.from("\r\r")],
+    [
+      "claude-interactive-trace-smoke",
+      "malformed CSI-u",
+      Buffer.from("\x1b[13~"),
+    ],
+    ["codex-tui-trace-smoke", "CR instead of CSI-u", Buffer.from("\r")],
+    ["codex-tui-trace-smoke", "malformed CSI-u", Buffer.from("\x1b[13~")],
+  ] as const)(
+    "rejects %s compiler submission replaced with %s",
+    async (scenarioId, _label, submission) => {
+      const selected = compiledManifestRequest(
+        scenarioId,
+        scenarioId === "claude-interactive-trace-smoke"
+          ? "Read /worktree/agentscope-claude-tool-stimulus.txt with Read, then reply DONE.\r/exit\r"
+          : undefined,
+      );
+      const promptAction = selected.interaction.actions[3];
+      const submitAction = selected.interaction.actions[4];
+      if (promptAction?.action !== "input" || submitAction?.action !== "input")
+        throw new Error("test.compiler.actions");
+      const start = 65 + promptAction.byteLength;
+      const stdin = new Uint8Array(
+        Buffer.concat([
+          Buffer.from(selected.process.stdin.subarray(0, start)),
+          submission,
+          Buffer.from(
+            selected.process.stdin.subarray(start + submitAction.byteLength),
+          ),
+        ]),
+      );
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        executeSelectedPtyTransportForTest(
+          {
+            ...selected,
+            process: { ...selected.process, stdin },
+            interaction: {
+              ...selected.interaction,
+              actions: selected.interaction.actions.map((action, index) =>
+                index === 4
+                  ? {
+                      action: "input" as const,
+                      byteLength: submission.length,
+                      inputSha256: createHash("sha256")
+                        .update(submission)
+                        .digest("hex"),
+                    }
+                  : action,
+              ),
+            },
+          },
+          "clean",
+          { signal: controller.signal },
+        ),
+      ).rejects.toThrow("testkit.pty.request");
+    },
+  );
+
   const principalFacts = () => ({
     uid: 1000,
     euid: 1000,
@@ -203,6 +1930,32 @@ describe("selected PTY transport", () => {
       "",
     ].join("\n"),
   });
+
+  it("retains the unsupported signal without admitting a completion receipt", async () => {
+    const error: unknown = await executeSelectedPtyTransportForTest(
+      request(),
+      "unsupported-signal",
+    ).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({ code: "testkit.pty.transport.exit" });
+    expect(readPtyExitSignal(error)).toBe(1);
+  });
+  const controllerPrincipalFacts = () => {
+    const ordinary = principalFacts();
+    return {
+      ...ordinary,
+      profile: "codex-controller" as const,
+      uid: 0,
+      euid: 0,
+      gid: 0,
+      egid: 0,
+      groups: [0],
+      status: ordinary.status
+        .replaceAll("1000", "0")
+        .replaceAll("CapEff:\t0000000000000000", "CapEff:\t00000000000000e3")
+        .replaceAll("CapPrm:\t0000000000000000", "CapPrm:\t00000000000000e3")
+        .replaceAll("CapBnd:\t0000000000000000", "CapBnd:\t00000000000000e3"),
+    };
+  };
 
   // eslint-disable-next-line max-lines-per-function -- one challenge-gated checkpoint lifecycle
   it("rejects a fixed readiness marker before the per-run challenge", async () => {
@@ -272,6 +2025,7 @@ describe("selected PTY transport", () => {
         challenge,
         text: "›",
         requiredText: "Ask Codex to do anything",
+        postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${challenge}`,
         requiredTerminalProtocol: "csi-u-flags-7-query-v1",
         bold: true,
         dim: false,
@@ -295,24 +2049,23 @@ describe("selected PTY transport", () => {
         ],
       },
     };
+    const prepareChallengeCase = (selected: SelectedPtyExecutionRequest) => {
+      const caseNow = performance.now();
+      return {
+        ...selected,
+        process: {
+          ...selected.process,
+          monotonicStartupDeadlineMs: caseNow + 5_000,
+          monotonicExecutionDeadlineMs: caseNow + 10_000,
+          monotonicShutdownDeadlineMs: caseNow + 15_000,
+        },
+      };
+    };
     const executeChallengeCase = (
       selected: SelectedPtyExecutionRequest,
       seed: Parameters<typeof executeSelectedPtyTransportForTest>[1],
-    ) => {
-      const caseNow = performance.now();
-      return executeSelectedPtyTransportForTest(
-        {
-          ...selected,
-          process: {
-            ...selected.process,
-            monotonicStartupDeadlineMs: caseNow + 5_000,
-            monotonicExecutionDeadlineMs: caseNow + 10_000,
-            monotonicShutdownDeadlineMs: caseNow + 15_000,
-          },
-        },
-        seed,
-      );
-    };
+    ) =>
+      executeSelectedPtyTransportForTest(prepareChallengeCase(selected), seed);
 
     await expect(
       executeChallengeCase(promptRequest, "clean"),
@@ -415,19 +2168,16 @@ describe("selected PTY transport", () => {
       outcome: "input-incomplete",
       readinessObserved: false,
     });
-    await expect(
-      executeChallengeCase(promptRequest, "readiness-revoked-after-input"),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "resize", geometry: { columns: 100, rows: 30 } },
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-        { action: "input", byteLength: prompt.length },
-        { action: "input", byteLength: enter.length },
-        { action: "wait-for-semantic-completion" },
-      ],
-      inputBytesWritten: 65 + prompt.length + enter.length,
-      outcome: "input-incomplete",
+    const revoked = await observeRefusedCheckpoint(
+      () => prepareChallengeCase(promptRequest),
+      "readiness-revoked-after-input",
+    );
+    expect(revoked.code).toBe("testkit.pty.transport.semantic-incomplete");
+    expect(revoked.armCalls).toBe(1);
+    expect(revoked.completionSeen).toBe(false);
+    expect(revoked.semanticFailure).toMatchObject({
+      inputJoined: false,
+      allInputBytesWritten: false,
       readinessObserved: false,
     });
     const resizeRevocationRequest: SelectedPtyExecutionRequest = {
@@ -485,41 +2235,44 @@ describe("selected PTY transport", () => {
         ),
       ).rejects.toThrow("testkit.pty.request");
 
-    await expect(
-      executeChallengeCase(challengeRequest, "fixed-readiness-spoof"),
-    ).resolves.toMatchObject({
-      actions: [{ action: "input", byteLength: 65 }],
-      inputBytesWritten: 65,
-      outcome: "input-incomplete",
-      readinessObserved: false,
+    const spoof = await observeRefusedCheckpoint(
+      () => prepareChallengeCase(challengeRequest),
+      "fixed-readiness-spoof",
+    );
+    expect(spoof).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
+      armCalls: 0,
+      completionSeen: false,
+      readinessSeen: false,
     });
-    await expect(
-      executeChallengeCase(challengeRequest, "completion-before-readiness"),
-    ).resolves.toMatchObject({
-      actions: [
-        { action: "input", byteLength: 65 },
-        { action: "checkpoint-process-topology" },
-        { action: "wait-for-semantic-completion" },
-        { action: "input", byteLength: 1 },
-      ],
-      inputBytesWritten: 66,
-      outcome: "completed",
-      readinessObserved: true,
+    const premature = await observeRefusedCheckpoint(
+      () => prepareChallengeCase(challengeRequest),
+      "completion-before-readiness",
+    );
+    expect(premature).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-readiness",
+      completionSeen: false,
     });
     for (const seed of ["checkpoint-missing-process"] as const)
-      await expect(
-        executeChallengeCase(challengeRequest, seed),
-      ).resolves.toMatchObject({
-        actions: [{ action: "input", byteLength: 65 }],
-        inputBytesWritten: 65,
-        outcome: "input-incomplete",
+      expect(
+        await observeRefusedCheckpoint(
+          () => prepareChallengeCase(challengeRequest),
+          seed,
+        ),
+      ).toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
+        armCalls: 0,
+        completionSeen: false,
       });
-    await expect(
-      executeChallengeCase(challengeRequest, "checkpoint-process-churn"),
-    ).resolves.toMatchObject({
-      actions: [{ action: "input", byteLength: 65 }],
-      inputBytesWritten: 65,
-      outcome: "transport-failed",
+    expect(
+      await observeRefusedCheckpoint(
+        () => prepareChallengeCase(challengeRequest),
+        "checkpoint-process-churn",
+      ),
+    ).toMatchObject({
+      code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
+      armCalls: 0,
+      completionSeen: false,
     });
     await expect(
       executeChallengeCase(
@@ -580,10 +2333,10 @@ describe("selected PTY transport", () => {
       "checkpoint-observer-delay",
       "checkpoint-observer-delay-mismatch",
     ] as const) {
-      const delayedAt = performance.now();
-      await expect(
-        executeSelectedPtyTransportForTest(
-          {
+      expect(
+        await observeRefusedCheckpoint(() => {
+          const delayedAt = performance.now();
+          return {
             ...challengeRequest,
             process: {
               ...challengeRequest.process,
@@ -591,19 +2344,112 @@ describe("selected PTY transport", () => {
               monotonicExecutionDeadlineMs: delayedAt + 100,
               monotonicShutdownDeadlineMs: delayedAt + 500,
             },
-          },
-          seed,
-        ),
-      ).resolves.toMatchObject({
-        actions: [{ action: "input", byteLength: 65 }],
-        cleanup: "clean",
-        inputBytesWritten: 65,
-        outcome: "transport-failed",
-        residualProcessCount: 0,
+          };
+        }, seed),
+      ).toMatchObject({
+        code: "testkit.pty.transport.semantic-unsupported-osc-challenge-completion-not-armed",
+        armCalls: 0,
+        completionSeen: false,
       });
     }
   }, 60_000);
 
+  it.each([
+    ["semantic-marker", "terminal-query-handshake"],
+    ["semantic-marker", "terminal-query-partial"],
+    ["semantic-marker", "terminal-query-blocked"],
+    ["challenge-marker", "terminal-query-handshake"],
+    ["challenge-marker", "terminal-query-partial"],
+    ["challenge-marker", "terminal-query-blocked"],
+  ] as const)(
+    "settles late ordinary replies after historical %s readiness with %s",
+    async (kind, seed) => {
+      vi.resetModules();
+      const { BoundedTerminalEmulator: Terminal } =
+        await import("../bounded-terminal-emulator.js");
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- exact emulator receiver below
+      const write = Terminal.prototype.write;
+      const spy = vi
+        .spyOn(Terminal.prototype, "write")
+        .mockImplementation(function (this: BoundedTerminalEmulator, chunk) {
+          Reflect.apply(write, this, [chunk]);
+          if (
+            new TextDecoder().decode(chunk).startsWith("AGENTSCOPE_PTY_READY")
+          )
+            // The existing handshake fake expects the real CPR at row2/column1.
+            Reflect.apply(write, this, [new TextEncoder().encode("\r\n")]);
+        });
+      try {
+        const { executeSelectedPtyTransportForTest: execute } =
+          await import("../internal/headless-supervisor-backend.js");
+        const challenge = "a".repeat(64);
+        const initialInput =
+          kind === "challenge-marker"
+            ? new TextEncoder().encode(`${challenge}\n`)
+            : new Uint8Array([121, 101, 115, 10]);
+        // This existing fake closes on a written Ctrl-D, not its eof() witness.
+        // It proves generic fixed-input progress, not the actual Claude plan.
+        const stdin = new Uint8Array([...initialInput, 4]);
+        const selected = request({ stdin });
+        const receipt = await execute(
+          {
+            ...selected,
+            readiness:
+              kind === "challenge-marker" ? { kind, challenge } : { kind },
+            initialGeometry: { columns: 100, rows: 30 },
+            interaction: {
+              trigger:
+                kind === "challenge-marker" ? "immediate" : "semantic-ready",
+              actions: [
+                {
+                  action: "input",
+                  byteLength: initialInput.length,
+                  inputSha256: createHash("sha256")
+                    .update(initialInput)
+                    .digest("hex"),
+                },
+                ...(kind === "challenge-marker"
+                  ? [
+                      {
+                        action: "checkpoint-process-topology" as const,
+                        topology: "root-with-contained-process-set" as const,
+                      },
+                    ]
+                  : []),
+                { action: "wait-for-semantic-completion" },
+                {
+                  action: "input",
+                  byteLength: 1,
+                  inputSha256: createHash("sha256")
+                    .update(new Uint8Array([4]))
+                    .digest("hex"),
+                },
+              ],
+            },
+          },
+          seed,
+        );
+        expect(receipt).toMatchObject({
+          outcome: "completed",
+          cleanup: "clean",
+          readinessObserved: true,
+          processJoined: true,
+          terminalInputJoined: true,
+          terminalOutputJoined: true,
+          terminalTransportClosed: true,
+          eofByteWritten: false,
+          inputBytesWritten: stdin.length,
+          finalSnapshot: { semanticState: "completed" },
+        });
+        expect(receipt.actions.at(-2)?.action).toBe(
+          "wait-for-semantic-completion",
+        );
+        expect(receipt.actions.at(-1)?.action).toBe("input");
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
   it.each([
     "terminal-query-handshake",
     "terminal-query-partial",
@@ -666,9 +2512,7 @@ describe("selected PTY transport", () => {
       postSubmissionIdleDiagnostic: "idle-ready",
     });
     if (seed === "terminal-post-completion-idle")
-      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe(
-        "title-not-observed",
-      );
+      expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe("idle-ready");
     if (seed === "terminal-title-completion-after-idle")
       expect(completed.postSubmissionIdleAtTitleDiagnostic).toBe("idle-ready");
     expect(completed.actions.map(({ action }) => action)).toEqual([
@@ -685,24 +2529,27 @@ describe("selected PTY transport", () => {
 
   it("stops before post-turn input when the synthetic terminal closes", async () => {
     const selected = protocolPromptRequest();
-    const gated = postSubmissionRequest(selected);
-    const stale = await executeSelectedPtyTransportForTest(
-      gated,
+    const stale = await observeRefusedCheckpoint(
+      () => postSubmissionRequest(selected),
       "terminal-preenter-frame-late-close",
     );
-    expect(stale.actions.map(({ action }) => action)).not.toContain(
-      "wait-for-post-submission-idle-prompt",
-    );
-    expect(stale.inputBytesWritten).toBe(137);
-    expect(stale.postSubmissionIdleDiagnostic).not.toBe("idle-ready");
-    expect(stale.cleanup).toBe("clean");
+    expect(stale.code).toBe("testkit.pty.transport.semantic-incomplete");
+    expect(stale.completionSeen).toBe(false);
+    expect(stale.semanticFailure).toMatchObject({
+      inputJoined: false,
+      allInputBytesWritten: false,
+    });
   });
 
   it("rejects substituted post-turn readiness and action order", async () => {
     const selected = protocolPromptRequest();
     const gated = postSubmissionRequest(selected);
+    const missingResponse = { ...selected.readiness };
+    if (missingResponse.kind !== "challenge-styled-text")
+      throw new Error("test.fixture.readiness");
+    delete missingResponse.postSubmissionResponseText;
     for (const readiness of [
-      selected.readiness,
+      missingResponse,
       {
         ...gated.readiness,
         postSubmissionResponseText: `AGENTSCOPE_CODEX_RESPONSE:${"b".repeat(64)}`,
@@ -747,7 +2594,7 @@ describe("selected PTY transport", () => {
       boundedNegativePostSubmissionRequest(),
       "terminal-post-submission-idle-missing",
     );
-    expect(missingIdle.finalSnapshot.semanticState).toBe("completed");
+    expect(missingIdle.finalSnapshot.semanticState).not.toBe("completed");
     const actions = missingIdle.actions.map(({ action }) => action);
     expect(actions.slice(0, 5)).toEqual([
       "resize",
@@ -756,12 +2603,8 @@ describe("selected PTY transport", () => {
       "input",
       "input",
     ]);
-    // Completion may precede a causally post-input semantic wait; neither
-    // observation admits an idle response.
-    expect(
-      actions.length === 5 ||
-        (actions.length === 6 && actions[5] === "wait-for-semantic-completion"),
-    ).toBe(true);
+    expect(actions).not.toContain("wait-for-semantic-completion");
+    expect(actions).toHaveLength(5);
     expect(missingIdle.inputBytesWritten).toBe(137);
     expect(missingIdle.postSubmissionIdleDiagnostic).toBe(
       "response-not-observed",
@@ -818,9 +2661,9 @@ describe("selected PTY transport", () => {
     "rejects terminal protocol negative %s",
     async (seed) => {
       const selected = protocolPromptRequest();
-      const now = performance.now();
-      const rejected = await executeSelectedPtyTransportForTest(
-        {
+      const rejected = await observeRefusedCheckpoint(() => {
+        const now = performance.now();
+        return {
           ...selected,
           process: {
             ...selected.process,
@@ -828,24 +2671,17 @@ describe("selected PTY transport", () => {
             monotonicExecutionDeadlineMs: now + 10_000,
             monotonicShutdownDeadlineMs: now + 15_000,
           },
-        },
-        seed,
-      );
-      expect(rejected).toMatchObject({
-        actions: [
-          { action: "resize", geometry: { columns: 100, rows: 30 } },
-          { action: "input", byteLength: 65 },
-          ...(seed === "keyboard-protocol-after-readiness"
-            ? [{ action: "checkpoint-process-topology" }]
-            : []),
-        ],
-        inputBytesWritten: 65,
-        outcome: "input-incomplete",
+        };
+      }, seed);
+      expect(rejected.armCalls).toBe(0);
+      expect(rejected.completionSeen).toBe(false);
+      expect(rejected.code).toBe("testkit.pty.transport.semantic-incomplete");
+      // The synthetic runtime forbids post-challenge input for these seeds;
+      // terminal refusal retains genuine private incomplete-input facts.
+      expect(rejected.semanticFailure).toMatchObject({
+        inputJoined: false,
+        allInputBytesWritten: false,
       });
-      if (seed === "keyboard-protocol-missing")
-        expect(rejected.checkpointProgressDiagnostic).toBe("no-live-readiness");
-      if (seed === "keyboard-protocol-after-readiness")
-        expect(rejected.checkpointProgressDiagnostic).toBe("advanced");
     },
     20_000,
   );
@@ -1022,21 +2858,7 @@ describe("selected PTY transport", () => {
   });
 
   it("admits only the exact Codex controller capability set", () => {
-    const ordinary = principalFacts();
-    const controller = {
-      ...ordinary,
-      profile: "codex-controller" as const,
-      uid: 0,
-      euid: 0,
-      gid: 0,
-      egid: 0,
-      groups: [0],
-      status: ordinary.status
-        .replaceAll("1000", "0")
-        .replaceAll("CapEff:\t0000000000000000", "CapEff:\t00000000000000e3")
-        .replaceAll("CapPrm:\t0000000000000000", "CapPrm:\t00000000000000e3")
-        .replaceAll("CapBnd:\t0000000000000000", "CapBnd:\t00000000000000e3"),
-    };
+    const controller = controllerPrincipalFacts();
     expect(validateSelectedContainerPrincipalFactsForTest(controller)).toBe(
       true,
     );
@@ -1056,6 +2878,78 @@ describe("selected PTY transport", () => {
       }),
     ).toThrow("testkit.pty.immutable-candidate");
   });
+
+  it("keeps exact profile selection independent of ambient array includes", () => {
+    for (const scenarioId of [
+      "codex-tui-trace-smoke",
+      "claude-interactive-trace-smoke",
+    ])
+      expect(actualImmutablePrincipalProfile(scenarioId, true)).toBe(
+        "codex-controller",
+      );
+    expect(actualImmutablePrincipalProfile("fixture-process-smoke", true)).toBe(
+      "ordinary",
+    );
+  });
+
+  it.each(["codex-tui-trace-smoke", "claude-interactive-trace-smoke"])(
+    "binds actual %s selection to the exact admitted controller principal",
+    (scenarioId) => {
+      const controller = {
+        ...controllerPrincipalFacts(),
+        profile: actualImmutablePrincipalProfile(scenarioId),
+      };
+      expect(validateSelectedContainerPrincipalFactsForTest(controller)).toBe(
+        true,
+      );
+      for (const status of [
+        controller.status.replace(
+          "CapBnd:\t00000000000000e3",
+          "CapBnd:\t00000000000000e2",
+        ),
+        controller.status.replace(
+          "CapEff:\t00000000000000e3",
+          "CapEff:\t00000000000000e7",
+        ),
+        controller.status.replace("NoNewPrivs:\t1", "NoNewPrivs:\t0"),
+      ])
+        expect(() =>
+          validateSelectedContainerPrincipalFactsForTest({
+            ...controller,
+            status,
+          }),
+        ).toThrow("testkit.pty.immutable-candidate");
+      expect(() =>
+        validateSelectedContainerPrincipalFactsForTest({
+          ...controller,
+          groups: [0, 1000],
+        }),
+      ).toThrow("testkit.pty.immutable-candidate");
+    },
+  );
+  it.each([
+    "fixture-process-smoke",
+    "fixture-process-interactive",
+    "claude-interactive-trace-smoke-extra",
+  ])(
+    "keeps actual %s selection ordinary and rejects a root substitution",
+    (scenarioId) => {
+      const profile = actualImmutablePrincipalProfile(scenarioId);
+      expect(profile).toBe("ordinary");
+      expect(
+        validateSelectedContainerPrincipalFactsForTest({
+          ...principalFacts(),
+          profile,
+        }),
+      ).toBe(true);
+      expect(() =>
+        validateSelectedContainerPrincipalFactsForTest({
+          ...controllerPrincipalFacts(),
+          profile,
+        }),
+      ).toThrow("testkit.pty.immutable-candidate");
+    },
+  );
 
   it.each(["uid", "gid", "groups", "status"] as const)(
     "rejects causal immutable principal %s substitution",
@@ -1267,7 +3161,7 @@ describe("selected PTY transport", () => {
     ],
     [
       "unsupported-control",
-      "testkit.pty.transport.semantic-unsupported-extended-csi",
+      "testkit.pty.transport.semantic-unsupported-extended-csi-private-mode-unlisted-h-9999",
     ],
   ] as const)(
     "rejects terminal semantic state %s as completion",

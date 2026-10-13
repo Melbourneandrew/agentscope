@@ -209,8 +209,8 @@ const installedRootHookTimeoutMilliseconds = 7_000;
 
 const codexRootHookSpans = (source) => {
   const spans = [];
-  let active;
-  let open;
+  const opened = new Map();
+  const seen = new Set();
   for (const line of source.split("\n")) {
     if (!line.includes("codex.hooks.command")) continue;
     const eventFields = [
@@ -224,20 +224,27 @@ const codexRootHookSpans = (source) => {
     const isClose = /: close(?:\s|$)/u.test(line);
     if (isNew === isClose) throw new Error("integration.codex.hook-log");
     if (isNew) {
-      if (active !== undefined) throw new Error("integration.codex.hook-log");
-      active = eventName;
-      open = line;
+      if (
+        seen.has(eventName) ||
+        (eventName !== "SessionStart" &&
+          [...opened.keys()].some((name) => name !== "SessionStart"))
+      )
+        throw new Error("integration.codex.hook-log");
+      seen.add(eventName);
+      opened.set(eventName, line);
       continue;
     }
-    if (active !== eventName || open === undefined)
-      throw new Error("integration.codex.hook-log");
-    active = undefined;
+    const open = opened.get(eventName);
+    if (open === undefined) throw new Error("integration.codex.hook-log");
+    opened.delete(eventName);
     spans.push(Object.freeze({ close: line, eventName, open }));
-    open = undefined;
   }
+  const active =
+    [...opened.keys()].find((name) => name !== "SessionStart") ??
+    (opened.has("SessionStart") ? "SessionStart" : undefined);
   return Object.freeze({
     activeEventName: active,
-    activeOpen: open,
+    activeOpen: opened.get(active),
     spans: Object.freeze(spans),
   });
 };
@@ -256,57 +263,19 @@ const completedHookDurationMilliseconds = (span) => {
 const hookSpanIdentity = (span) =>
   createHash("sha256").update(`${span.open}\n${span.close}\n`).digest("hex");
 
-/**
- * Proves that the exact SessionStart command completed before the loopback
- * gateway admits the first model request. No later root event may already be
- * present at this causal checkpoint.
- */
-export const inspectCodexSessionStartBeforeFirstModelRequestAdmission = (
-  input,
-) => {
-  const source = readCodexHookLog(input);
-  if (source === undefined) return undefined;
-  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
-  if (
-    spans.length === 0 &&
-    activeEventName === undefined &&
-    activeOpen === undefined
-  )
-    return undefined;
-  if (
-    spans.length === 0 &&
-    activeEventName === "SessionStart" &&
-    activeOpen !== undefined
-  )
-    return undefined;
-  if (activeEventName !== undefined || activeOpen !== undefined)
-    throw new Error("integration.codex.hook-lifecycle");
-  if (spans.length !== 1 || spans[0]?.eventName !== "SessionStart")
-    throw new Error("integration.codex.hook-lifecycle");
-  const durationMilliseconds = completedHookDurationMilliseconds(spans[0]);
-  if (durationMilliseconds > 1_000)
-    throw new Error("integration.codex.hook-mediation");
-  return Object.freeze({
-    durationMilliseconds,
-    spanSha256: hookSpanIdentity(spans[0]),
-  });
-};
-
 // Failure-only snapshot after the selected PTY has stopped. This cannot arm
 // the model gate and never returns log contents or an admission identity.
 export const classifyCodexSessionStartAtFailedPty = (input) => {
   const source = readCodexHookLog(input);
   if (source === undefined) return "arm-log-unavailable";
-  const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  const { activeEventName, spans } = codexRootHookSpans(source);
   if (spans.length === 0 && activeEventName === undefined)
     return "arm-hook-unseen";
-  if (
-    spans.length === 0 &&
-    activeEventName === "SessionStart" &&
-    activeOpen !== undefined
-  )
+  if (spans.length === 0 && activeEventName === "SessionStart")
     return "arm-hook-open";
   if (spans[0]?.eventName === "SessionStart") {
+    if (commandOutcome(spans[0].close) !== "completed")
+      throw new Error("integration.codex.hook-lifecycle");
     classifyCodexShutdownLogSource(source);
     return "arm-hook-completed";
   }
@@ -314,32 +283,43 @@ export const classifyCodexSessionStartAtFailedPty = (input) => {
 };
 
 /**
- * Proves the one graceful root lifecycle from one authenticated log snapshot.
+ * Proves required Stop/SessionEnd from one authenticated log snapshot.
+ * SessionStart is optional diagnostic evidence, never pre-entry certification.
  */
 export const inspectCodexRootHookLifecycle = (input) => {
   const source = readCodexHookLog(input);
   if (source === undefined) return undefined;
   const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
+  const required = spans.filter((span) => span.eventName !== "SessionStart");
   if (
-    activeEventName !== undefined ||
-    activeOpen !== undefined ||
-    spans.length !== rootHookEvents.length ||
-    spans.some((span, index) => span.eventName !== rootHookEvents[index])
+    (activeEventName !== undefined && activeEventName !== "SessionStart") ||
+    (activeEventName === undefined && activeOpen !== undefined) ||
+    required.length !== 2 ||
+    required.some((span, index) => span.eventName !== rootHookEvents[index + 1])
   )
     throw new Error("integration.codex.hook-lifecycle");
-  const durations = spans.map(completedHookDurationMilliseconds);
+  const durations = required.map(completedHookDurationMilliseconds);
   if (
     durations.some(
       (duration) => duration > installedRootHookTimeoutMilliseconds,
     )
   )
     throw new Error("integration.codex.hook-log");
-  if (durations[0] > 1_000) throw new Error("integration.codex.hook-mediation");
+  const startup = spans.find((span) => span.eventName === "SessionStart");
+  const startupDuration =
+    startup === undefined
+      ? null
+      : tracingDurationMilliseconds(startup.close, "time\\.busy") +
+        tracingDurationMilliseconds(startup.close, "time\\.idle");
+  if (startupDuration !== null && !Number.isFinite(startupDuration))
+    throw new Error("integration.codex.hook-log");
+  if (startup !== undefined) commandOutcome(startup.close);
   return Object.freeze({
-    sessionStartDurationMilliseconds: durations[0],
-    sessionStartSpanSha256: hookSpanIdentity(spans[0]),
-    stopDurationMilliseconds: durations[1],
-    sessionEndDurationMilliseconds: durations[2],
+    sessionStartDurationMilliseconds: startupDuration,
+    sessionStartSpanSha256:
+      startup === undefined ? null : hookSpanIdentity(startup),
+    stopDurationMilliseconds: durations[0],
+    sessionEndDurationMilliseconds: durations[1],
   });
 };
 
@@ -351,19 +331,24 @@ export const classifyCodexShutdownLogSource = (source) => {
   if (typeof source !== "string") throw new Error("integration.codex.hook-log");
   if (source.length === 0) return "log-unavailable";
   const { activeEventName, activeOpen, spans } = codexRootHookSpans(source);
-  const names = spans.map((span) => span.eventName);
+  const required = spans.filter((span) => span.eventName !== "SessionStart");
+  const names = required.map((span) => span.eventName);
   if (
-    names.length === 0 ||
-    names.length > rootHookEvents.length ||
-    names.some((name, index) => name !== rootHookEvents[index]) ||
+    (spans.length === 0 && activeEventName === undefined) ||
+    names.length > 2 ||
+    names.some((name, index) => name !== rootHookEvents[index + 1]) ||
     (activeEventName !== undefined &&
+      activeEventName !== "SessionStart" &&
       (activeOpen === undefined ||
-        activeEventName !== rootHookEvents[names.length])) ||
+        activeEventName !== rootHookEvents[names.length + 1])) ||
     (activeEventName === undefined && activeOpen !== undefined)
   )
     throw new Error("integration.codex.hook-lifecycle");
   for (const span of spans)
-    if (commandOutcome(span.close) !== "completed")
+    if (
+      commandOutcome(span.close) !== "completed" &&
+      span.eventName !== "SessionStart"
+    )
       throw new Error("integration.codex.hook-lifecycle");
   if (names.includes("SessionEnd")) return "session-end-completed";
   if (activeEventName === "SessionEnd") return "session-end-active";
@@ -393,16 +378,6 @@ export const codexStopHookReadyForExit = (state) => {
     return false;
   throw new Error("integration.codex.hook-lifecycle");
 };
-
-export const codexSessionStartCheckpointMatchesLifecycle = (
-  checkpoint,
-  lifecycle,
-) =>
-  checkpoint !== undefined &&
-  lifecycle !== undefined &&
-  checkpoint.durationMilliseconds ===
-    lifecycle.sessionStartDurationMilliseconds &&
-  checkpoint.spanSha256 === lifecycle.sessionStartSpanSha256;
 
 /**
  * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
@@ -492,8 +467,8 @@ export const classifyMissingOperationalStateByHookDuration = (
 
 /**
  * Returns the complete observed SessionStart command span. This short-lived
- * non-capturing hook is a conservative upper bound on vendor mediation before
- * the exact installed launcher's first instruction.
+ * non-capturing hook is diagnostic only, not a bound on pre-entry mediation.
+ * The legacy function name is retained for the existing composition caller.
  *
  * @param {{afterRead?: () => void, directoryDescriptor: number, directoryPath: string}} input
  * @returns {number | undefined}
@@ -508,8 +483,8 @@ export const codexSessionStartMediationUpperBoundMilliseconds = (input) => {
   const span =
     tracingDurationMilliseconds(close, "time\\.busy") +
     tracingDurationMilliseconds(close, "time\\.idle");
-  if (!Number.isFinite(span) || span < 0 || span > 1_000)
-    throw new Error("integration.codex.hook-mediation");
+  if (!Number.isFinite(span) || span < 0)
+    throw new Error("integration.codex.hook-log");
   return span;
 };
 
@@ -721,6 +696,78 @@ export const codexSessionIdentity = (records) => {
   }
   if (matches.length !== 1) throw new Error("integration.codex.session-ledger");
   return matches[0];
+};
+
+// Called only after the official child joins. Physical JSONL positions are
+// observations, not native sequence numbers or an incremental generation.
+export const projectCodexPostJoinTranscript = ({
+  records,
+  baseline,
+  observedRecords,
+  expectedMessage,
+  sessionId,
+  turnId,
+  modelName,
+}) => {
+  if (
+    !Array.isArray(observedRecords) ||
+    observedRecords.length !== 1 ||
+    !validCodexSessionLedgerRecord(observedRecords[0]) ||
+    records?.length !== 1 ||
+    !validCodexSessionLedgerRecord(records[0]) ||
+    ["relativePath", "dev", "ino", "mode", "uid", "gid"].some(
+      (key) => records[0][key] !== observedRecords[0][key],
+    ) ||
+    !records[0].content.startsWith(observedRecords[0].content)
+  )
+    throw new Error("integration.codex.session-ledger");
+  if (
+    codexSessionIdentity(records) !== sessionId ||
+    codexTurnTerminalIdAfterBaseline(records, baseline, expectedMessage) !==
+      turnId ||
+    typeof modelName !== "string" ||
+    modelName.length < 1 ||
+    modelName.length > 256
+  )
+    throw new Error("integration.codex.session-ledger");
+  const lines = records[0].content.split("\n");
+  lines.pop(); // the existing session reader above required a final newline
+  if (lines.length > 4_096) throw new Error("integration.codex.session-ledger");
+  const positions = { session: [], context: [], terminal: [] };
+  lines.forEach((line, position) => {
+    if (line === "") return;
+    const entry = JSON.parse(line);
+    if (entry?.type === "session_meta") positions.session.push(position);
+    if (entry?.type === "turn_context") {
+      if (
+        entry.payload?.turn_id !== turnId ||
+        entry.payload?.model !== modelName
+      )
+        throw new Error("integration.codex.session-ledger");
+      positions.context.push(position);
+    }
+    if (entry?.type === "event_msg" && entry.payload?.type === "task_complete")
+      positions.terminal.push(position);
+  });
+  if (
+    positions.session.length !== 1 ||
+    positions.context.length !== 1 ||
+    positions.terminal.length !== 1 ||
+    positions.session[0] >= positions.context[0] ||
+    positions.context[0] >= positions.terminal[0]
+  )
+    throw new Error("integration.codex.session-ledger");
+  return Object.freeze({
+    nativeFormat: "codex-0.149.1-rollout-jsonl",
+    boundaryKind: "transcript-range",
+    positionKind: "line",
+    availableStartPosition: 0,
+    exclusiveEndPosition: lines.length,
+    sessionMetaPosition: positions.session[0],
+    turnContextPosition: positions.context[0],
+    taskCompletePosition: positions.terminal[0],
+    sourceGeneration: null,
+  });
 };
 
 export const terminalObservationBeforeDeadline = ({
@@ -1529,17 +1576,31 @@ export const settledCodexLedgerSnapshot = ({
     throw new Error("integration.codex.session-ledger");
   }
 };
-const readStableLedger = (parent, relativePath, name) => {
+const readStableLedger = (
+  parent,
+  relativePath,
+  name,
+  baseline,
+  expectedMessage,
+) => {
   const descriptor = openChild(
     parent,
     name,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
-  if (descriptor === null) return null;
+  if (descriptor === null) {
+    if (baseline !== undefined)
+      throw new Error("integration.codex.session-ledger");
+    return null;
+  }
   try {
     const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw new Error("integration.codex.session-ledger");
-    if (before.size < 1n) return null;
+    if (before.size < 1n) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return null;
+    }
     if (before.size > BigInt(ledgerLimit))
       throw new Error("integration.codex.session-ledger");
     const first = readCapped(descriptor);
@@ -1553,6 +1614,55 @@ const readStableLedger = (parent, relativePath, name) => {
       second,
       after,
     });
+    if (content === null && baseline !== undefined) {
+      // Only an observed append on the already bound inode is pending. A
+      // rewrite, truncation, missing path or ownership change is not a retry.
+      const prefix = Buffer.from(baseline.content, "utf8");
+      if (
+        [before, middle, after].some(
+          (status) =>
+            !status.isFile() ||
+            status.dev !== baseline.dev ||
+            status.ino !== baseline.ino ||
+            status.mode !== baseline.mode ||
+            status.uid !== baseline.uid ||
+            status.gid !== baseline.gid ||
+            status.size > BigInt(ledgerLimit),
+        ) ||
+        before.size < BigInt(prefix.length) ||
+        middle.size < before.size ||
+        after.size < middle.size ||
+        after.size === before.size ||
+        first.length < Number(before.size) ||
+        first.length > Number(middle.size) ||
+        second.length < Number(middle.size) ||
+        second.length > Number(after.size) ||
+        !first.subarray(0, prefix.length).equals(prefix) ||
+        !second.subarray(0, first.length).equals(first)
+      )
+        throw new Error("integration.codex.session-ledger");
+      for (const bytes of [first, second]) {
+        let observed;
+        try {
+          // A live append can end between UTF-8 bytes. Validate the complete
+          // prefix without flushing the incomplete trailing code point; fatal
+          // decoding still rejects malformed bytes anywhere in that prefix.
+          observed = new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+            stream: true,
+          });
+        } catch {
+          throw new Error("integration.codex.session-ledger");
+        }
+        // Validate completed lines and terminal contradictions even when the
+        // snapshot cannot yet be published as a settled observation.
+        codexTurnTerminalIdAfterBaseline(
+          [{ ...baseline, content: observed }],
+          [baseline],
+          expectedMessage,
+        );
+      }
+      return undefined;
+    }
     return content === null
       ? null
       : Object.freeze({
@@ -1569,7 +1679,18 @@ const readStableLedger = (parent, relativePath, name) => {
   }
 };
 
-export const readCodexSessionLedgerRecords = (homeDescriptor) => {
+export const readCodexSessionLedgerRecords = (
+  homeDescriptor,
+  baseline,
+  expectedMessage,
+) => {
+  if (
+    baseline !== undefined &&
+    (!Array.isArray(baseline) ||
+      baseline.length !== 1 ||
+      !validCodexSessionLedgerRecord(baseline[0]))
+  )
+    throw new Error("integration.codex.session-ledger");
   if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
     throw new Error("integration.codex.session-ledger");
   const homeStatus = fstatSync(homeDescriptor, { bigint: true });
@@ -1599,10 +1720,18 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
   };
   try {
     const codex = openChild(homeDescriptor, ".codex", directoryFlags);
-    if (codex === null) return [];
+    if (codex === null) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return [];
+    }
     opened.push(codex);
     const sessions = openChild(codex, "sessions", directoryFlags);
-    if (sessions === null) return [];
+    if (sessions === null) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return [];
+    }
     opened.push(sessions);
     let directories = openDirectories(
       [{ descriptor: sessions, relativePath: ".codex/sessions" }],
@@ -1611,6 +1740,8 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
     directories = openDirectories(directories, /^(?:0[1-9]|1[0-2])$/u);
     directories = openDirectories(directories, /^(?:0[1-9]|[12]\d|3[01])$/u);
     const ledgers = [];
+    const seen = [];
+    let pending = false;
     for (const directory of directories) {
       const names = authenticatedEntries(
         directory.descriptor,
@@ -1619,15 +1750,28 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
         budget,
       );
       for (const name of names) {
+        const path = `${directory.relativePath}/${name}`;
+        if (baseline !== undefined && path !== baseline[0].relativePath)
+          throw new Error("integration.codex.session-ledger");
+        seen.push(path);
         const record = readStableLedger(
           directory.descriptor,
           directory.relativePath,
           name,
+          baseline?.[0],
+          expectedMessage,
         );
-        if (record !== null) ledgers.push(record);
+        if (record === undefined) pending = true;
+        else if (record !== null) ledgers.push(record);
       }
     }
     if (ledgers.length > 8) throw new Error("integration.codex.session-ledger");
+    if (baseline !== undefined) {
+      if (seen.length !== 1 || seen[0] !== baseline[0].relativePath)
+        throw new Error("integration.codex.session-ledger");
+      if (pending) return undefined;
+      codexTurnTerminalIdAfterBaseline(ledgers, baseline, expectedMessage);
+    }
     return ledgers;
   } finally {
     for (const descriptor of opened.reverse()) closeSync(descriptor);

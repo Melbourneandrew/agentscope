@@ -75,7 +75,13 @@ const planFor = (
       candidate.executionMode === executionMode &&
       candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
-  return createIsolationPlan({
+  return planForScenario(scenario, token);
+};
+const planForScenario = (
+  scenario: (typeof manifest.scenarios)[number],
+  token: string,
+) =>
+  createIsolationPlan({
     scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
@@ -92,7 +98,6 @@ const planFor = (
     maximumParallelScenarios: 2,
     scenarioTimeoutMilliseconds: 300_000,
   });
-};
 
 const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   policyVersion: 1,
@@ -864,33 +869,16 @@ describe("scenario isolation", () => {
     expect(() => planFor("not-a-token")).toThrow("integration.isolation.plan");
   });
 
-  it("reserves a control volume only for the real Codex gate scenario", () => {
+  it("reserves a private control volume for every upstream service consumer", () => {
     const ordinary = planFor("0123456789abcdef");
     const scenario = manifest.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
     if (scenario === undefined) throw new Error("integration.test.scenario");
-    const codex = createIsolationPlan({
-      scenario,
-      manifestIdentity: manifest.manifestIdentity,
-      candidate,
-      runToken: "0123456789abcdef",
-      baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
-      mockServerImageIdentity: preparedIdentityFor(
-        scenario.mockServerImage,
-        "b",
-      ),
-      selection: {
-        selectionVersion: 2,
-        manifestIdentity: manifest.manifestIdentity,
-        mode: "scenario",
-        selector: { scenarioId: scenario.scenarioId },
-        scenarioIds: [scenario.scenarioId],
-      },
-      maximumParallelScenarios: 2,
-      scenarioTimeoutMilliseconds: 300_000,
-    });
-    expect(ordinary.controlVolumeName).toBeNull();
+    const codex = planForScenario(scenario, "0123456789abcdef");
+    expect(ordinary.controlVolumeName).toBe(
+      "agentscope-int-0123456789abcdef-control",
+    );
     expect(codex.controlVolumeName).toBe(
       "agentscope-int-0123456789abcdef-control",
     );
@@ -923,6 +911,7 @@ describe("scenario isolation", () => {
       "build",
       "build-mockserver",
       "network",
+      "control-volume",
       "collector",
       "retrieval",
       "mockserver",
@@ -933,6 +922,7 @@ describe("scenario isolation", () => {
       "container:agentscope-int-0123456789abcdef-retrieval",
       "container:agentscope-int-0123456789abcdef-mockserver",
       "remove-network:agentscope-int-0123456789abcdef-network",
+      "remove-control-volume:agentscope-int-0123456789abcdef-control",
       "image:agentscope-int-0123456789abcdef:candidate",
       "image:agentscope-int-0123456789abcdef:mockserver",
       "context:0123456789abcdef",
@@ -956,6 +946,44 @@ describe("scenario isolation", () => {
     expect(JSON.stringify(evidence)).not.toContain("AGENTSCOPE_PTY_COMPLETE");
     expect(JSON.stringify(evidence)).not.toContain("cnVuCg==");
   });
+});
+
+describe("scenario result boolean delivered before service semantic join", () => {
+  it.each([false, true])(
+    "delivers owned succeeded=%s once to the real executor join",
+    async (succeeded) => {
+      const plan = planFor("0123456789abcdef");
+      const fixture = driver();
+      fixture.runScenario.mockResolvedValueOnce({
+        receipt: headlessReceiptFor(plan.runId),
+        succeeded,
+      });
+      const seen: unknown[] = [];
+      vi.spyOn(fixture.implementation, "joinMockServer").mockImplementationOnce(
+        (...args: unknown[]) => {
+          seen.push(args[2]);
+          if (args[2] !== succeeded)
+            throw new Error("integration.mockserver.control");
+          return Promise.resolve();
+        },
+      );
+      const execution = executeIsolationPlan(
+        plan,
+        fixture.implementation,
+        new AbortController().signal,
+      );
+      if (succeeded)
+        await expect(execution).resolves.toMatchObject({ outcome: "passed" });
+      else
+        await expect(execution).rejects.toThrow(
+          "integration.isolation.scenario-failed",
+        );
+      expect(seen).toEqual([succeeded]);
+      const evidence = fixture.recordEvidence.mock.calls[0]?.[0];
+      expect(evidence?.outcome).toBe(succeeded ? "passed" : "failed");
+      expect(evidence?.cleanup.outcome).toBe("complete");
+    },
+  );
 });
 
 describe("scenario isolation outcomes", () => {
@@ -1041,6 +1069,294 @@ describe("scenario isolation outcomes", () => {
 
 // eslint-disable-next-line max-lines-per-function -- one matrix verifies ordered cleanup evidence and causal precedence.
 describe("scenario cleanup evidence", () => {
+  it("retains the observed work phase when rejection has no value", async () => {
+    const fixture = driver();
+    fixture.inspectExecutionPolicy.mockRejectedValueOnce(undefined);
+    const cleanupCause = new Error("private-cleanup-cause");
+    const cleanupFailure = new Error(
+      "integration.isolation.cleanup-network-remove",
+      { cause: cleanupCause },
+    );
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+      cleanupFailure,
+    );
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.cleanup-network-remove",
+        cause: cleanupCause,
+      });
+      expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe("failed");
+      expect(String(diagnostic.mock.calls[0]?.[0])).toContain(
+        '"originalWorkPhase":"inspect-policy"',
+      );
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it("bounds the full fixed removal vector and never retains error contents", async () => {
+    const fixture = driver();
+    fixture.removeContainer.mockRejectedValue(new Error("private-container"));
+    vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValue(
+      new Error("integration.isolation.cleanup-network-remove"),
+    );
+    vi.spyOn(fixture.implementation, "removeControlVolume").mockRejectedValue(
+      new Error("integration.images.containment"),
+    );
+    vi.spyOn(fixture.implementation, "removeImage")
+      .mockRejectedValueOnce(new Error("integration.images.deadline"))
+      .mockRejectedValueOnce(new Error("integration.images.docker-client"));
+    vi.spyOn(fixture.implementation, "removeContext").mockRejectedValue(
+      new Error("private-context"),
+    );
+    const diagnostic = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("integration.isolation.cleanup-scenario-container");
+      const output = String(diagnostic.mock.calls[0]?.[0]);
+      expect(
+        JSON.parse(
+          output.slice("integration.isolation.cleanup-diagnostic:".length),
+        ),
+      ).toMatchObject({
+        originalWorkPhase: null,
+        originalWorkFailureReason: null,
+        removalFailureCount: 9,
+        failedRemovals: [
+          { operation: "scenario-container", reason: "unknown" },
+          { operation: "collector-container", reason: "unknown" },
+          { operation: "retrieval-container", reason: "unknown" },
+          { operation: "mock-server-container", reason: "unknown" },
+          { operation: "network", reason: "network-remove" },
+          { operation: "control-volume", reason: "containment" },
+          { operation: "scenario-image", reason: "deadline" },
+          { operation: "mock-server-image", reason: "docker-client" },
+          { operation: "context", reason: "unknown" },
+        ],
+      });
+      expect(Buffer.byteLength(output)).toBeLessThan(2048);
+      expect(output).not.toContain("private-");
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it.each([
+    ["inspectExecutionPolicy", "inspect-policy"],
+    ["buildImage", "build-candidate"],
+    ["buildMockServerImage", "build-mock"],
+    ["createNetwork", "create-network"],
+    ["createControlVolume", "create-control"],
+    ["startCollector", "start-collector"],
+    ["startRetrieval", "start-retrieval"],
+    ["startMockServer", "start-mock"],
+    ["runScenario", "run-scenario"],
+    ["joinMockServer", "join-mock"],
+  ] as const)(
+    "retains only the original fixed work phase %s",
+    async (method, phase) => {
+      const fixture = driver();
+      const workFailure = new Error("private-work-canary");
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      vi.spyOn(fixture.implementation, method).mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      vi.spyOn(
+        fixture.implementation,
+        "removeControlVolume",
+      ).mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-control-volume"),
+      );
+      try {
+        await expect(
+          executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          ),
+        ).rejects.toMatchObject({
+          message: "integration.isolation.cleanup-network-remove",
+          cause: workFailure,
+        });
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(
+          JSON.parse(
+            output.slice("integration.isolation.cleanup-diagnostic:".length),
+          ),
+        ).toMatchObject({
+          originalWorkPhase: phase,
+          originalWorkFailureReason: "unknown",
+          removalFailureCount: 2,
+          failedRemovals: [
+            { operation: "network", reason: "network-remove" },
+            { operation: "control-volume", reason: "control-volume-identity" },
+          ],
+        });
+        expect(output).not.toContain("private-work-canary");
+        expect(fixture.calls.at(-1)).toBe("evidence");
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
+  it("keeps diagnostic getters and a throwing sink out of cleanup precedence", async () => {
+    const fixture = driver();
+    const workFailure = new Error("private-work-canary");
+    const cleanupFailure = new Error("private-cleanup-canary");
+    const getter = vi.fn(() => "private-getter-canary");
+    Object.defineProperty(cleanupFailure, "message", { get: getter });
+    fixture.runScenario.mockRejectedValueOnce(workFailure);
+    fixture.removeContainer.mockRejectedValueOnce(cleanupFailure);
+    const diagnostic = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => {
+        throw new Error("private-sink-canary");
+      });
+    try {
+      await expect(
+        executeIsolationPlan(
+          planFor("0123456789abcdef"),
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        message: "integration.isolation.cleanup-scenario-container",
+        cause: workFailure,
+      });
+      expect(getter).not.toHaveBeenCalled();
+      expect(String(diagnostic.mock.calls[0]?.[0])).not.toMatch(
+        /private-(?:work|cleanup|getter|sink)-canary/u,
+      );
+      expect(String(diagnostic.mock.calls[0]?.[0])).toContain(
+        '"reason":"unknown"',
+      );
+      expect(fixture.calls.at(-1)).toBe("evidence");
+    } finally {
+      diagnostic.mockRestore();
+    }
+  });
+
+  it.each([
+    ["integration.mockserver.control", "mockserver-control"],
+    ["integration.isolation.mockserver-terminal", "mockserver-terminal"],
+  ] as const)(
+    "retains join failure %s separately from removal reasons",
+    async (message, reason) => {
+      const fixture = driver();
+      const workFailure = new Error(message);
+      vi.spyOn(fixture.implementation, "joinMockServer").mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      try {
+        await expect(
+          executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          ),
+        ).rejects.toMatchObject({
+          message: "integration.isolation.cleanup-network-remove",
+          cause: workFailure,
+        });
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(
+          JSON.parse(
+            output.slice("integration.isolation.cleanup-diagnostic:".length),
+          ),
+        ).toMatchObject({
+          originalWorkPhase: "join-mock",
+          originalWorkFailureReason: reason,
+          failedRemovals: [{ operation: "network", reason: "network-remove" }],
+        });
+        expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe(
+          "failed",
+        );
+        expect(Buffer.byteLength(output)).toBeLessThan(2048);
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
+  it.each(["getter", "proxy"] as const)(
+    "does not inspect hostile work failure %s",
+    async (kind) => {
+      const fixture = driver();
+      const trap = vi.fn(() => {
+        throw new Error("private-work-trap");
+      });
+      const native = new Error("private-work-canary");
+      const workFailure =
+        kind === "proxy"
+          ? new Proxy(native, {
+              get: trap,
+              getOwnPropertyDescriptor: trap,
+              getPrototypeOf: trap,
+            })
+          : Object.defineProperty(native, "message", { get: trap });
+      vi.spyOn(fixture.implementation, "joinMockServer").mockRejectedValueOnce(
+        workFailure,
+      );
+      vi.spyOn(fixture.implementation, "removeNetwork").mockRejectedValueOnce(
+        new Error("integration.isolation.cleanup-network-remove"),
+      );
+      const diagnostic = vi
+        .spyOn(process.stderr, "write")
+        .mockReturnValue(true);
+      try {
+        let observed: unknown;
+        try {
+          await executeIsolationPlan(
+            planFor("0123456789abcdef"),
+            fixture.implementation,
+            new AbortController().signal,
+          );
+        } catch (error) {
+          observed = error;
+        }
+        expect(observed).toBeInstanceOf(Error);
+        expect(Object.getOwnPropertyDescriptor(observed, "cause")?.value).toBe(
+          workFailure,
+        );
+        expect(trap).not.toHaveBeenCalled();
+        const output = String(diagnostic.mock.calls[0]?.[0]);
+        expect(output).toContain('"originalWorkFailureReason":"unknown"');
+        expect(output).not.toContain("private-");
+        expect(fixture.recordEvidence.mock.calls[0]?.[0].outcome).toBe(
+          "failed",
+        );
+      } finally {
+        diagnostic.mockRestore();
+      }
+    },
+  );
+
   it("records unavailable runtime inspection and still tears down", async () => {
     const fixture = driver();
     fixture.inspectExecutionPolicy.mockRejectedValueOnce(
@@ -1088,7 +1404,7 @@ describe("scenario cleanup evidence", () => {
       remaining: emptyCleanupInventory(),
     });
     expect(diagnostic).toHaveBeenCalledWith(
-      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0}}\n',
+      'integration.isolation.cleanup-diagnostic:{"outcome":"failed","removalFailureCount":1,"remaining":{"containers":0,"networks":0,"images":0,"volumes":0,"buildContexts":0,"activeRunMarkers":0},"originalWorkPhase":null,"originalWorkFailureReason":null,"failedRemovals":[{"operation":"scenario-container","reason":"unknown"}]}\n',
     );
     diagnostic.mockRestore();
   });
@@ -1275,7 +1591,7 @@ describe("scenario evidence validation", () => {
       remaining: null,
     });
     expect(diagnostic).toHaveBeenCalledWith(
-      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null}\n',
+      'integration.isolation.cleanup-diagnostic:{"outcome":"verification-failed","removalFailureCount":0,"remaining":null,"originalWorkPhase":null,"originalWorkFailureReason":null,"failedRemovals":[]}\n',
     );
     diagnostic.mockRestore();
   });
@@ -1442,6 +1758,149 @@ describe("selected headless backend evidence", () => {
   });
 });
 
+describe("failed PTY readiness and exact action-prefix evidence", () => {
+  it.each(["readiness", "prefix", "both", "before-resize"])(
+    "retains %s failure without replacing it with receipt validation",
+    async (variant) => {
+      const plan = planFor("0123456789abcdef", "interactive");
+      const fixture = driver();
+      const original = ptyReceiptFor(plan.runId, plan.scenarioId);
+      const geometry =
+        variant === "before-resize"
+          ? original.request.initialGeometry
+          : original.observedGeometry;
+      const receipt = {
+        ...original,
+        outcome: "timeout" as const,
+        readinessObserved: variant === "prefix",
+        actions:
+          variant === "readiness"
+            ? original.actions
+            : original.actions.slice(0, variant === "before-resize" ? 0 : 1),
+        observedGeometry: geometry,
+        finalSnapshot: { ...original.finalSnapshot, geometry },
+      };
+      fixture.runScenario.mockResolvedValueOnce({ receipt, succeeded: false });
+      await expect(
+        executeIsolationPlan(
+          plan,
+          fixture.implementation,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("integration.isolation.scenario-failed");
+      expect(fixture.recordEvidence.mock.calls[0]?.[0]).toMatchObject({
+        outcome: "failed",
+        cleanup: { outcome: "complete" },
+        ptyTerminalReceipt: receipt,
+      });
+    },
+  );
+});
+describe("failed PTY prefix mutation refusal", () => {
+  it("refuses prefix payload, order, authority, time and geometry substitutions and completed incomplete controls", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const original = ptyReceiptFor();
+    const receipt = {
+      ...original,
+      outcome: "timeout" as const,
+      readinessObserved: false,
+      actions: original.actions.slice(0, 2),
+    };
+    const interactive = {
+      ...evidence,
+      outcome: "failed",
+      scenarioId: original.scenarioId,
+      executionMode: "interactive",
+      terminalAction: "eof",
+      executionPolicy: executionPolicyFor(original.scenarioId),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: receipt,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toMatchObject({
+      outcome: "failed",
+    });
+    const variants = [
+      { ...receipt, actions: [...receipt.actions, ...original.actions] },
+      { ...receipt, actions: [...receipt.actions].reverse() },
+      { ...receipt, actions: [original.actions[1]] },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "input"
+            ? { ...action, inputSha256: "f".repeat(64) }
+            : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "input" ? { ...action, byteLength: 3 } : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) =>
+          action.action === "resize"
+            ? { ...action, geometry: { columns: 99, rows: 30 } }
+            : action,
+        ),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) => ({
+          ...action,
+          monotonicAtMs: 999,
+        })),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action) => ({
+          ...action,
+          monotonicAtMs: receipt.returnedAtMs + 1,
+        })),
+      },
+      {
+        ...receipt,
+        actions: receipt.actions.map((action, index) => ({
+          ...action,
+          monotonicAtMs: 2_100 - index,
+        })),
+      },
+      { ...receipt, observedGeometry: { columns: 80, rows: 24 } },
+      {
+        ...receipt,
+        finalSnapshot: {
+          ...receipt.finalSnapshot,
+          geometry: { columns: 80, rows: 24 },
+        },
+      },
+      { ...receipt, inputSha256: "f".repeat(64) },
+      { ...receipt, requestFingerprint: `sha256:${"f".repeat(64)}` },
+      { ...receipt, processRequestFingerprint: `sha256:${"f".repeat(64)}` },
+      {
+        ...receipt,
+        returnedAtMs: receipt.request.process.monotonicShutdownDeadlineMs + 1,
+      },
+      { ...receipt, outcome: "completed" },
+      { ...original, readinessObserved: false },
+      { ...original, actions: original.actions.slice(0, 1) },
+    ];
+    for (const ptyTerminalReceipt of variants)
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, outcome: "passed" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+  });
+});
+
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY backend evidence", () => {
   it("retains the authenticated Codex checkpoint after live prompt readiness is revoked", () => {
@@ -1471,6 +1930,18 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    for (const category of ["observer-signal", "observer-process-set"]) {
+      const categorized = {
+        ...interactive,
+        ptyTerminalReceipt: {
+          ...receipt,
+          pumpFailureDiagnostic: { ...receipt.pumpFailureDiagnostic, category },
+        },
+      };
+      expect(compileWithPreparedAuthority(categorized, evidence)).toEqual(
+        categorized,
+      );
+    }
     for (const ptyTerminalReceipt of [
       refingerprintPtyActions(
         receipt,

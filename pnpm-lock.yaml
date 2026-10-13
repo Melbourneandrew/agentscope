@@ -7,6 +7,9 @@ settings:
 importers:
   .:
     devDependencies:
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:packages/protocol
       "@eslint/js":
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.8.1(jiti@2.7.0))
@@ -384,6 +387,18 @@ importers:
 
   tests/integration:
     dependencies:
+      "@agentscope/destination-langfuse":
+        specifier: workspace:*
+        version: link:../../packages/destinations/langfuse
+      "@agentscope/harness-claude-code":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/claude-code
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../packages/protocol
       "@agentscope/testkit":
         specifier: workspace:*
         version: link:../../packages/testkit
@@ -394,6 +409,9 @@ importers:
       "@types/node":
         specifier: ^22.15.0
         version: 22.20.1
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
       typescript:
         specifier: ^5.9.2
         version: 5.9.3

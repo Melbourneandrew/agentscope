@@ -1,13 +1,512 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
+import { tmpdir } from "node:os";
+import { transpileModule, ScriptTarget } from "typescript";
+import { prepareCandidate, verifyPreparedCandidate } from "./artifacts.js";
+import { runIntegrationStages } from "./controller-stages.js";
+import { inferModeAndIdentity } from "./controller-host-identity.js";
+import { compileVerifiedSignedManifestHarnessMaterial } from "./harness-material.js";
 
-import { sha256 } from "./canonical.js";
+import { canonicalJson, sha256 } from "./canonical.js";
+import { compileCapabilityManifest } from "./manifest.js";
+import {
+  createHarnessAdmissionKernel,
+  type HarnessAdmissionSeed,
+  type HarnessAdmissionKernel,
+} from "./harness-admission.js";
+// @ts-expect-error private preparation boundary has no published declaration
+import * as preparationBoundary from "../image-preparation/boundary.mjs";
 import {
   compileHarnessAdmissionCompletion,
   compileHarnessAdmissionSeed,
 } from "./harness-scenario-admission.js";
 
 const digest = (character: string): string => `sha256-${character.repeat(64)}`;
+const actualControllerRegistry = () => {
+  // Real controller source, but outer host identity/other authority is synthetic.
+  const controller = readFileSync(
+    resolve(import.meta.dirname, "controller.ts"),
+    "utf8",
+  );
+  const runner = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const slice = (source: string, first: string, last: string) => {
+    const start = source.indexOf(first),
+      end = source.indexOf(last, start);
+    if (start < 0 || end < start) throw new Error("source-fixture-boundary");
+    return source.slice(start, end);
+  };
+  const state = slice(
+    controller,
+    "  const capability = Object.freeze({ binding });",
+    "  try {\n    return await capabilityContext.run",
+  );
+  const kernel = slice(
+    controller,
+    "const harnessAdmissionKernel =",
+    "/* v8 ignore stop */",
+  );
+  const runIds = slice(
+    controller,
+    "export const registerIntegrationRunIds =",
+    "export const registerIntegrationCandidateIdentity =",
+  ).replace("export ", "");
+  const registrar = slice(
+    controller,
+    "export const registerIntegrationCandidateIdentity =",
+    "export const beginRealHarnessAdmission =",
+  ).replace("export ", "");
+  const sources = slice(runner, "const admissionMaterialRecords =", "if (\n");
+  const patterns = controller
+    .split("\n")
+    .filter(
+      (line) =>
+        line.startsWith("const candidatePattern =") ||
+        line.startsWith("const runTokenPattern ="),
+    )
+    .join("\n");
+  expect(patterns.split("\n")).toHaveLength(2);
+  const source = `const capabilityStates = new WeakMap(); ${state}
+    const requireDisposableOuterHostCapability = () => capability;
+    ${patterns}
+    let harnessAdmissionSources;
+    const configureRealHarnessAdmissionSources = (value) => { harnessAdmissionSources = value; };
+    ${sources} ${kernel} ${runIds} ${registrar}
+    ({token:capability,kernel:harnessAdmissionKernel,registry:state.candidateIdentities,
+      receipts:state.headlessReceipts,ptyReceipts:state.ptyReceipts,
+      materialRecords:admissionMaterialRecords,terminalRecords:admissionTerminalRecords,
+      registerRunIds:registerIntegrationRunIds,registerCandidate:registerIntegrationCandidateIdentity});`;
+  return runInNewContext(
+    transpileModule(source, {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText,
+    {
+      createHarnessAdmissionKernel,
+      AbortController,
+      researchRequest: undefined,
+      sourceTree: undefined,
+      substrateCertificationRequest: undefined,
+      binding: {
+        hostKind: "github-hosted",
+        workspaceRevision: "a".repeat(40),
+        privateStorage: { authorityDigest: `sha256:${"a".repeat(64)}` },
+      },
+    },
+  ) as {
+    token: object;
+    kernel: HarnessAdmissionKernel<object>;
+    registry: Set<string>;
+    receipts: Map<string, { requestFingerprint: string }>;
+    ptyReceipts: Map<string, { requestFingerprint: string }>;
+    materialRecords: WeakMap<object, HarnessAdmissionSeed>;
+    terminalRecords: WeakMap<object, unknown>;
+    registerRunIds: (runs: string[]) => void;
+    registerCandidate: (identity: string) => void;
+  };
+};
+const preparedTransfer = () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-admission-ingress-"));
+  const artifact = join(root, "agentscope-cli.tgz"),
+    lockfile = join(root, "pnpm-lock.yaml");
+  writeFileSync(artifact, "source-only-packed-cli");
+  writeFileSync(lockfile, "lockfileVersion: '9.0'\n");
+  const prepared = prepareCandidate({
+    candidateRevision: "a".repeat(40),
+    platform: { os: "linux", architecture: "x64", nodeVersion: "22.18.0" },
+    lockfilePath: lockfile,
+    outputRoot: join(root, "candidates"),
+    artifacts: [{ id: "agentscope-cli", kind: "npm-tarball", path: artifact }],
+  });
+  return {
+    root,
+    prepared,
+    pointer: {
+      pointerVersion: 1,
+      bundleIdentity: prepared.evidence.bundleIdentity,
+      candidateRevision: prepared.evidence.candidateRevision,
+    },
+  };
+};
+const verifiedIngress = (
+  transfer: ReturnType<typeof preparedTransfer>,
+  registry: ReturnType<typeof actualControllerRegistry>,
+  pointer = transfer.pointer,
+) => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const candidateDirectory = resolve("),
+    end = source.indexOf("let preparedDockerClient;", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return runInNewContext(source.slice(start, end) + "candidate;", {
+    resolve,
+    artifactsRoot: transfer.root,
+    pointer,
+    verifyPreparedCandidate,
+    registerIntegrationCandidateIdentity: registry.registerCandidate,
+  }) as ReturnType<typeof verifyPreparedCandidate>;
+};
+describe("actual lifecycle transferred candidate ingress", () => {
+  it("registers only the verified transfer in the initially empty real controller registry", async () => {
+    const transfer = preparedTransfer();
+    try {
+      const registry = actualControllerRegistry();
+      expect(registry.registry.size).toBe(0);
+      const seed = compileHarnessAdmissionSeed({
+        ...fixture(),
+        candidateDigest: transfer.prepared.evidence.bundleIdentity,
+      });
+      const material = {
+        authorityVersion: 1 as const,
+        authorityKind: "authenticated-harness-material" as const,
+      };
+      registry.materialRecords.set(material, seed);
+      registry.registerRunIds([seed.runId]);
+      expect(() => registry.kernel.begin(registry.token, material)).toThrow(
+        "integration.harness-admission.invalid",
+      );
+      const stages: string[] = [];
+      const { mode } = inferModeAndIdentity({
+        GITHUB_ACTIONS: "true",
+        RUNNER_ENVIRONMENT: "github-hosted",
+        GITHUB_JOB: "synthetic",
+        GITHUB_REPOSITORY: "synthetic/source-only",
+        GITHUB_RUN_ATTEMPT: "1",
+        GITHUB_RUN_ID: "1",
+        GITHUB_SHA: "a".repeat(40),
+        RUNNER_NAME: "synthetic",
+        AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: "999999999",
+      });
+      expect(mode).toBe("lifecycle");
+      await runIntegrationStages(mode, {
+        clean: () => {
+          stages.push("clean");
+          return Promise.resolve();
+        },
+        maintainArtifacts: () => {
+          stages.push("maintain");
+          return Promise.resolve();
+        },
+        prepareCandidate: () => {
+          stages.push("prepare-candidate");
+          return Promise.resolve();
+        },
+        select: () => {
+          stages.push("select");
+          return Promise.resolve();
+        },
+        prepareImages: () => {
+          stages.push("images");
+          return Promise.resolve();
+        },
+        prepareModelRoutes: () => {
+          stages.push("routes");
+          return Promise.resolve();
+        },
+        runScenarios: () => {
+          verifiedIngress(transfer, registry);
+          return Promise.resolve();
+        },
+      });
+      expect(stages).not.toContain("prepare-candidate");
+      expect([...registry.registry]).toEqual([seed.candidateDigest]);
+      const authority = registry.kernel.begin(registry.token, material);
+      const terminal = {
+          authorityVersion: 1 as const,
+          authorityKind: "authenticated-harness-terminal" as const,
+        },
+        requestFingerprint = `sha256:${"f".repeat(64)}`;
+      registry.receipts.set(seed.runId, { requestFingerprint });
+      registry.terminalRecords.set(terminal, {
+        material,
+        completion: compileHarnessAdmissionCompletion({
+          cleanup: { outcome: "complete" },
+          observation: { sourceOnly: true },
+          outcome: "passed",
+          requestFingerprint,
+          runId: seed.runId,
+          scenarioImageDigest: seed.preparedImage.scenarioImageDigest,
+        }),
+      });
+      registry.kernel.complete(registry.token, authority, terminal);
+      expect(
+        registry.kernel.compile(registry.token, [authority]).entries,
+      ).toHaveLength(1);
+      const wrongMaterial = { ...material };
+      registry.materialRecords.set(wrongMaterial, {
+        ...seed,
+        candidateDigest: digest("f"),
+      });
+      expect(() =>
+        registry.kernel.begin(registry.token, wrongMaterial),
+      ).toThrow("integration.harness-admission.invalid");
+    } finally {
+      rmSync(transfer.root, { recursive: true, force: true });
+    }
+  });
+});
+describe("verified candidate ingress refusal", () => {
+  it.each(["corrupt", "pointer", "missing-cli"])(
+    "refuses %s transfer before registration",
+    (fault) => {
+      const transfer = preparedTransfer();
+      try {
+        const registry = actualControllerRegistry();
+        if (fault === "corrupt")
+          writeFileSync(
+            join(
+              transfer.prepared.directory,
+              "files",
+              transfer.prepared.evidence.artifacts[0]!.fileName,
+            ),
+            "x".repeat(transfer.prepared.evidence.artifacts[0]!.bytes),
+          );
+        if (fault === "pointer")
+          transfer.pointer.candidateRevision = "b".repeat(40);
+        if (fault === "missing-cli") {
+          const material = {
+            ...transfer.prepared.evidence,
+            artifacts: transfer.prepared.evidence.artifacts.map((artifact) => ({
+              ...artifact,
+              id: "mock-runtime",
+            })),
+          };
+          const { bundleIdentity: originalIdentity, ...unsigned } = material;
+          expect(originalIdentity).toBe(transfer.pointer.bundleIdentity);
+          const bundleIdentity = sha256(canonicalJson(unsigned));
+          writeFileSync(
+            join(transfer.prepared.directory, "evidence.json"),
+            JSON.stringify({ ...unsigned, bundleIdentity }),
+          );
+          renameSync(
+            transfer.prepared.directory,
+            join(transfer.root, "candidates", bundleIdentity),
+          );
+          transfer.pointer.bundleIdentity = bundleIdentity;
+          expect(
+            verifyPreparedCandidate(
+              join(transfer.root, "candidates", bundleIdentity),
+            ).bundleIdentity,
+          ).toBe(bundleIdentity);
+        }
+        expect(() => verifiedIngress(transfer, registry)).toThrow(
+          fault === "corrupt"
+            ? "integration.artifact.prepared-digest"
+            : fault === "pointer"
+              ? "integration.isolation.inputs"
+              : "integration.isolation.candidate-artifact",
+        );
+        expect(registry.registry.size).toBe(0);
+      } finally {
+        rmSync(transfer.root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+const runnerAdmissionDigest = () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const admissionDigest =");
+  const end = source.indexOf("const linuxBootMonotonicMilliseconds =", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return runInNewContext(source.slice(start, end) + "admissionDigest;", {
+    createHash,
+    canonicalJson,
+    sha256,
+  }) as (value: unknown) => string;
+};
+const { normalizePlatform } = preparationBoundary as {
+  normalizePlatform: (value: { os: string; architecture: string }) => {
+    os: string;
+    architecture: string;
+  };
+};
+// Standalone synthetic controller, never runtime authority or admission evidence.
+const compileStandaloneSeed = (seed: HarnessAdmissionSeed) => {
+  const token = {},
+    material = {
+      authorityVersion: 1 as const,
+      authorityKind: "authenticated-harness-material" as const,
+    },
+    terminal = {
+      authorityVersion: 1 as const,
+      authorityKind: "authenticated-harness-terminal" as const,
+    };
+  const requestFingerprint = `sha256:${"f".repeat(64)}`;
+  const kernel = createHarnessAdmissionKernel(
+    (value) =>
+      value === token
+        ? {
+            active: true,
+            authorityIdentity: `sha256:${"a".repeat(64)}`,
+            candidateIdentities: new Set([seed.candidateDigest]),
+            hostKind: "github-hosted",
+            receipts: new Map([
+              [seed.runId, { requestFingerprint, transport: "pty" }],
+            ]),
+            runIds: new Set([seed.runId]),
+            workspaceRevision: "a".repeat(40),
+          }
+        : undefined,
+    (_value, value) => (value === material ? seed : undefined),
+    (_value, value) =>
+      value === terminal
+        ? {
+            material,
+            completion: compileHarnessAdmissionCompletion({
+              cleanup: { outcome: "complete" },
+              observation: { sourceOnly: true },
+              outcome: "passed",
+              requestFingerprint,
+              runId: seed.runId,
+              scenarioImageDigest: seed.preparedImage.scenarioImageDigest,
+            }),
+          }
+        : undefined,
+  );
+  const authority = kernel.begin(token, material);
+  kernel.complete(token, authority, terminal);
+  return kernel.compile(token, [authority]);
+};
+describe("actual prepared platform to runner admission seed", () => {
+  it.each(["codex", "claude-code"])(
+    "binds the actual %s component fixture without platform key-order drift",
+    (harnessId) => {
+      // Other authority-shaped inputs are explicitly synthetic source-test inputs.
+      const manifest = compileCapabilityManifest(
+        JSON.parse(
+          readFileSync(
+            resolve(import.meta.dirname, "../capability-manifest.json"),
+            "utf8",
+          ),
+        ),
+      );
+      const evidence = manifest.evidence.find(
+        (row) => row.harnessId === harnessId && row.admission !== undefined,
+      )!;
+      const scenario = manifest.scenarios.find(
+        (row) => row.harnessEvidenceId === evidence.evidenceId,
+      )!;
+      const platformIdentity = runnerAdmissionDigest()(
+        normalizePlatform({ architecture: "amd64", os: "linux" }),
+      );
+      const input = {
+        candidateDigest: sha256("synthetic-source-only"),
+        componentFixture: JSON.parse(
+          readFileSync(
+            resolve(
+              import.meta.dirname,
+              "../../..",
+              evidence.admission!.component.fixture.path,
+            ),
+            "utf8",
+          ),
+        ) as unknown,
+        destinationCombinationIdentity: sha256("synthetic-source-only"),
+        evidence,
+        manifestIdentity: manifest.manifestIdentity,
+        materialIdentity: sha256("synthetic-source-only"),
+        platformIdentity,
+        preparedImage: {
+          image: scenario.image,
+          manifestDigest: `sha256:${"a".repeat(64)}`,
+          configDigest: `sha256:${"b".repeat(64)}`,
+          platformIdentity,
+          scenarioImageDigest: sha256("synthetic-source-only"),
+        },
+        runId: "0123456789abcdef",
+        scenario,
+      };
+      const seed = compileHarnessAdmissionSeed(input);
+      expect(seed.platformIdentity).toBe(platformIdentity);
+      expect(compileStandaloneSeed(seed).entries).toHaveLength(1);
+      for (const harness of [
+        {
+          ...seed.harness,
+          distributionReference: seed.harness.distributionReference + "?",
+        },
+        { ...seed.harness, distributionReference: "z".repeat(257) },
+        {
+          ...seed.harness,
+          distributionReference: "signed-manifest:private space",
+        },
+        {
+          ...seed.harness,
+          distributionReference:
+            seed.harness.distributionReference + "-substituted",
+        },
+        { ...seed.harness, artifactAuthorityDigest: digest("f") },
+      ])
+        expect(() => compileStandaloneSeed({ ...seed, harness })).toThrow(
+          "integration.harness-admission.invalid",
+        );
+      const different = runnerAdmissionDigest()(
+        normalizePlatform({ architecture: "arm64", os: "linux" }),
+      );
+      expect(() =>
+        compileHarnessAdmissionSeed({
+          ...input,
+          platformIdentity: different,
+          preparedImage: {
+            ...input.preparedImage,
+            platformIdentity: different,
+          },
+        }),
+      ).toThrow("integration.harness-scenario-admission.invalid");
+    },
+  );
+});
+describe("canonical runner admission digest", () => {
+  it("canonicalizes reordered platform keys while preserving destination combination identity", () => {
+    const hash = runnerAdmissionDigest();
+    const platform = normalizePlatform({ os: "linux", architecture: "amd64" });
+    expect(hash(platform)).toBe(sha256(canonicalJson(platform)));
+    expect(hash({ architecture: platform.architecture, os: platform.os })).toBe(
+      hash(platform),
+    );
+    const combination = {
+      destinations: ["langfuse"],
+      modelRoutes: ["anthropic-connectivity-probe", "anthropic-messages"],
+    };
+    expect(hash(combination)).toBe(sha256(JSON.stringify(combination)));
+  });
+});
+// Deliberate grammar-only unit input, never actual-capture admission evidence.
+const componentFixture = (version = "1.2.3") => {
+  const base = parseHarnessSanitizedFixture(
+    JSON.parse(
+      readFileSync(
+        resolve(
+          import.meta.dirname,
+          "../../../packages/harnesses/codex/fixtures/native/codex-stop-v1.json",
+        ),
+        "utf8",
+      ),
+    ),
+  );
+  return {
+    ...base,
+    harnessVersion: version,
+    governance: {
+      ...base.governance,
+      representative: {
+        scenarioId: "codex-component-case",
+        representativeVersion: version,
+        evidenceSlot: "codex-component-v1",
+      },
+    },
+  };
+};
 const fixture = () => ({
+  componentFixture: componentFixture(),
   candidateDigest: digest("a"),
   destinationCombinationIdentity: digest("b"),
   evidence: {
@@ -102,15 +601,171 @@ const fixture = () => ({
   },
 });
 
+it("refuses hostile consumed metadata without invoking getters or proxy traps", () => {
+  const input = fixture();
+  const genuine = componentFixture();
+  let observed = 0;
+  const getter = () => {
+    observed++;
+    throw new Error("PRIVATE_RAW_CANARY");
+  };
+  const rootAccessor = Object.defineProperty({ ...genuine }, "harnessId", {
+    get: getter,
+  });
+  const authorityAccessor = Object.defineProperty({}, "status", {
+    get: getter,
+  });
+  const proxy = new Proxy(genuine, { getPrototypeOf: getter, ownKeys: getter });
+  const revoked = Proxy.revocable(genuine, {});
+  revoked.revoke();
+  for (const value of [
+    proxy,
+    revoked.proxy,
+    rootAccessor,
+    {
+      ...genuine,
+      governance: {
+        ...genuine.governance,
+        provenance: {
+          ...genuine.governance.provenance,
+          artifactAuthority: authorityAccessor,
+        },
+      },
+    },
+    { ...genuine, fixtureVersion: 2 },
+    { ...genuine, governance: { ...genuine.governance, representative: [] } },
+  ])
+    expect(() =>
+      compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
+  expect(observed).toBe(0);
+});
+
+it("consumes reviewed governance identity, not the test-only native payload grammar", () => {
+  const input = fixture();
+  const { fixtureVersion, harnessId, harnessVersion, governance } =
+    input.componentFixture;
+  const seed = compileHarnessAdmissionSeed({
+    ...input,
+    componentFixture: { fixtureVersion, harnessId, harnessVersion, governance },
+  });
+  expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+  expect(seed.component.fixtureDigest).toBe(digest("3"));
+});
+
 // eslint-disable-next-line max-lines-per-function -- complete bridge matrix
 describe("real harness scenario admission bridge", () => {
+  it("refuses missing, malformed, foreign and version-unbound component fixtures", () => {
+    const input = fixture();
+    const genuine = componentFixture();
+    for (const value of [
+      undefined,
+      {},
+      { ...genuine, harnessId: "claude-code" },
+      { ...genuine, harnessVersion: "9.9.9" },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            scenarioId: "invalid/case",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          representative: {
+            ...genuine.governance.representative,
+            evidenceSlot: "invalid/slot",
+          },
+        },
+      },
+      {
+        ...genuine,
+        governance: {
+          ...genuine.governance,
+          provenance: {
+            ...genuine.governance.provenance,
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    ])
+      expect(() =>
+        compileHarnessAdmissionSeed({ ...input, componentFixture: value }),
+      ).toThrow("integration.harness-scenario-admission.invalid");
+  });
   it("binds material, component, catalog, platform, and scenario identities", () => {
     const input = fixture();
     const seed = compileHarnessAdmissionSeed(input);
     expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
     expect(seed.component.fixtureDigest).toBe(digest("3"));
+    expect(seed.scenarioId).toBe(input.scenario.scenarioId);
+    expect(seed.harness.evidenceSlot).toBe(
+      input.evidence.admission.evidenceSlot,
+    );
+    expect(seed.execution.mode).toBe(input.scenario.executionMode);
     expect(seed.catalogRowIdentity).toMatch(/^sha256-[a-f0-9]{64}$/u);
     expect(Object.isFrozen(seed)).toBe(true);
+  });
+
+  it("does not use authenticated component provenance as prepared runtime authority", () => {
+    const input = fixture();
+    const component = input.componentFixture;
+    const seed = compileHarnessAdmissionSeed({
+      ...input,
+      componentFixture: {
+        ...component,
+        governance: {
+          ...component.governance,
+          provenance: {
+            captureKind: "disposable-hermetic",
+            artifactAuthority: { status: "authenticated", digest: digest("f") },
+          },
+        },
+      },
+    });
+    expect(seed.harness.artifactDigest).toBe(input.materialIdentity);
+    expect(seed.harness.artifactDigest).not.toBe(digest("f"));
+  });
+
+  it.each([
+    {
+      captureKind: "unknown",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "synthetic",
+      artifactAuthority: { status: "unresolved", reason: "other" },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
+    },
+    {
+      captureKind: "disposable-hermetic",
+      artifactAuthority: { status: "authenticated", digest: "malformed" },
+    },
+  ])("refuses malformed component provenance %#", (provenance) => {
+    const input = fixture();
+    expect(() =>
+      compileHarnessAdmissionSeed({
+        ...input,
+        componentFixture: {
+          ...input.componentFixture,
+          governance: { ...input.componentFixture.governance, provenance },
+        },
+      }),
+    ).toThrow("integration.harness-scenario-admission.invalid");
   });
 
   it("rejects certification fixtures and cross-scenario material", () => {
@@ -147,8 +802,19 @@ describe("real harness scenario admission bridge", () => {
 
   it("uses the same admission seam for a signed-manifest distribution", () => {
     const input = fixture();
+    const binary = Buffer.from("inert binary"),
+      signature = Buffer.from("inert signature"),
+      key = Buffer.from("inert public key");
+    const hash = (bytes: Uint8Array) =>
+      createHash("sha256").update(bytes).digest("hex");
+    const manifest = Buffer.from(
+      JSON.stringify({
+        platforms: { "linux-x64": { checksum: hash(binary) } },
+      }),
+    );
     const signed = {
       ...input,
+      componentFixture: componentFixture("2.1.89"),
       evidence: {
         ...input.evidence,
         representativeVersion: "2.1.89",
@@ -161,24 +827,24 @@ describe("real harness scenario admission bridge", () => {
           verifierImage: `node@sha256:${"a".repeat(64)}`,
           binary: {
             url: "https://downloads.vendor.invalid/2.1.89/linux-x64/tool",
-            bytes: 1,
-            sha256: "a".repeat(64),
+            bytes: binary.length,
+            sha256: hash(binary),
             executableName: "tool",
           },
           manifest: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json",
-            bytes: 1,
-            sha256: "b".repeat(64),
+            bytes: manifest.length,
+            sha256: hash(manifest),
           },
           signature: {
             url: "https://downloads.vendor.invalid/2.1.89/manifest.json.sig",
-            bytes: 1,
-            sha256: "c".repeat(64),
+            bytes: signature.length,
+            sha256: hash(signature),
           },
           signingKey: {
             url: "https://downloads.vendor.invalid/keys/release.asc",
-            bytes: 1,
-            sha256: "d".repeat(64),
+            bytes: key.length,
+            sha256: hash(key),
             fingerprint: "A".repeat(40),
             signerFingerprint: "A".repeat(40),
             signatureHashAlgorithm: "sha512" as const,
@@ -191,7 +857,35 @@ describe("real harness scenario admission bridge", () => {
         },
       },
     };
+    const record = compileVerifiedSignedManifestHarnessMaterial({
+      binary,
+      evidenceId: input.evidence.evidenceId,
+      material: signed.evidence.material,
+      manifestBytes: manifest,
+      signatureBytes: signature,
+      signingKeyBytes: key,
+      verification: {
+        primaryFingerprint: "A".repeat(40),
+        signerFingerprint: "A".repeat(40),
+        uid: signed.evidence.material.signingKey.uid,
+        manifestSha256: hash(manifest),
+        signatureHashAlgorithm: "sha512",
+        verifier: {
+          controllerSha256: "d".repeat(64),
+          image: signed.evidence.material.verifierImage,
+          imageConfigDigest: `sha256:${"b".repeat(64)}`,
+          imageId: digest("c"),
+          imageManifestDigest: `sha256:${"e".repeat(64)}`,
+          name: "gpg",
+        },
+      },
+    });
+    signed.materialIdentity = record.materialIdentity;
+    expect(record.materialIdentity).not.toBe(
+      sha256(JSON.stringify(signed.evidence.material)),
+    );
     const seed = compileHarnessAdmissionSeed(signed);
+    expect(seed.harness.artifactDigest).toBe(record.materialIdentity);
     expect(seed.harness.distributionReference).toBe(
       "signed-manifest:vendor-tool@2.1.89#linux-x64",
     );
@@ -232,3 +926,12 @@ describe("real harness scenario admission bridge", () => {
       );
   });
 });
+import {
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+import { parseHarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";

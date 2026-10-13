@@ -83,7 +83,11 @@ const checkedObject = (bytes, pin) => {
   return bytes;
 };
 
-const acquire = async (signal, deadline) => {
+const acquire = async (
+  signal,
+  deadline,
+  note = publishMaterialResearchPhase,
+) => {
   const archives = {};
   for (const [kind, pin] of [
     ["source", source.archive],
@@ -91,23 +95,23 @@ const acquire = async (signal, deadline) => {
     ["node", bootstrap.node.archive],
   ]) {
     check(signal, deadline);
-    publishMaterialResearchPhase(`download-${kind}`);
+    note(`download-${kind}`);
     archives[kind] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
     );
   }
-  publishMaterialResearchPhase("download-jdk");
+  note("download-jdk");
   archives.jdk = await downloadMockServerJdkArchive(signal, deadline);
   check(signal, deadline);
   // These return owned copies, with SHA512 additionally required for Maven.
-  publishMaterialResearchPhase("verify-archives");
+  note("verify-archives");
   archives.source = verifyMockServerSourceArchive(archives.source);
   archives.maven = verifyMavenArchiveBytes(archives.maven);
   archives.node = verifyBootstrapArchive("node", archives.node);
   archives.jdk = verifyBootstrapArchive("jdk", archives.jdk);
   const metadata = {};
-  publishMaterialResearchPhase("pinned-metadata");
+  note("pinned-metadata");
   for (const [name, pin] of Object.entries(bootstrap.metadata)) {
     check(signal, deadline);
     metadata[name] = verifyBootstrapMetadata(
@@ -120,7 +124,7 @@ const acquire = async (signal, deadline) => {
     ["maven-signature", maven.signature],
   ]) {
     check(signal, deadline);
-    publishMaterialResearchPhase(`download-${name}`);
+    note(`download-${name}`);
     metadata[name] = checkedObject(
       await downloadMaterialObject(pin, signal, deadline),
       pin,
@@ -141,7 +145,8 @@ const sameFile = (identity) => {
   )
     fail();
 };
-const contextFiles = (kind, objects) => ({
+const verificationKinds = ["maven", "node", "jdk"];
+const kindFiles = (kind, objects) => ({
   "material-command.mjs": command.bytes,
   "bootstrap-gpg.mjs": helper.bytes,
   "policy.json": Buffer.from(`${JSON.stringify({ kind })}\n`),
@@ -158,16 +163,27 @@ const contextFiles = (kind, objects) => ({
     kind === "node"
       ? objects.metadata["node-checksums"]
       : objects.archives[kind],
-  "Verifier.Dockerfile": Buffer.from(
-    [
-      "FROM agentscope_base",
-      "WORKDIR /verify",
-      "COPY --chmod=0600 . /verify/",
-      `RUN --network=none ${JSON.stringify(["/usr/local/bin/node", "/verify/material-command.mjs", "bootstrap-gpg", "/verify"])}`,
-      "",
-    ].join("\n"),
-  ),
 });
+const contextFiles = (objects) => {
+  const files = {},
+    recipe = [];
+  for (const kind of verificationKinds) {
+    recipe.push(`FROM agentscope_base AS verify_${kind}`, "WORKDIR /verify");
+    for (const [name, bytes] of Object.entries(kindFiles(kind, objects))) {
+      files[`${kind}-${name}`] = bytes;
+      recipe.push(`COPY --chmod=0600 ${kind}-${name} /verify/${name}`);
+    }
+    recipe.push(
+      `RUN --network=none ${JSON.stringify(["/usr/local/bin/node", "/verify/material-command.mjs", "bootstrap-gpg", "/verify"])}`,
+      `RUN --network=none ${JSON.stringify(["/usr/local/bin/node", "-e", `require('node:fs').writeFileSync('/proof-${kind}', '${kind}\\n', {flag:'wx',mode:0o600})`])}`,
+    );
+  }
+  recipe.push("FROM scratch");
+  for (const kind of verificationKinds)
+    recipe.push(`COPY --from=verify_${kind} /proof-${kind} /proof/${kind}`);
+  files["Verifier.Dockerfile"] = Buffer.from(`${recipe.join("\n")}\n`);
+  return files;
+};
 const stageContext = (owned, kind, objects, signal, deadline) => {
   check(signal, deadline);
   if (
@@ -180,7 +196,7 @@ const stageContext = (owned, kind, objects, signal, deadline) => {
   mkdirSync(path, { mode: 0o700 });
   const context = { directory: exactDirectory(path), files: [] };
   owned.contexts.push(context);
-  for (const [name, bytes] of Object.entries(contextFiles(kind, objects))) {
+  for (const [name, bytes] of Object.entries(contextFiles(objects))) {
     check(signal, deadline);
     sameDirectory(context.directory);
     writeExclusive(resolve(path, name), bytes);
@@ -230,13 +246,27 @@ const cleanup = (owned, deadline) => {
   check({ aborted: false }, deadline);
 };
 
-const verifyKind = async (input, owned, kind, objects, workSignal) => {
+const verifyInputs = async (
+  input,
+  owned,
+  objects,
+  workSignal,
+  note = publishMaterialResearchPhase,
+) => {
   const { deadline, dockerClient, runId, signal } = input;
   const workDeadline = deadline - reserveMilliseconds;
   check(workSignal, workDeadline);
-  const context = stageContext(owned, kind, objects, workSignal, workDeadline);
-  const tag = `agentscope-bootstrap:${runId}-${kind}`;
-  publishMaterialResearchPhase(`verify-${kind}`);
+  const context = stageContext(
+    owned,
+    "verification",
+    objects,
+    workSignal,
+    workDeadline,
+  );
+  const tag = `agentscope-bootstrap:${runId}-verification`;
+  // Existing first-kind phase denotes this one combined verifier operation;
+  // it is not three independently observed image builds or retirements.
+  note("verify-maven");
   const imageId = await buildPreparedDockerImage(dockerClient, {
     buildArguments: {},
     baseImage: base,
@@ -263,7 +293,7 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
     throw error;
   });
   // Retire a successfully created reference even after late work completion.
-  publishMaterialResearchPhase(`retire-${kind}`);
+  note("retire-maven");
   await retirePreparedDockerImage(dockerClient, {
     deadline: Math.min(deadline - 1_000, performance.now() + 5_000),
     imageId,
@@ -271,12 +301,23 @@ const verifyKind = async (input, owned, kind, objects, workSignal) => {
     tag,
   });
   check(workSignal, workDeadline);
-  return Object.freeze({ kind, imageId });
+  return verificationKinds.map((kind) => Object.freeze({ kind, imageId }));
 };
 
 /** Mutable returned archives must be reauthenticated before supplier staging. */
-export const prepareMockServerBootstrap = async (input) => {
-  publishMaterialResearchPhase("bootstrap-preflight");
+export const prepareMockServerBootstrap = async (
+  input,
+  entered = () => undefined,
+) => {
+  const note = (phase) => {
+    publishMaterialResearchPhase(phase);
+    try {
+      entered(phase);
+    } catch {
+      // Optional same-controller observation cannot replace work outcomes.
+    }
+  };
+  note("bootstrap-preflight");
   const { deadline, dockerClient, privateRoot, runId, signal } = input;
   const budget = deadline - reserveMilliseconds - performance.now();
   if (
@@ -325,14 +366,19 @@ export const prepareMockServerBootstrap = async (input) => {
     rootCreated = true;
     owned = { parent, root: exactDirectory(rootPath), contexts: [] };
     if (owned.root.dev !== parent.dev) fail();
-    const objects = await acquire(workSignal, deadline - reserveMilliseconds);
-    const verifications = [];
-    for (const kind of ["maven", "node", "jdk"]) {
-      verifications.push(
-        await verifyKind(input, owned, kind, objects, workSignal),
-      );
-    }
-    publishMaterialResearchPhase("bootstrap-cleanup");
+    const objects = await acquire(
+      workSignal,
+      deadline - reserveMilliseconds,
+      note,
+    );
+    const verifications = await verifyInputs(
+      input,
+      owned,
+      objects,
+      workSignal,
+      note,
+    );
+    note("bootstrap-cleanup");
     cleanup(owned, deadline);
     owned = undefined;
     rootCreated = false;

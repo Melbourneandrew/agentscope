@@ -4,6 +4,8 @@ import {
   fail,
   kernelError,
   readPtyReconciliationStage,
+  readPtySemanticFailure,
+  readPtyExitSignal,
   trustedErrorCode,
   type PtyReconciliationStage,
 } from "./kernel-errors.js";
@@ -66,6 +68,8 @@ export const boundedInvoke = <T>(
     return fail(
       trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
       readPtyReconciliationStage(error),
+      readPtySemanticFailure(error),
+      readPtyExitSignal(error),
     );
   }
   const observed = terminalOf(operationPromise);
@@ -86,6 +90,8 @@ export const boundedInvoke = <T>(
                 trustedErrorCode(settled.error) ??
                   "testkit.headless.kernel.failure",
                 readPtyReconciliationStage(settled.error),
+                readPtySemanticFailure(settled.error),
+                readPtyExitSignal(settled.error),
               ),
             );
         },

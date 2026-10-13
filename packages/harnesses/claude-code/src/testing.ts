@@ -138,6 +138,15 @@ const createTestingInstallationPlanner: HarnessComponentContractAdapter["createI
         invocation,
         inventory,
         testingDialectAuthority,
+        // Component fixtures model already-installed artifacts; this is not
+        // authenticated physical ownership or real harness admission.
+        [
+          { targetPath: invocation.launcherPath, exists: true },
+          {
+            targetPath: `${invocation.launcherPath}.metadata.json`,
+            exists: true,
+          },
+        ],
       );
       if (!isSharedContractMarker(target.bytes))
         return productionPlanner(target);

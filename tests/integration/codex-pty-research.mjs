@@ -155,6 +155,12 @@ export const createCodexModelControlRequest = ({
 };
 
 export const codexGateResearchHints = Object.freeze([
+  "model-budget",
+  "model-http-status",
+  "model-projection",
+  "model-control-order",
+  "model-control-count",
+  "model-ledger",
   "arm-log-unavailable",
   "arm-log-invalid",
   "arm-hook-unseen",
@@ -167,6 +173,7 @@ export const codexGateResearchHints = Object.freeze([
   "arm-hook-lifecycle",
   "arm-hook-mediation",
   "arm-session-missing",
+  "arm-session-ledger",
   "arm-control",
   "arm-child",
   "arm-filesystem",
@@ -267,6 +274,8 @@ const pumpOperations = Object.freeze([
 const pumpCategories = Object.freeze([
   "observer-read",
   "observer-identity",
+  "observer-signal",
+  "observer-process-set",
   "transport",
   "geometry",
   "checkpoint-witness",

@@ -1,11 +1,13 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 
 const execute = promisify(execFile);
 const maximumOutputBytes = 8 * 1024 * 1024;
+let verificationStage = "entry";
 const fail = () => {
   throw new Error("integration.harness-material-command.failed");
 };
@@ -54,6 +56,7 @@ const gpgArguments = (home) => [
 ];
 
 const verifyNpm = async (root, policy) => {
+  verificationStage = "npm-input";
   const packages = Array.isArray(policy.packages) ? policy.packages : fail();
   writeFileSync(
     resolve(root, "package.json"),
@@ -74,6 +77,7 @@ const verifyNpm = async (root, policy) => {
   );
   const environment = npmEnvironment(resolve(root, "home"), policy.registry);
   const npm = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+  verificationStage = "npm-version";
   const { stdout: npmVersion } = await execute(
     "/usr/local/bin/node",
     [npm, "--version"],
@@ -85,6 +89,7 @@ const verifyNpm = async (root, policy) => {
     },
   );
   if (npmVersion !== `${policy.verifierNpmVersion}\n`) fail();
+  verificationStage = "npm-install";
   await execute(
     "/usr/local/bin/node",
     [
@@ -98,6 +103,7 @@ const verifyNpm = async (root, policy) => {
     ],
     { cwd: root, env: environment, maxBuffer: maximumOutputBytes },
   );
+  verificationStage = "npm-lock";
   const lock = readJson(resolve(root, "package-lock.json"));
   for (const entry of packages) {
     const installed = record(
@@ -110,6 +116,7 @@ const verifyNpm = async (root, policy) => {
     )
       fail();
   }
+  verificationStage = "npm-audit";
   const { stdout } = await execute(
     "/usr/local/bin/node",
     [
@@ -139,6 +146,7 @@ const verifyNpm = async (root, policy) => {
     audit.verified.length !== packages.length
   )
     fail();
+  verificationStage = "npm-bundles";
   for (const entry of packages) {
     const verified = audit.verified.find(
       (candidate) =>
@@ -155,15 +163,20 @@ const verifyNpm = async (root, policy) => {
 };
 
 const verifyGpg = async (root, policy) => {
+  if (policy.platformPackage !== undefined)
+    await verifyPlatformPackage(root, policy);
+  verificationStage = "gpg-home";
   const home = resolve(root, "gpg-home");
   mkdirSync(home, { mode: 0o700 });
   const common = gpgArguments(home);
   const environment = { HOME: home, LANG: "C.UTF-8", PATH: "/usr/bin:/bin" };
+  verificationStage = "gpg-import";
   await execute("/usr/bin/gpg", [...common, "--import", resolve(root, "key")], {
     cwd: root,
     env: environment,
     maxBuffer: maximumOutputBytes,
   });
+  verificationStage = "gpg-list";
   const { stdout: listing } = await execute(
     "/usr/bin/gpg",
     [...common, "--with-colons", "--fingerprint", "--list-keys"],
@@ -174,6 +187,7 @@ const verifyGpg = async (root, policy) => {
       maxBuffer: maximumOutputBytes,
     },
   );
+  verificationStage = "gpg-key-policy";
   const fingerprints = listing
     .split("\n")
     .filter((line) => line.startsWith("fpr:"))
@@ -186,6 +200,7 @@ const verifyGpg = async (root, policy) => {
     !fingerprints.includes(policy.signerFingerprint)
   )
     fail();
+  verificationStage = "gpg-signature";
   const { stdout } = await execute(
     "/usr/bin/gpg",
     [
@@ -202,6 +217,7 @@ const verifyGpg = async (root, policy) => {
       maxBuffer: maximumOutputBytes,
     },
   );
+  verificationStage = "gpg-signature-policy";
   const status = stdout
     .split("\n")
     .filter((line) => line.startsWith("[GNUPG:] "));
@@ -229,6 +245,139 @@ const verifyGpg = async (root, policy) => {
     fail();
 };
 
+const streamPlatformMember = (archive, descriptor, deadline) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      "/usr/bin/tar",
+      [
+        "--use-compress-program=/usr/bin/gzip",
+        "--extract",
+        "--to-stdout",
+        "--file",
+        archive,
+        "--",
+        "package/claude",
+      ],
+      {
+        env: { LANG: "C", PATH: "/usr/bin:/bin" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let bytes = 0,
+      stderrBytes = 0,
+      rejected = false;
+    const hash = createHash("sha256");
+    const stop = () => {
+      rejected = true;
+      child.kill("SIGKILL");
+    };
+    const timer = setTimeout(stop, Math.max(1, deadline - performance.now()));
+    child.stdout.on("data", (chunk) => {
+      if (!Buffer.isBuffer(chunk)) {
+        stop();
+        return;
+      }
+      bytes += chunk.byteLength;
+      if (bytes > descriptor.memberBytes || performance.now() >= deadline)
+        stop();
+      else hash.update(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      if (!Buffer.isBuffer(chunk)) {
+        stop();
+        return;
+      }
+      stderrBytes += chunk.byteLength;
+      if (stderrBytes > 65_536) stop();
+    });
+    child.once("error", () => {
+      rejected = true;
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (
+        rejected ||
+        code !== 0 ||
+        stderrBytes !== 0 ||
+        bytes !== descriptor.memberBytes ||
+        hash.digest("hex") !== descriptor.memberSha256
+      )
+        reject(new Error("integration.harness-material-command.failed"));
+      else resolve();
+    });
+  });
+
+const verifyPlatformPackage = async (root, policy) => {
+  verificationStage = "platform-archive";
+  const descriptor = record(policy.platformPackage);
+  if (
+    !Number.isSafeInteger(policy.maximumMilliseconds) ||
+    policy.maximumMilliseconds < 1 ||
+    policy.maximumMilliseconds > 300_000 ||
+    !Number.isSafeInteger(descriptor.memberBytes) ||
+    descriptor.memberBytes < 1 ||
+    descriptor.memberBytes > 384 * 1024 * 1024 ||
+    descriptor.memberName !== "package/claude"
+  )
+    fail();
+  const deadline = performance.now() + policy.maximumMilliseconds;
+  const archive = resolve(root, "platform.tgz");
+  const bytes = readFileSync(archive);
+  if (
+    bytes.byteLength !== descriptor.bytes ||
+    bytes.byteLength > 312 * 1024 * 1024 ||
+    digest(bytes) !== descriptor.sha256 ||
+    `sha512-${createHash("sha512").update(bytes).digest("base64")}` !==
+      descriptor.integrity
+  )
+    fail();
+  bytes.fill(0);
+  verificationStage = "platform-inventory";
+  const { stdout, stderr } = await execute(
+    "/usr/bin/tar",
+    [
+      "--use-compress-program=/usr/bin/gzip",
+      "--list",
+      "--verbose",
+      "--numeric-owner",
+      "--full-time",
+      "--quoting-style=literal",
+      "--file",
+      archive,
+    ],
+    {
+      env: { LANG: "C", PATH: "/usr/bin:/bin" },
+      encoding: "utf8",
+      maxBuffer: 65_536,
+      timeout: Math.max(1, Math.floor(deadline - performance.now())),
+      killSignal: "SIGKILL",
+    },
+  );
+  const expected = new Set([
+    "package/claude",
+    "package/package.json",
+    "package/LICENSE.md",
+    "package/README.md",
+  ]);
+  if (Buffer.byteLength(stdout) > 4096 || stderr !== "") fail();
+  for (const line of stdout.trimEnd().split("\n")) {
+    const fields =
+      /^-[rwx-]{9} \d+\/\d+\s+(\d+) \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (package\/[A-Za-z.]+)$/u.exec(
+        line,
+      );
+    if (
+      fields === null ||
+      !expected.delete(fields[2]) ||
+      (fields[2] === descriptor.memberName &&
+        Number(fields[1]) !== descriptor.memberBytes)
+    )
+      fail();
+  }
+  if (expected.size !== 0 || performance.now() >= deadline) fail();
+  verificationStage = "platform-member";
+  await streamPlatformMember(archive, descriptor, deadline);
+};
+
 const [operation, root] = process.argv.slice(2);
 if (
   !["gpg-verify", "npm-verify", "bootstrap-gpg"].includes(operation ?? "") ||
@@ -244,5 +393,12 @@ try {
     await runBootstrapGpgVerification(policy.kind, execute);
   }
 } catch {
+  if (operation !== "bootstrap-gpg") {
+    try {
+      writeSync(2, `[agentscope-verifier:v1 failure=${verificationStage}]\n`);
+    } catch {
+      // Diagnostic delivery cannot replace the original failed command.
+    }
+  }
   process.exitCode = 1;
 }

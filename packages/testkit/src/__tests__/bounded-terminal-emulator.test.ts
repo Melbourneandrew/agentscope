@@ -11,6 +11,1153 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const bytes = (value: string): Uint8Array => encoder.encode(value);
 
+describe("exact resource4 modifier controls", () => {
+  it.each([
+    "\u001b[>m",
+    "\u001b[>3;1m",
+    "\u001b[>4;65535m",
+    "\u001b[>4;1;0m",
+    "\u001b[>4:1m",
+    "\u001b[>4;1 m",
+    "\u001b[>4;65536m",
+  ])("retains unsupported or malformed shape %j", (sequence) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.completionObserved()).toBe(false);
+  });
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "admits full and fragmented ordinary control %j without semantic output",
+    (sequence) => {
+      for (const fragmented of [false, true]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        const before = terminal.snapshot();
+        for (const part of fragmented ? [...sequence] : [sequence])
+          terminal.write(bytes(part));
+        expect(terminal.snapshot()).toEqual({
+          ...before,
+          outputBytes: before.outputBytes + bytes(sequence).length,
+        });
+        expect(terminal.readinessObserved()).toBe(false);
+        expect(terminal.completionObserved()).toBe(false);
+        expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      }
+    },
+  );
+});
+
+describe("historical challenged marker readiness", () => {
+  it.each([
+    "",
+    "AGENTSCOPE_PTY_READY",
+    `AGENTSCOPE_PTY_READY:${"b".repeat(64)}`,
+    `AGENTSCOPE_PTY_READY:${"a".repeat(63)}`,
+  ])("does not create readiness from an unproved marker %j", (marker) => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(marker));
+    terminal.write(bytes("\u001b(B"));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+    );
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.completionObserved()).toBe(false);
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-readiness",
+    );
+  });
+  it.each([
+    "\u001b(B",
+    "\u000f",
+    "\u001b[?1049h\u001b[?1049l",
+    "\u001b7\u001b8",
+    "\t",
+  ])(
+    "survives admitted screen revocation %j before exact completion",
+    (control) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      for (const character of `AGENTSCOPE_PTY_READY:${challenge}\r\n`)
+        terminal.write(bytes(character));
+      expect(terminal.readinessObserved()).toBe(true);
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(control));
+      expect(terminal.challengedReadinessProgress().screenRevoked).toBe(true);
+      expect(terminal.readinessObserved()).toBe(true);
+      expect(terminal.completionObserved()).toBe(false);
+      for (const character of `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`)
+        terminal.write(bytes(character));
+      expect(terminal.end()).toMatchObject({
+        semanticState: "completed",
+        malformedControlCount: 0,
+        unsupportedControlCount: 0,
+      });
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+});
+
+describe("challenged completion ignores ordinary printable tokens", () => {
+  it.each(["challenge-marker", "challenge-styled-text"] as const)(
+    "does not complete %s from printable text before or after arming",
+    (kind) => {
+      const challenge = "a".repeat(64);
+      const matcher =
+        kind === "challenge-marker"
+          ? { kind, challenge }
+          : ({
+              kind,
+              challenge,
+              text: "›",
+              requiredText: "fixture-model default",
+              requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+              bold: true,
+              dim: false,
+            } as const);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        matcher,
+      );
+      for (const character of "ordinary AGENTSCOPE_PTY_COMPLETE text")
+        terminal.write(bytes(character));
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.snapshot().semanticState).not.toBe("completed");
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes("\r\nAGENTSCOPE_PTY_COMPLETE\r\n"));
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.end().semanticState).not.toBe("completed");
+    },
+  );
+  it.each([false, true])(
+    "accepts a fresh challenged title after ordinary token (fragmented=%s)",
+    (fragmented) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes("ordinary AGENTSCOPE_PTY_COMPLETE text\r\n"));
+      expect(terminal.completionObserved()).toBe(false);
+      const title = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+      for (const part of fragmented ? [...title] : [title])
+        terminal.write(bytes(part));
+      expect(terminal.completionObserved()).toBe(true);
+      expect(terminal.end()).toMatchObject({
+        semanticState: "completed",
+        unsupportedControlCount: 0,
+      });
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each(["semantic-marker", "styled-text-after-completion"] as const)(
+    "preserves legacy %s printable completion",
+    (kind) => {
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        kind === "semantic-marker"
+          ? { kind }
+          : { kind, text: "›", bold: true, dim: false },
+      );
+      terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
+      expect(terminal.completionObserved()).toBe(true);
+      expect(terminal.end().semanticState).toBe("completed");
+    },
+  );
+});
+
+describe("closed OSC refusal partition", () => {
+  it("uses captured selector guards after initialization", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    const guard = vi.spyOn(Number, "isSafeInteger").mockImplementation(() => {
+      throw Error("substituted guard");
+    });
+    try {
+      terminal.write(bytes("\u001b]65535;PRIVATE\u0007"));
+      expect(terminal.unsupportedControlReason()).toBe("osc-selector-65535");
+    } finally {
+      guard.mockRestore();
+    }
+  });
+  it.each([52, 104, 65535])(
+    "retains only canonical selector %s",
+    (selector) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `\u001b]${selector};PRIVATE_PAYLOAD\u0007`)
+        terminal.write(bytes(character));
+      expect(terminal.unsupportedControlReason()).toBe(
+        `osc-selector-${selector}`,
+      );
+      expect(terminal.end().semanticState).toBe("malformed-control");
+    },
+  );
+  it.each([
+    "00052",
+    "-1",
+    "+52",
+    "52.0",
+    " 52",
+    "52\n",
+    "52\r\n",
+    "private",
+    "65536",
+    "999999",
+  ])("keeps noncanonical selector %j generic", (selector) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(`\u001b]${selector};52\u0007`));
+    expect(terminal.unsupportedControlReason()).toBe("osc");
+  });
+  it("preserves short-circuit priority and first reason/count", () => {
+    const limits = {
+      ...defaultPtyTerminalEmulatorLimits,
+      maximumTitleBytes: 2,
+    };
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      limits,
+    );
+    terminal.write(bytes("\u001b]52;PRIVATE\u0007\u001b]0;PRIVATE\u0007"));
+    expect(terminal.unsupportedControlReason()).toBe("osc-selector-52");
+    expect(terminal.end().unsupportedControlCount).toBe(2);
+    const admitted = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      limits,
+    );
+    admitted.write(bytes("\u001b]0;PRIVATE\u0007"));
+    expect(admitted.unsupportedControlReason()).toBe("osc-title-bound");
+  });
+  it("partitions challenged title misuse without completing or echoing it", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-marker",
+        challenge: "a".repeat(64),
+      },
+    );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\u001b\\`),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-readiness",
+    );
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+});
+
+describe("exact native OSC indexed palette reset", () => {
+  it.each([
+    ["\u0007", false],
+    ["\u0007", true],
+    ["\u001b\\", false],
+    ["\u001b\\", true],
+  ])(
+    "accepts the exact reset without semantic authority (%j, %j)",
+    (end, fragmented) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary text"));
+      const before = terminal.snapshot();
+      const sequence = `\u001b]104;255${end}`;
+      for (const part of fragmented ? [...sequence] : [sequence])
+        terminal.write(bytes(part));
+      expect(terminal.end()).toMatchObject({
+        cursor: before.cursor,
+        screenSha256: before.screenSha256,
+        titleSha256: before.titleSha256,
+        titlePresent: before.titlePresent,
+        semanticState: "active",
+        unsupportedControlCount: 0,
+        malformedControlCount: 0,
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each([
+    ["104", "osc"],
+    ["104;254", "osc-selector-104"],
+    ["104;0255", "osc-selector-104"],
+    ["104;255;1", "osc-selector-104"],
+    ["104;255?", "osc-selector-104"],
+    ["104;255AGENTSCOPE_PTY_READY", "osc-selector-104"],
+    ["52;c;synthetic", "osc-selector-52"],
+    ["999;unknown", "osc-selector-999"],
+  ])("keeps unrelated OSC payload %j refused", (control, reason) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(`\u001b]${control}\u0007`));
+    expect(terminal.end().unsupportedControlCount).toBe(1);
+    expect(terminal.unsupportedControlReason()).toBe(reason);
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("preserves title/control bounds and unfinished sequence refusal", () => {
+    const smallTitle = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      {
+        ...defaultPtyTerminalEmulatorLimits,
+        maximumTitleBytes: 2,
+      },
+    );
+    smallTitle.write(bytes("\u001b]104;255\u0007"));
+    expect(smallTitle.end().unsupportedControlCount).toBe(1);
+    const overflow = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    overflow.write(bytes(`\u001b]104;255${"x".repeat(512)}\u0007`));
+    expect(overflow.end().malformedControlCount).toBeGreaterThan(0);
+    expect(overflow.malformedControlReason()).toBe("control-limit");
+    const unfinished = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    unfinished.write(bytes("\u001b]104;255\u001b"));
+    expect(unfinished.end().malformedControlCount).toBeGreaterThan(0);
+  });
+});
+
+describe("truthful bounded DECRQM responses", () => {
+  it.each([
+    ["$p", "0;0"],
+    ["?$p", "?0;0"],
+    ["?00025$p", "?25;1"],
+    ["0$p", "0;0"],
+    ["65535$p", "65535;0"],
+    ["?7$p", "?7;1"],
+    ["?25$p", "?25;1"],
+    ["?1049$p", "?1049;2"],
+    ["?9001$p", "?9001;4"],
+    ["?2026$p", "?2026;2"],
+    ["?2031$p", "?2031;2"],
+    ["?1000$p", "?1000;2"],
+    ["?1002$p", "?1002;2"],
+    ["?1003$p", "?1003;2"],
+    ["?1006$p", "?1006;2"],
+    ["?12$p", "?12;0"],
+    ["?1004$p", "?1004;0"],
+    ["?1007$p", "?1007;0"],
+    ["?2004$p", "?2004;0"],
+    ["?65535$p", "?65535;0"],
+  ])(
+    "answers exact fragmented query %j without semantic progress",
+    (query, result) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary ASCII"));
+      const before = terminal.snapshot();
+      for (const character of `\u001b[${query}`)
+        terminal.write(bytes(character));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        `\u001b[${result}$y`,
+      );
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(`\u001b[${query}`).length,
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.requiredTerminalProtocolReady()).toBe(false);
+    },
+  );
+  it.each([7, 25, 1000, 1002, 1003, 1006, 1049, 2026, 2031])(
+    "reports actual current private mode %s",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const [final, state] of [
+        ["h", 1],
+        ["l", 2],
+      ] as const) {
+        terminal.write(bytes(`\u001b[?${mode}${final}`));
+        expect(terminal.takeTerminalResponses()).toHaveLength(0);
+        terminal.write(bytes(`\u001b[?${mode}$p`));
+        expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+          `\u001b[?${mode};${state}$y`,
+        );
+      }
+    },
+  );
+  it.each([12, 1004, 1007, 2004])(
+    "does not advertise unmodeled hint %s",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[?${mode}h\u001b[?${mode}$p`));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        `\u001b[?${mode};0$y`,
+      );
+    },
+  );
+  it.each(["?65536$p", "?1;2$p", ">1$p", "?1$$p", "?1$q", "?1:2$p"])(
+    "refuses neighboring query %j",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[${query}`));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it("preserves earlier errors and cumulative queue bounds after drain", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9001h\u001b[?25$p"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-9001",
+    );
+    terminal.takeTerminalResponses();
+    const count = Math.floor(4096 / bytes("\u001b[?25;1$y").length);
+    for (let index = 1; index < count; index++) {
+      terminal.write(bytes("\u001b[?25$p"));
+      terminal.takeTerminalResponses();
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[?25$p"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
+describe("normal mouse reporting subscription without pointer input", () => {
+  it.each(["1000", "1002;1006", "1003;1006"])(
+    "preserves screen and semantic authority across fragmented %s enable and reset",
+    (modes) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary ASCII"));
+      const before = terminal.snapshot();
+      const sequence = `\u001b[?${modes}h\u001b[?${modes}l`;
+      for (const character of sequence) terminal.write(bytes(character));
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(sequence).length,
+      });
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.requiredTerminalProtocolReady()).toBe(false);
+    },
+  );
+  it.each(["1005", "9999"])(
+    "refuses companion %s without committing subscription",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[?1000;${mode}h\u001b[?1000$p`));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        "\u001b[?1000;2$y",
+      );
+    },
+  );
+});
+
+describe("ordered mouse tracking and independent SGR encoding", () => {
+  it("retains settled tracking and encoding when a mixed reset is refused", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(
+      bytes(
+        "\u001b[?1002;1006h\u001b[?1000;1006;1005l\u001b[?1002$p\u001b[?1006$p",
+      ),
+    );
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?1002;1$y\u001b[?1006;1$y",
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-1005",
+    );
+  });
+  it.each([
+    "1000;1002",
+    "1002;1000",
+    "1000;1003",
+    "1003;1000",
+    "1002;1003",
+    "1003;1002",
+  ])("uses the final tracking mode in %s", (modes) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    const selected = Number(modes.split(";").at(-1));
+    for (const character of `\u001b[?${modes};1006h`)
+      terminal.write(bytes(character));
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    terminal.write(
+      bytes("\u001b[?1000$p\u001b[?1002$p\u001b[?1003$p\u001b[?1006$p"),
+    );
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      `\u001b[?1000;${selected === 1000 ? 1 : 2}$y\u001b[?1002;${selected === 1002 ? 1 : 2}$y\u001b[?1003;${selected === 1003 ? 1 : 2}$y\u001b[?1006;1$y`,
+    );
+    terminal.write(bytes("\u001b[?1000l\u001b[?1002$p\u001b[?1006$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?1002;2$y\u001b[?1006;1$y",
+    );
+    terminal.write(bytes("\u001b[?1006l\u001b[?1006$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?1006;2$y",
+    );
+    expect(terminal.snapshot().semanticState).toBe("active");
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it.each(["1001", "1005", "9999"])(
+    "does not commit any mouse state when %s is refused",
+    (mode) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const tracking of [1002, 1003]) {
+        terminal.write(
+          bytes(
+            `\u001b[?${tracking};1006;${mode}h\u001b[?${tracking}$p\u001b[?1006$p`,
+          ),
+        );
+        expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+          `\u001b[?${tracking};2$y\u001b[?1006;2$y`,
+        );
+      }
+      expect(terminal.end().semanticState).toBe("malformed-control");
+    },
+  );
+});
+
+describe("fixed rejected CSI parameter syntax", () => {
+  it.each([
+    ["38:2::1:2:3m", "colon-sgr"],
+    ["1:2u", "colon-keyboard"],
+    ["?1:2h", "colon-other"],
+    ["?65536$p", "range"],
+    ["65536$p", "range"],
+    ["1!p", "intermediate"],
+    ["65536m", "range"],
+    ["999999999999999999999m", "range"],
+  ])(
+    "localizes refused syntax %j without semantic progress",
+    (control, reason) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `\u001b[${control}`)
+        terminal.write(bytes(character));
+      expect(terminal.malformedControlReason()).toBe(
+        `csi-parameters-${reason}`,
+      );
+      expect(terminal.end()).toMatchObject({
+        semanticState: "malformed-control",
+      });
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each(["1?2m", "1:2?m", "1$2p", "??1m", "1:2>x"])(
+    "retains legacy fallback for malformed order %j",
+    (control) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(`\u001b[${control}`));
+      expect(terminal.malformedControlReason()).toBe("csi-parameters");
+    },
+  );
+  it("preserves original numeric edge and earlier malformed priority", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b[65535m"));
+    expect(terminal.malformedControlReason()).toBeNull();
+    terminal.write(bytes("\u0000\u001b[38:2m\u001b[65536m"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+  });
+});
+
+describe("truthful fixed terminal identification", () => {
+  const reply = "\u001bP>|AgentscopeBoundedTerminalEmulator\u001b\\";
+  it.each(["\u001b[>q", "\u001b[>0q"])(
+    "answers fragmented exact version query %j without semantic progress",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes("ordinary ASCII"));
+      const before = terminal.snapshot();
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      for (const character of query) terminal.write(bytes(character));
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(query).length,
+      });
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(reply);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      expect(terminal.end().semanticState).not.toBe("completed");
+    },
+  );
+  it.each(["\u001b[>1q", "\u001b[>0;0q", "\u001b[?0q", "\u001b[>0 q"])(
+    "preserves refusal for neighboring identification shape %j",
+    (query) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(query));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it("preserves earlier failures and cumulative response bounds across drains", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[>q"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-h-9999",
+    );
+    terminal.takeTerminalResponses();
+    const maximumReplies = Math.floor(4096 / bytes(reply).length);
+    for (let index = 1; index < maximumReplies; index += 1) {
+      terminal.write(bytes("\u001b[>0q"));
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(reply);
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[>q"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
+describe("fixed palette theme protocol", () => {
+  it("models fragmented subscription without changing screen or sending an initial report", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("ordinary ASCII"));
+    const before = terminal.snapshot();
+    const sequence = "\u001b[?2031h\u001b[?2031l";
+    for (const character of sequence) terminal.write(bytes(character));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes(sequence).length,
+    });
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+  it.each(["", "\u001b[?2031h", "\u001b[?2031h\u001b[?2031l"])(
+    "answers exact theme query after %j",
+    (subscription) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      for (const character of `${subscription}\u001b[?996n`)
+        terminal.write(bytes(character));
+      expect(terminal.snapshot()).toMatchObject({
+        semanticState: "active",
+        malformedControlCount: 0,
+        unsupportedControlCount: 0,
+      });
+      expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+        "\u001b[?997;1n",
+      );
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    },
+  );
+  it.each([
+    "\u001b[?996;1n",
+    "\u001b[?997n",
+    "\u001b[996n",
+    "\u001b[?2031;9999h",
+  ])("retains strict refusal for nearby shape %j", (sequence) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).toBe("malformed-control");
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+  });
+  it("retains error priority and the cumulative response budget across drains", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[?2031h\u001b[?996n"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-h-9999",
+    );
+    terminal.takeTerminalResponses();
+    for (let index = 1; index < 455; index += 1) {
+      terminal.write(bytes("\u001b[?996n"));
+      terminal.takeTerminalResponses();
+    }
+    expect(() => {
+      terminal.write(bytes("\u001b[?996n"));
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.response-limit"),
+    );
+  });
+});
+
+describe("fixed rejected extended-CSI identities", () => {
+  it.each([0, 9999, 65535])(
+    "localizes bounded unlisted mode %s without admitting it",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        for (const character of `\u001b[?25;${mode};1000${final}`)
+          terminal.write(bytes(character));
+        expect(terminal.unsupportedControlReason()).toBe(
+          `extended-csi-private-mode-unlisted-${final}-${mode}`,
+        );
+        expect(terminal.end().unsupportedControlCount).toBe(1);
+      }
+    },
+  );
+  it("keeps oversized parameters malformed and first refusal latched", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b[?65536h\u001b[?9999l\u001b[?0h"));
+    expect(terminal.malformedControlReason()).toBe("csi-parameters-range");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-l-9999",
+    );
+  });
+});
+
+describe("fixed rejected extended-CSI legacy identities", () => {
+  it("models only the exact disabled Win32-input reset without changing screen or trust", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("ordinary ASCII"));
+    const before = terminal.snapshot();
+    for (const character of "\u001b[?9001l") terminal.write(bytes(character));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 8,
+    });
+    expect(terminal.unsupportedControlReason()).toBeNull();
+  });
+  it.each(["\u001b[?9001h", "\u001b[?25;9001l", "\u001b[?9001;25l"])(
+    "refuses Win32 enable or mixed reset %j",
+    (sequence) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(sequence));
+      expect(terminal.unsupportedControlReason()).toBe(
+        "extended-csi-private-mode-9001",
+      );
+    },
+  );
+  it("cannot reset earlier failure or manufacture readiness", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?9999h\u001b[?9001l"));
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-unlisted-h-9999",
+    );
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
+  it.each([
+    1, 2, 3, 4, 5, 6, 8, 9, 10, 13, 14, 18, 19, 30, 35, 38, 40, 41, 42, 43, 44,
+    45, 46, 47, 66, 67, 69, 80, 95, 1001, 1005, 1010, 1011, 1014, 1015, 1016,
+    1020, 1021, 1022, 1023, 1034, 1035, 1036, 1037, 1039, 1040, 1041, 1042,
+    1043, 1044, 1045, 1046, 1047, 1048, 1050, 1051, 1052, 1053, 1060, 1061,
+    2001, 2002, 2003, 2005, 2006,
+  ])(
+    "identifies documented rejected private mode %s without admitting it",
+    (mode) => {
+      for (const final of ["h", "l"]) {
+        const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+        for (const character of `\u001b[?${mode}${final}`)
+          terminal.write(bytes(character));
+        expect(terminal.unsupportedControlReason()).toBe(
+          `extended-csi-private-mode-${mode}`,
+        );
+        expect(terminal.end().semanticState).not.toBe("completed");
+      }
+    },
+  );
+  it.each([
+    ["\u001b[>c", "secondary-device-attributes"],
+    ["\u001b[>0c", "secondary-device-attributes"],
+    ["\u001b[=c", "tertiary-device-attributes"],
+    ["\u001b[=0c", "tertiary-device-attributes"],
+    ...[0, 1, 2, 3, 4, 6, 7].map((value) => [
+      `\u001b[?${value}g`,
+      "key-modifier-query",
+    ]),
+    ["\u001b[1 p", "intermediate"],
+    ["\u001b[>32u", "keyboard-shape"],
+    ["\u001b[>4;65535m", "modifier-shape"],
+  ])(
+    "identifies refused fixed family %j without accepting it",
+    (sequence, reason) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+      terminal.write(bytes(sequence));
+      expect(terminal.unsupportedControlReason()).toBe(
+        `extended-csi-${reason}`,
+      );
+      expect(terminal.end().unsupportedControlCount).toBe(1);
+    },
+  );
+  it("preserves the first refused parameter and earlier malformed failure", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u0000\u001b[?25;1000;1005h\u001b[>q"));
+    expect(terminal.unsupportedControlReason()).toBe(
+      "extended-csi-private-mode-1005",
+    );
+    expect(terminal.malformedControlReason()).toBe("ground-control-0");
+  });
+  it.each([
+    ["\u001b[>1c", "residual-shape"],
+    ["\u001b[=1c", "residual-shape"],
+    ["\u001b[>1q", "residual-shape"],
+    ["\u001b[?5g", "residual-shape"],
+    ["\u001b[<3p", "residual-shape"],
+    ["\u001b[?65535h", "private-mode-unlisted-h-65535"],
+    ["\u001b[?9999l", "private-mode-unlisted-l-9999"],
+  ])("identifies only the refusal branch for %j", (sequence, reason) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes(sequence));
+    expect(terminal.unsupportedControlReason()).toBe(`extended-csi-${reason}`);
+    expect(terminal.end().unsupportedControlCount).toBe(1);
+  });
+  it("does not reclassify existing supported modes or protocols", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(
+      bytes(
+        "\u001b[?7;12;25;1004;1007;1049;2004;2026h\u001b[?7;12;25;1004;1007;1049;2004;2026l\u001b[>4;0m\u001b[>4;2m\u001b[2 q",
+      ),
+    );
+    expect(terminal.unsupportedControlReason()).toBeNull();
+  });
+});
+const frame =
+  "\u001b[?2026h\u001b[2J\u001b[H\u001b[1m›\u001b[22m fixture-model default\u001b[?2026l";
+const terminalForCharset = (withProtocol = true) => {
+  const challenge = "a".repeat(64);
+  const terminal = new BoundedTerminalEmulator(
+    { columns: 100, rows: 8 },
+    defaultPtyTerminalEmulatorLimits,
+    {
+      kind: "challenge-styled-text",
+      challenge,
+      text: "›",
+      requiredText: "fixture-model default",
+      requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+      bold: true,
+      dim: false,
+    },
+  );
+  if (withProtocol)
+    terminal.write(
+      bytes(
+        "\u001b[>7u\u001b[6n\u001b]10;?\u001b\\\u001b]11;?\u001b\\\u001b[?u\u001b[c",
+      ),
+    );
+  terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}`));
+  return terminal;
+};
+describe("resource4 negotiation preserves live styled authority", () => {
+  it.each(["\u001b[>4m", "\u001b[>4;1m"])(
+    "does not advance or recover protocol/screen authority with %j",
+    (sequence) => {
+      const terminal = terminalForCharset();
+      terminal.takeTerminalResponses();
+      terminal.write(bytes(frame));
+      const before = terminal.snapshot();
+      const progress = terminal.challengedReadinessProgress();
+      terminal.write(bytes(sequence));
+      expect(terminal.snapshot()).toEqual({
+        ...before,
+        outputBytes: before.outputBytes + bytes(sequence).length,
+      });
+      expect(terminal.challengedReadinessProgress()).toEqual(progress);
+      expect(terminal.readinessObserved()).toBe(true);
+      expect(terminal.completionObserved()).toBe(false);
+      expect(terminal.takeTerminalResponses()).toHaveLength(0);
+      terminal.write(bytes("\u001b(0"));
+      const revoked = terminal.challengedReadinessProgress();
+      terminal.write(bytes(sequence));
+      expect(terminal.challengedReadinessProgress()).toEqual(revoked);
+      expect(terminal.readinessObserved()).toBe(false);
+      const incomplete = terminalForCharset(false);
+      incomplete.write(bytes(frame));
+      const pending = incomplete.challengedReadinessProgress();
+      incomplete.write(bytes(sequence));
+      expect(incomplete.challengedReadinessProgress()).toEqual(pending);
+      expect(incomplete.readinessObserved()).toBe(false);
+      incomplete.write(bytes("\u001b[>8u"));
+      const rejected = incomplete.challengedReadinessProgress();
+      expect(rejected.terminalProtocol).toBe("rejected");
+      incomplete.write(bytes(sequence));
+      expect(incomplete.challengedReadinessProgress()).toEqual(rejected);
+      expect(incomplete.readinessObserved()).toBe(false);
+    },
+  );
+});
+describe("exact palette reset preserves challenge authority", () => {
+  it("preserves established readiness without recovering revoked or incomplete trust", () => {
+    const reset = bytes("\u001b]104;255\u0007");
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    terminal.write(reset);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + reset.length,
+    });
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.takeTerminalResponses()).toHaveLength(0);
+    terminal.write(bytes("\u001b(0"));
+    const revoked = terminal.challengedReadinessProgress();
+    terminal.write(reset);
+    expect(terminal.challengedReadinessProgress()).toEqual(revoked);
+    expect(terminal.readinessObserved()).toBe(false);
+    const incomplete = terminalForCharset(false);
+    incomplete.write(bytes(frame));
+    const pending = incomplete.challengedReadinessProgress();
+    incomplete.write(reset);
+    expect(incomplete.challengedReadinessProgress()).toEqual(pending);
+    expect(incomplete.readinessObserved()).toBe(false);
+    expect(incomplete.takeTerminalResponses()).toHaveLength(0);
+  });
+});
+describe("DECRQM preserves existing challenge authority", () => {
+  it("does not disturb an active styled frame or recover revoked trust", () => {
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes(frame.replace("\u001b[?2026l", "")));
+    const progress = terminal.challengedReadinessProgress();
+    const before = terminal.snapshot();
+    terminal.write(bytes("\u001b[?2026$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2026;1$y",
+    );
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 9,
+    });
+    terminal.write(bytes("\u001b[?2026l"));
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u001b(0\u001b[?7$p\u001b(B"));
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("reports current sync setting rather than invalidated observation frame", () => {
+    const terminal = terminalForCharset();
+    terminal.takeTerminalResponses();
+    terminal.write(bytes("\u001b[?2026h\u001b[?2026h\u001b[?2026$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2026;1$y",
+    );
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+  it("uses original saved autowrap state and does not mint rejected subscriptions", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\u001b7\u001b[?7l\u001b8\u001b[?7$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?7;1$y",
+    );
+    terminal.write(bytes("\u001b[?2031;9999h\u001b[?2031$p"));
+    expect(decoder.decode(terminal.takeTerminalResponses())).toBe(
+      "\u001b[?2031;2$y",
+    );
+    expect(terminal.end().semanticState).toBe("malformed-control");
+  });
+});
+
+describe("theme protocol preserves existing challenge authority", () => {
+  it("does not mutate established styled readiness or screen identity", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    const sequence = "\u001b[?2031h\u001b[?996n\u001b[?2031l";
+    terminal.write(bytes(sequence));
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes(sequence).length,
+    });
+  });
+  it("cannot recover revoked graphics trust without fresh ASCII frame", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    terminal.write(bytes("\u001b(0\u001b[?2031h\u001b[?996n\u001b[?2031l"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\u001b(B${frame}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("cannot advance an incomplete required protocol handshake", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge: "a".repeat(64),
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    const before = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[?2031h\u001b[?996n\u001b[?2031l"));
+    expect(terminal.challengedReadinessProgress()).toEqual(before);
+    expect(terminal.readinessObserved()).toBe(false);
+  });
+});
+describe("identification query preserves challenge authority", () => {
+  it("does not mutate established styled readiness or recover graphics trust", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    const before = terminal.snapshot();
+    const progress = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[>0q"));
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + bytes("\u001b[>0q").length,
+    });
+    expect(terminal.challengedReadinessProgress()).toEqual(progress);
+    terminal.write(bytes("\u001b(0\u001b[>q"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(`\u001b(B${frame}`));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("cannot advance the required keyboard handshake", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      {
+        kind: "challenge-styled-text",
+        challenge: "a".repeat(64),
+        text: "›",
+        requiredText: "fixture-model default",
+        requiredTerminalProtocol: "csi-u-flags-7-query-v1",
+        bold: true,
+        dim: false,
+      },
+    );
+    const before = terminal.challengedReadinessProgress();
+    terminal.write(bytes("\u001b[>q\u001b[>0q"));
+    expect(terminal.challengedReadinessProgress()).toEqual(before);
+    expect(terminal.readinessObserved()).toBe(false);
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
+});
+describe("G0/G1 designation and GL invocation", () => {
+  it.each([
+    ["\u000f", true],
+    ["\u001b(B\u000f", true],
+    ["\u001b(0\u000f", false],
+    ["\u001b)0\u000f", true],
+    ["\u001b)B\u000e", true],
+    ["\u001b)0\u000e", false],
+    ["\u001b(B\u000e", false],
+    ["\u001b(0\u001b)B\u000e", true],
+    ["\u001b)B\u000e\u001b(0\u000f", false],
+    ["\u001b)B\u000e\u001b7\u001b)0\u001b8", true],
+    ["\u001b(0\u001b7\u001b(B\u001b8\u000f", false],
+    ["\u001b)0\u001b7\u000e\u001b8", true],
+  ] as const)(
+    "derives active ASCII authority for %j without trusting graphics",
+    (sequence, trusted) => {
+      const terminal = terminalForCharset();
+      for (const character of sequence) terminal.write(bytes(character));
+      terminal.write(bytes(frame));
+      expect(terminal.readinessObserved()).toBe(trusted);
+      expect(terminal.end().malformedControlCount).toBe(0);
+    },
+  );
+  it("requires a fresh authenticated frame after SI, including idempotent SI", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    terminal.write(bytes("\u000f"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("preserves exact styled readiness, cursor and challenge identity across Win32 disable", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+    const before = terminal.snapshot();
+    terminal.write(bytes("\u001b[?9001l"));
+    expect(terminal.readinessObserved()).toBe(true);
+    expect(terminal.snapshot()).toEqual({
+      ...before,
+      outputBytes: before.outputBytes + 8,
+    });
+  });
+  it("cannot restore revoked styled readiness using Win32 disable", () => {
+    const terminal = terminalForCharset();
+    terminal.write(bytes(frame));
+    terminal.write(bytes("\u000f\u001b[?9001l"));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes(frame));
+    expect(terminal.readinessObserved()).toBe(true);
+  });
+  it("does not derive ASCII marker authority from an invoked graphics G1", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 100, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`\u001b)0\u000eAGENTSCOPE_PTY_READY:${challenge}`));
+    expect(terminal.readinessObserved()).toBe(false);
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
+    expect(terminal.end().semanticState).not.toBe("completed");
+  });
+  it.each(["\u001b)0\u000e", "\u001b(0\u000f"])(
+    "requires fresh ASCII marker bytes after graphics %j and SI recovery",
+    (graphics) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 100, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      terminal.write(bytes(`${graphics}AGENTSCOPE_PTY_READY:${challenge}`));
+      terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\u001b(B\u000f"));
+      expect(terminal.readinessObserved()).toBe(false);
+      expect(terminal.snapshot().semanticState).toBe("active");
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+      expect(terminal.readinessObserved()).toBe(true);
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(
+        bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
+      );
+      expect(terminal.end().semanticState).toBe("completed");
+    },
+  );
+  it("cannot splice marker fragments across invocation and retains credential refusal", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 100, rows: 8 });
+    terminal.write(bytes("AGENTSCOPE_PTY_COM\u000fPLETE"));
+    expect(terminal.snapshot().semanticState).not.toBe("completed");
+    terminal.write(bytes("\u001b)0\u000ePassword: \u000f"));
+    expect(terminal.end().semanticState).toBe("credential-prompt");
+  });
+  it("retains already observed completion after designation and invocation", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 100, rows: 8 });
+    terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE\u001b)0\u000e\u000f"));
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+  it("never erases an earlier malformed control or accepts invalid designation", () => {
+    for (const sequence of ["\u0000\u000f", "\u001b)Z\u000f"]) {
+      const terminal = terminalForCharset();
+      terminal.write(bytes(sequence + frame));
+      expect(terminal.end().semanticState).toBe("malformed-control");
+      expect(terminal.malformedControlReason()).toBe(
+        sequence[0] === "\u0000" ? "ground-control-0" : "escape",
+      );
+    }
+  });
+});
+
+describe("fixed rejected ground-control reasons", () => {
+  it.each([
+    0, 1, 2, 3, 4, 5, 6, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28,
+    29, 30, 31, 127,
+  ])("retains only the first rejected control value %s", (point) => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(new Uint8Array([point]));
+    terminal.write(new Uint8Array([point === 0 ? 127 : 0]));
+    expect(terminal.end()).toMatchObject({
+      semanticState: "malformed-control",
+      malformedControlCount: 2,
+    });
+    expect(terminal.malformedControlReason()).toBe(`ground-control-${point}`);
+  });
+  it("preserves permitted ground controls and fragmented OSC/escape parsing", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 40, rows: 8 });
+    terminal.write(bytes("\r\n\b\t\u0007\u001b]0;title"));
+    terminal.write(bytes("\u0007\u001b["));
+    terminal.write(bytes("2J"));
+    expect(terminal.end().malformedControlCount).toBe(0);
+    expect(terminal.malformedControlReason()).toBeNull();
+  });
+});
+
 // These cases share one bounded emulator fixture surface across semantic states.
 // eslint-disable-next-line max-lines-per-function
 describe("bounded semantic terminal emulator", () => {
@@ -140,6 +1287,112 @@ describe("bounded semantic terminal emulator", () => {
     expect(terminal.readinessObserved()).toBe(false);
     terminal.write(bytes(`\r\nAGENTSCOPE_PTY_READY:${challenge}`));
     expect(terminal.readinessObserved()).toBe(true);
+  });
+
+  it("recognizes a fragmented challenge completion title only after submission", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes(`\u001b]2;AGENTSCOPE_PTY_COM`));
+    expect(terminal.completionObserved()).toBe(false);
+    terminal.write(bytes(`PLETE:${challenge}\u001b\\`));
+    expect(terminal.end().semanticState).toBe("completed");
+  });
+
+  it.each([
+    ["pre-submission", "not-armed"],
+    ["no-readiness", "readiness"],
+    ["foreign", "mismatch"],
+    ["malformed", "mismatch"],
+    ["duplicate", "duplicate"],
+    ["wrong-selector", "selector"],
+  ])("refuses %s challenged completion titles", (kind, reason) => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    if (kind !== "no-readiness")
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    if (kind !== "pre-submission") terminal.armPostSubmissionIdleObservation();
+    const title = `AGENTSCOPE_PTY_COMPLETE:${kind === "foreign" ? "b".repeat(64) : challenge}${kind === "malformed" ? "x" : ""}`;
+    const sequence = `\u001b]${kind === "wrong-selector" ? "0" : "2"};${title}\u001b\\`;
+    terminal.write(bytes(sequence));
+    if (kind === "duplicate") terminal.write(bytes(sequence));
+    expect(terminal.end().semanticState).not.toBe("completed");
+    expect(terminal.unsupportedControlReason()).toBe(
+      `osc-challenge-completion-${reason}`,
+    );
+  });
+
+  it("keeps unrelated titles inert for challenged completion", () => {
+    const challenge = "a".repeat(64);
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge },
+    );
+    terminal.write(bytes(`AGENTSCOPE_PTY_READY:${challenge}\r\n`));
+    terminal.armPostSubmissionIdleObservation();
+    terminal.write(bytes("\u001b]2;ordinary title\u001b\\"));
+    expect(terminal.end()).toMatchObject({
+      semanticState: "ready",
+      unsupportedControlCount: 0,
+    });
+  });
+
+  it.each([1, 2, 19])(
+    "refuses a completion title begun before submission (prefix=%s)",
+    (prefix) => {
+      const challenge = "a".repeat(64);
+      const terminal = new BoundedTerminalEmulator(
+        { columns: 40, rows: 8 },
+        defaultPtyTerminalEmulatorLimits,
+        { kind: "challenge-marker", challenge },
+      );
+      const sequence = `\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`;
+      terminal.write(
+        bytes(
+          `AGENTSCOPE_PTY_READY:${challenge}\r\n${sequence.slice(0, prefix)}`,
+        ),
+      );
+      terminal.armPostSubmissionIdleObservation();
+      terminal.write(bytes(sequence.slice(prefix)));
+      expect(terminal.end().semanticState).not.toBe("completed");
+      expect(terminal.unsupportedControlReason()).toBe(
+        "osc-challenge-completion-started-before-arm",
+      );
+    },
+  );
+
+  it("keeps original challenged guard priority, count and first latch", () => {
+    const terminal = new BoundedTerminalEmulator(
+      { columns: 40, rows: 8 },
+      defaultPtyTerminalEmulatorLimits,
+      { kind: "challenge-marker", challenge: "a".repeat(64) },
+    );
+    terminal.write(
+      bytes(
+        `\u001b]0;AGENTSCOPE_PTY_COMPLETE:${"b".repeat(64)}PRIVATE_CANARY\u001b\\`,
+      ),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-selector",
+    );
+    terminal.write(
+      bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${"a".repeat(64)}\u001b\\`),
+    );
+    expect(terminal.unsupportedControlReason()).toBe(
+      "osc-challenge-completion-selector",
+    );
+    expect(terminal.end().unsupportedControlCount).toBe(2);
+    expect(JSON.stringify(terminal.snapshot())).not.toContain("PRIVATE_CANARY");
   });
 
   it("holds challenged input until the exact styled TUI prompt", () => {
@@ -714,7 +1967,7 @@ describe("bounded semantic terminal emulator", () => {
     terminal.armPostSubmissionIdleObservation();
     terminal.write(bytes(`AGENTSCOPE_CODEX_RESPONSE:${challenge}`));
     terminal.write(bytes("AGENTSCOPE_PTY_COMPLETE"));
-    expect(terminal.completionObserved()).toBe(true);
+    expect(terminal.completionObserved()).toBe(false);
     expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe(
       "title-not-observed",
     );
@@ -733,6 +1986,7 @@ describe("bounded semantic terminal emulator", () => {
       bytes(`\u001b]2;AGENTSCOPE_PTY_COMPLETE:${challenge}\u001b\\`),
     );
     expect(terminal.postSubmissionIdleAtTitleDiagnostic()).toBe("idle-ready");
+    expect(terminal.completionObserved()).toBe(true);
   });
 
   it("classifies fixed readiness losses at the exact challenged title", () => {

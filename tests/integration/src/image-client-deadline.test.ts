@@ -27,6 +27,18 @@ const source = (name: string) => {
     .replace(/^import[\s\S]*?from "[^"]+";/gmu, "")
     .replaceAll("export const ", "const ");
 };
+const requestDiagnosticReader = () => {
+  const boundary = source("boundary");
+  const start = boundary.indexOf("const requestDiagnostics = new WeakMap();");
+  const end = boundary.indexOf("const recordImageRequestDiagnostic", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return runInNewContext(
+    `${boundary.slice(start, end)}\nreadImageRequestDiagnostic;`,
+    {},
+    { timeout: 1000 },
+  ) as (error: unknown) => unknown;
+};
 const storage = (clock: { now: number }, extra: Record<string, unknown> = {}) =>
   runInNewContext(
     `${source("private-storage")}\n({createPrivateClientRoot,cleanupPrivateClient});`,
@@ -373,6 +385,7 @@ describe("canonical preparation and terminal publication obey inherited time", (
           maximumResponseBytes: 100,
           maximumManifestBytes: 100,
           maximumEvidenceBytes: 100,
+          readImageRequestDiagnostic: requestDiagnosticReader(),
         },
         { timeout: 1000 },
       ) as (

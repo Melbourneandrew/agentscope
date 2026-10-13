@@ -4,12 +4,16 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -41,6 +45,141 @@ const forged = (): PreparedNpmHarnessMaterial =>
     authorityKind: "authenticated-harness-material",
     authorityVersion: 1,
   }) as PreparedNpmHarnessMaterial;
+
+const packageVerification = (
+  changes: {
+    listing?: string;
+    stderr?: string;
+    member?: Buffer;
+    archive?: Buffer;
+    exitCode?: number;
+  } = {},
+) => {
+  const source = readFileSync(
+    new URL("../harness-material-command.mjs", import.meta.url),
+    "utf8",
+  );
+  const archive = Buffer.from("fixed compressed package fixture");
+  const member = Buffer.from("fixed platform binary fixture");
+  const calls: { executable: string; arguments: string[] }[] = [];
+  const descriptor = {
+    bytes: archive.byteLength,
+    sha256: createHash("sha256").update(archive).digest("hex"),
+    integrity: `sha512-${createHash("sha512").update(archive).digest("base64")}`,
+    memberName: "package/claude",
+    memberBytes: member.byteLength,
+    memberSha256: createHash("sha256").update(member).digest("hex"),
+  };
+  const listing = ["claude", "package.json", "LICENSE.md", "README.md"]
+    .map(
+      (name) =>
+        `-rwxr-xr-x 0/0 ${name === "claude" ? member.byteLength : 1} 2026-01-01 00:00:00 package/${name}`,
+    )
+    .join("\n");
+  const verify = runInNewContext(
+    `${source.slice(source.indexOf("const streamPlatformMember"), source.indexOf("const [operation, root]"))}\nverifyPlatformPackage;`,
+    {
+      Buffer,
+      createHash,
+      resolve,
+      performance,
+      setTimeout,
+      clearTimeout,
+      record: (value: unknown) => value,
+      fail: () => {
+        throw new Error("fixed-refusal");
+      },
+      digest: (value: Buffer) =>
+        createHash("sha256").update(value).digest("hex"),
+      readFileSync: () => Buffer.from(changes.archive ?? archive),
+      execute: (executable: string, arguments_: string[]) => {
+        calls.push({ executable, arguments: arguments_ });
+        return Promise.resolve({
+          stdout: changes.listing ?? listing,
+          stderr: changes.stderr ?? "",
+        });
+      },
+      spawn: (executable: string, arguments_: string[]) => {
+        calls.push({ executable, arguments: arguments_ });
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new EventEmitter(),
+          stderr: new EventEmitter(),
+          kill: () => true,
+        });
+        queueMicrotask(() => {
+          child.stdout.emit("data", changes.member ?? member);
+          child.emit("close", changes.exitCode ?? 0);
+        });
+        return child;
+      },
+    },
+  ) as (root: string, policy: unknown) => Promise<void>;
+  return {
+    calls,
+    descriptor,
+    listing,
+    member,
+    run: () =>
+      verify("/verify", {
+        platformPackage: descriptor,
+        maximumMilliseconds: 1000,
+      }),
+  };
+};
+
+describe("signed platform package member association", () => {
+  it("uses only fixed absolute tar/gzip and streams the exact member digest", async () => {
+    const fixture = packageVerification();
+    await fixture.run();
+    expect(fixture.calls).toHaveLength(2);
+    expect(
+      fixture.calls.every((call) => call.executable === "/usr/bin/tar"),
+    ).toBe(true);
+    expect(
+      fixture.calls.every(
+        (call) => call.arguments[0] === "--use-compress-program=/usr/bin/gzip",
+      ),
+    ).toBe(true);
+    expect(fixture.calls[1]?.arguments.slice(-2)).toEqual([
+      "--",
+      "package/claude",
+    ]);
+  });
+
+  it("refuses compressed substitutions before member extraction", async () => {
+    const fixture = packageVerification({
+      archive: Buffer.from("substituted archive"),
+    });
+    await expect(fixture.run()).rejects.toThrow();
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it("refuses unknown, duplicate, nonregular, oversized, or noisy listings", async () => {
+    const good = packageVerification().listing;
+    for (const changes of [
+      { listing: good.replace("package/README.md", "package/foreign") },
+      { listing: `${good}\n${good.split("\n")[0]}` },
+      { listing: good.replace("-rwxr-xr-x", "lrwxr-xr-x") },
+      { listing: "x".repeat(4097) },
+      { stderr: "private-canary" },
+    ]) {
+      const fixture = packageVerification(changes);
+      await expect(fixture.run()).rejects.toThrow();
+      expect(fixture.calls).toHaveLength(1);
+    }
+  });
+
+  it("refuses changed, truncated, overlong members and nonzero extraction", async () => {
+    const member = packageVerification().member;
+    for (const changes of [
+      { member: Buffer.alloc(member.byteLength) },
+      { member: member.subarray(0, -1) },
+      { member: Buffer.concat([member, Buffer.from("x")]) },
+      { exitCode: 1 },
+    ])
+      await expect(packageVerification(changes).run()).rejects.toThrow();
+  });
+});
 
 afterEach(() => {
   for (const path of roots.splice(0))
@@ -172,7 +311,10 @@ describe("authenticated harness material runtime", () => {
         runId: "0123456789abcdef",
         signal: AbortSignal.abort(),
       }),
-    ).rejects.toThrow("integration.harness-material.failed");
+    ).rejects.toMatchObject({
+      message: "integration.harness-material.failed",
+      cause: { message: "integration.harness-material.preflight" },
+    });
     expect(existsSync(resolve(privateRoot, "harness-signed-fixture"))).toBe(
       false,
     );

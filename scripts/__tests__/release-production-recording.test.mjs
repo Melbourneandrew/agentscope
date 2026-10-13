@@ -23,6 +23,11 @@ import {
   stageRetainedProbe,
   recordProbeStagePacket,
   reconcileProbePacket,
+  recordPublicationCheckpoint,
+  recordPublicationApproval,
+  readLatestRecord,
+  verifyRegistryPublication,
+  continuePublication,
 } from "../release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "../release-lane/validation.mjs";
 
@@ -65,7 +70,12 @@ async function stageFixture() {
         bytes: Buffer.from(bytes),
       };
       assets.push(entry);
-      return entry;
+      return {
+        id: entry.id,
+        name: entry.name,
+        size: entry.size,
+        digest: entry.digest,
+      };
     },
     assets: async () => assets,
     readAsset: async (id) => assets.find((entry) => entry.id === id).bytes,
@@ -129,6 +139,728 @@ async function stageFixture() {
   };
   return { ...f, store, candidate, assets, intent, tuple, input };
 }
+
+async function publicationFixture() {
+  const f = await stageFixture();
+  f.run.head_branch = "v0.1.0";
+  await recordStageFromJob(f.store, {
+    releaseId: 7,
+    intentDigest: f.intent.digest,
+    identity: f.input.identity,
+    executingDigests: f.input.executingDigests,
+    stageResult: {
+      schemaVersion: 1,
+      tuple: f.tuple,
+      response: "received",
+      stageId: "stage-1",
+    },
+    observedAt: "2026-10-07T00:02:00.000Z",
+  });
+  const head = await readLatestRecord(f.store, 7);
+  f.store.releases = async () => [
+    { id: 7, draft: true, immutable: false, tag_name: "v0.1.0" },
+  ];
+  const input = {
+    identity: f.input.identity,
+    releaseId: 7,
+    expectedSequence: head.sequence,
+    expectedPriorDigest: head.digest,
+    executingDigests: f.input.executingDigests,
+    observedAt: "2026-10-07T00:02:00.000Z",
+  };
+  const owner = {
+    transactionId: head.transactionId,
+    draftReleaseDatabaseId: 7,
+    sourceRevision: head.sourceRevision,
+    candidateManifestDigest: head.candidateManifestDigest,
+    expectedSequence: head.sequence,
+    expectedPriorDigest: head.digest,
+    ...Object.fromEntries(
+      [
+        "stageId",
+        "package",
+        "version",
+        "distTag",
+        "tarballSha256",
+        "integrity",
+      ].map((key) => [key, head.payload[key]]),
+    ),
+    downloadedTarballSha256: head.payload.tarballSha256,
+    pendingStagesState: "exact-stage-only",
+    distTags: { bootstrap: "0.0.0-bootstrap.0", latest: "0.0.0-bootstrap.0" },
+    issuedAt: input.observedAt,
+    expiresAt: "2026-10-07T00:10:00.000Z",
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: input.observedAt,
+    }),
+  };
+  return {
+    ...f,
+    head,
+    publicationInput: input,
+    owner,
+    candidate: {
+      manifest: f.candidate.manifest,
+      certificationRecord: f.candidate.certificationRecord,
+      tarballPath: f.candidate.tarballPath,
+    },
+  };
+}
+
+async function approvedPublicationFixture() {
+  const f = await publicationFixture();
+  const checkpoint = await recordPublicationCheckpoint(
+    f.store,
+    f.publicationInput,
+    f.owner,
+  );
+  const input = {
+    ...f.publicationInput,
+    expectedSequence: checkpoint.sequence,
+    expectedPriorDigest: checkpoint.digest,
+    observedAt: "2026-10-07T00:03:00.000Z",
+  };
+  const observed = {
+    ...f.owner,
+    expectedSequence: checkpoint.sequence,
+    expectedPriorDigest: checkpoint.digest,
+    issuedAt: input.observedAt,
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: input.observedAt,
+    }),
+  };
+  const consumed = await recordPublicationCheckpoint(
+    f.store,
+    input,
+    observed,
+    true,
+  );
+  const head = await recordPublicationApproval(
+    f.store,
+    {
+      ...input,
+      expectedSequence: consumed.sequence,
+      expectedPriorDigest: consumed.digest,
+      observedAt: "2026-10-07T00:04:00.000Z",
+    },
+    {
+      stageId: "stage-1",
+      checkpointDigest: sha256(canonicalJson(consumed.checkpoint)),
+      transactionRecordDigest: consumed.digest,
+      state: "approved",
+      approvedAt: "2026-10-07T00:04:00.000Z",
+    },
+  );
+  return { ...f, head };
+}
+
+function syntheticRegistryAudit(f, change) {
+  const statement = {
+    predicateType: "https://slsa.dev/provenance/v1",
+    predicate: {
+      buildDefinition: {
+        externalParameters: {
+          workflow: {
+            ref: "refs/tags/v0.1.0",
+            repository: "https://github.com/Melbourneandrew/agentscope",
+            path: ".github/workflows/release.yml",
+          },
+        },
+        resolvedDependencies: [
+          {
+            uri: "git+https://github.com/Melbourneandrew/agentscope@refs/tags/v0.1.0",
+            digest: { gitCommit: f.head.sourceRevision },
+          },
+        ],
+      },
+      runDetails: {
+        metadata: {
+          invocationId: `https://github.com/Melbourneandrew/agentscope/actions/runs/${f.head.stageRunId}/attempts/${f.head.stageRunAttempt}`,
+        },
+      },
+    },
+  };
+  if (change === "provenance")
+    statement.predicate.buildDefinition.externalParameters.workflow.ref =
+      "refs/heads/main";
+  const audit = {
+    invalid: [],
+    missing: [],
+    verified: [
+      {
+        name: "agentscope-cli",
+        version: "0.1.0",
+        registry: "https://registry.npmjs.org/",
+        attestationBundles: [
+          {
+            predicateType: statement.predicateType,
+            bundle: {
+              dsseEnvelope: {
+                payload: Buffer.from(JSON.stringify(statement)).toString(
+                  "base64",
+                ),
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+  return audit;
+}
+
+function syntheticRegistryChild(f, change = "none") {
+  const calls = [];
+  let root;
+  const metadata = {
+    name: "agentscope-cli",
+    version: "0.1.0",
+    bin: { agentscope: "./dist/bin/agentscope.js" },
+    dist: {
+      integrity: f.tuple.integrity,
+      tarball:
+        "https://registry.npmjs.org/agentscope-cli/-/agentscope-cli-0.1.0.tgz",
+    },
+  };
+  const audit = syntheticRegistryAudit(f, change);
+  const execFileImpl = (file, args, options, callback) => {
+    calls.push([file, args]);
+    expect(options.env.GITHUB_TOKEN).toBeUndefined();
+    expect(options.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
+    expect(options.timeout).toBeGreaterThan(0);
+    let output;
+    if (args[0] === "--version") {
+      root = options.cwd;
+      output = "11.17.0\n";
+    } else if (args[0] === "view")
+      output = JSON.stringify(
+        args[2] === "dist-tags"
+          ? {
+              ...f.head.checkpoint.distTags,
+              alpha: change === "tags" ? "0.2.0" : "0.1.0",
+            }
+          : metadata,
+      );
+    else if (args[0] === "pack") {
+      writeFileSync(
+        join(root, "agentscope-cli-0.1.0.tgz"),
+        readFileSync(f.candidate.tarballPath),
+      );
+      output = JSON.stringify([{ filename: "agentscope-cli-0.1.0.tgz" }]);
+    } else if (args[0] === "install") {
+      writeFileSync(
+        join(root, "package-lock.json"),
+        JSON.stringify({
+          packages: {
+            "node_modules/agentscope-cli": {
+              version: "0.1.0",
+              resolved: metadata.dist.tarball,
+              integrity:
+                change === "installed-integrity"
+                  ? "other"
+                  : metadata.dist.integrity,
+            },
+          },
+        }),
+      );
+      output = "installed";
+    } else if (args[0] === "audit") output = JSON.stringify(audit);
+    else {
+      expect(file).toBe(process.execPath);
+      expect(args).toContain("--installed-package-root");
+      output = JSON.stringify({
+        schema: "agentscope.cli.installed-smoke.v1",
+        scope: "packed-public-command-smoke",
+        package: "agentscope-cli",
+        version: "0.1.0",
+        candidateDigest: f.tuple.tarballSha256,
+        checkCount: 81,
+      });
+    }
+    callback(null, Buffer.from(output), Buffer.alloc(0));
+  };
+  return { execFileImpl, calls, root: () => root };
+}
+
+test("registry composition uses standard npm verification and existing smoke in a credential-free owned root", async () => {
+  const f = await approvedPublicationFixture();
+  expect(Object.keys(f.candidate)).toEqual([
+    "manifest",
+    "certificationRecord",
+    "tarballPath",
+  ]);
+  const child = syntheticRegistryChild(f);
+  const result = await verifyRegistryPublication(
+    f.head,
+    f.candidate,
+    performance.now() + 10_000,
+    child,
+  );
+  expect(result.state).toBe("registry-and-installed-smoke-verified");
+  expect(result.downloadedTarballSha256).toBe(f.tuple.tarballSha256);
+  expect(result.transactionRecordDigest).toBe(f.head.digest);
+  expect(child.calls.map((call) => call[1][0])).toEqual([
+    "--version",
+    "view",
+    "view",
+    "pack",
+    "install",
+    "audit",
+    "--import",
+  ]);
+  expect(existsSync(child.root())).toBe(false);
+});
+
+test.each(["sourceRevision", "candidateManifestDigest"])(
+  "actual three-field candidate refuses substituted authenticated head %s before a child",
+  async (field) => {
+    const f = await approvedPublicationFixture();
+    const child = syntheticRegistryChild(f);
+    const substituted = {
+      ...f.head,
+      [field]: field === "sourceRevision" ? "c".repeat(40) : hash,
+    };
+    await expect(
+      verifyRegistryPublication(
+        substituted,
+        f.candidate,
+        performance.now() + 10_000,
+        child,
+      ),
+    ).rejects.toThrow();
+    expect(child.calls).toHaveLength(0);
+    expect(child.root()).toBeUndefined();
+  },
+);
+test.each(["tags", "provenance", "installed-integrity"])(
+  "registry %s substitution refuses and cleans exact owned root",
+  async (kind) => {
+    const f = await approvedPublicationFixture();
+    const child = syntheticRegistryChild(f, kind);
+    await expect(
+      verifyRegistryPublication(
+        f.head,
+        f.candidate,
+        performance.now() + 10_000,
+        child,
+      ),
+    ).rejects.toThrow();
+    expect(existsSync(child.root())).toBe(false);
+    expect(
+      child.calls.filter(([file]) => file === process.execPath),
+    ).toHaveLength(0);
+  },
+);
+
+async function continuationFixture() {
+  const f = await approvedPublicationFixture();
+  vi.setSystemTime(new Date("2026-10-07T00:05:00.000Z"));
+  const result = await verifyRegistryPublication(
+    f.head,
+    f.candidate,
+    performance.now() + 10_000,
+    syntheticRegistryChild(f),
+  );
+  const input = {
+    ...f.publicationInput,
+    expectedSequence: f.head.sequence,
+    expectedPriorDigest: f.head.digest,
+    observedAt: "2026-10-07T00:05:00.000Z",
+  };
+  const packet = {
+    ...result,
+    runId: input.identity.runId,
+    runAttempt: input.identity.runAttempt,
+    ...input.executingDigests,
+  };
+  const controls = {
+    issuedAt: input.observedAt,
+    expiresAt: "2026-10-07T00:06:00.000Z",
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: input.observedAt,
+    }),
+  };
+  const publication = { calls: 0, attestations: 0, draft: true };
+  f.store.protectedSource = async () => ({ tagObjectSha: "c".repeat(40) });
+  f.store.assets = async () =>
+    f.assets.map((asset) => ({ ...asset, state: "uploaded" }));
+  f.store.release = async () => ({
+    id: 7,
+    draft: publication.draft,
+    immutable: !publication.draft,
+    prerelease: true,
+    tag_name: "v0.1.0",
+  });
+  f.store.publishDraft = async () => {
+    const last = JSON.parse(f.assets.at(-1).bytes.toString("utf8"));
+    expect(last.transition).toBe("ready-to-publish");
+    expect(last.releaseLedgerPath).toBe("release-records/releases/");
+    expect(last.incidentLedgerPath).toBe("release-records/incidents/");
+    publication.calls++;
+    publication.draft = false;
+    return { release: await f.store.release(7), uncertain: false };
+  };
+  f.store.verifyImmutableAttestation = async (releaseId, assets, tag) => {
+    expect(releaseId).toBe(7);
+    expect(tag).toBe("c".repeat(40));
+    expect(assets).toHaveLength(f.assets.length);
+    publication.attestations++;
+    return hash;
+  };
+  f.store.verifyAttestationCapability = async () => hash;
+  return { ...f, continuationInput: input, packet, controls, publication };
+}
+
+test("ready precedes one publish; immutable continuation never writes another asset or PATCH", async () => {
+  const f = await continuationFixture();
+  const result = await continuePublication(
+    f.store,
+    f.continuationInput,
+    f.packet,
+    f.controls,
+  );
+  expect(result.state).toBe("immutable-awaiting-reviewed-completion");
+  expect(result.disposition).toBe(
+    "awaiting-reviewed-append-under-release-records/releases",
+  );
+  expect(result.immutableAttestationDigest).toBe(hash);
+  expect(f.publication.calls).toBe(1);
+  const ready = await readLatestRecord(f.store, 7, true);
+  const count = f.assets.length;
+  const packet = { ...f.packet, transactionRecordDigest: ready.digest };
+  await continuePublication(
+    f.store,
+    {
+      ...f.continuationInput,
+      expectedSequence: ready.sequence,
+      expectedPriorDigest: ready.digest,
+    },
+    packet,
+    f.controls,
+  );
+  expect(f.assets).toHaveLength(count);
+  expect(f.publication.calls).toBe(1);
+  expect(f.publication.attestations).toBe(2);
+});
+
+test("bootstrap refusal before draft creation cannot append candidate assets", async () => {
+  const f = candidateFixture();
+  const createDraft = vi.fn();
+  const appendAsset = vi.fn();
+  await expect(
+    prepareDraft(
+      {
+        releases: async () => [],
+        assertNoBootstrapTransaction: async () => {
+          throw new Error("release.store.unresolved");
+        },
+        createDraft,
+        appendAsset,
+      },
+      f,
+    ),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(createDraft).not.toHaveBeenCalled();
+  expect(appendAsset).not.toHaveBeenCalled();
+});
+
+test("bootstrap appearing after initial checkpoint inspection refuses before append", async () => {
+  const f = await publicationFixture();
+  const count = f.assets.length;
+  let checks = 0;
+  f.store.assertNoBootstrapTransaction = async () => {
+    if (++checks === 2) throw new Error("release.store.unresolved");
+  };
+  await expect(
+    recordPublicationCheckpoint(f.store, f.publicationInput, f.owner),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(checks).toBe(2);
+  expect(f.assets).toHaveLength(count);
+});
+
+test("bootstrap refusal at the actual pre-stage boundary invokes no npm child", async () => {
+  const f = await stageFixture();
+  const child = vi.fn();
+  f.store.assertNoBootstrapTransaction = async () => {
+    throw new Error("release.store.unresolved");
+  };
+  await expect(
+    stageRetainedCandidate(f.store, f.input, f.candidate, {
+      execFileImpl: child,
+    }),
+  ).rejects.toThrow("release.store.unresolved");
+  expect(child).not.toHaveBeenCalled();
+});
+
+test("fresh bootstrap refusal after durable ready preserves intent without PATCH", async () => {
+  const f = await continuationFixture();
+  f.store.assertNoBootstrapTransaction = async () => {
+    const last = JSON.parse(f.assets.at(-1).bytes.toString("utf8"));
+    if (last.transition === "ready-to-publish")
+      throw new Error("release.store.unresolved");
+  };
+  await expect(
+    continuePublication(f.store, f.continuationInput, f.packet, f.controls),
+  ).rejects.toThrow("release.store.unresolved");
+  expect((await readLatestRecord(f.store, 7)).transition).toBe(
+    "ready-to-publish",
+  );
+  expect(f.publication.calls).toBe(0);
+  expect(f.publication.attestations).toBe(0);
+});
+
+test.each(["run", "tuple", "controls", "assets"])(
+  "continuation %s mismatch refuses before publication",
+  async (kind) => {
+    const f = await continuationFixture();
+    const packet = { ...f.packet };
+    const controls = { ...f.controls };
+    if (kind === "run") packet.runId = 99;
+    if (kind === "tuple") packet.downloadedTarballSha256 = hash;
+    if (kind === "controls")
+      controls.expiresAt = f.continuationInput.observedAt;
+    if (kind === "assets")
+      f.assets.push({
+        id: 99,
+        name: "extra.json",
+        size: 2,
+        digest: sha256("{}"),
+        bytes: Buffer.from("{}"),
+      });
+    await expect(
+      continuePublication(f.store, f.continuationInput, packet, controls),
+    ).rejects.toThrow();
+    expect(f.publication.calls).toBe(0);
+  },
+);
+test("uncertain publish remains active without automatic retry or completion", async () => {
+  const f = await continuationFixture();
+  f.store.publishDraft = async () => {
+    f.publication.calls++;
+    return { release: await f.store.release(7), uncertain: true };
+  };
+  const result = await continuePublication(
+    f.store,
+    f.continuationInput,
+    f.packet,
+    f.controls,
+  );
+  expect(result.state).toBe("frozen-unresolved");
+  expect(result.disposition).toBe("owner-reconciliation-required-no-retry");
+  expect(f.publication.calls).toBe(1);
+  expect(f.publication.attestations).toBe(0);
+});
+
+test("publication consumption is durable one-use before the separate interactive approval", async () => {
+  const f = await publicationFixture();
+  const checkpoint = await recordPublicationCheckpoint(
+    f.store,
+    f.publicationInput,
+    f.owner,
+  );
+  expect(checkpoint.transition).toBe("publication-checkpoint");
+  expect(checkpoint.checkpoint.state).toBe("valid-unconsumed");
+  const input = {
+    ...f.publicationInput,
+    expectedSequence: checkpoint.sequence,
+    expectedPriorDigest: checkpoint.digest,
+    observedAt: "2026-10-07T00:03:00.000Z",
+  };
+  const observation = {
+    ...f.owner,
+    expectedSequence: checkpoint.sequence,
+    expectedPriorDigest: checkpoint.digest,
+    issuedAt: input.observedAt,
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: input.observedAt,
+    }),
+  };
+  const consumed = await recordPublicationCheckpoint(
+    f.store,
+    input,
+    observation,
+    true,
+  );
+  expect(consumed.checkpoint.expiresAt).toBe(f.owner.expiresAt);
+  expect(consumed.checkpoint.state).toBe(
+    "consumed-before-interactive-approval",
+  );
+  await expect(
+    recordPublicationCheckpoint(f.store, input, observation, true),
+  ).rejects.toThrow();
+  const receipt = {
+    stageId: "stage-1",
+    checkpointDigest: sha256(canonicalJson(consumed.checkpoint)),
+    transactionRecordDigest: consumed.digest,
+    state: "approved",
+    approvedAt: "2026-10-07T00:04:00.000Z",
+  };
+  const approved = await recordPublicationApproval(
+    f.store,
+    {
+      ...input,
+      expectedSequence: consumed.sequence,
+      expectedPriorDigest: consumed.digest,
+      observedAt: "2026-10-07T00:04:00.000Z",
+    },
+    receipt,
+  );
+  expect(approved.transition).toBe("approval-reported");
+  expect(approved.approval.ownerIdentity).toBe("Melbourneandrew");
+  expect(approved.tuple).toEqual(f.tuple);
+});
+
+test("an expired unconsumed checkpoint can be replaced without renewing consumed authority", async () => {
+  const f = await publicationFixture();
+  const first = await recordPublicationCheckpoint(
+    f.store,
+    f.publicationInput,
+    f.owner,
+  );
+  const issuedAt = f.owner.expiresAt;
+  const expiresAt = new Date(Date.parse(issuedAt) + 300_000).toISOString();
+  const input = {
+    ...f.publicationInput,
+    expectedSequence: first.sequence,
+    expectedPriorDigest: first.digest,
+    observedAt: issuedAt,
+  };
+  const observation = {
+    ...f.owner,
+    expectedSequence: first.sequence,
+    expectedPriorDigest: first.digest,
+    issuedAt,
+    expiresAt,
+    distTags: { ...f.owner.distTags, historical: "0.0.0-bootstrap.0" },
+    controlsReport: JSON.stringify({
+      ...JSON.parse(controlsReport),
+      inspectedAt: issuedAt,
+    }),
+  };
+  const replacement = await recordPublicationCheckpoint(
+    f.store,
+    input,
+    observation,
+  );
+  expect(replacement.sequence).toBe(first.sequence + 1);
+  expect(replacement.previousDigest).toBe(first.digest);
+  expect(replacement.checkpoint.expiresAt).toBe(expiresAt);
+  expect(replacement.checkpoint.distTags.historical).toBe("0.0.0-bootstrap.0");
+  const consumption = {
+    ...input,
+    expectedSequence: replacement.sequence,
+    expectedPriorDigest: replacement.digest,
+  };
+  const current = {
+    ...observation,
+    expectedSequence: replacement.sequence,
+    expectedPriorDigest: replacement.digest,
+  };
+  const consumed = await recordPublicationCheckpoint(
+    f.store,
+    consumption,
+    current,
+    true,
+  );
+  const count = f.assets.length;
+  await expect(
+    recordPublicationCheckpoint(
+      f.store,
+      {
+        ...input,
+        expectedSequence: consumed.sequence,
+        expectedPriorDigest: consumed.digest,
+      },
+      {
+        ...current,
+        expectedSequence: consumed.sequence,
+        expectedPriorDigest: consumed.digest,
+      },
+    ),
+  ).rejects.toThrow();
+  expect(f.assets).toHaveLength(count);
+});
+
+test("unsupported attestation tool refuses before ready bytes or publication", async () => {
+  const f = await continuationFixture();
+  const count = f.assets.length;
+  f.store.verifyAttestationCapability = async () => {
+    throw new Error("fixed-unavailable");
+  };
+  await expect(
+    continuePublication(f.store, f.continuationInput, f.packet, f.controls),
+  ).rejects.toThrow();
+  expect(f.assets).toHaveLength(count);
+  expect(f.publication.calls).toBe(0);
+});
+
+test.each(["draft", "unaccounted", "duplicate-tag"])(
+  "a different %s release refuses before publication checkpoint",
+  async (kind) => {
+    const f = await publicationFixture();
+    f.store.releases = async () => [
+      { id: 7, draft: true, immutable: false, tag_name: "v0.1.0" },
+      {
+        id: 8,
+        draft: kind === "draft",
+        immutable: kind === "duplicate-tag",
+        tag_name: kind === "duplicate-tag" ? "v0.1.0" : "v0.0.0-bootstrap.0",
+      },
+    ];
+    const count = f.assets.length;
+    await expect(
+      recordPublicationCheckpoint(f.store, f.publicationInput, f.owner),
+    ).rejects.toThrow();
+    expect(f.assets).toHaveLength(count);
+  },
+);
+
+test.each(["principal", "ref", "source", "workflow", "head", "expiry", "tags"])(
+  "publication %s mismatch refuses before durable mutation",
+  async (kind) => {
+    const f = await publicationFixture();
+    const input = { ...f.publicationInput };
+    const owner = { ...f.owner, distTags: { ...f.owner.distTags } };
+    if (kind === "principal") f.run.actor.id = 1;
+    if (kind === "ref") f.run.head_branch = "main";
+    if (kind === "source")
+      input.identity = { ...input.identity, sourceRevision: "c".repeat(40) };
+    if (kind === "workflow")
+      input.executingDigests = {
+        ...input.executingDigests,
+        workflowDigest: `sha256:${"c".repeat(64)}`,
+      };
+    if (kind === "head") input.expectedPriorDigest = hash;
+    if (kind === "expiry") input.observedAt = owner.expiresAt;
+    if (kind === "tags") owner.distTags.latest = "0.1.0";
+    const count = f.assets.length;
+    await expect(
+      recordPublicationCheckpoint(f.store, input, owner),
+    ).rejects.toThrow();
+    expect(f.assets).toHaveLength(count);
+  },
+);
+
+test("registry install refuses a caller-supplied completed-stage label before any child", async () => {
+  let calls = 0;
+  await expect(
+    verifyRegistryPublication(
+      { transition: "stage-recorded" },
+      {},
+      performance.now() + 1000,
+      {
+        execFileImpl: () => {
+          calls++;
+        },
+      },
+    ),
+  ).rejects.toThrow();
+  expect(calls).toBe(0);
+});
 
 test("same-run durable intent stages the exact isolated bytes once then records fixed DTO", async () => {
   const f = await stageFixture();
@@ -367,7 +1099,13 @@ function fixture() {
     input,
     run,
     approval,
-    store: { run: async () => run, approvals: async () => [approval] },
+    store: {
+      run: async () => run,
+      approvals: async () => [approval],
+      // Synthetic store classification; actual tree acquisition is tested in
+      // release-github-store.test.mjs, not minted by this fixture.
+      assertNoBootstrapTransaction: async () => {},
+    },
   };
 }
 async function intentFixture(observationOverrides = {}) {
@@ -428,6 +1166,7 @@ function chainStore(f, write) {
   f.intent = prepareIntent(f.input, f.checkpoint);
   records.push(first);
   return {
+    assertNoBootstrapTransaction: async () => {},
     release: async () => ({
       draft: true,
       prerelease: true,
@@ -1072,6 +1811,7 @@ test("draft producer retains exact candidate and writes first record last, not a
   const names = [];
   const result = await prepareDraft(
     {
+      assertNoBootstrapTransaction: async () => {},
       releases: async () => [],
       createDraft: async () => ({
         id: 7,
@@ -1101,6 +1841,7 @@ test.each(["existing-draft", "ambiguous-create", "ambiguous-upload"])(
     let creations = 0;
     const fixture = candidateFixture();
     const store = {
+      assertNoBootstrapTransaction: async () => {},
       releases: async () =>
         kind === "existing-draft" ? [{ draft: true }] : [],
       createDraft: async () => {

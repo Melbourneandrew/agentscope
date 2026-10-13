@@ -1,0 +1,12 @@
+{
+  "evidenceVersion": 1,
+  "harnessId": "claude-code",
+  "harnessPackage": "@agentscope/harness-claude-code",
+  "representativeVersion": "2.1.245",
+  "capabilities": [
+    "installed-cli-lifecycle",
+    "interactive-pty",
+    "anthropic-messages-loopback",
+    "otlp-trace"
+  ]
+}

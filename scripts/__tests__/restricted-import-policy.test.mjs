@@ -529,6 +529,71 @@ test("checks artifact literals while permitting computed artifact loads", () => 
   }
 });
 
+test("permits only the two current-source private CLI fixture bundle loads", () => {
+  const value = fixture();
+  try {
+    const relativePath =
+      "apps/cli/src/__tests__/product-installation-fixture.ts";
+    mkdirSync(join(value.root, "apps/cli/src/__tests__"), { recursive: true });
+    writeFileSync(
+      join(value.root, relativePath),
+      readFileSync(new URL(`../../${relativePath}`, import.meta.url), "utf8"),
+    );
+    assert.doesNotThrow(() =>
+      auditCoreFinalizationImports(value.root, value.packages),
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("keeps every alternate fixture module load and other source forbidden", () => {
+  const value = fixture();
+  try {
+    const directory = join(value.root, "apps/cli/src/__tests__");
+    mkdirSync(directory, { recursive: true });
+    const source = join(directory, "product-installation-fixture.ts");
+    for (const expression of [
+      "require(pathToFileURL(privatePath).href)",
+      "import(pathToFileURL(otherPath).href)",
+      "import(pathToFileURL(privatePath).pathname)",
+      "import(pathToFileURL(privatePath)['href'])",
+      "import(new URL(privatePath).href)",
+      "import(pathToFileURL(privatePath + '').href)",
+      "import(pathToFileURL(privatePath).href, {})",
+      "import(pathToFileURL?.(privatePath).href)",
+      "import(pathToFileURL(privatePath)?.href)",
+      "import(pathToFileURL(privatePath).href); import(pathToFileURL(privatePath).href)",
+    ]) {
+      writeFileSync(source, `${expression};\n`);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /computed module load/u,
+      );
+    }
+    rmSync(source);
+    writeFileSync(
+      join(directory, "foreign-fixture.ts"),
+      "void import(pathToFileURL(privatePath).href);\n",
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /computed module load/u,
+    );
+    rmSync(join(directory, "foreign-fixture.ts"));
+    writeFileSync(
+      source,
+      'void import(pathToFileURL(privatePath).href); void import("@agentscope/protocol/core-finalization");\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /Core-only/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("rejects computed Core authority loads from tests and testkit", () => {
   const value = fixture();
   try {

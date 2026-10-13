@@ -4,6 +4,7 @@ import { deepFreeze } from "./canonical.js";
 
 type InteractivePtyScenario = Readonly<{
   executionMode: string;
+  harnessEvidenceId?: string;
   nativeReadiness: Readonly<{ kind: string }> | null;
   outputContract: string;
   postCompletionControl: string;
@@ -11,6 +12,10 @@ type InteractivePtyScenario = Readonly<{
   terminalInputBase64: string;
   waitForSemanticCompletionBeforeTerminalAction: boolean;
 }>;
+
+const claudeChallenge = (scenario: InteractivePtyScenario) =>
+  scenario.nativeReadiness?.kind === "challenge-marker" &&
+  scenario.harnessEvidenceId === "claude-code-2-1-245";
 
 export const compileInteractivePtyActions = (
   scenario: InteractivePtyScenario,
@@ -78,6 +83,17 @@ export const compileInteractivePtyActions = (
       ? []
       : challengeBytes === 65
         ? (() => {
+            if (claudeChallenge(scenario)) {
+              if (
+                preCompletionInputBytes < 2 ||
+                input[initialInputBytes + preCompletionInputBytes - 1] !== 0x0d
+              )
+                throw new Error("integration.manifest.interaction");
+              return [
+                inputAction(initialInputBytes, preCompletionInputBytes - 1),
+                inputAction(initialInputBytes + preCompletionInputBytes - 1, 1),
+              ];
+            }
             if (
               preCompletionInputBytes < 6 ||
               input[initialInputBytes + preCompletionInputBytes - 5] !== 0x1b ||

@@ -1,4 +1,4 @@
-/** Private build composition of existing SQLite and Core-owned directory assets. */
+/** Private build composition of the Core-owned directory assets. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cp, lstat, open, realpath } from "node:fs/promises";
@@ -117,32 +117,6 @@ export const verifyInstalledNativeArtifacts = async (
   installedRoot,
   regularFiles,
 ) => {
-  const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
-  const supportManifestBytes = readFileSync(
-    join(candidateRoot, "records/support-manifest.json"),
-  );
-  assert.equal(
-    digest(supportManifestBytes),
-    "587e01fac592f3989b05d634fd8a5a03f1d72bebef3c83da0a22b0ca18d1ff76",
-  );
-  const supportManifest = JSON.parse(supportManifestBytes);
-  assert.equal(
-    supportManifest.disposition,
-    "proposed-unpublished-execution-eligible",
-  );
-  assert.equal(supportManifest.nativeBinaries.length, 1);
-  assert.equal(supportManifest.supportedPlatforms.length, 1);
-  const declaredCandidateFiles = supportManifest.artifactFiles
-    .map(({ relativePath }) => relativePath)
-    .concat("records/support-manifest.json")
-    .sort();
-  assert.deepEqual(regularFiles(candidateRoot), declaredCandidateFiles);
-  for (const artifact of supportManifest.artifactFiles) {
-    const bytes = readFileSync(join(candidateRoot, artifact.relativePath));
-    assert.equal(bytes.length, artifact.bytes);
-    assert.equal(`sha256:${digest(bytes)}`, artifact.digest);
-  }
-
   const directory = await verifyDirectoryArtifact(true);
   const directoryRoot = join(installedRoot, "dist/internal/directory-runtime");
   const bin = readFileSync(
@@ -168,12 +142,10 @@ export const verifyInstalledNativeArtifacts = async (
     assert.equal(installed.length, original.length);
     assert.equal(digest(installed), digest(original));
   }
-  const sqliteNative =
-    "dist/internal/local-sqlite/native/node127-linux-x64-glibc/agentscope_sqlite.node";
   const directoryNative = directory.paths
     .filter((path) => path.endsWith(".node"))
     .map((path) => `dist/internal/directory-runtime/${path}`);
-  const permittedNative = [sqliteNative, ...directoryNative].sort();
+  const permittedNative = directoryNative.sort();
   assert.equal(new Set(permittedNative).size, permittedNative.length);
   return Object.freeze(permittedNative);
 };

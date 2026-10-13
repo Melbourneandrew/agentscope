@@ -52,7 +52,16 @@ const expectedInternalDependencies = new Map([
     `@agentscope/harness-${harness}`,
     ["@agentscope/core", "@agentscope/harnesses-core", "@agentscope/protocol"],
   ]),
-  ["@agentscope/integration", ["@agentscope/testkit"]],
+  [
+    "@agentscope/integration",
+    [
+      "@agentscope/destination-langfuse",
+      "@agentscope/harness-claude-code",
+      "@agentscope/harnesses-core",
+      "@agentscope/protocol",
+      "@agentscope/testkit",
+    ],
+  ],
 ]);
 
 export function expectedInternalDependenciesFor(name) {

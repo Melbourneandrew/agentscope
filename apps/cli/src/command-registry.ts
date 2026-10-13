@@ -203,6 +203,7 @@ const rawCommandRegistry = [
       "configuration.conflict",
       "configuration.missing",
       "configuration.unavailable",
+      "destination.capability-unavailable",
       "destination.connection-exists",
       "destination.credential-unavailable",
       "destination.lifecycle-busy",

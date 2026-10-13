@@ -5,6 +5,7 @@ import {
 import type {
   HarnessDiscoveryResult,
   HarnessInstallationPlanner,
+  HarnessTargetInspection,
   OwnedHarnessHookInvocation,
 } from "@agentscope/harnesses-core";
 
@@ -912,6 +913,7 @@ const editHooks = (
   invocation: OwnedHarnessHookInvocation,
   command: string,
   operation: "install" | "migrate" | "uninstall",
+  nativeArtifactsPresent: boolean,
 ): "changed" | "unchanged" | "conflict" => {
   const hooks = settings.hooks;
   if (hooks !== undefined && !isRecord(hooks)) return "conflict";
@@ -919,6 +921,7 @@ const editHooks = (
   const budget: HookBudget = { remainingBytes: maximumHookUtf8Bytes };
   let legacyCount = 0;
   let currentCount = 0;
+  let nativeCount = 0;
   const recognized = new Set<unknown>();
   if (Object.keys(target).length > everyHookEvent.size) return "conflict";
   for (const [event, entries] of Object.entries(target)) {
@@ -938,6 +941,7 @@ const editHooks = (
       eventOwned ||= profile !== null;
       legacyCount += Number(profile === "legacy");
       currentCount += Number(profile === "current");
+      nativeCount += Number(profile === "native");
       if (profile !== null) recognized.add(entry);
       if (
         profile === null &&
@@ -947,7 +951,9 @@ const editHooks = (
         return "conflict";
     }
   }
-  if (!profileCountsAreValid(legacyCount, currentCount)) return "conflict";
+  if (!profileCountsAreValid(legacyCount, currentCount, nativeCount))
+    return "conflict";
+  if (nativeCount > 0 && !nativeArtifactsPresent) return "conflict";
   let changed = false;
   for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
     const entries = target[event];
@@ -1012,6 +1018,10 @@ export const createClaudeCodeInstallationPlanner = (
   invocation: OwnedHarnessHookInvocation,
   inventory: ClaudeCodePluginInventory,
   dialectAuthority: ClaudeCodeDialectAuthority,
+  inspectedFiles: readonly Pick<
+    HarnessTargetInspection,
+    "targetPath" | "exists"
+  >[] = [],
 ): HarnessInstallationPlanner => {
   if (
     !isOwnedHarnessHookInvocation(invocation) ||
@@ -1026,6 +1036,14 @@ export const createClaudeCodeInstallationPlanner = (
   const parsedInventory = parsePluginInventory(inventory);
   if (parsedInventory === undefined) return () => ({ kind: "conflict" });
   const overlap = inspectParsedPluginOverlap(parsedInventory);
+  // Existing Core-held observations accompany this first-party composition.
+  // Per-artifact bytes/modes and whole-plan application remain Core-owned.
+  const nativeArtifactsPresent = [
+    invocation.launcherPath,
+    `${invocation.launcherPath}.metadata.json`,
+  ].every((path) =>
+    inspectedFiles.some((file) => file.targetPath === path && file.exists),
+  );
   return ({ exists, bytes, digest, targetPath }) => {
     if (overlap.status === "ambiguous") return { kind: "conflict" };
     if (exists !== (bytes !== null)) return { kind: "conflict" };
@@ -1045,12 +1063,13 @@ export const createClaudeCodeInstallationPlanner = (
     if (operation === "uninstall") {
       if (!exists || bytes === null) return { kind: "unchanged" };
       if (
-        [false, true].some(
-          (legacy) =>
+        (["legacy", "current", "native"] as const).some(
+          (profile) =>
+            (profile !== "native" || nativeArtifactsPresent) &&
             JSON.stringify(canonical(settings)) ===
-            JSON.stringify(
-              canonical(ownedSettings(invocation, command, legacy)),
-            ),
+              JSON.stringify(
+                canonical(ownedSettings(invocation, command, profile)),
+              ),
         )
       )
         return { kind: "remove" };
@@ -1074,7 +1093,13 @@ export const createClaudeCodeInstallationPlanner = (
       return { kind: "conflict" };
     if (operation === "migrate" && overlap.status === "conflict")
       disableMigratedPlugin(settings, overlap.pluginId);
-    const result = editHooks(settings, invocation, command, operation);
+    const result = editHooks(
+      settings,
+      invocation,
+      command,
+      operation,
+      nativeArtifactsPresent,
+    );
     if (result === "conflict") return { kind: "conflict" };
     if (result === "unchanged") return { kind: "unchanged" };
     return {

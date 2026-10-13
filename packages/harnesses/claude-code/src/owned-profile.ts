@@ -12,6 +12,7 @@ export type ClaudeCodeLifecycleEvent =
 const ownedEvents = CLAUDE_CODE_LIFECYCLE_EVENTS.filter(
   (event) => event !== "SessionEnd",
 );
+type OwnedProfile = "legacy" | "current" | "native";
 export const handlerTimeout = (invocation: OwnedHarnessHookInvocation) =>
   Math.ceil((invocation.hookDeadlineMilliseconds + 2_000) / 1_000);
 
@@ -19,21 +20,27 @@ export const ownedMatcher = (
   invocation: OwnedHarnessHookInvocation,
   event: ClaudeCodeLifecycleEvent,
   command: string,
-  legacy = false,
+  profile: OwnedProfile = "native",
 ) =>
   Object.freeze({
-    agentscope: Object.freeze({
-      contractVersion: invocation.contractVersion,
-      event,
-      harnessType: invocation.harnessType,
-      ownershipIdentity: invocation.ownershipIdentity,
-    }),
+    ...(profile === "native"
+      ? {}
+      : {
+          agentscope: Object.freeze({
+            contractVersion: invocation.contractVersion,
+            event,
+            harnessType: invocation.harnessType,
+            ownershipIdentity: invocation.ownershipIdentity,
+          }),
+        }),
     hooks: Object.freeze([
       Object.freeze({
         type: "command" as const,
         command,
         args: Object.freeze([]),
-        ...(legacy ? {} : { timeout: handlerTimeout(invocation) }),
+        ...(profile === "legacy"
+          ? {}
+          : { timeout: handlerTimeout(invocation) }),
       }),
     ]),
   });
@@ -41,13 +48,12 @@ export const ownedMatcher = (
 export const ownedSettings = (
   invocation: OwnedHarnessHookInvocation,
   command: string,
-  legacy = false,
+  profile: OwnedProfile = "native",
 ) => ({
   hooks: Object.fromEntries(
-    (legacy ? CLAUDE_CODE_LIFECYCLE_EVENTS : ownedEvents).map((event) => [
-      event,
-      [ownedMatcher(invocation, event, command, legacy)],
-    ]),
+    (profile === "legacy" ? CLAUDE_CODE_LIFECYCLE_EVENTS : ownedEvents).map(
+      (event) => [event, [ownedMatcher(invocation, event, command, profile)]],
+    ),
   ),
 });
 
@@ -96,10 +102,17 @@ export const ownedMatcherProfile = (
   invocation: OwnedHarnessHookInvocation,
   event: string,
   command: string,
-): "legacy" | "current" | null => {
+): OwnedProfile | null => {
   if (!CLAUDE_CODE_LIFECYCLE_EVENTS.includes(event as ClaudeCodeLifecycleEvent))
     return null;
   const nativeEvent = event as ClaudeCodeLifecycleEvent;
+  if (
+    event !== "SessionEnd" &&
+    isRecord(value) &&
+    Object.keys(value).join("\0") === "hooks" &&
+    hookArrayEquals(value.hooks, command, handlerTimeout(invocation))
+  )
+    return "native";
   if (ownedMatcherEquals(value, invocation, nativeEvent, command))
     return "legacy";
   return event !== "SessionEnd" &&
@@ -113,7 +126,12 @@ export const ownedMatcherProfile = (
     ? "current"
     : null;
 };
-export const profileCountsAreValid = (legacy: number, current: number) =>
-  (legacy === 0 && current === 0) ||
-  (legacy === 5 && current === 0) ||
-  (legacy === 0 && current === 4);
+export const profileCountsAreValid = (
+  legacy: number,
+  current: number,
+  native: number,
+) =>
+  (legacy === 0 && current === 0 && native === 0) ||
+  (legacy === 5 && current === 0 && native === 0) ||
+  (legacy === 0 && current === 4 && native === 0) ||
+  (legacy === 0 && current === 0 && native === 4);

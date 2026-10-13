@@ -40,6 +40,97 @@ const dialect = createClaudeCodeDialectAuthority(
 );
 if (dialect === undefined) throw new Error("fixture.dialect");
 
+describe("native ownership uses existing held artifacts", () => {
+  it.each(["none", "metadata", "launcher", "both"])(
+    "requires both exact paths, not a planned replacement (%s)",
+    (present) => {
+      const targetPath = "/settings.json";
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({
+          hooks: Object.fromEntries(
+            ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map(
+              (event) => [
+                event,
+                [
+                  {
+                    hooks: [
+                      {
+                        type: "command",
+                        command: invocation.launcherPath,
+                        args: [],
+                        timeout: 3,
+                      },
+                    ],
+                  },
+                ],
+              ],
+            ),
+          ),
+        }),
+      );
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      const context = prepareClaudeCodeInstallationContext(
+        {
+          readGuards: [],
+          pluginInventory: {
+            settingsLayers: [
+              {
+                scope: "user",
+                targetPath,
+                targetDigest: digest,
+                targetExists: true,
+                enabledPlugins: {},
+              },
+            ],
+            installedPlugins: [],
+          },
+        },
+        1000,
+      );
+      const files = [
+        {
+          targetPath: invocation.launcherPath,
+          exists: present === "launcher" || present === "both",
+        },
+        {
+          targetPath: `${invocation.launcherPath}.metadata.json`,
+          exists: present === "metadata" || present === "both",
+        },
+      ];
+      for (const operation of ["install", "uninstall"] as const) {
+        const planner = context.configurationPlanner(
+          operation,
+          invocation,
+          dialect,
+          [],
+          files,
+        );
+        expect(
+          planner({ targetPath, exists: true, bytes, digest, mode: 0o600 }),
+        ).toMatchObject({
+          kind:
+            present === "both"
+              ? operation === "install"
+                ? "unchanged"
+                : "remove"
+              : "conflict",
+        });
+      }
+      const held = context.configurationPlanner(
+        "install",
+        invocation,
+        dialect,
+        [],
+        files,
+      );
+      files.splice(0);
+      expect(
+        held({ targetPath, exists: true, bytes, digest, mode: 0o600 }).kind,
+      ).toBe(present === "both" ? "unchanged" : "conflict");
+    },
+  );
+});
+
 describe("public factory binds complete native context", () => {
   it("keeps pure installation preparation outside the discovery object", () => {
     expect(Object.keys(factory())).toEqual(["bindInvocation"]);

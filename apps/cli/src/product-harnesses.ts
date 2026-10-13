@@ -31,7 +31,6 @@ import {
 } from "@agentscope/harness-codex";
 import {
   claudeCodeDescriptor,
-  createClaudeCodeDialectAuthority,
   type ClaudeDiscoveryPolicy,
 } from "@agentscope/harness-claude-code";
 
@@ -473,18 +472,12 @@ const createClaudeProductAdapter = (
         claudeCodeDescriptor.harnessType,
         probe,
       );
-      const dialectAuthority = createClaudeCodeDialectAuthority(
-        observed,
-        "posix",
-      );
-      if (dialectAuthority === undefined)
-        throw new Error("cli.launcher.unsupported");
       const plugins = await discovery.observeInstallationContext();
       const createInstallation = await loadInstallationFactory(input);
       return createInstallation({
         ...common,
         harness: "claude-code",
-        dialectAuthority,
+        observedDiscovery: observed,
         ...plugins,
       });
     },

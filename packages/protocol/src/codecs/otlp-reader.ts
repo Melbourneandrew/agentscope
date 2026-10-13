@@ -422,6 +422,9 @@ const canonicalUnits = (request: ExportTraceServiceRequest) => {
 };
 
 const compareOtlpSpans = (left: OtlpSpan, right: OtlpSpan) => {
+  const leftRoot = left.parentSpanId === undefined;
+  const rightRoot = right.parentSpanId === undefined;
+  if (leftRoot !== rightRoot) return leftRoot ? -1 : 1;
   const time = BigInt(left.startTimeUnixNano) - BigInt(right.startTimeUnixNano);
   return time < 0n
     ? -1

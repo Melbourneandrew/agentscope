@@ -262,6 +262,8 @@ test("the checked-in inventory is classified exactly once", () => {
     inventory.length,
   );
   assert.ok(plan.pure.includes("workspace-policy-runner.test.mjs"));
+  assert.ok(plan.pure.includes("release-terminal-probe.test.mjs"));
+  assert.ok(!plan.authority.includes("release-terminal-probe.test.mjs"));
   assert.deepEqual(plan.pure, purePolicyFiles);
   assert.deepEqual(
     plan.authority,

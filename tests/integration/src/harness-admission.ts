@@ -307,7 +307,7 @@ const parseHarness = (value: unknown): HarnessAdmissionSeed["harness"] => {
     eligibleRange: { minimumInclusive, maximumExclusive },
     distributionReference: text(
       harness.distributionReference,
-      /^[A-Za-z0-9][A-Za-z0-9+._:@/-]{0,255}$/u,
+      /^[A-Za-z0-9][A-Za-z0-9+._:@/#-]{0,255}$/u,
       256,
     ),
     artifactDigest: text(harness.artifactDigest, digestPattern, 71),
