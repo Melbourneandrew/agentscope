@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { invalid, record, exactKeys } from "./harness-material-privacy.js";
 
 import { canonicalJson, deepFreeze, sha256 } from "./canonical.js";
 import type { CapabilityManifest } from "./manifest.js";
@@ -77,27 +78,6 @@ export type VerifiedSignedManifestHarnessMaterial = Readonly<{
 }>;
 export type VerifiedHarnessMaterial =
   VerifiedNpmHarnessMaterial | VerifiedSignedManifestHarnessMaterial;
-
-const invalid = (): never => {
-  throw new Error("integration.harness-material.invalid");
-};
-
-const record = (value: unknown): Readonly<Record<string, unknown>> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return invalid();
-  return value as Readonly<Record<string, unknown>>;
-};
-
-const exactKeys = (
-  value: Readonly<Record<string, unknown>>,
-  keys: readonly string[],
-): void => {
-  if (
-    JSON.stringify(Object.keys(value).sort()) !==
-    JSON.stringify([...keys].sort())
-  )
-    invalid();
-};
 
 const exactArray = (value: unknown, maximum: number): readonly unknown[] => {
   if (!Array.isArray(value) || value.length > maximum) return invalid();

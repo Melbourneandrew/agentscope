@@ -1,218 +1,16 @@
-import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
-import { runInNewContext } from "node:vm";
-import { deriveIdentityBundle } from "@agentscope/protocol";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { sanitizeFixtureResult } from "./operations.js";
-import { failureEvidenceCoverageIsExact } from "./controller.js";
-// @ts-expect-error existing repository release consumer has no declaration
-import * as consumer from "../../../scripts/release-lane/admission.mjs";
-// @ts-expect-error existing repository canonical helpers have no declaration
-import * as canonical from "../../../scripts/release-lane/validation.mjs";
-
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0))
-    fs.rmSync(root, { recursive: true, force: true });
-});
-type Fixture = {
-  prepared: unknown;
-  support: { entries: { binding: { seed: { runId: string } } }[] };
-  evidence: {
-    runId: string;
-    scenarioId: string;
-    outcome: string;
-    cleanup: { outcome: string };
-  };
-  lifecycle: { artifactFileName: string };
-  model: unknown;
-  destination: unknown;
-  observation: unknown;
-};
-const helpers = canonical as {
-  canonicalJson: (value: unknown) => string;
-  sha256: (value: string) => string;
-};
-const release = consumer as {
-  bindScenarioEvidence: (
-    prepared: Buffer,
-    support: Buffer,
-    files: Record<string, Buffer>,
-    family: string,
-  ) => { family: string };
-  requireActualSemanticAdmission: (values: unknown) => unknown;
-};
-const documents = (input: Fixture) => ({
-  "evidence.json": input.evidence,
-  "fixture-lifecycle.json": input.lifecycle,
-  "model-ledger.json": input.model,
-  "destination-ledger.json": input.destination,
-  "harness-observation.json": input.observation,
-});
-const componentFixture = (family: "codex" | "claude-code") => {
-  const source = fs.readFileSync(
-    new URL(
-      "../../../scripts/__tests__/release-admission.test.mjs",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const begin = source.indexOf("function fixture() {"),
-    end = source.indexOf("const bindCodex =", begin);
-  const claude = source.indexOf("function claudeFixture() {"),
-    claudeEnd = source.indexOf("const bindClaude =", claude);
-  if ([begin, end, claude, claudeEnd].some((value) => value < 0))
-    throw Error("synthetic-consumer-source-boundary");
-  const factory = runInNewContext(
-    `${source.slice(begin, end)}\n${source.slice(claude, claudeEnd)}\n({codexFixture,claudeFixture,codexSupportFixture});`,
-    {
-      Buffer,
-      createHash,
-      ...helpers,
-      deriveIdentityBundle: (
-        input: Parameters<typeof deriveIdentityBundle>[0],
-      ) =>
-        deriveIdentityBundle(
-          JSON.parse(JSON.stringify(input)) as Parameters<
-            typeof deriveIdentityBundle
-          >[0],
-        ),
-    },
-    { timeout: 1_000 },
-  ) as {
-    codexFixture: () => unknown;
-    claudeFixture: () => unknown;
-    codexSupportFixture: (input: unknown, family: string) => unknown;
-  };
-  const value = JSON.parse(
-    JSON.stringify(
-      family === "codex" ? factory.codexFixture() : factory.claudeFixture(),
-    ),
-  ) as Fixture;
-  // The existing consumer preimage uses a placeholder lifecycle filename;
-  // use the current producer's ordinary sanitized fixture envelope here.
-  value.lifecycle.artifactFileName = "agentscope-cli.tgz";
-  value.support = JSON.parse(
-    JSON.stringify(factory.codexSupportFixture(value, family)),
-  ) as Fixture["support"];
-  return value;
-};
-const setup = () => {
-  const root = fs.mkdtempSync(join(tmpdir(), "agentscope-success-cleanup-"));
-  roots.push(root);
-  const artifacts = join(root, "artifacts/integration");
-  const integration = join(root, "tests/integration");
-  const privateRoot = join(root, "private");
-  for (const path of [artifacts, integration, privateRoot])
-    fs.mkdirSync(path, { recursive: true, mode: 0o700 });
-  const status = fs.lstatSync(privateRoot);
-  const inputs = [componentFixture("codex"), componentFixture("claude-code")];
-  const generic = "3".repeat(16);
-  const entries = inputs.flatMap((input) => input.support.entries);
-  const material = {
-    manifestVersion: 1,
-    disposition: "real-scenario-evidence-awaiting-release-gate",
-    entries,
-  };
-  const support = {
-    ...material,
-    manifestIdentity: helpers
-      .sha256(helpers.canonicalJson(material))
-      .replace("sha256:", "sha256-"),
-  };
-  const write = (relative: string, value: unknown) => {
-    const path = join(artifacts, relative);
-    fs.mkdirSync(resolve(path, ".."), { recursive: true });
-    fs.writeFileSync(path, `${JSON.stringify(value)}\n`, { mode: 0o600 });
-    return path;
-  };
-  write("harness-support-evidence.json", support);
-  write("current-selection.json", {});
-  for (const input of inputs) {
-    for (const [name, value] of Object.entries(documents(input)))
-      write(`runs/${input.evidence.runId}/${name}`, value);
-    write(`runs/${input.evidence.runId}/raw-private.json`, {
-      raw: "PRIVATE_CANARY",
-    });
-    write(`contexts/${input.evidence.runId}/private.json`, {
-      raw: "PRIVATE_CANARY",
-    });
-  }
-  write(`runs/${generic}/raw.json`, { raw: "PRIVATE_CANARY" });
-  write("candidates/owned/private.json", { raw: "PRIVATE_CANARY" });
-  const owned = {
-    artifactFiles: ["harness-support-evidence.json", "current-selection.json"],
-    candidateIdentities: ["owned"],
-    runIds: [...inputs.map((input) => input.evidence.runId), generic],
-    requiredFailureEvidence: [] as string[],
-    failureEvidence: [],
-    privateStorageRetirements: [],
-  };
-  const output: unknown[] = [];
-  let dockerFailure = false;
-  const run = () => {
-    const source = fs.readFileSync(
-      new URL("../clean.mjs", import.meta.url),
-      "utf8",
-    );
-    runInNewContext(
-      source
-        .replace(/^import[\s\S]*?from "[^"]+";$/gmu, "")
-        .replace("import.meta.dirname", JSON.stringify(integration)),
-      {
-        ...fs,
-        Buffer,
-        createHash,
-        resolve,
-        sep,
-        process,
-        sanitizeFixtureResult,
-        requireDisposableOuterHostCapability: () => ({
-          binding: {
-            dockerExecutable: "/inert",
-            dockerEnvironment: {},
-            privateStorage: {
-              root: privateRoot,
-              rootDev: status.dev,
-              rootIno: status.ino,
-              rootUid: status.uid,
-              rootGid: status.gid,
-              rootMode: status.mode & 0o7777,
-            },
-          },
-        }),
-        ownedIntegrationResources: () => owned,
-        remainingIntegrationOperationMilliseconds: () => 1000,
-        failureEvidenceCoverageIsExact,
-        IMAGE_PREPARATION_LIMITS: { maximumEvidenceBytes: 1024 * 1024 },
-        validInstalledPtyFailure: () => true,
-        validCodexResearchDiagnostic: () => true,
-        certificationFailureAuthorityIsValid: () => true,
-        execFileSync: () => {
-          if (dockerFailure) throw Error("synthetic-docker-refusal");
-          return "";
-        },
-        console: { log: (value: unknown) => output.push(value) },
-      },
-      { timeout: 1000 },
-    );
-  };
-  return {
-    root,
-    artifacts,
-    inputs,
-    owned,
-    output,
-    support,
-    write,
-    run,
-    refuseDocker: () => {
-      dockerFailure = true;
-    },
-  };
-};
+import { assertPersistedHarnessMaterialPrivacy } from "./harness-material-privacy.js";
+import {
+  cleanFixtureRoots,
+  documents,
+  materialFixture,
+  release,
+  setup,
+} from "./__tests__/fixtures/success-evidence-fixture.js";
+afterEach(cleanFixtureRoots);
 
 describe("actual success cleanup handoff (synthetic component evidence only)", () => {
   it("retains exact support/five-document bytes, deletes raw state, and preserves the existing consumer", () => {
@@ -287,12 +85,65 @@ describe("actual success cleanup handoff (synthetic component evidence only)", (
 
 describe("actual cleanup rejects an unsafe or incomplete success handoff", () => {
   it.each([
+    "evidence",
+    "support",
+    "seed",
+    "completion",
+    "controller",
+    "material",
+    "entry",
+    "binding",
+    "harness",
+    "component",
+    "preparedImage",
+  ])(
+    "rejects unreviewed raw fields at %s before retaining upload bytes",
+    (kind) => {
+      const input = setup();
+      const first = input.inputs[0];
+      if (first === undefined) throw Error("synthetic-input");
+      const evidence = JSON.parse(JSON.stringify(first.evidence)) as Record<
+        string,
+        unknown
+      >;
+      const support = JSON.parse(JSON.stringify(input.support)) as {
+        entries: { binding: Record<string, Record<string, unknown>> }[];
+      } & Record<string, unknown>;
+      if (kind === "evidence") evidence.unreviewedRaw = "PRIVATE_CANARY";
+      else if (kind === "material")
+        evidence.preparedHarnessMaterial = { unreviewedRaw: "PRIVATE_CANARY" };
+      else if (kind === "support") support.unreviewedRaw = "PRIVATE_CANARY";
+      else {
+        const entry = support.entries[0];
+        if (entry === undefined) throw Error("synthetic-entry");
+        const target =
+          kind === "entry"
+            ? entry
+            : kind === "binding"
+              ? entry.binding
+              : ["harness", "component", "preparedImage"].includes(kind)
+                ? entry.binding.seed![kind]
+                : entry.binding[kind];
+        if (typeof target !== "object" || target === null)
+          throw Error("synthetic-member");
+        (target as Record<string, unknown>).unreviewedRaw = "PRIVATE_CANARY";
+      }
+      input.write(`runs/${first.evidence.runId}/evidence.json`, evidence);
+      input.write("harness-support-evidence.json", support);
+      expect(input.run).toThrow();
+      expect(input.output).not.toContain(
+        "Agentscope integration cleanup complete.",
+      );
+    },
+  );
+  it.each([
     "missing",
     "symlink",
     "hardlink",
     "oversized",
     "incomplete",
     "foreign-run",
+    "unsafe-mode",
   ])("refuses %s without a successful handoff", (kind) => {
     const input = setup();
     const first = input.inputs[0];
@@ -309,6 +160,7 @@ describe("actual cleanup rejects an unsafe or incomplete success handoff", () =>
       fs.symlinkSync(join(input.artifacts, "current-selection.json"), path);
     }
     if (kind === "hardlink") fs.linkSync(path, join(input.root, "alias"));
+    if (kind === "unsafe-mode") fs.chmodSync(path, 0o646);
     if (kind === "oversized") fs.writeFileSync(path, Buffer.alloc(1_048_577));
     if (kind === "incomplete") {
       first.evidence.cleanup.outcome = "failed";
@@ -346,6 +198,91 @@ describe("actual cleanup rejects an unsafe or incomplete success handoff", () =>
       expect(input.output).not.toContain(
         "Agentscope integration cleanup complete.",
       );
+    },
+  );
+});
+
+describe("closed material projection and bounded wrong-file cleanup", () => {
+  it.each([false, true])(
+    "accepts compiler-produced signed=%s material and rejects nested raw/accessor/proxy data",
+    (signed) => {
+      const value = materialFixture(signed);
+      expect(() => {
+        assertPersistedHarnessMaterialPrivacy(value);
+      }).not.toThrow();
+      for (const key of signed
+        ? ["verifier", "binary", "signingKey"]
+        : ["verifier", "packages"]) {
+        const altered = structuredClone(value);
+        const target =
+          key === "packages"
+            ? (altered.packages as Record<string, unknown>[])[0]
+            : (altered[key] as Record<string, unknown>);
+        if (target === undefined) throw Error("synthetic-material-member");
+        target.unreviewedRaw = "PRIVATE_CANARY";
+        expect(() => {
+          assertPersistedHarnessMaterialPrivacy(altered);
+        }).toThrow();
+      }
+      let reads = 0;
+      const hostile = { ...value };
+      Object.defineProperty(hostile, "verifier", {
+        get() {
+          reads++;
+          throw Error("PRIVATE_CANARY");
+        },
+      });
+      expect(() => {
+        assertPersistedHarnessMaterialPrivacy(hostile);
+      }).toThrow();
+      expect(() => {
+        assertPersistedHarnessMaterialPrivacy(
+          new Proxy(value, {
+            ownKeys() {
+              reads++;
+              throw Error("PRIVATE_CANARY");
+            },
+          }),
+        );
+      }).toThrow();
+      expect(reads).toBe(0);
+    },
+  );
+  it.each(["fifo", "replace-during-open"])(
+    "rejects an owned0600 %s support without blocking the child",
+    (kind) => {
+      const input = setup();
+      const path = join(input.artifacts, "harness-support-evidence.json");
+      if (kind === "fifo") {
+        fs.unlinkSync(path);
+        execFileSync("/usr/bin/mkfifo", ["-m", "600", path]);
+      }
+      const source = fs
+        .readFileSync(new URL("../clean.mjs", import.meta.url), "utf8")
+        .replace(/^import[\s\S]*?from "[^"]+";$/gmu, "")
+        .replace(
+          "import.meta.dirname",
+          JSON.stringify(join(input.root, "tests/integration")),
+        );
+      const child = `import * as fs from 'node:fs'; import {execFileSync as createFifo} from 'node:child_process'; import {resolve,sep} from 'node:path'; import {runInNewContext} from 'node:vm'; import {createHash} from 'node:crypto';
+      const root=${JSON.stringify(input.root)}, status=fs.lstatSync(resolve(root,'private'));
+      try {runInNewContext(${JSON.stringify(source)}, {...fs, Buffer, JSON, resolve,sep,createHash, process,
+        openSync:(path,flags)=>{if(${JSON.stringify(kind === "replace-during-open")} && path===${JSON.stringify(path)}){fs.unlinkSync(path);createFifo('/usr/bin/mkfifo',['-m','600',path]);}return fs.openSync(path,flags);},
+        ownedIntegrationResources:()=>(${JSON.stringify(input.owned)}), failureEvidenceCoverageIsExact:()=>true,
+        requireDisposableOuterHostCapability:()=>({binding:{privateStorage:{root:resolve(root,'private'),rootDev:status.dev,rootIno:status.ino,rootUid:status.uid,rootGid:status.gid,rootMode:status.mode&4095}}}),
+        remainingIntegrationOperationMilliseconds:()=>1000, IMAGE_PREPARATION_LIMITS:{maximumEvidenceBytes:1048576},execFileSync:()=>'', console:{log:()=>{}},
+        parsePersistedHarnessSupportEvidence:()=>{throw Error('unexpected-parser')},compileIsolationEvidence:()=>{throw Error('unexpected-parser')},assertPersistedHarnessMaterialPrivacy:()=>{throw Error('unexpected-parser')},sanitizeFixtureResult:()=>{throw Error('unexpected-parser')}});
+        process.exitCode=2; } catch(error) {process.exitCode=error.message==='integration.cleanup.success-evidence'?0:3;}`;
+      const result = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", child],
+        { timeout: 1500, maxBuffer: 16384, encoding: "utf8" },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
     },
   );
 });

@@ -30,6 +30,9 @@ import {
 } from "./immutable-candidate-authority.mjs";
 import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
 import { sanitizeFixtureResult } from "./dist/operations.js";
+import { compileIsolationEvidence } from "./dist/isolation.js";
+import { parsePersistedHarnessSupportEvidence } from "./dist/harness-admission.js";
+import { assertPersistedHarnessMaterialPrivacy } from "./dist/harness-material-privacy.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -206,19 +209,27 @@ const successfulDocuments = Object.freeze([
   "destination-ledger.json",
   "harness-observation.json",
 ]);
-const readSuccessfulDocument = (relative) => {
+const readSuccessfulDocument = (relative, support = false) => {
   let descriptor;
   try {
     remainingIntegrationOperationMilliseconds(30_000, true);
     const path = resolve(artifactsRoot, relative);
+    const namedBefore = lstatSync(path);
+    if (!namedBefore.isFile() || namedBefore.isSymbolicLink())
+      throw new Error();
     if (realpathSync(path) !== resolve(expectedRealArtifactsRoot, relative))
       throw new Error();
-    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     const before = fstatSync(descriptor);
     if (
       !before.isFile() ||
       before.nlink !== 1 ||
-      (before.mode & 0o7777) !== 0o600 ||
+      !(support ? [0o600] : [0o600, 0o644]).includes(before.mode & 0o7777) ||
+      before.dev !== namedBefore.dev ||
+      before.ino !== namedBefore.ino ||
       before.size < 1 ||
       before.size > 1_048_576
     )
@@ -259,13 +270,9 @@ const successfulEvidenceRuns = () => {
     return retained;
   if (owned.requiredFailureEvidence.length !== 0)
     throw new Error("integration.cleanup.success-evidence");
-  const support = readSuccessfulDocument("harness-support-evidence.json");
-  if (
-    !Array.isArray(support.entries) ||
-    support.entries.length < 1 ||
-    support.entries.length > 32
-  )
-    throw new Error("integration.cleanup.success-evidence");
+  const support = parsePersistedHarnessSupportEvidence(
+    readSuccessfulDocument("harness-support-evidence.json", true),
+  );
   for (const entry of support.entries) {
     const runId = entry.binding?.seed?.runId;
     if (
@@ -273,8 +280,6 @@ const successfulEvidenceRuns = () => {
         "@agentscope/harness-codex",
         "@agentscope/harness-claude-code",
       ].includes(entry.harnessType) ||
-      typeof runId !== "string" ||
-      !/^[a-f0-9]{16}$/u.test(runId) ||
       !owned.runIds.includes(runId) ||
       retained.has(runId)
     )
@@ -286,15 +291,19 @@ const successfulEvidenceRuns = () => {
       ]),
     );
     const evidence = documents["evidence.json"];
+    const { preparedHarnessMaterial, ...isolationEvidence } = evidence;
+    compileIsolationEvidence(isolationEvidence);
+    if (Object.hasOwn(evidence, "preparedHarnessMaterial"))
+      assertPersistedHarnessMaterialPrivacy(preparedHarnessMaterial);
     if (
       evidence.runId !== runId ||
       evidence.scenarioId !== entry.binding.seed.scenarioId ||
       evidence.outcome !== "passed" ||
-      evidence.cleanup?.outcome !== "complete" ||
+      evidence.cleanup.outcome !== "complete" ||
       evidence.cleanup.removalFailureCount !== 0 ||
       evidence.cleanup.remaining === null ||
       Object.values(evidence.cleanup.remaining).some((count) => count !== 0) ||
-      entry.binding.completion?.runId !== runId ||
+      entry.binding.completion.runId !== runId ||
       entry.binding.completion.outcome !== "scenario-terminal-clean" ||
       entry.binding.completion.remainingOwnedResources !== 0
     )
