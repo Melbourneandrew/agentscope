@@ -15,7 +15,8 @@ const authoritativeDocumentationPaths = [
   /^\.beads\/.+\.[mM][dD]$/u,
   /^\.github\/(?:ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\/.+\.[mM][dD]$/u,
   /^apps\/docs\/(?:AGENTS|CLAUDE)\.[mM][dD]$/u,
-  /^apps\/docs\/content\/docs\/(?:index\.[mM][dD][xX]|(?:blueprints|cli|requirements)\/.+\.[mM][dD][xX])$/u,
+  /^apps\/docs\/content\/docs\/(?:index|getting-started)\.[mM][dD][xX]$/u,
+  /^apps\/docs\/content\/docs\/(?:blueprints|cli|requirements)\/.+\.[mM][dD][xX]$/u,
   /^(?:apps|ops|packages|tests)\/.+\/README\.[mM][dD]$/u,
   /^packages\/harnesses\/core\/NATIVE_FIXTURES\.[mM][dD]$/u,
 ];
