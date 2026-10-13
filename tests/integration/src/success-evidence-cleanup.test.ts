@@ -83,6 +83,68 @@ describe("actual success cleanup handoff (synthetic component evidence only)", (
   });
 });
 
+describe("actual cleanup rejects shadowed original upload bytes", () => {
+  it.each([
+    ["support", "disposition"],
+    ["evidence", "runId"],
+    ["fixture-lifecycle", "scenarioId"],
+    ["model-ledger", "scenarioId"],
+    ["destination-ledger", "scenarioId"],
+    ["harness-observation", "kind"],
+  ])("refuses duplicate original %s keys before upload", (document, key) => {
+    const input = setup();
+    const first = input.inputs[0];
+    if (first === undefined) throw Error("synthetic-input");
+    const path = join(
+      input.artifacts,
+      document === "support"
+        ? "harness-support-evidence.json"
+        : `runs/${first.evidence.runId}/${document}.json`,
+    );
+    const bytes = fs.readFileSync(path, "utf8");
+    fs.writeFileSync(
+      path,
+      bytes.replace("{", `{${JSON.stringify(key)}:{"raw":"PRIVATE_CANARY"},`),
+    );
+    expect(input.run).toThrow();
+    expect(input.output).not.toContain(
+      "Agentscope integration cleanup complete.",
+    );
+  });
+  it("refuses an escaped duplicate nested support key", () => {
+    const input = setup();
+    const path = join(input.artifacts, "harness-support-evidence.json");
+    const bytes = fs.readFileSync(path, "utf8");
+    fs.writeFileSync(
+      path,
+      bytes.replace(
+        '"seed":{',
+        '"seed":{"run\\u0049d":{"raw":"PRIVATE_CANARY"},',
+      ),
+    );
+    expect(input.run).toThrow();
+    expect(input.output).not.toContain(
+      "Agentscope integration cleanup complete.",
+    );
+  });
+  it.each(["modelLedger", "destinationLedger", "harnessObservation"])(
+    "refuses a hidden original lifecycle %s field",
+    (key) => {
+      const input = setup();
+      const first = input.inputs[0];
+      if (first === undefined) throw Error("synthetic-input");
+      input.write(`runs/${first.evidence.runId}/fixture-lifecycle.json`, {
+        ...first.lifecycle,
+        [key]: { raw: "PRIVATE_CANARY" },
+      });
+      expect(input.run).toThrow();
+      expect(input.output).not.toContain(
+        "Agentscope integration cleanup complete.",
+      );
+    },
+  );
+});
+
 describe("actual cleanup rejects an unsafe or incomplete success handoff", () => {
   it.each([
     "evidence",

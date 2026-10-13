@@ -21,6 +21,102 @@ export const exactKeys = (
     invalid();
 };
 
+export const parseStrictJson = (bytes: Uint8Array): unknown => {
+  const source = Buffer.from(bytes).toString("utf8");
+  let offset = 0;
+  const whitespace = (): void => {
+    while (/\s/u.test(source[offset] ?? "")) offset += 1;
+  };
+  const string = (): string => {
+    const start = offset;
+    if (source[offset] !== '"') return invalid();
+    offset += 1;
+    while (offset < source.length) {
+      if (source[offset] === "\\") offset += 2;
+      else if (source[offset] === '"') {
+        offset += 1;
+        try {
+          return JSON.parse(source.slice(start, offset)) as string;
+        } catch {
+          return invalid();
+        }
+      } else offset += 1;
+    }
+    return invalid();
+  };
+  const value = (): unknown => {
+    whitespace();
+    if (source[offset] === '"') return string();
+    if (source[offset] === "{") {
+      offset += 1;
+      const result: Record<string, unknown> = {};
+      const keys = new Set<string>();
+      whitespace();
+      if (source[offset] === "}") {
+        offset += 1;
+        return result;
+      }
+      while (offset < source.length) {
+        whitespace();
+        const key = string();
+        if (keys.has(key)) return invalid();
+        keys.add(key);
+        whitespace();
+        if (source[offset] !== ":") return invalid();
+        offset += 1;
+        result[key] = value();
+        whitespace();
+        if (source[offset] === "}") {
+          offset += 1;
+          return result;
+        }
+        if (source[offset] !== ",") return invalid();
+        offset += 1;
+      }
+      return invalid();
+    }
+    if (source[offset] === "[") {
+      offset += 1;
+      const result: unknown[] = [];
+      whitespace();
+      if (source[offset] === "]") {
+        offset += 1;
+        return result;
+      }
+      while (offset < source.length) {
+        result.push(value());
+        whitespace();
+        if (source[offset] === "]") {
+          offset += 1;
+          return result;
+        }
+        if (source[offset] !== ",") return invalid();
+        offset += 1;
+      }
+      return invalid();
+    }
+    for (const [literal, parsed] of [
+      ["true", true],
+      ["false", false],
+      ["null", null],
+    ] as const)
+      if (source.startsWith(literal, offset)) {
+        offset += literal.length;
+        return parsed;
+      }
+    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(
+      source.slice(offset),
+    )?.[0];
+    if (number === undefined) return invalid();
+    offset += number.length;
+    return Number(number);
+  };
+  const parsed = value();
+  whitespace();
+  if (offset !== source.length) return invalid();
+  return parsed;
+};
+
 const exactArray = (value: unknown, maximum: number): readonly unknown[] => {
   if (!Array.isArray(value) || value.length > maximum) return invalid();
   return value;

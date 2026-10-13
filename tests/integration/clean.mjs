@@ -32,7 +32,10 @@ import { certificationFailureAuthorityIsValid } from "./dist/substrate-certifica
 import { sanitizeFixtureResult } from "./dist/operations.js";
 import { compileIsolationEvidence } from "./dist/isolation.js";
 import { parsePersistedHarnessSupportEvidence } from "./dist/harness-admission.js";
-import { assertPersistedHarnessMaterialPrivacy } from "./dist/harness-material-privacy.js";
+import {
+  assertPersistedHarnessMaterialPrivacy,
+  parseStrictJson,
+} from "./dist/harness-material-privacy.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -255,7 +258,7 @@ const readSuccessfulDocument = (relative, support = false) => {
       ].some((key) => before[key] !== after[key] || before[key] !== named[key])
     )
       throw new Error();
-    return JSON.parse(bytes.subarray(0, count).toString("utf8"));
+    return parseStrictJson(bytes.subarray(0, count));
   } catch {
     throw new Error("integration.cleanup.success-evidence");
   } finally {
@@ -308,9 +311,16 @@ const successfulEvidenceRuns = () => {
       entry.binding.completion.remainingOwnedResources !== 0
     )
       throw new Error("integration.cleanup.success-evidence");
+    const lifecycle = documents["fixture-lifecycle.json"];
+    if (
+      ["modelLedger", "destinationLedger", "harnessObservation"].some((key) =>
+        Object.hasOwn(lifecycle, key),
+      )
+    )
+      throw new Error("integration.cleanup.success-evidence");
     const fixture = sanitizeFixtureResult(
       {
-        ...documents["fixture-lifecycle.json"],
+        ...lifecycle,
         modelLedger: documents["model-ledger.json"],
         destinationLedger: documents["destination-ledger.json"],
         harnessObservation: documents["harness-observation.json"],

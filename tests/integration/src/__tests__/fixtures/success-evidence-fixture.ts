@@ -17,7 +17,10 @@ import {
   compileVerifiedNpmHarnessMaterial,
   compileVerifiedSignedManifestHarnessMaterial,
 } from "../../harness-material.js";
-import { assertPersistedHarnessMaterialPrivacy } from "../../harness-material-privacy.js";
+import {
+  assertPersistedHarnessMaterialPrivacy,
+  parseStrictJson,
+} from "../../harness-material-privacy.js";
 import * as integrationCanonical from "../../canonical.js";
 // @ts-expect-error existing repository release consumer has no declaration
 import * as consumer from "../../../../../scripts/release-lane/admission.mjs";
@@ -273,6 +276,13 @@ export const materialFixture = (signed: boolean, family = "codex") => {
     ),
   ) as Record<string, unknown>;
 };
+const cleanupReaders = Object.freeze({
+  sanitizeFixtureResult,
+  compileIsolationEvidence,
+  parsePersistedHarnessSupportEvidence,
+  assertPersistedHarnessMaterialPrivacy,
+  parseStrictJson,
+});
 export const setup = () => {
   const root = fs.mkdtempSync(join(tmpdir(), "agentscope-success-cleanup-"));
   roots.push(root);
@@ -345,10 +355,7 @@ export const setup = () => {
         resolve,
         sep,
         process,
-        sanitizeFixtureResult,
-        compileIsolationEvidence,
-        parsePersistedHarnessSupportEvidence,
-        assertPersistedHarnessMaterialPrivacy,
+        ...cleanupReaders,
         requireDisposableOuterHostCapability: () => ({
           binding: {
             dockerExecutable: "/inert",
