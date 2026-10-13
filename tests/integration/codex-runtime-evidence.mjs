@@ -1644,7 +1644,12 @@ const readStableLedger = (
       for (const bytes of [first, second]) {
         let observed;
         try {
-          observed = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+          // A live append can end between UTF-8 bytes. Validate the complete
+          // prefix without flushing the incomplete trailing code point; fatal
+          // decoding still rejects malformed bytes anywhere in that prefix.
+          observed = new TextDecoder("utf-8", { fatal: true }).decode(bytes, {
+            stream: true,
+          });
         } catch {
           throw new Error("integration.codex.session-ledger");
         }

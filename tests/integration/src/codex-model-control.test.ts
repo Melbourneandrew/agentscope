@@ -58,6 +58,7 @@ const observeCodexLiveLedger = (
     ino?: number;
     append?: boolean;
     fault?: string;
+    utf8?: "split" | "invalid";
   }[])[],
   metrics = { reads: 0, waits: [] as number[], clock: 0 },
 ): Promise<{ turnId: string; reads: number; baseline: string }> => {
@@ -89,6 +90,11 @@ const observeCodexLiveLedger = (
       const openChild = (parent, name) => ({'.codex': 1, sessions: 2, '2026': 3, '01': parent === 3 ? 4 : 5}[name] ?? 6);
       const authenticatedEntries = (descriptor) => descriptor === 2 ? ['2026'] : descriptor === 3 || descriptor === 4 ? ['01'] : active.map((_, index) => index === 0 ? 'rollout-synthetic.jsonl' : 'rollout-extra.jsonl');
       const closeSync = () => {};
+      const sampleBytes = (value, stage) => value.utf8
+        ? Buffer.concat([Buffer.from(value.content), Buffer.from([
+            ...(value.utf8 === 'invalid' ? [0xff] : []), 0xe2, ...(stage === 1 ? [0x82] : []),
+          ])])
+        : Buffer.from(value.content + (value.append && stage === 1 ? '{' : ''));
       const fstatSync = (descriptor) => {
         if (descriptor !== 6) return { isDirectory: () => true };
         const value = active[0], stage = statusRead++;
@@ -96,13 +102,13 @@ const observeCodexLiveLedger = (
           isFile: () => true, dev: 1n, ino: BigInt(value.ino ?? 2),
           mode: value.fault === 'mode' && stage > 0 ? 0o100644n : 0o100600n,
           uid: value.fault === 'owner' && stage > 0 ? 1001n : 1000n, gid: 1000n,
-          size: BigInt(Buffer.byteLength(value.content) + (value.append && stage === 2 ? 1 : 0)),
+          size: BigInt(sampleBytes(value, stage === 2 ? 1 : 0).length),
           mtimeNs: BigInt(value.append ? stage : 0), ctimeNs: BigInt(value.append ? stage : 0),
         };
       };
       const readCapped = () => {
         const value = active[0], stage = byteRead++;
-        return Buffer.from(value.content + (value.append && stage === 1 ? '{' : ''));
+        return sampleBytes(value, stage);
       };
       const readRecords = (...args) => {
         active = values[Math.min(reads++, values.length - 1)]; statusRead = 0; byteRead = 0;
@@ -182,6 +188,48 @@ describe("actual Codex bound live append observation", () => {
       ).rejects.toThrow("integration.codex.session-ledger");
     },
   );
+});
+
+describe("live append UTF-8 complete-prefix observation", () => {
+  const partial = `${codexLiveMetadata}{"note":"`;
+  const complete = `${codexLiveMetadata}{"note":"€"}\n${codexLiveTerminal}`;
+  it("waits through E2 then E282 and observes the later complete UTF-8 terminal", async () => {
+    await expect(
+      observeCodexLiveLedger([
+        [{ content: codexLiveMetadata }],
+        [{ content: partial, append: true, utf8: "split" }],
+        [{ content: complete }],
+      ]),
+    ).resolves.toEqual({
+      turnId: "synthetic-turn",
+      reads: 3,
+      baseline: codexLiveMetadata,
+    });
+  });
+  it("rejects invalid UTF-8 before an otherwise incomplete tail", async () => {
+    await expect(
+      observeCodexLiveLedger([
+        [{ content: codexLiveMetadata }],
+        [{ content: partial, append: true, utf8: "invalid" }],
+        [{ content: complete }],
+      ]),
+    ).rejects.toThrow("integration.codex.session-ledger");
+  });
+  it("does not extend the original deadline for an incomplete UTF-8 append", async () => {
+    const metrics = { reads: 0, waits: [] as number[], clock: 0 };
+    await expect(
+      observeCodexLiveLedger(
+        [
+          [{ content: codexLiveMetadata }],
+          [{ content: partial, append: true, utf8: "split" }],
+          [{ content: partial, append: true, utf8: "split" }],
+          [{ content: complete }],
+        ],
+        metrics,
+      ),
+    ).rejects.toThrow("integration.codex.trace-deadline");
+    expect(metrics).toEqual({ reads: 3, waits: [100, 100, 100], clock: 300 });
+  });
 });
 
 describe("actual Codex live baseline complete-line boundary", () => {

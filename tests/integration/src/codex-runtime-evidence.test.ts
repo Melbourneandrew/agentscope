@@ -1211,6 +1211,10 @@ const readSyntheticAppend = (fault: string, live = true) => {
     const baseline = {relativePath:'.codex/sessions/2026/01/01/rollout-synthetic.jsonl', dev:1n, ino:2n, mode:0o100600n, uid:3n, gid:4n, content};
     const ledgerLimit = 2 * 1024 * 1024, directoryFlags = 0;
     const constants = {O_RDONLY:0, O_NOFOLLOW:0, O_NONBLOCK:0};
+    const utf8Samples = [1,2].map(length => Buffer.concat([
+      Buffer.from(content + '{"note":"'),
+      Buffer.from([...(fault === 'utf8-invalid' ? [0xff] : []), ...[0xe2,0x82].slice(0,length)]),
+    ]));
     let statusRead = 0, byteRead = 0;
     const closed = [];
     const closeSync = descriptor => closed.push(descriptor);
@@ -1228,12 +1232,13 @@ const readSyntheticAppend = (fault: string, live = true) => {
         mode: fault === 'mode' && stage > 0 ? 0o100644n : 0o100600n,
         uid: fault === 'uid' && stage > 0 ? 9n : 3n,
         gid: fault === 'gid' && stage > 0 ? 9n : 4n,
-        size: fault === 'zero' ? 0n : BigInt(Buffer.byteLength(content) + (fault === 'truncate' && stage === 1 ? -1 : stage === 2 && fault !== 'same-size' ? 1 : 0)),
+        size: fault.startsWith('utf8') ? BigInt(utf8Samples[stage === 2 ? 1 : 0].length) : fault === 'zero' ? 0n : BigInt(Buffer.byteLength(content) + (fault === 'truncate' && stage === 1 ? -1 : stage === 2 && fault !== 'same-size' ? 1 : 0)),
         mtimeNs: BigInt(stage), ctimeNs: BigInt(stage),
       };
     };
     const readCapped = () => {
       const stage = byteRead++;
+      if (fault.startsWith('utf8')) return utf8Samples[stage];
       if (fault === 'prefix') return Buffer.from(content.replace('synthetic-session','synthetic-changed'));
       if (stage === 1 && fault === 'rewrite') return Buffer.from(content.replace('synthetic','rewritten') + '{');
       return Buffer.from(content + (stage === 1 && fault !== 'same-size' ? '{' : ''));
@@ -1254,6 +1259,31 @@ const readSyntheticAppend = (fault: string, live = true) => {
 };
 
 describe("bound live Codex append snapshot", () => {
+  it.each([[0xe2], [0xe2, 0x82], [0xff, 0xe2], [0xe2, 0x28, 0xa1]])(
+    "keeps stable snapshots fatal for incomplete or malformed UTF-8 %j",
+    (...bytes) => {
+      const first = Buffer.from(bytes);
+      const status = {
+        dev: 1n,
+        ino: 2n,
+        mode: 0o100600n,
+        uid: 3n,
+        gid: 4n,
+        size: BigInt(first.length),
+        mtimeNs: 5n,
+        ctimeNs: 6n,
+      };
+      expect(() =>
+        settledCodexLedgerSnapshot({
+          before: status,
+          first,
+          middle: status,
+          second: first,
+          after: status,
+        }),
+      ).toThrow("integration.codex.session-ledger");
+    },
+  );
   it("returns pending only for authenticated growth and closes every descriptor", () => {
     expect(readSyntheticAppend("append")).toEqual({
       pending: true,
@@ -1265,6 +1295,13 @@ describe("bound live Codex append snapshot", () => {
     expect(readSyntheticAppend("append", false)).toEqual({
       pending: false,
       count: 0,
+      closed: [6, 5, 4, 3, 2, 1],
+    });
+  });
+  it("classifies a split UTF-8 trailing code point as pending", () => {
+    expect(readSyntheticAppend("utf8-split")).toEqual({
+      pending: true,
+      count: undefined,
       closed: [6, 5, 4, 3, 2, 1],
     });
   });
@@ -1283,6 +1320,7 @@ describe("bound live Codex append snapshot", () => {
     "open-missing",
     "path",
     "extra",
+    "utf8-invalid",
   ])("refuses %s rather than returning pending", (fault) => {
     const result = readSyntheticAppend(fault);
     expect(result.error).toBe("integration.codex.session-ledger");
