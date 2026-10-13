@@ -6,6 +6,10 @@ import { EventEmitter } from "node:events";
 import { ScriptTarget, transpileModule } from "typescript";
 import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-preparation.mjs";
 import {
+  assertMockServerFinalLedger,
+  projectMockServerRequests,
+} from "../mockserver-control.mjs";
+import {
   createPullOperation,
   prepareImageOperation,
   readImagePreparationDiagnostic,
@@ -270,8 +274,10 @@ const actualCollectorObservation = (
     createFinalMockServerLedgerDirectory: () => "/synthetic",
     resolve: (_root: string, name: string) => `/synthetic/${name}`,
     readMockServerFinalLedger: () => Buffer.from("[]"),
-    projectMockServerRequests: () => [],
-    assertMockServerFinalLedger: () => {},
+    projectMockServerRequests:
+      failure === "final-ledger" ? projectMockServerRequests : () => [],
+    assertMockServerFinalLedger:
+      failure === "final-ledger" ? assertMockServerFinalLedger : () => {},
     fixtureResults: new Map(),
     fixtureTrafficObservations: new Map(),
     modelRoutes: {},
@@ -682,6 +688,94 @@ describe("actual collector HTTPS hostile process projection", () => {
       expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
     }
     expect(traps).toBe(0);
+  });
+});
+describe("actual final-ledger refusal guard observation", () => {
+  it("carries the real full-ledger assertion refusal through the literal joined branch", async () => {
+    const f = actualCollectorObservation("final-ledger");
+    await expect(
+      f.functions.joinMockServer(f.plan, new AbortController().signal),
+    ).rejects.toMatchObject({
+      message: "integration.mockserver.control",
+      cause: "model-view",
+    });
+    expect(f.output[0]).toContain('"slot":"join-ledger-assert"');
+    expect(f.output[0]).toContain('"ledgerRefusal":"model-view"');
+    expect(f.output[0]).toContain('"code":"integration.mockserver.control"');
+    expect(
+      f.calls.some(
+        (args) => args[0] === "cp" && args[1]?.endsWith("requests.complete"),
+      ),
+    ).toBe(true);
+    expect(f.calls.some((args) => args[0] === "exec")).toBe(false);
+  });
+  it("projects only the closed final-ledger refusal at its actual join slot", () => {
+    const causes = [
+      "full-traffic-shape",
+      "full-traffic-count",
+      ...["method", "path", "role", "status", "bodyBytes", "bodySha256"].map(
+        (field) => `full-traffic-field-${field}`,
+      ),
+      "model-view",
+      "native-model",
+    ];
+    for (const cause of causes) {
+      const f = actualCollectorObservation("success");
+      const error = new Error("integration.mockserver.control", { cause });
+      f.functions.publishOperationFailureDiagnostic(
+        "join-ledger-assert",
+        error,
+        f.plan,
+        {},
+      );
+      expect(f.output[0]).toContain(`"ledgerRefusal":"${cause}"`);
+      expect(f.output[0]).toContain('"code":"integration.mockserver.control"');
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(error.cause).toBe(cause);
+      const other = actualCollectorObservation("success");
+      other.functions.publishOperationFailureDiagnostic(
+        "join-container-wait",
+        error,
+        other.plan,
+        {},
+      );
+      expect(other.output[0]).not.toContain("ledgerRefusal");
+    }
+    let reads = 0;
+    const accessor = Object.defineProperty(
+      new Error("integration.mockserver.control"),
+      "cause",
+      {
+        get() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    const proxy = new Proxy(new Error("integration.mockserver.control"), {
+      get() {
+        reads++;
+        throw new Error("PRIVATE");
+      },
+    });
+    for (const error of [
+      new Error("PRIVATE", { cause: causes[0] }),
+      new Error("integration.mockserver.control", { cause: "PRIVATE" }),
+      accessor,
+      proxy,
+      { message: "integration.mockserver.control", cause: causes[0] },
+    ]) {
+      const f = actualCollectorObservation("success");
+      f.functions.publishOperationFailureDiagnostic(
+        "join-ledger-assert",
+        error,
+        f.plan,
+        {},
+      );
+      expect(f.output[0]).toContain('"ledgerRefusal":null');
+      expect(f.output[0]).not.toContain("PRIVATE");
+    }
+    expect(reads).toBe(0);
   });
 });
 describe("actual collector refusal guard observation", () => {

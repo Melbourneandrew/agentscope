@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 
 const maximumBytes = 1024 * 1024;
-const failure = () => {
-  throw new Error("integration.mockserver.control");
+const failure = (cause) => {
+  throw new Error(
+    "integration.mockserver.control",
+    cause === undefined ? undefined : { cause },
+  );
 };
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const diagnosticMethods = Object.freeze([
@@ -371,7 +374,7 @@ const assertClaudeFinalModelLedger = (
         entry.bodySha256 !== hashes[index],
     )
   )
-    failure();
+    failure("native-model");
 };
 
 export const assertMockServerFinalLedger = (
@@ -386,7 +389,7 @@ export const assertMockServerFinalLedger = (
     typeof comparison !== "object" ||
     types.isProxy(comparison)
   )
-    failure();
+    failure("full-traffic-shape");
   const fields = Object.getOwnPropertyDescriptors(comparison);
   if (
     Reflect.ownKeys(fields).length !== 2 ||
@@ -396,19 +399,29 @@ export const assertMockServerFinalLedger = (
         !Object.hasOwn(fields[key], "value"),
     )
   )
-    failure();
+    failure("full-traffic-shape");
   const traffic = fields.traffic.value,
     runId = fields.runId.value;
   if (!Array.isArray(ledger) || ledger.length > 16 || traffic === undefined)
-    failure();
-  const observed = snapshotMockServerTraffic(traffic, runId).entries;
+    failure("full-traffic-shape");
+  let observed;
+  try {
+    observed = snapshotMockServerTraffic(traffic, runId).entries;
+  } catch {
+    failure("full-traffic-shape");
+  }
+  if (ledger.length !== observed.length) failure("full-traffic-count");
+  let differingField;
   if (
-    ledger.length !== observed.length ||
     ledger.some((row, index) =>
-      trafficFields.some((field) => row[field] !== observed[index][field]),
+      trafficFields.some((field) => {
+        if (row[field] === observed[index][field]) return false;
+        differingField = field;
+        return true;
+      }),
     )
   )
-    failure();
+    failure(`full-traffic-field-${differingField}`);
   // Derive the legacy model-only view ONLY after all received traffic was bound.
   ledger = ledger.filter((row) => row.role === "data-plane");
   const entries = fixture?.modelLedger?.entries;
@@ -423,14 +436,14 @@ export const assertMockServerFinalLedger = (
         entry.bodyBytes !== entries[index].bodyBytes,
     )
   )
-    failure();
+    failure("model-view");
   if (scenario.scenarioId === "codex-tui-trace-smoke") {
     if (
       ledger.length !== 1 ||
       ledger[0].bodySha256 !==
         fixture?.harnessObservation?.modelRequestBodySha256
     )
-      failure();
+      failure("native-model");
     return;
   }
   if (scenario.scenarioId === "claude-interactive-trace-smoke") {

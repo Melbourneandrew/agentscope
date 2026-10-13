@@ -2498,6 +2498,33 @@ const ptyReceiptFailureObservation = (receipt) => {
     readinessObserved: receipt.readinessObserved,
   });
 };
+const finalLedgerFailureObservation = (slot, error) => {
+  if (slot !== "join-ledger-assert") return {};
+  let ledgerRefusal = null;
+  if (!types.isProxy(error) && types.isNativeError(error)) {
+    const message = Object.getOwnPropertyDescriptor(error, "message"),
+      cause = Object.getOwnPropertyDescriptor(error, "cause");
+    if (
+      Object.hasOwn(message ?? {}, "value") &&
+      message.value === "integration.mockserver.control" &&
+      Object.hasOwn(cause ?? {}, "value") &&
+      [
+        "full-traffic-shape",
+        "full-traffic-count",
+        "full-traffic-field-method",
+        "full-traffic-field-path",
+        "full-traffic-field-role",
+        "full-traffic-field-status",
+        "full-traffic-field-bodyBytes",
+        "full-traffic-field-bodySha256",
+        "model-view",
+        "native-model",
+      ].includes(cause.value)
+    )
+      ledgerRefusal = cause.value;
+  }
+  return { ledgerRefusal };
+};
 const publishOperationFailureDiagnostic = (
   slot,
   error,
@@ -2517,6 +2544,7 @@ const publishOperationFailureDiagnostic = (
         slot,
         runId,
         code: knownFailureCode(error),
+        ...finalLedgerFailureObservation(slot, error),
         ...(slot === "join-collector-project"
           ? { collectorRefusal: readOtlpObservationFailure(error) }
           : {}),

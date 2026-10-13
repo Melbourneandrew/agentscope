@@ -450,6 +450,84 @@ const finalLedgerFixture = () => {
   };
   return { ledger, routes, scenario, traffic, checkLedger, fixture, body };
 };
+describe("closed final-ledger refusal partition", () => {
+  it("partitions refusals after the actual upstream projection without copying values", () => {
+    const make = () => finalLedgerFixture();
+    const refusal = (operation: () => void, cause: string) => {
+      try {
+        operation();
+      } catch (error) {
+        expect((error as Error).message).toBe("integration.mockserver.control");
+        expect((error as Error).cause).toBe(cause);
+        expect(JSON.stringify(error)).toBe("{}");
+        return;
+      }
+      throw new Error("expected refusal");
+    };
+    const f = make();
+    const compare = { traffic: f.traffic, runId };
+    refusal(() => {
+      Reflect.apply(assertMockServerFinalLedger, undefined, [
+        f.ledger,
+        f.fixture,
+        { routes: f.routes },
+        f.scenario,
+        null,
+      ]);
+    }, "full-traffic-shape");
+    refusal(() => {
+      assertMockServerFinalLedger(
+        f.ledger,
+        f.fixture,
+        { routes: f.routes },
+        f.scenario,
+        { ...compare, traffic: { runId, entries: [] } },
+      );
+    }, "full-traffic-count");
+    for (const [field, value] of Object.entries({
+      method: "PUT",
+      path: "/different",
+      role: "allowed",
+      status: 201,
+      bodyBytes: 0,
+      bodySha256: "f".repeat(64),
+    })) {
+      const entries = f.traffic.entries.map((entry, index) =>
+        index === 0 ? { ...entry, [field]: value } : entry,
+      );
+      refusal(() => {
+        assertMockServerFinalLedger(
+          f.ledger,
+          f.fixture,
+          { routes: f.routes },
+          f.scenario,
+          { traffic: { runId, entries }, runId },
+        );
+      }, `full-traffic-field-${field}`);
+    }
+    refusal(() => {
+      assertMockServerFinalLedger(
+        f.ledger,
+        { modelLedger: { entries: [] } },
+        { routes: f.routes },
+        f.scenario,
+        compare,
+      );
+    }, "model-view");
+    refusal(() => {
+      assertMockServerFinalLedger(
+        f.ledger,
+        f.fixture,
+        { routes: f.routes },
+        { ...f.scenario, scenarioId: "codex-tui-trace-smoke" },
+        compare,
+      );
+    }, "native-model");
+    expect(() => {
+      f.checkLedger(f.ledger);
+    }).not.toThrow();
+  });
+});
 describe("same complete upstream final ledger", () => {
   it("refuses malformed comparison envelopes and substituted independent run bindings before reads", () => {
     const { ledger, fixture, routes, scenario, traffic } = finalLedgerFixture();
