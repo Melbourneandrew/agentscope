@@ -639,7 +639,7 @@ describe("integration capability manifest", () => {
       "recordModelBaseline(records);",
     );
     const terminalLedgerRead = terminalObserver.indexOf(
-      "const records = readCodexSessionLedgerRecords(homeDescriptor);",
+      "? readCodexSessionLedgerRecords(homeDescriptor)",
     );
     const codexJoin = source.indexOf(
       "  await observeBeforeDiagnosticDeadline(codexRun, traceDeadline);\n",
