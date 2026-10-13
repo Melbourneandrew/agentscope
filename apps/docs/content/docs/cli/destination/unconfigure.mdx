@@ -5,7 +5,14 @@ command: agentscope destination unconfigure
 commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8b74c008d
 ---
 
-Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. By default, stored credentials and the configuration backup are retained. Explicit `--retire-credentials` requests the canonical complete-connection retirement: both configuration reference sets must be proved free before deleting the exact owned stored set. Partial or uncertain proof does not permit deletion.
+Unconfiguration removes an admitted connection and its routing selection
+atomically. The 0.1.0 alpha does not admit Local SQLite, so it offers no Local
+retention plan, applied lifecycle result, or retained-delete selector. By
+default, stored credentials and the configuration backup are retained.
+Explicit `--retire-credentials` requests the canonical complete-connection
+retirement: both configuration reference sets must be proved free before
+deleting the exact owned stored set. Partial or uncertain proof does not permit
+deletion.
 
 ## Syntax
 
@@ -15,11 +22,14 @@ agentscope destination unconfigure <name> [--yes] [--retire-credentials] [--outp
 
 ## Output and exits
 
-For Local SQLite, without `--yes`, `human`, `json`, and `jsonl` report the plan with `applied: false`. On apply they report the committed generation, `dataPreserved: true`, and the retained selector using `agentscope.cli.destination-unconfigure.v1`. Other connections are unconfigured directly. Stored retirement never implies destination data deletion.
+In `human`, `json`, and `jsonl` modes, admitted non-Local connections report
+the committed configuration generation using
+`agentscope.cli.destination-unconfigure.v1`. Stored retirement never implies
+destination data deletion.
 
 ## Automation
 
-This command is safe for local data retention but is not equivalent to data deletion. Use the separate confirmed delete command for an exact owned file.
+This command is not equivalent to destination data deletion.
 
 The original foreground 60-second allowance includes all credential work; cancellation and expiry do not start a fresh cleanup window. A fixed failure may retain committed or uncertain work for reconciliation. `--retire-credentials` is not a rotation operation and is not applicable to Local SQLite.
 
@@ -28,10 +38,11 @@ The original foreground 60-second allowance includes all credential work; cancel
 - `configuration.conflict` and `configuration.unavailable` describe the atomic write.
 - `destination.connection-missing` rejects an unknown name.
 - `destination.credential-removal-required` prevents orphaning a referenced credential.
-- `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, `destination.lifecycle-reconciliation-required`, and `destination.lifecycle-unavailable` are closed Local lifecycle outcomes.
+- `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, and `destination.lifecycle-reconciliation-required` are closed lifecycle outcomes.
+- `destination.lifecycle-unavailable` means no admitted Local lifecycle handler is available.
 
 ## Examples
 
 ```bash
-agentscope destination unconfigure local-history --yes
+agentscope destination unconfigure langfuse --yes
 ```

@@ -20,23 +20,25 @@ sends them only to destinations you explicitly configure and select.
 
 ## Alpha status
 
-Agentscope 0.1.0 is not published yet. The first alpha has admitted these exact
-support rows; package publication is still pending:
+Agentscope 0.1.0 is not published yet. Final actual-binary CI evidence has
+passed for these candidate rows:
 
 | Harness     | Version | Execution                           | Capture                  | Destination credentials                                        |
 | ----------- | ------- | ----------------------------------- | ------------------------ | -------------------------------------------------------------- |
 | Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
 | Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
 
-Claude Code capture covers `SessionStart`, `PreToolUse`, `PostToolUse`, and
-`Stop`. It does not claim `SessionEnd` or a native end event. macOS, Keychain,
-workstation execution, Cursor, and the remaining product-roster harnesses are
-not 0.1.0 support claims.
+These are not published support rows. The governed product support manifest,
+release record, and package publication remain pending. Claude Code evidence
+covers `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`; it does not claim
+`SessionEnd` or a native end event. macOS, Keychain, workstation execution,
+Cursor, and the remaining product-roster harnesses are not 0.1.0 support
+claims.
 
-Langfuse over OTLP is the admitted alpha destination. Local SQLite remains in
-the source tree for future work, but 0.1.0 excludes its executable capability
-and makes no SQLite support claim. Shipped assets or source paths outside the
-table do not create additional support claims.
+The candidate evidence uses Langfuse over OTLP. Local SQLite remains in the
+source tree for future work, but 0.1.0 excludes its executable capability and
+makes no SQLite support claim. Shipped assets or source paths outside the table
+do not create additional support claims.
 
 ## Start here
 
