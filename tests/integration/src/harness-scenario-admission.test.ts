@@ -1,14 +1,120 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
 import { compileVerifiedSignedManifestHarnessMaterial } from "./harness-material.js";
 
-import { sha256 } from "./canonical.js";
+import { canonicalJson, sha256 } from "./canonical.js";
+import { compileCapabilityManifest } from "./manifest.js";
+// @ts-expect-error private preparation boundary has no published declaration
+import * as preparationBoundary from "../image-preparation/boundary.mjs";
 import {
   compileHarnessAdmissionCompletion,
   compileHarnessAdmissionSeed,
 } from "./harness-scenario-admission.js";
 
 const digest = (character: string): string => `sha256-${character.repeat(64)}`;
+const runnerAdmissionDigest = () => {
+  const source = readFileSync(
+    resolve(import.meta.dirname, "../run-scenarios.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const admissionDigest =");
+  const end = source.indexOf("const linuxBootMonotonicMilliseconds =", start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return runInNewContext(source.slice(start, end) + "admissionDigest;", {
+    createHash,
+    canonicalJson,
+    sha256,
+  }) as (value: unknown) => string;
+};
+const { normalizePlatform } = preparationBoundary as {
+  normalizePlatform: (value: { os: string; architecture: string }) => {
+    os: string;
+    architecture: string;
+  };
+};
+describe("actual prepared platform to runner admission seed", () => {
+  it.each(["codex", "claude-code"])(
+    "binds the actual %s component fixture without platform key-order drift",
+    (harnessId) => {
+      // Other authority-shaped inputs are explicitly synthetic source-test inputs.
+      const manifest = compileCapabilityManifest(
+        JSON.parse(
+          readFileSync(
+            resolve(import.meta.dirname, "../capability-manifest.json"),
+            "utf8",
+          ),
+        ),
+      );
+      const evidence = manifest.evidence.find(
+        (row) => row.harnessId === harnessId && row.admission !== undefined,
+      )!;
+      const scenario = manifest.scenarios.find(
+        (row) => row.harnessEvidenceId === evidence.evidenceId,
+      )!;
+      const platformIdentity = runnerAdmissionDigest()(
+        normalizePlatform({ architecture: "amd64", os: "linux" }),
+      );
+      const input = {
+        candidateDigest: sha256("synthetic-source-only"),
+        componentFixture: JSON.parse(
+          readFileSync(
+            resolve(
+              import.meta.dirname,
+              "../../..",
+              evidence.admission!.component.fixture.path,
+            ),
+            "utf8",
+          ),
+        ) as unknown,
+        destinationCombinationIdentity: sha256("synthetic-source-only"),
+        evidence,
+        manifestIdentity: manifest.manifestIdentity,
+        materialIdentity: sha256("synthetic-source-only"),
+        platformIdentity,
+        preparedImage: {
+          image: scenario.image,
+          manifestDigest: `sha256:${"a".repeat(64)}`,
+          configDigest: `sha256:${"b".repeat(64)}`,
+          platformIdentity,
+          scenarioImageDigest: sha256("synthetic-source-only"),
+        },
+        runId: "0123456789abcdef",
+        scenario,
+      };
+      expect(compileHarnessAdmissionSeed(input).platformIdentity).toBe(
+        platformIdentity,
+      );
+      const different = runnerAdmissionDigest()(
+        normalizePlatform({ architecture: "arm64", os: "linux" }),
+      );
+      expect(() =>
+        compileHarnessAdmissionSeed({
+          ...input,
+          platformIdentity: different,
+          preparedImage: {
+            ...input.preparedImage,
+            platformIdentity: different,
+          },
+        }),
+      ).toThrow("integration.harness-scenario-admission.invalid");
+    },
+  );
+  it("canonicalizes reordered platform keys while preserving destination combination identity", () => {
+    const hash = runnerAdmissionDigest();
+    const platform = normalizePlatform({ os: "linux", architecture: "amd64" });
+    expect(hash(platform)).toBe(sha256(canonicalJson(platform)));
+    expect(hash({ architecture: platform.architecture, os: platform.os })).toBe(
+      hash(platform),
+    );
+    const combination = {
+      destinations: ["langfuse"],
+      modelRoutes: ["anthropic-connectivity-probe", "anthropic-messages"],
+    };
+    expect(hash(combination)).toBe(sha256(JSON.stringify(combination)));
+  });
+});
 // Deliberate grammar-only unit input, never actual-capture admission evidence.
 const componentFixture = (version = "1.2.3") => {
   const base = parseHarnessSanitizedFixture(

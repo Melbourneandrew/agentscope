@@ -22,6 +22,7 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { promisify, types } from "node:util";
 import { deriveIdentityBundle } from "@agentscope/protocol";
+import { canonicalJson, sha256 } from "./dist/canonical.js";
 import {
   completionCopySourceMissingResponseMatches,
   knownFailureCode,
@@ -865,8 +866,7 @@ const fingerprintSelectedPtyAuthority = (authority) =>
     .digest("hex")}`;
 const diagnosticDigest = (value) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
-const admissionDigest = (value) =>
-  `sha256-${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+const admissionDigest = (value) => sha256(canonicalJson(value));
 const linuxBootMonotonicMilliseconds = () => {
   const source = readFileSync("/proc/uptime", "utf8");
   if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
