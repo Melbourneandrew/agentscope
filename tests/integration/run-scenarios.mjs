@@ -118,6 +118,7 @@ import {
   registerIntegrationHeadlessReceipt,
   registerIntegrationPtyReceipt,
   registerIntegrationRunIds,
+  registerIntegrationCandidateIdentity,
   registerSubstrateCertificationPredicate,
   registerSubstrateCertificationProjection,
   requireIntegrationFailureEvidence,
@@ -269,6 +270,7 @@ const cliArtifact = candidate.artifacts.find(
 );
 if (cliArtifact === undefined)
   throw new Error("integration.isolation.candidate-artifact");
+registerIntegrationCandidateIdentity(candidate.bundleIdentity);
 let preparedDockerClient;
 const docker = async (
   arguments_,
