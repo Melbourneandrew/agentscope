@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -22,10 +21,7 @@ import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 import { verifyInstalledNativeArtifacts } from "./scripts/directory-artifact.mjs";
-import {
-  runTraceSearchUntilAvailable,
-  traceGetFailureSummary,
-} from "./scripts/artifact-retrieval.mjs";
+import { assertAlphaLocalNativeAbsent } from "./scripts/alpha-packed-absence.mjs";
 
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
@@ -39,9 +35,6 @@ const installRoot = realpathSync(
 );
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
-// This bounds the packed topology proof, not the product hook. The installed
-// scenario and source tests retain and prove the production 5,000 ms authority.
-const packedCodexHookVerifierDeadlineMilliseconds = 5_000;
 let loopbackServer;
 mkdirSync(artifactDirectory, { recursive: true });
 
@@ -89,46 +82,6 @@ function regularFiles(root) {
     }
   }
   return files.sort();
-}
-
-function snapshotSqliteFamily(root) {
-  const family = regularFiles(root)
-    .filter((path) =>
-      ["traces.sqlite", "traces.sqlite-wal", "traces.sqlite-shm"].includes(
-        basename(path),
-      ),
-    )
-    .map((path) => {
-      const absolutePath = join(root, path);
-      const before = lstatSync(absolutePath);
-      assert.equal(before.isFile(), true);
-      const bytes = readFileSync(absolutePath);
-      const after = lstatSync(absolutePath);
-      assert.deepEqual(
-        {
-          device: after.dev,
-          inode: after.ino,
-          size: after.size,
-        },
-        {
-          device: before.dev,
-          inode: before.ino,
-          size: before.size,
-        },
-      );
-      return {
-        device: after.dev,
-        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-        inode: after.ino,
-        path,
-        size: after.size,
-      };
-    });
-  assert.ok(
-    family.some(({ path }) => basename(path) === "traces.sqlite"),
-    "configured Local SQLite family must contain traces.sqlite",
-  );
-  return family;
 }
 
 function waitForFile(path, child) {
@@ -651,390 +604,62 @@ setTimeout(() => process.exit(3), 10_000).unref();
     `${langfuseDoctor.stdout}${langfuseDoctor.stderr}`,
     /packed-(?:public|secret)-canary|discarded-provider/u,
   );
-  if (
-    process.platform === "linux" &&
-    process.arch === "x64" &&
-    process.versions.modules === "127"
-  ) {
-    const localUserHome = join(installRoot, "local-lifecycle-user-home");
-    const localHome = join(localUserHome, ".agentscope");
-    mkdirSync(localUserHome);
-    const localEnvironment = {
-      HOME: localUserHome,
-      USERPROFILE: localUserHome,
-    };
-    run(executable, ["init", "--yes", "--output", "json"], {
-      ...executableOptions,
-      env: localEnvironment,
+  // The alpha artifact retains discovery, but has no admitted Local tuple.
+  const localUserHome = join(installRoot, "local-lifecycle-user-home");
+  const localHome = join(localUserHome, ".agentscope");
+  mkdirSync(localUserHome);
+  const localEnvironment = { HOME: localUserHome, USERPROFILE: localUserHome };
+  const localOptions = { ...executableOptions, env: localEnvironment };
+  const localArguments = (apply) => [
+    "destination",
+    "configure",
+    "local-sqlite",
+    "--name",
+    "packed-local",
+    ...(apply ? ["--yes"] : []),
+    "--output",
+    "json",
+  ];
+  const assertLocalUnavailable = (apply) => {
+    const result = runRaw(executable, localArguments(apply), localOptions);
+    assert.equal(result.status, 5);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(JSON.parse(result.stderr), {
+      category: "unavailable",
+      code: "destination.capability-unavailable",
+      command: "agentscope destination configure",
+      schema: "agentscope.cli.diagnostic.v1",
     });
-    const configurationBeforePlan = readFileSync(
-      join(localHome, "config.json"),
-    );
-    assert.equal(
-      JSON.parse(configurationBeforePlan).routing.hookDeadlineMilliseconds,
-      5_000,
-      "the packed product must retain the production default hook deadline",
-    );
-    const plannedConfigure = run(
-      executable,
-      [
-        "destination",
-        "configure",
-        "local-sqlite",
-        "--name",
-        "packed-local",
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.deepEqual(JSON.parse(plannedConfigure.stdout).records, [
-      {
-        applied: false,
-        connection: null,
-        generation: null,
-        plan: JSON.parse(plannedConfigure.stdout).records[0].plan,
-        state: "planned",
-      },
-    ]);
-    assert.equal(
-      JSON.parse(plannedConfigure.stdout).records[0].plan.operation,
-      "configure",
-    );
-    assert.equal(
-      JSON.parse(plannedConfigure.stdout).records[0].plan.retentionPolicy
-        .physicalCleanupTrigger,
-      "next-authorized-mutation",
-    );
+  };
+  assertLocalUnavailable(false);
+  assertLocalUnavailable(true);
+  assert.equal(
+    existsSync(localHome),
+    false,
+    "refusal before init must not create a home",
+  );
+  run(executable, ["init", "--yes", "--output", "json"], localOptions);
+  const beforeConfiguration = readFileSync(join(localHome, "config.json"));
+  assert.equal(
+    JSON.parse(beforeConfiguration).routing.hookDeadlineMilliseconds,
+    5_000,
+    "the alpha must retain the production default hook deadline",
+  );
+  const beforeInventory = regularFiles(localHome);
+  assert.deepEqual(
+    beforeInventory.filter((path) =>
+      /(?:^|\/)traces\.sqlite(?:-(?:wal|shm))?$/u.test(path),
+    ),
+    [],
+    "alpha init must not create a trace database",
+  );
+  for (const apply of [false, true]) {
+    assertLocalUnavailable(apply);
     assert.deepEqual(
       readFileSync(join(localHome, "config.json")),
-      configurationBeforePlan,
+      beforeConfiguration,
     );
-    assert.equal(
-      existsSync(join(localHome, "destinations", "local-sqlite")),
-      false,
-    );
-    const configuredLocal = run(
-      executable,
-      [
-        "destination",
-        "configure",
-        "local-sqlite",
-        "--name",
-        "packed-local",
-        "--yes",
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    const configuredLocalRecords = JSON.parse(configuredLocal.stdout).records;
-    assert.equal(configuredLocalRecords.length, 1);
-    const configuredLocalRecord = configuredLocalRecords[0];
-    assert.match(
-      configuredLocalRecord.connectionId,
-      /^destination-connection-v1-[0-9a-f]{64}$/u,
-    );
-    assert.equal(
-      configuredLocalRecord.destinationType,
-      "@agentscope/destination-local-sqlite",
-    );
-    assert.equal(configuredLocalRecord.name, "packed-local");
-    assert.equal(configuredLocalRecord.routed, false);
-    assert.equal(configuredLocalRecord.settingsVersion, 1);
-    assert.equal(configuredLocalRecord.transport, "local");
-    assert.deepEqual(configuredLocalRecords, [
-      {
-        connectionId: configuredLocalRecord.connectionId,
-        destinationType: "@agentscope/destination-local-sqlite",
-        name: "packed-local",
-        routed: false,
-        settingsVersion: 1,
-        transport: "local",
-      },
-    ]);
-    assert.match(configuredLocal.stderr, /"state":"planned"/u);
-    const routedLocal = run(
-      executable,
-      ["routing", "set", "packed-local", "--output", "json"],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.equal(routedLocal.stderr, "");
-    assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
-      { name: "packed-local" },
-    ]);
-    const packedTopologyConfigurationPath = join(localHome, "config.json");
-    const packedTopologyConfiguration = JSON.parse(
-      readFileSync(packedTopologyConfigurationPath, "utf8"),
-    );
-    packedTopologyConfiguration.routing.hookDeadlineMilliseconds =
-      packedCodexHookVerifierDeadlineMilliseconds;
-    writeFileSync(
-      packedTopologyConfigurationPath,
-      `${JSON.stringify(packedTopologyConfiguration)}\n`,
-      { mode: 0o600 },
-    );
-    assert.equal(
-      JSON.parse(readFileSync(packedTopologyConfigurationPath, "utf8")).routing
-        .hookDeadlineMilliseconds,
-      packedCodexHookVerifierDeadlineMilliseconds,
-      "the isolated packed topology configuration must match its launcher",
-    );
-    const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
-      ...launcherInput,
-      agentscopeHome: localHome,
-      harnessType: "@agentscope/harness-codex",
-      hookDeadlineMilliseconds: packedCodexHookVerifierDeadlineMilliseconds,
-    });
-    assert.equal(
-      codexLauncher.metadata.hookDeadlineMilliseconds,
-      packedCodexHookVerifierDeadlineMilliseconds,
-    );
-    writeFileSync(codexLauncher.launcherPath, codexLauncher.launcherBytes, {
-      mode: codexLauncher.mode,
-    });
-    chmodSync(codexLauncher.launcherPath, codexLauncher.mode);
-    writeFileSync(codexLauncher.metadataPath, codexLauncher.metadataBytes);
-    const ambientSubstitutedHome = join(
-      installRoot,
-      "ambient-substituted-hook-home",
-    );
-    const codexHookInput = (hookEventName) =>
-      JSON.stringify(
-        hookEventName === "SessionStart"
-          ? {
-              cwd: installRoot,
-              hook_event_name: "SessionStart",
-              model: "packed-model",
-              permission_mode: "default",
-              session_id: "packed-session",
-              source: "startup",
-              transcript_path: null,
-            }
-          : hookEventName === "Stop"
-            ? {
-                cwd: installRoot,
-                hook_event_name: "Stop",
-                last_assistant_message: "PACKED_CONTENT_CANARY",
-                model: "packed-model",
-                permission_mode: "default",
-                session_id: "packed-session",
-                stop_hook_active: false,
-                transcript_path: null,
-                turn_id: "packed-turn",
-              }
-            : {
-                cwd: installRoot,
-                hook_event_name: "SessionEnd",
-                reason: "other",
-                session_id: "packed-session",
-                transcript_path: null,
-              },
-      );
-    let packedStopElapsedMilliseconds;
-    const invokePackedHook = (hookEventName) => {
-      const hookStartedAt = performance.now();
-      const invokedHook = run(codexLauncher.launcherPath, [], {
-        env: {
-          AGENTSCOPE_HOME: join(ambientSubstitutedHome, "override"),
-          HOME: ambientSubstitutedHome,
-          USERPROFILE: ambientSubstitutedHome,
-        },
-        input: codexHookInput(hookEventName),
-      });
-      if (hookEventName === "Stop")
-        packedStopElapsedMilliseconds = Math.round(
-          performance.now() - hookStartedAt,
-        );
-      assert.equal(invokedHook.stdout, "");
-      assert.equal(invokedHook.stderr, "");
-    };
-    for (const hookEventName of ["SessionStart", "Stop"])
-      invokePackedHook(hookEventName);
-    const packedHookOperationalStatePath = join(
-      localHome,
-      "health",
-      "operational-state-v1.json",
-    );
-    assert.equal(
-      existsSync(packedHookOperationalStatePath),
-      true,
-      `installed Stop hook produced no operational receipt; elapsedMilliseconds=${packedStopElapsedMilliseconds}; configurationPresent=${existsSync(join(localHome, "config.json"))}; destinationRootPresent=${existsSync(join(localHome, "destinations", "local-sqlite"))}`,
-    );
-    const packedHookOperationalState = readFileSync(
-      packedHookOperationalStatePath,
-      "utf8",
-    );
-    const acceptedHookConnections = JSON.parse(
-      packedHookOperationalState,
-    ).health.filter(
-      (entry) =>
-        entry.scope === "connection" &&
-        entry.stage === "remote-acceptance" &&
-        entry.outcome === "accepted" &&
-        entry.receipt === "accepted",
-    );
-    assert.ok(acceptedHookConnections.length >= 1);
-    assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
-    assert.equal(existsSync(ambientSubstitutedHome), false);
-    const searchedLocalObservation = runTraceSearchUntilAvailable(
-      runRaw,
-      executable,
-      [
-        "traces",
-        "search",
-        "--destination",
-        "packed-local",
-        "--session",
-        "packed-session",
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    const searchedLocal = searchedLocalObservation.result;
-    if (!searchedLocalObservation.timely || searchedLocal.status !== 0) {
-      assert.fail(
-        `installed Stop trace retrieval unavailable; timely=${searchedLocalObservation.timely}; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}`,
-      );
-    }
-    const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
-    assert.equal(searchedLocal.stderr, "");
-    assert.equal(searchedLocalDocument.records.length, 1);
-    assert.equal(searchedLocalDocument.records[0].summaries.length, 1);
-    const packedTraceLocator =
-      searchedLocalDocument.records[0].summaries[0].locator;
-    const retrievedLocal = runRaw(
-      executable,
-      [
-        "traces",
-        "get",
-        "--destination",
-        "packed-local",
-        "--trace-ref",
-        JSON.stringify(packedTraceLocator),
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.equal(
-      retrievedLocal.status,
-      0,
-      traceGetFailureSummary(retrievedLocal),
-    );
-    const retrievedLocalDocument = JSON.parse(retrievedLocal.stdout);
-    assert.equal(retrievedLocal.stderr, "");
-    assert.equal(retrievedLocalDocument.records.length, 1);
-    const packedTrace = retrievedLocalDocument.records[0].graph;
-    const packedSpans = packedTrace.resourceSpans.flatMap(({ scopeSpans }) =>
-      scopeSpans.flatMap(({ spans }) => spans),
-    );
-    const stringAttribute = (attributes, key) =>
-      attributes.find((attribute) => attribute.key === key)?.value?.stringValue;
-    assert.deepEqual(
-      packedSpans.map(({ name }) => name),
-      ["codex.turn", "codex.response"],
-    );
-    assert.equal(
-      stringAttribute(packedSpans[1].attributes, "llm.model_name"),
-      "packed-model",
-    );
-    invokePackedHook("SessionEnd");
-    assert.equal(
-      packedSpans
-        .map(({ attributes }) => stringAttribute(attributes, "session.id"))
-        .filter((value) => value !== undefined)
-        .join("\0"),
-      "packed-session",
-    );
-    assert.doesNotMatch(JSON.stringify(packedTrace), /PACKED_CONTENT_CANARY/u);
-    const localDoctor = run(executable, ["doctor", "--output", "json"], {
-      ...executableOptions,
-      env: localEnvironment,
-    });
-    const localFinding = JSON.parse(
-      localDoctor.stdout,
-    ).records[0].findings.find(
-      ({ code }) => code === "doctor.destination.local-resource.available",
-    );
-    assert.ok(localFinding);
-    assert.deepEqual(
-      localFinding.evidence.localResource.databaseDerivedRetention,
-      {
-        clockContinuity: "unavailable",
-        cutoff: "unavailable",
-        payloadBytes: "unavailable",
-        rowCount: "unavailable",
-      },
-    );
-    const localNamespace = join(localHome, "destinations", "local-sqlite");
-    const configuredDatabaseFamily = snapshotSqliteFamily(localNamespace);
-    const plannedUnconfigure = run(
-      executable,
-      ["destination", "unconfigure", "packed-local", "--output", "json"],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.equal(
-      JSON.parse(plannedUnconfigure.stdout).records[0].applied,
-      false,
-    );
-    const unconfiguredLocal = run(
-      executable,
-      [
-        "destination",
-        "unconfigure",
-        "packed-local",
-        "--yes",
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    const retainedSelector = JSON.parse(unconfiguredLocal.stdout).records[0]
-      .retainedDeleteSelector;
-    assert.match(retainedSelector, /^destination-connection-v1-[0-9a-f]{64}$/u);
-    assert.equal(
-      JSON.parse(unconfiguredLocal.stdout).records[0].state,
-      "retained",
-    );
-    assert.deepEqual(
-      snapshotSqliteFamily(localNamespace),
-      configuredDatabaseFamily,
-    );
-    const plannedDelete = run(
-      executable,
-      ["destination", "delete", retainedSelector, "--output", "json"],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.deepEqual(JSON.parse(plannedDelete.stdout).records[0], {
-      applied: false,
-      deleted: false,
-      plan: JSON.parse(plannedDelete.stdout).records[0].plan,
-      selector: retainedSelector,
-      state: "planned",
-    });
-    assert.deepEqual(
-      snapshotSqliteFamily(localNamespace),
-      configuredDatabaseFamily,
-    );
-    const deletedLocal = run(
-      executable,
-      [
-        "destination",
-        "delete",
-        retainedSelector,
-        "--confirm",
-        "--output",
-        "json",
-      ],
-      { ...executableOptions, env: localEnvironment },
-    );
-    assert.equal(JSON.parse(deletedLocal.stdout).records[0].deleted, true);
-    assert.deepEqual(
-      existsSync(localNamespace) ? regularFiles(localNamespace) : [],
-      [],
-    );
+    assert.deepEqual(regularFiles(localHome), beforeInventory);
   }
   const invalid = runRaw(
     executable,
@@ -1067,6 +692,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
   );
   const installedRoot = join(installRoot, "node_modules/agentscope-cli");
   const installedFiles = regularFiles(installedRoot);
+  assertAlphaLocalNativeAbsent(installedFiles);
   assert.deepEqual(regularFiles(join(installedRoot, "dist/bin/migrations")), [
     "0001-initialize.sql",
     "0002-retrieval-indexes.sql",
@@ -1102,10 +728,6 @@ setTimeout(() => process.exit(3), 10_000).unref();
     false,
   );
   assert.doesNotMatch(bundle, /node-gyp|binding\.gyp/u);
-  assert.deepEqual(bundle.match(/better-sqlite3[^"'\s]*/gu), [
-    "better-sqlite3.cjs",
-    "better-sqlite3-MIT.txt",
-  ]);
 
   process.stdout.write(
     `Verified clean install of ${basename(tarball)} (${packReport[0].integrity})\n`,

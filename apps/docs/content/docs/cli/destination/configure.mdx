@@ -2,14 +2,14 @@
 title: Configure a destination
 description: Create a named connection from a first-party destination descriptor.
 command: agentscope destination configure
-commandContract: sha256:e4344e6e0b317acf331df5558c099328d3eae02ae5fc14c7b2b065a7d4b4427e
+commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8b74c008d
 ---
 
 The generic configure command resolves `<type>` through the compiled first-party registry, validates non-secret settings with the descriptor's detached strict schema, validates every declared credential slot, and commits one new configuration generation atomically.
 
 In human output mode on a macOS terminal, omitting `--credential-env` collects every required credential through hidden terminal input before creating any stored credential. No value is echoed or placed in arguments or configuration. The foreground command has one 60-second allowance including setup, all prompts, and credential/configuration work; activity and additional slots do not reset it. This is an implementation policy, not a typing-time guarantee. Cancellation or expiry refuses later work and may require reconciliation of an already-started mutation. Native platform admission remains separate from this command contract.
 
-Langfuse and Local SQLite are registered first-party types. Local SQLite first returns a non-mutating plan containing its resolved display path, persistence notice, and effective retention policy. `--yes` presents that same plan before the package-owned lifecycle handler may create or publish data and commit configuration. Failure to admit the exact native candidate returns a fixed lifecycle diagnostic before filesystem or configuration mutation.
+Langfuse and Local SQLite remain registered first-party types. The 0.1.0 alpha does not admit the Local SQLite capability: both planning and `--yes` return `destination.capability-unavailable` before settings, credentials, plan presentation, or filesystem/configuration mutation. Local descriptor discovery is not a support claim.
 
 ## Syntax
 
@@ -19,7 +19,7 @@ agentscope destination configure <type> --name <name> [--settings <json>] [--cre
 
 ## Output and exits
 
-For Local SQLite, an invocation without `--yes` reports `state: planned`, `applied: false`, and the lifecycle plan. With `--yes`, that plan is presented before mutation; machine modes write it to the plan channel on standard error. The applied `json` and `jsonl` result contains exactly one public connection record with `connectionId`, `destinationType`, `name`, `routed`, `settingsVersion`, and `transport`. `human` output reports the configured connection and configuration generation. Every mode derives from `agentscope.cli.destination-configure.v1`. Credential values are never output.
+Local SQLite returns exit 5 and the stable capability-unavailable diagnostic; no plan or connection record is emitted. An admitted destination's applied `json` and `jsonl` result contains exactly one public connection record with `connectionId`, `destinationType`, `name`, `routed`, `settingsVersion`, and `transport`. `human` output reports the configured connection and configuration generation. Every mode derives from `agentscope.cli.destination-configure.v1`. Credential values are never output.
 
 ## Automation
 
@@ -30,6 +30,7 @@ JSON, JSONL, and non-terminal invocations never prompt. Supply the complete decl
 ## Diagnostics
 
 - `configuration.conflict`, `configuration.missing`, and `configuration.unavailable` describe the Core configuration boundary.
+- `destination.capability-unavailable` means the alpha does not admit this destination capability; refusal precedes plan or mutation.
 - `destination.connection-exists` rejects duplicate names.
 - `destination.credential-unavailable` means credential input or resolution could not safely complete. Fixed boolean facts can indicate an observed configuration commit or a need for reconciliation; failure does not imply that an already-started mutation was undone.
 - `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, `destination.lifecycle-reconciliation-required`, and `destination.lifecycle-unavailable` are closed Local lifecycle outcomes.

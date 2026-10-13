@@ -25,10 +25,9 @@ const allowedActions = new Set([
   "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
 ]);
 const installCommand = "pnpm install --frozen-lockfile";
-const pruneCommand = "node scripts/native-ci-selection.mjs --prune-irrelevant";
 const buildCommand = "pnpm nx build agentscope-cli --skip-nx-cache";
 const cliArtifactCommand = "pnpm verify:cli-artifact";
-const nativeCandidateCommand = "pnpm verify:native-candidate";
+const localExcludedCommand = 'echo "Local SQLite not admitted"';
 const substrateCommand = "pnpm verify:release-lane-substrate";
 const workflowContextCommand =
   'node scripts/verify-release-workflow-context.mjs --repository "$GITHUB_REPOSITORY" --source-revision "$SOURCE_REVISION" --observed-head "$(git rev-parse HEAD)" --caller-workflow-ref "$CALLER_WORKFLOW_REF" --job-workflow-ref "$JOB_WORKFLOW_REF" --job-workflow-sha "$JOB_WORKFLOW_SHA" --candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --protected-tag v0.1.0';
@@ -38,10 +37,9 @@ const recordsCommand =
   'node scripts/verify-release-records.mjs --artifact-root artifacts/release-candidate --record-set-relative "$REHEARSAL_RECORDS" --candidate-manifest-relative "$CANDIDATE_MANIFEST" --trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0 --workspace-root . --workflow-relative .github/workflows/release.yml';
 const allowedRunCommands = new Set([
   installCommand,
-  pruneCommand,
   buildCommand,
   cliArtifactCommand,
-  nativeCandidateCommand,
+  localExcludedCommand,
   substrateCommand,
   workflowContextCommand,
   candidateCommand,
@@ -91,10 +89,9 @@ const expectedActionInputs = new Map([
 ]);
 const expectedRunEnvironments = new Map([
   [installCommand, null],
-  [pruneCommand, null],
   [buildCommand, null],
   [cliArtifactCommand, null],
-  [nativeCandidateCommand, null],
+  [localExcludedCommand, null],
   [substrateCommand, null],
   [
     workflowContextCommand,
@@ -131,7 +128,6 @@ const expectedRunEnvironments = new Map([
 ]);
 const expectedStepTopology = Object.freeze([
   { uses: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" },
-  { run: pruneCommand },
   { uses: "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1" },
   { uses: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020" },
   { run: installCommand },
@@ -141,8 +137,8 @@ const expectedStepTopology = Object.freeze([
   { run: workflowContextCommand },
   { run: buildCommand },
   { run: cliArtifactCommand },
-  { run: nativeCandidateCommand },
   { run: candidateCommand },
+  { run: localExcludedCommand },
   { run: recordsCommand },
   { run: substrateCommand },
 ]);
@@ -160,6 +156,7 @@ export const releaseAuthorityFiles = Object.freeze([
 ]);
 const forbiddenScript = [/https?:\/\//u, /npm\s+(?:publish|stage)/u];
 const allowedExternalModules = new Set([
+  "node:assert/strict",
   "node:crypto",
   "node:fs",
   "node:path",

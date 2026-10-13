@@ -58,10 +58,6 @@ const PROCESS_TIMEOUT_MILLISECONDS = 15_000;
 const EXPECTED_PACKAGE = "agentscope-cli";
 const EXPECTED_BIN = "agentscope";
 const requiredArgumentDiagnostic = "cli.input.invalid";
-const localSqliteCandidateAvailable =
-  process.platform === "linux" &&
-  process.arch === "x64" &&
-  process.versions.modules === "127";
 
 function parseNamedArgument(name: string): string {
   const index = process.argv.indexOf(name);
@@ -325,10 +321,8 @@ const contracts = Object.freeze({
     invocation: {
       args: ["local-sqlite", "--name", "contract-local"],
       caseId: "destination.configure.valid",
-      expectedCode: localSqliteCandidateAvailable ? 0 : 5,
-      ...(localSqliteCandidateAvailable
-        ? {}
-        : { expectedDiagnostic: "destination.lifecycle-unavailable" }),
+      expectedCode: 5,
+      expectedDiagnostic: "destination.capability-unavailable",
       prepare: "initialized",
     },
     missing: ["local-sqlite"],
