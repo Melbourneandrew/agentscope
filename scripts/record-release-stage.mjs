@@ -28,6 +28,11 @@ import {
   stageRetainedProbe,
   recordProbeStagePacket,
   reconcileProbePacket,
+  recordPublicationCheckpoint,
+  recordPublicationApproval,
+  readPublicationForVerification,
+  verifyRegistryPublication,
+  continuePublication,
 } from "./release-lane/production-recording.mjs";
 import { sha256, canonicalJson } from "./release-lane/validation.mjs";
 import { requireActualSemanticAdmission } from "./release-lane/admission.mjs";
@@ -95,9 +100,13 @@ const mode = process.argv[2];
 if (!(
   process.argv.length === 2 ||
   (process.argv.length === 3 &&
-    ["--stage", "--record-stage", "--prepare-probe", "--verify-probe"].includes(
-      mode,
-    ))
+    [
+      "--stage",
+      "--record-stage",
+      "--prepare-probe",
+      "--verify-probe",
+      "--verify-publication",
+    ].includes(mode))
 ))
   fail();
 const probeOperation = [
@@ -250,6 +259,7 @@ function executingDigests() {
     "scripts/release-lane/operator-controls.mjs",
     "scripts/release-lane/release-controls.mjs",
     "apps/cli/scripts/publish-manifest-contract.mjs",
+    "apps/cli/scripts/verify-installed-smoke.ts",
   ];
   return {
     workflowDigest: sha256(
@@ -380,6 +390,65 @@ function dependentStageOutput(tuple) {
     response: encoded ? "ambiguous" : "missing",
     stageId: null,
   };
+}
+const publicationOperation = [
+  "prepare-publication",
+  "consume-publication",
+  "record-approval",
+  "continue-publication",
+].includes(event.inputs.operation);
+if (publicationOperation) {
+  const input = {
+    identity,
+    releaseId: Number(event.inputs["release-id"]),
+    expectedSequence: Number(event.inputs["expected-sequence"]),
+    expectedPriorDigest: event.inputs["expected-prior-digest"],
+    executingDigests: executingDigests(),
+    observedAt: new Date().toISOString(),
+  };
+  const owner = JSON.parse(event.inputs["owner-observation"]);
+  if (mode === "--verify-publication") {
+    if (event.inputs.operation !== "continue-publication") fail();
+    const verificationInput = { ...input };
+    delete verificationInput.observedAt;
+    const head = await readPublicationForVerification(store, verificationInput);
+    const packet = await verifyRegistryPublication(head, candidate(), deadline);
+    output(
+      "registry-result",
+      canonicalJson({
+        ...packet,
+        runId: identity.runId,
+        runAttempt: identity.runAttempt,
+        ...input.executingDigests,
+      }),
+    );
+  } else if (mode) fail();
+  else if (event.inputs.operation === "continue-publication") {
+    // Only fixed needs.verify-publication output, never event owner JSON,
+    // carries the credential-free registry/install acquisition result.
+    const encoded = process.env.RELEASE_REGISTRY_RESULT;
+    if (typeof encoded !== "string" || Buffer.byteLength(encoded) > 16_384)
+      fail();
+    const result = await continuePublication(
+      store,
+      input,
+      JSON.parse(encoded),
+      owner,
+    );
+    retainProbe("release-completion-manifest.json", result);
+  } else {
+    const record =
+      event.inputs.operation === "record-approval"
+        ? await recordPublicationApproval(store, input, owner)
+        : await recordPublicationCheckpoint(
+            store,
+            input,
+            owner,
+            event.inputs.operation === "consume-publication",
+          );
+    output("publication-record-digest", record.digest);
+  }
+  process.exit(0);
 }
 if (probeOperation) {
   const executing = executingDigests();

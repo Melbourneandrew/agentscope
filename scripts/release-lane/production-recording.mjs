@@ -11,7 +11,11 @@ import {
   writeFileSync,
   unlinkSync,
   rmdirSync,
+  mkdirSync,
+  rmSync,
 } from "node:fs";
+import { execFile } from "node:child_process";
+import { types } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,8 +30,12 @@ import {
   validateProbeIntent,
   validateProbeStagePacket,
   validateProbeInvocationReservation,
+  validatePublicationObservation,
 } from "./production-recorder.mjs";
-import { projectOperatorControlsReport } from "./admission.mjs";
+import {
+  projectOperatorControlsReport,
+  parseAdmissionDocument,
+} from "./admission.mjs";
 import { produceNpmStage } from "./npm-stage-producer.mjs";
 
 const authenticated = new WeakMap();
@@ -843,9 +851,17 @@ export async function bindIntentTuple(store, head, input, executingDigests) {
   return tuple;
 }
 
-export async function readLatestRecord(store, releaseId) {
+export async function readLatestRecord(
+  store,
+  releaseId,
+  allowImmutable = false,
+) {
   const release = await store.release(releaseId);
-  if (!release.draft || !release.prerelease || release.tag_name !== "v0.1.0")
+  if (
+    (!release.draft && !(allowImmutable && release.immutable === true)) ||
+    !release.prerelease ||
+    release.tag_name !== "v0.1.0"
+  )
     fail();
   const entries = (await store.assets(releaseId)).filter((entry) =>
     /^release-record-\d{6}\.json$/u.test(entry.name),
@@ -1041,7 +1057,13 @@ export async function recordStage(store, input) {
   // All records in the same chain retain the draft database identity at root.
   const unsigned = { ...record };
   delete unsigned.digest;
-  const durable = { ...unsigned, draftReleaseDatabaseId: value.releaseId };
+  const durable = {
+    ...unsigned,
+    draftReleaseDatabaseId: value.releaseId,
+    tuple: intent.tuple,
+    stageRunId: intent.runId,
+    stageRunAttempt: intent.runAttempt,
+  };
   const result = { ...durable, digest: sha256(canonicalJson(durable)) };
   await store.appendAsset(
     value.releaseId,
@@ -1051,4 +1073,759 @@ export async function recordStage(store, input) {
   const after = await readLatestRecord(store, value.releaseId);
   if (after.digest !== result.digest) fail();
   return after;
+}
+
+async function appendPublicationRecord(store, head, transition, fields) {
+  const current = await readLatestRecord(store, head.draftReleaseDatabaseId);
+  if (
+    current.sequence !== head.sequence ||
+    current.digest !== head.digest ||
+    head.sequence >= 31
+  )
+    fail();
+  const unsigned = {
+    schemaVersion: 1,
+    sequence: head.sequence + 1,
+    previousDigest: head.digest,
+    transactionId: head.transactionId,
+    draftReleaseDatabaseId: head.draftReleaseDatabaseId,
+    candidateManifestDigest: head.candidateManifestDigest,
+    sourceRevision: head.sourceRevision,
+    protectedTag: "v0.1.0",
+    kind: "product",
+    transition,
+    tuple: head.tuple,
+    stageRunId: head.stageRunId,
+    stageRunAttempt: head.stageRunAttempt,
+    ...fields,
+  };
+  const record = { ...unsigned, digest: sha256(canonicalJson(unsigned)) };
+  await store.appendAsset(
+    head.draftReleaseDatabaseId,
+    `release-record-${String(record.sequence).padStart(6, "0")}.json`,
+    encode(record),
+  );
+  const after = await readLatestRecord(store, head.draftReleaseDatabaseId);
+  if (after.digest !== record.digest || after.sequence !== record.sequence)
+    fail();
+  return after;
+}
+
+async function assertSelectedReleaseFence(store, releaseId) {
+  const releases = await store.releases();
+  if (
+    !Array.isArray(releases) ||
+    releases.length >= 100 ||
+    releases.filter((release) => release.id === releaseId).length !== 1 ||
+    releases.some(
+      (release) =>
+        release.id !== releaseId &&
+        (release.draft || release.immutable !== true),
+    ) ||
+    releases.filter((release) => release.tag_name === "v0.1.0").length !== 1 ||
+    releases.find((release) => release.id === releaseId).tag_name !== "v0.1.0"
+  )
+    fail();
+}
+
+// Owner-only pending-stage list/download facts are explicitly attestations.
+// Ordinary npm stage approve <exact UUID> remains an interactive owner action,
+// never invoked by this workflow or by an Actions/OIDC token.
+export async function recordPublicationCheckpoint(
+  store,
+  input,
+  observation,
+  consume = false,
+) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "releaseId",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "observedAt",
+    "executingDigests",
+  ]);
+  const {
+    value: identity,
+    run,
+    approval,
+  } = await authenticateRunApproval(store, value.identity);
+  await store.protectedSource(identity.sourceRevision);
+  await assertSelectedReleaseFence(store, value.releaseId);
+  const head = await readLatestRecord(store, value.releaseId);
+  if (
+    run.head_branch !== "v0.1.0" ||
+    head.sourceRevision !== identity.sourceRevision ||
+    head.sequence !== value.expectedSequence ||
+    head.digest !== value.expectedPriorDigest ||
+    !(consume
+      ? head.transition === "publication-checkpoint"
+      : ["stage-recorded", "publication-checkpoint"].includes(head.transition))
+  )
+    fail();
+  await bindIntentTuple(store, head, head.tuple, value.executingDigests);
+  const checkpoint = validatePublicationObservation(
+    observation,
+    head,
+    value.observedAt,
+    consume,
+  );
+  const authenticatedCheckpoint = {
+    ...checkpoint,
+    ownerIdentity: identity.owner,
+    state: consume
+      ? "consumed-before-interactive-approval"
+      : "valid-unconsumed",
+    authenticationDigest: sha256(
+      canonicalJson({ run, approval, observation: checkpoint }),
+    ),
+  };
+  if (consume) {
+    authenticatedCheckpoint.originalCheckpointDigest = sha256(
+      canonicalJson(head.checkpoint),
+    );
+    authenticatedCheckpoint.consumedAt = value.observedAt;
+  }
+  return appendPublicationRecord(
+    store,
+    head,
+    consume ? "publication-consumed" : "publication-checkpoint",
+    {
+      checkpoint: authenticatedCheckpoint,
+      actor: identity.owner,
+      runId: identity.runId,
+      runAttempt: identity.runAttempt,
+    },
+  );
+}
+
+export async function recordPublicationApproval(store, input, ownerReport) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "releaseId",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "observedAt",
+    "executingDigests",
+  ]);
+  const {
+    value: identity,
+    run,
+    approval,
+  } = await authenticateRunApproval(store, value.identity);
+  await store.protectedSource(identity.sourceRevision);
+  await assertSelectedReleaseFence(store, value.releaseId);
+  const head = await readLatestRecord(store, value.releaseId);
+  if (
+    head.transition !== "publication-consumed" ||
+    run.head_branch !== "v0.1.0" ||
+    head.sourceRevision !== identity.sourceRevision ||
+    head.sequence !== value.expectedSequence ||
+    head.digest !== value.expectedPriorDigest
+  )
+    fail();
+  await bindIntentTuple(store, head, head.tuple, value.executingDigests);
+  const report = snapshotRecorderInput(ownerReport);
+  recorderExactKeys(report, [
+    "stageId",
+    "checkpointDigest",
+    "transactionRecordDigest",
+    "state",
+    "approvedAt",
+  ]);
+  const time = Date.parse(report.approvedAt);
+  if (
+    report.stageId !== head.checkpoint.stageId ||
+    report.checkpointDigest !== sha256(canonicalJson(head.checkpoint)) ||
+    report.transactionRecordDigest !== head.digest ||
+    report.state !== "approved" ||
+    !Number.isFinite(time) ||
+    new Date(time).toISOString() !== report.approvedAt ||
+    time < Date.parse(head.checkpoint.consumedAt) ||
+    time >= Date.parse(head.checkpoint.expiresAt) ||
+    time > Date.parse(value.observedAt)
+  )
+    fail();
+  return appendPublicationRecord(store, head, "approval-reported", {
+    checkpoint: head.checkpoint,
+    approval: {
+      ...report,
+      ownerIdentity: identity.owner,
+      authenticationDigest: sha256(canonicalJson({ run, approval, report })),
+    },
+    actor: identity.owner,
+  });
+}
+
+// Credential-free ordinary children only. This is the existing npm/installed
+// smoke process boundary, not an authorization kernel or process-set oracle.
+function publicationChildRunner(deadline, root, execFileImpl) {
+  const env = Object.fromEntries(
+    ["PATH", "LANG", "SystemRoot"]
+      .filter((key) => typeof process.env[key] === "string")
+      .map((key) => [key, process.env[key]]),
+  );
+  Object.assign(env, {
+    HOME: join(root, "home"),
+    USERPROFILE: join(root, "home"),
+    npm_config_cache: join(root, "cache"),
+    npm_config_userconfig: join(root, "empty-npmrc"),
+    npm_config_registry: "https://registry.npmjs.org",
+    NO_COLOR: "1",
+  });
+  return async (command, args, cwd = root) => {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining < 1) fail();
+    return new Promise((resolve, reject) => {
+      try {
+        execFileImpl(
+          command,
+          args,
+          {
+            cwd,
+            env,
+            encoding: "buffer",
+            maxBuffer: 2_097_152,
+            timeout: remaining,
+            killSignal: "SIGKILL",
+            windowsHide: true,
+          },
+          (error, stdout, stderr) => {
+            if (
+              error ||
+              performance.now() >= deadline ||
+              types.isProxy(stdout) ||
+              types.isProxy(stderr) ||
+              !Buffer.isBuffer(stdout) ||
+              !Buffer.isBuffer(stderr) ||
+              stdout.length > 2_097_152 ||
+              stderr.length > 65_536
+            )
+              reject(new Error("release.recording.unresolved"));
+            else resolve(Buffer.from(stdout));
+          },
+        );
+      } catch {
+        reject(new Error("release.recording.unresolved"));
+      }
+    });
+  };
+}
+
+function validateNpmStatement(statement, head) {
+  const definition = statement.predicate?.buildDefinition;
+  const workflow = definition?.externalParameters?.workflow;
+  const dependencies = definition?.resolvedDependencies;
+  if (
+    statement.predicateType !== "https://slsa.dev/provenance/v1" ||
+    workflow?.repository !== "https://github.com/Melbourneandrew/agentscope" ||
+    workflow.path !== ".github/workflows/release.yml" ||
+    workflow.ref !== "refs/tags/v0.1.0" ||
+    !Array.isArray(dependencies) ||
+    dependencies.length !== 1 ||
+    dependencies[0].uri !==
+      "git+https://github.com/Melbourneandrew/agentscope@refs/tags/v0.1.0" ||
+    dependencies[0].digest?.gitCommit !== head.sourceRevision ||
+    statement.predicate?.runDetails?.metadata?.invocationId !==
+      `https://github.com/Melbourneandrew/agentscope/actions/runs/${head.stageRunId}/attempts/${head.stageRunAttempt}`
+  )
+    fail();
+}
+
+async function readRegistryMetadata(run, tuple, head) {
+  const metadata = parseAdmissionDocument(
+    await run("npm", [
+      "view",
+      "agentscope-cli@0.1.0",
+      "--json",
+      "--registry",
+      "https://registry.npmjs.org",
+    ]),
+  );
+  const tags = parseAdmissionDocument(
+    await run("npm", [
+      "view",
+      "agentscope-cli",
+      "dist-tags",
+      "--json",
+      "--registry",
+      "https://registry.npmjs.org",
+    ]),
+  );
+  if (
+    metadata.name !== tuple.package ||
+    metadata.version !== tuple.version ||
+    (metadata.bin?.agentscope !== "dist/bin/agentscope.js" &&
+      metadata.bin?.agentscope !== "./dist/bin/agentscope.js") ||
+    Object.keys(metadata.bin ?? {}).length !== 1 ||
+    metadata.dist?.integrity !== tuple.integrity ||
+    metadata.dist?.tarball !==
+      "https://registry.npmjs.org/agentscope-cli/-/agentscope-cli-0.1.0.tgz" ||
+    canonicalJson(tags) !==
+      canonicalJson({ ...head.checkpoint.distTags, alpha: "0.1.0" })
+  )
+    fail();
+  return { metadata, tags };
+}
+
+async function runInstalledPublicationSmoke(run, root, tarball, tuple) {
+  const smoke = parseAdmissionDocument(
+    await run(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        new URL(
+          "../../apps/cli/scripts/verify-installed-smoke.ts",
+          import.meta.url,
+        ).pathname,
+        "--executable",
+        join(root, "node_modules/.bin/agentscope"),
+        "--tarball",
+        tarball,
+        "--installed-package-root",
+        join(root, "node_modules/agentscope-cli"),
+        "--expected-version",
+        "0.1.0",
+      ],
+      new URL("../..", import.meta.url).pathname,
+    ),
+  );
+  if (
+    smoke.schema !== "agentscope.cli.installed-smoke.v1" ||
+    smoke.scope !== "packed-public-command-smoke" ||
+    smoke.package !== tuple.package ||
+    smoke.version !== tuple.version ||
+    smoke.candidateDigest !== tuple.tarballSha256 ||
+    !Number.isSafeInteger(smoke.checkCount) ||
+    smoke.checkCount <= 80
+  )
+    fail();
+  return smoke;
+}
+
+function validateRegistryContinuationPacket(registryPacket, value, head) {
+  const packet = snapshotRecorderInput(registryPacket);
+  recorderExactKeys(packet, [
+    "schemaVersion",
+    "sourceRevision",
+    "transactionRecordDigest",
+    "candidateManifestDigest",
+    "registryMetadataDigest",
+    "distTags",
+    "downloadedTarballSha256",
+    "integrity",
+    "provenanceDigest",
+    "installedSmokeDigest",
+    "state",
+    "runId",
+    "runAttempt",
+    "workflowDigest",
+    "releaseScriptsDigest",
+  ]);
+  if (
+    packet.schemaVersion !== 1 ||
+    packet.state !== "registry-and-installed-smoke-verified" ||
+    packet.runId !== value.identity.runId ||
+    packet.runAttempt !== value.identity.runAttempt ||
+    packet.sourceRevision !== head.sourceRevision ||
+    packet.transactionRecordDigest !== head.digest ||
+    packet.candidateManifestDigest !== head.candidateManifestDigest ||
+    packet.downloadedTarballSha256 !== head.tuple.tarballSha256 ||
+    packet.integrity !== head.tuple.integrity ||
+    packet.workflowDigest !== value.executingDigests.workflowDigest ||
+    packet.releaseScriptsDigest !==
+      value.executingDigests.releaseScriptsDigest ||
+    canonicalJson(packet.distTags) !==
+      canonicalJson({ ...head.checkpoint.distTags, alpha: "0.1.0" }) ||
+    [
+      packet.registryMetadataDigest,
+      packet.provenanceDigest,
+      packet.installedSmokeDigest,
+    ].some((hash) => !/^sha256:[a-f0-9]{64}$/u.test(hash))
+  )
+    fail();
+  return packet;
+}
+
+function validateContinuationControls(controlsObservation, value) {
+  const fresh = snapshotRecorderInput(controlsObservation);
+  recorderExactKeys(fresh, ["controlsReport", "issuedAt", "expiresAt"]);
+  const controls = projectOperatorControlsReport(
+    fresh.controlsReport,
+    fresh.expiresAt,
+    value.observedAt,
+  );
+  const issued = Date.parse(fresh.issuedAt);
+  const expires = Date.parse(fresh.expiresAt);
+  if (
+    !Number.isFinite(issued) ||
+    !Number.isFinite(expires) ||
+    expires <= issued ||
+    expires - issued > 900_000 ||
+    Date.parse(value.observedAt) < issued ||
+    Date.parse(value.observedAt) >= expires ||
+    controls.controlsInspectedAt !== fresh.issuedAt
+  )
+    fail();
+  return { controls, expires };
+}
+
+function verifiedNpmProvenance(bytes, head) {
+  const value = parseAdmissionDocument(bytes);
+  if (
+    !Array.isArray(value.invalid) ||
+    value.invalid.length ||
+    !Array.isArray(value.missing) ||
+    value.missing.length ||
+    !Array.isArray(value.verified)
+  )
+    fail();
+  const packages = value.verified.filter(
+    (entry) => entry.name === "agentscope-cli" && entry.version === "0.1.0",
+  );
+  if (
+    packages.length !== 1 ||
+    packages[0].registry !== "https://registry.npmjs.org/" ||
+    !Array.isArray(packages[0].attestationBundles)
+  )
+    fail();
+  const proofs = packages[0].attestationBundles.filter(
+    (entry) => entry.predicateType === "https://slsa.dev/provenance/v1",
+  );
+  if (
+    proofs.length !== 1 ||
+    typeof proofs[0].bundle?.dsseEnvelope?.payload !== "string"
+  )
+    fail();
+  const statement = parseAdmissionDocument(
+    Buffer.from(proofs[0].bundle.dsseEnvelope.payload, "base64"),
+  );
+  validateNpmStatement(statement, head);
+  return sha256(canonicalJson(proofs[0]));
+}
+
+// Executed ONLY by the fixed separate no-write/no-OIDC verification job. The
+// privileged publisher consumes its same-run artifact, never loads the CLI.
+export async function verifyRegistryPublication(
+  headInput,
+  candidate,
+  deadline,
+  execution = {},
+) {
+  const head = snapshotRecorderInput(headInput);
+  if (
+    !["approval-reported", "ready-to-publish"].includes(head.transition) ||
+    !Number.isFinite(deadline)
+  )
+    fail();
+  const tuple = validateStageTuple(head.tuple);
+  // The ordinary entry returns only these retained candidate inputs. Expected
+  // identities come from the authenticated record, never fixture/caller extras.
+  verifyCandidateArtifact({
+    manifest: candidate.manifest,
+    certificationRecord: candidate.certificationRecord,
+    tarballPath: candidate.tarballPath,
+    expectedManifestDigest: head.candidateManifestDigest,
+    expectedSourceRevision: head.sourceRevision,
+    expectedProtectedTag: "v0.1.0",
+  });
+  const root = mkdtempSync(join(tmpdir(), "agentscope-registry-install-"));
+  try {
+    mkdirSync(join(root, "home"), { mode: 0o700 });
+    writeFileSync(join(root, "empty-npmrc"), "", { flag: "wx", mode: 0o600 });
+    const run = publicationChildRunner(
+      deadline,
+      root,
+      execution.execFileImpl ?? execFile,
+    );
+    const npmVersion = await run("npm", ["--version"]);
+    if (!/^11\.17\.0\r?\n?$/u.test(npmVersion.toString("utf8"))) fail();
+    const { metadata, tags } = await readRegistryMetadata(run, tuple, head);
+    // A fresh exact-version install uses the public registry, ordinary lifecycle
+    // behavior and no candidate rebuild. Its tarball is downloaded independently.
+    const packed = parseAdmissionDocument(
+      await run("npm", [
+        "pack",
+        "agentscope-cli@0.1.0",
+        "--json",
+        "--ignore-scripts",
+        "--registry",
+        "https://registry.npmjs.org",
+      ]),
+    );
+    if (
+      !Array.isArray(packed) ||
+      packed.length !== 1 ||
+      packed[0].filename !== "agentscope-cli-0.1.0.tgz"
+    )
+      fail();
+    const tarball = join(root, "agentscope-cli-0.1.0.tgz");
+    const facts = inspectCandidateTarball(tarball);
+    if (
+      facts.sha256 !== tuple.tarballSha256 ||
+      facts.integrity !== tuple.integrity
+    )
+      fail();
+    await run("npm", [
+      "install",
+      "agentscope-cli@0.1.0",
+      "--save-exact",
+      "--no-audit",
+      "--no-fund",
+      "--registry",
+      "https://registry.npmjs.org",
+    ]);
+    const lock = parseAdmissionDocument(
+      readFileSync(join(root, "package-lock.json")),
+    );
+    const installed = lock.packages?.["node_modules/agentscope-cli"];
+    if (
+      installed?.version !== tuple.version ||
+      installed.integrity !== tuple.integrity ||
+      installed.resolved !== metadata.dist.tarball
+    )
+      fail();
+    const audit = await run("npm", [
+      "audit",
+      "signatures",
+      "--json",
+      "--include-attestations",
+      "--registry",
+      "https://registry.npmjs.org",
+    ]);
+    const provenanceDigest = verifiedNpmProvenance(audit, head);
+    const smoke = await runInstalledPublicationSmoke(run, root, tarball, tuple);
+    return snapshotRecorderInput({
+      schemaVersion: 1,
+      sourceRevision: head.sourceRevision,
+      transactionRecordDigest: head.digest,
+      candidateManifestDigest: head.candidateManifestDigest,
+      registryMetadataDigest: sha256(canonicalJson(metadata)),
+      distTags: tags,
+      downloadedTarballSha256: facts.sha256,
+      integrity: facts.integrity,
+      provenanceDigest,
+      installedSmokeDigest: sha256(canonicalJson(smoke)),
+      state: "registry-and-installed-smoke-verified",
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: false });
+  }
+}
+
+export async function readPublicationForVerification(store, input) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "releaseId",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "executingDigests",
+  ]);
+  const run = await store.run(value.identity.runId);
+  if (
+    run.id !== value.identity.runId ||
+    run.run_attempt !== value.identity.runAttempt ||
+    run.head_sha !== value.identity.sourceRevision ||
+    run.head_branch !== "v0.1.0" ||
+    run.path !== ".github/workflows/release.yml" ||
+    run.event !== "workflow_dispatch" ||
+    run.actor?.id !== 25971425 ||
+    run.triggering_actor?.id !== 25971425 ||
+    run.actor?.login !== "Melbourneandrew" ||
+    run.triggering_actor?.login !== "Melbourneandrew"
+  )
+    fail();
+  await store.protectedSource(value.identity.sourceRevision);
+  await assertSelectedReleaseFence(store, value.releaseId);
+  const head = await readLatestRecord(store, value.releaseId, true);
+  if (
+    !["approval-reported", "ready-to-publish"].includes(head.transition) ||
+    head.sourceRevision !== value.identity.sourceRevision ||
+    head.sequence !== value.expectedSequence ||
+    head.digest !== value.expectedPriorDigest
+  )
+    fail();
+  await bindIntentTuple(store, head, head.tuple, value.executingDigests);
+  return head;
+}
+
+async function verifyRetainedReleaseAssets(store, releaseId) {
+  const assets = await store.assets(releaseId);
+  const initial = assets.filter(
+    (entry) => entry.name === "release-record-000001.json",
+  );
+  if (initial.length !== 1) fail();
+  const initialBytes = await store.readAsset(initial[0].id);
+  if (sha256(initialBytes) !== initial[0].digest) fail();
+  const first = parseAdmissionDocument(initialBytes);
+  if (first.transition !== "draft-prepared" || !Array.isArray(first.assets))
+    fail();
+  const retained = assets.filter(
+    (entry) => !/^release-record-\d{6}\.json$/u.test(entry.name),
+  );
+  if (
+    retained.length !== first.assets.length ||
+    retained.some(
+      (entry) =>
+        first.assets.filter(
+          (original) =>
+            original.id === entry.id &&
+            original.name === entry.name &&
+            original.size === entry.size &&
+            original.digest === entry.digest,
+        ).length !== 1,
+    )
+  )
+    fail();
+  const expected = new Set();
+  for (const asset of assets) {
+    if (
+      expected.has(asset.name) ||
+      asset.state !== "uploaded" ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size < 0 ||
+      asset.size > 52_428_800
+    )
+      fail();
+    expected.add(asset.name);
+    const bytes = await store.readAsset(asset.id);
+    if (bytes.length !== asset.size || sha256(bytes) !== asset.digest) fail();
+  }
+  return sha256(
+    canonicalJson(
+      assets
+        .map(({ id, name, size, digest }) => ({ id, name, size, digest }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    ),
+  );
+}
+
+// The fixed workflow's same-run no-write job supplies this packet, not an event
+// field. Durable ready bytes precede the only PATCH; completion is a reviewed
+// protected-main append, not a success announcement or mutable Release asset.
+export async function continuePublication(
+  store,
+  input,
+  registryPacket,
+  controlsObservation,
+) {
+  const value = snapshotRecorderInput(input);
+  recorderExactKeys(value, [
+    "identity",
+    "releaseId",
+    "expectedSequence",
+    "expectedPriorDigest",
+    "executingDigests",
+    "observedAt",
+  ]);
+  const { run, approval } = await authenticateRunApproval(
+    store,
+    value.identity,
+  );
+  const verificationInput = { ...value };
+  delete verificationInput.observedAt;
+  const head = await readPublicationForVerification(store, verificationInput);
+  const packet = validateRegistryContinuationPacket(
+    registryPacket,
+    value,
+    head,
+  );
+  // Fresh controls may be inspected after approval; they do not extend or renew
+  // the publication checkpoint whose consumed/approved times are already fixed.
+  const { controls, expires } = validateContinuationControls(
+    controlsObservation,
+    value,
+  );
+  await store.protectedSource(head.sourceRevision);
+  const assetsDigest = await verifyRetainedReleaseAssets(
+    store,
+    value.releaseId,
+  );
+  const attestationVerifierDigest = await store.verifyAttestationCapability();
+  if (Date.now() >= expires) fail();
+  const ready =
+    head.transition === "ready-to-publish"
+      ? head
+      : await appendPublicationRecord(store, head, "ready-to-publish", {
+          checkpoint: head.checkpoint,
+          approval: head.approval,
+          checkpointDigest: sha256(canonicalJson(head.checkpoint)),
+          approvalDigest: sha256(canonicalJson(head.approval)),
+          registryPacketDigest: sha256(canonicalJson(packet)),
+          registry: packet,
+          releaseLedgerPath: "release-records/releases/",
+          incidentLedgerPath: "release-records/incidents/",
+          controls,
+          authenticationDigest: sha256(canonicalJson({ run, approval })),
+          assetsDigest,
+          attestationVerifierDigest,
+        });
+  await store.protectedSource(head.sourceRevision);
+  const before = await readLatestRecord(store, value.releaseId, true);
+  if (before.digest !== ready.digest) fail();
+  const beforeAssetsDigest = await verifyRetainedReleaseAssets(
+    store,
+    value.releaseId,
+  );
+  const currentRelease = await store.release(value.releaseId);
+  if (Date.now() >= expires) fail();
+  const outcome =
+    currentRelease.immutable === true && currentRelease.draft === false
+      ? { release: currentRelease, uncertain: false }
+      : await store.publishDraft(value.releaseId);
+  // Reacquire tag and every retained asset even after an ambiguous response.
+  const tag = await store.protectedSource(head.sourceRevision);
+  const release = outcome.release;
+  const after = await readLatestRecord(store, value.releaseId, true);
+  if (
+    after.digest !== ready.digest ||
+    release.id !== value.releaseId ||
+    release.tag_name !== "v0.1.0" ||
+    release.prerelease !== true
+  )
+    fail();
+  const immutableAssetsDigest = await verifyRetainedReleaseAssets(
+    store,
+    value.releaseId,
+  );
+  if (immutableAssetsDigest !== beforeAssetsDigest) fail();
+  if (release.draft !== false || release.immutable !== true) {
+    return Object.freeze({
+      state: "frozen-unresolved",
+      readyManifestDigest: ready.digest,
+      releaseId: value.releaseId,
+      disposition: "owner-reconciliation-required-no-retry",
+    });
+  }
+  const immutableAttestationDigest = await store.verifyImmutableAttestation(
+    value.releaseId,
+    await store.assets(value.releaseId),
+    tag.tagObjectSha,
+  );
+  const unsigned = {
+    schemaVersion: 1,
+    kind: "release-completion",
+    state: "immutable-awaiting-reviewed-completion",
+    transactionId: head.transactionId,
+    sourceRevision: head.sourceRevision,
+    protectedTag: "v0.1.0",
+    draftReleaseDatabaseId: value.releaseId,
+    candidateManifestDigest: head.candidateManifestDigest,
+    readyManifestDigest: ready.digest,
+    registryPacketDigest: sha256(canonicalJson(packet)),
+    immutableReleaseDigest: sha256(canonicalJson(release)),
+    immutableAssetsDigest,
+    immutableAttestationDigest,
+    releaseLedgerPath: "release-records/releases/",
+    incidentLedgerPath: "release-records/incidents/",
+  };
+  return Object.freeze({
+    ...unsigned,
+    digest: sha256(canonicalJson(unsigned)),
+    disposition: "awaiting-reviewed-append-under-release-records/releases",
+  });
 }
