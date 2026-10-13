@@ -381,6 +381,7 @@ describe("actual-source optional original operation diagnostics", () => {
         runId: f.plan.runId,
         code: "integration.mockserver.control",
         clientRetirementRequired: true,
+        ...(slot === "join-ledger-assert" ? { ledgerRefusal: null } : {}),
         ...(slot === "join-collector-project"
           ? { collectorRefusal: null }
           : {}),
