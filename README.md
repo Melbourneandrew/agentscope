@@ -20,22 +20,23 @@ sends them only to destinations you explicitly configure and select.
 
 ## Alpha status
 
-Agentscope 0.1.0 is not published yet. Codex and Claude Code are the target
-harnesses for the first alpha, but this pre-release draft makes no support
-claim. Final release reconciliation must replace this paragraph with the exact
-admitted version, mode, platform, credential context, and OTLP combinations
-before publication.
+Agentscope 0.1.0 is not published yet. The first alpha has admitted these exact
+support rows; package publication is still pending:
 
-The Claude Code 2.1.245 candidate profile under validation covers
-`SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not claim a
-`SessionEnd` hook or native end event. Cursor and the remaining product-roster
-harnesses are later work and do not block 0.1.0.
+| Harness     | Version | Execution                           | Capture                  | Destination credentials                                        |
+| ----------- | ------- | ----------------------------------- | ------------------------ | -------------------------------------------------------------- |
+| Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
+| Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
 
-Langfuse over OTLP is the intended alpha destination. Local SQLite remains in
-the source tree for future work, but the intended 0.1.0 release excludes its
-executable capability and makes no SQLite support claim. That exclusion and the
-runtime support rows are still being verified; this source checkout is not a
-published product claim.
+Claude Code capture covers `SessionStart`, `PreToolUse`, `PostToolUse`, and
+`Stop`. It does not claim `SessionEnd` or a native end event. macOS, Keychain,
+workstation execution, Cursor, and the remaining product-roster harnesses are
+not 0.1.0 support claims.
+
+Langfuse over OTLP is the admitted alpha destination. Local SQLite remains in
+the source tree for future work, but 0.1.0 excludes its executable capability
+and makes no SQLite support claim. Shipped assets or source paths outside the
+table do not create additional support claims.
 
 ## Start here
 

@@ -6,21 +6,20 @@ description: Publication status and the safe Agentscope setup sequence.
 ## Before you begin
 
 Agentscope 0.1.0 is not published yet. Do not install an artifact from an
-untrusted source or treat source-checkout behavior as a support claim. The
-release will name each supported Codex and Claude Code version, mode, platform,
-and credential context only after actual-binary OTLP admission. After
-admission, final release reconciliation will add the exact supported
-combinations to this guide. None are listed yet, so do not continue with setup
-from this pre-release draft.
+untrusted source or treat source-checkout behavior as a support claim. These
+are the exact admitted alpha rows:
 
-The Claude Code 2.1.245 candidate profile under validation covers
-`SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop`. It does not expose
-`SessionEnd`, so Agentscope does not claim a native Claude session-end event.
+| Harness     | Version | Execution                           | Capture                  | Destination credentials                                        |
+| ----------- | ------- | ----------------------------------- | ------------------------ | -------------------------------------------------------------- |
+| Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
+| Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
 
-The intended alpha sends to Langfuse over OTLP. Local SQLite, Cursor, and the
-other harnesses are not 0.1.0 support claims. Agentscope requires Node.js 22 or
-later, and the public product is the `agentscope-cli` npm package, which exposes
-the `agentscope` command.
+Claude Code capture covers `SessionStart`, `PreToolUse`, `PostToolUse`, and
+`Stop`. It does not expose `SessionEnd`, so Agentscope does not claim a native
+Claude session-end event. macOS, Keychain, workstation execution, Local SQLite,
+Cursor, and other harnesses are not 0.1.0 support claims. Shipped assets do not
+expand this table. The public product is the `agentscope-cli` npm package,
+which exposes the `agentscope` command.
 
 ## Install the published alpha
 
@@ -39,24 +38,29 @@ Before the first stable release, do not use bare/default requests such as
 `latest` may resolve to the inert ownership bootstrap or may be absent. Select
 `agentscope-cli@alpha` or an exact product version.
 
-Use only a complete version, mode, platform, credential-context, and OTLP
-combination explicitly listed in this guide after publication. If your exact
+Use only a complete row listed above after publication. If your exact
 combination is absent, stop before configuring credentials or installing a
 harness.
 
 ## Safe setup sequence
 
-Once the release lists your complete platform combination:
+After the alpha is published, for an exact admitted row:
 
 1. Run `agentscope init` and inspect the plan. Repeat with `--yes` only when you
    intend to create the non-secret Agentscope configuration.
-2. Configure a named Langfuse connection with `agentscope destination configure
-langfuse --name <name>`. This command writes the destination immediately, so
-   review its name and settings before invoking it and inspect the saved
-   destination afterward. On an admitted interactive macOS path, follow the
-   hidden credential prompts; use `--credential-env` only for an explicit CI
-   environment-reference setup. `--yes` is not a Langfuse dry-run or commit
-   switch.
+2. Populate `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` from the CI secret
+   manager. Configure a named Langfuse connection using references, never
+   values:
+
+   ```bash
+   agentscope destination configure langfuse --name <name> \
+     --credential-env public-key=LANGFUSE_PUBLIC_KEY \
+     --credential-env secret-key=LANGFUSE_SECRET_KEY
+   ```
+
+   This command writes the destination immediately. Inspect the saved
+   destination afterward. `--yes` is not a Langfuse dry-run or commit switch.
+
 3. Select that connection explicitly with `agentscope routing set <name>`.
    Configuring a destination does not enable delivery; a bare `agentscope
 routing set` disables delivery.
@@ -71,9 +75,9 @@ If installation reports an overlap, review it before using the separate
 
 ## Configuration and credentials
 
-Non-secret configuration lives under `~/.agentscope`. Credentials use the
-admitted platform backend or an explicit CI environment reference; Agentscope
-does not store credential values in configuration or print them.
+Non-secret configuration lives under `~/.agentscope`. The admitted rows use
+explicit CI environment references; Agentscope stores the variable names, not
+credential values, and does not print the values.
 Ordinary installed commands and hooks ignore ambient `AGENTSCOPE_HOME`. It is
 reserved for repository-owned CI, portable, and test launchers that explicitly
 authorize the override, not as a user-facing relocation setting.
