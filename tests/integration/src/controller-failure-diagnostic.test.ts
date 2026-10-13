@@ -8,6 +8,7 @@ import { imagePreparationFailureRequiresOuterHostRetirement } from "../image-pre
 import {
   assertMockServerFinalLedger,
   projectMockServerRequests,
+  verifyMockServerControlBoundary,
 } from "../mockserver-control.mjs";
 import {
   createPullOperation,
@@ -153,6 +154,10 @@ const collectorTerminal = {
   },
 };
 type CollectorFunctions = {
+  observeBoundary: (
+    control: { send(...args: unknown[]): Promise<unknown> },
+    observation: { controlBoundary?: unknown },
+  ) => { send(...args: unknown[]): Promise<unknown> };
   collectorHttpsErrorObservation: (error: unknown) => Readonly<{
     httpsFailure: string | null;
     code: string;
@@ -192,7 +197,7 @@ const collectorTestSource = () => {
   expect(collectorEnd).toBeGreaterThan(collectorStart);
   expect(diagnosticEnd).toBeGreaterThan(diagnosticStart);
   expect(joinEnd).toBeGreaterThan(joinStart);
-  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({collectorHttpsErrorObservation:typeof collectorHttpsErrorObservation === "undefined" ? undefined : collectorHttpsErrorObservation,joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic})`;
+  return `${source.slice(collectorStart, collectorEnd)} ${source.slice(diagnosticStart, diagnosticEnd)} ${source.slice(joinStart, joinEnd)}; ({collectorHttpsErrorObservation:typeof collectorHttpsErrorObservation === "undefined" ? undefined : collectorHttpsErrorObservation,joinCollectorObservations,joinMockServer,publishOperationFailureDiagnostic,observeBoundary})`;
 };
 const diagnosticBuffer = (diagnosticBytes?: number) =>
   diagnosticBytes === undefined
@@ -235,20 +240,51 @@ const assertCollectorExec = (args: string[], options: unknown) => {
   ]);
   expect(options).toMatchObject({ maxBuffer: 12 * 1024 * 1024 });
 };
+type BoundaryProbe = {
+  ordinal: number;
+  kind: "send" | "status";
+  result?: unknown;
+};
+type CollectorOptions = {
+  result?: Promise<{ stdout: string }>;
+  entered?(): void;
+  boundaryProbe?: BoundaryProbe;
+};
+const boundaryControlFixture = (probe: BoundaryProbe | undefined) => {
+  const original = new Error("PRIVATE PROCESS FAILURE", {
+    cause: "PRIVATE_CAUSE",
+  });
+  const argsSeen: unknown[][] = [];
+  const control = {
+    send: function (...args: unknown[]) {
+      expect(this).toBe(control);
+      argsSeen.push(args);
+      if (argsSeen.length === probe?.ordinal) {
+        if (probe.kind === "send") return Promise.reject(original);
+        return Promise.resolve(probe.result ?? { status: 403 });
+      }
+      return Promise.resolve({ status: args[4] ? 101 : 200 });
+    },
+    stop: () => ({ status: 200 }),
+    snapshot: () => ({ entries: [] }),
+  };
+  return { control, original, boundaryArguments: argsSeen };
+};
 const actualCollectorObservation = (
   failure: string,
   sinkFails = false,
   execError?: Error,
   diagnosticBytes?: number,
-  deferredExec?: {
-    result: Promise<{ stdout: string }>;
-    entered(): void;
-  },
+  deferredExec?: CollectorOptions,
 ) => {
   const plan = collectorPlan();
   const output: string[] = [],
     calls: string[][] = [];
-  const original = new Error("PRIVATE PROCESS FAILURE");
+  const {
+    original,
+    control: boundaryControl,
+    boundaryArguments,
+  } = boundaryControlFixture(deferredExec?.boundaryProbe);
   let phase: string | undefined,
     now = 0;
   const functions = runInNewContext(collectorTestSource(), {
@@ -265,11 +301,10 @@ const actualCollectorObservation = (
     mockServerJoinDeadlines: new Map([[plan.runId, 1000]]),
     mockServerControls: new Map([[plan.runId, {}]]),
     assertControlVolumeCurrent: () => {},
-    openMockServerControl: () => ({
-      stop: () => ({ status: 200 }),
-      snapshot: () => ({ entries: [] }),
-    }),
-    verifyMockServerControlBoundary: () => {},
+    openMockServerControl: () => boundaryControl,
+    verifyMockServerControlBoundary: deferredExec?.boundaryProbe
+      ? verifyMockServerControlBoundary
+      : () => {},
     assertJoinedMockServerTerminal: () => {},
     createFinalMockServerLedgerDirectory: () => "/synthetic",
     resolve: (_root: string, name: string) => `/synthetic/${name}`,
@@ -308,7 +343,7 @@ const actualCollectorObservation = (
         return { stdout: "", stderr: "" };
       if (args[0] === "exec") {
         assertCollectorExec(args, options);
-        if (deferredExec) {
+        if (deferredExec?.result && deferredExec.entered) {
           deferredExec.entered();
           return deferredExec.result;
         }
@@ -347,6 +382,7 @@ const actualCollectorObservation = (
     original,
     output,
     calls,
+    boundaryArguments,
     phase: () => phase,
     observe: (value: string) => {
       phase = value;
@@ -355,6 +391,202 @@ const actualCollectorObservation = (
 };
 const nativeHttpsError = (properties: object) =>
   Object.assign(new Error("PRIVATE NATIVE FAILURE"), properties);
+describe("actual composed control boundary diagnostic", () => {
+  it.each([1, 2, 3, 4])(
+    "retains original send failure and closed request ordinal %s",
+    async (ordinal) => {
+      const f = actualCollectorObservation(
+        "success",
+        false,
+        undefined,
+        undefined,
+        { boundaryProbe: { ordinal, kind: "send" } },
+      );
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toBe(f.original);
+      expect(f.original.message).toBe("PRIVATE PROCESS FAILURE");
+      expect(f.original.cause).toBe("PRIVATE_CAUSE");
+      expect(f.output[0]).toContain(
+        JSON.stringify({
+          requestOrdinal: ordinal,
+          refusal: "send",
+          status: null,
+        }),
+      );
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(Buffer.byteLength(f.output[0]!)).toBeLessThanOrEqual(512);
+      expect(f.boundaryArguments).toEqual(
+        [
+          ["GET", "/mockserver/configuration", undefined, "controller", false],
+          ["GET", "/mockserver/dashboard", undefined, "controller", false],
+          [
+            "GET",
+            "/_mockserver_callback_websocket",
+            undefined,
+            "controller",
+            true,
+          ],
+          ["PUT", "/mockserver/status", undefined, "controller", false],
+        ].slice(0, ordinal),
+      );
+    },
+  );
+  it.each([1, 2, 3, 4])(
+    "keeps the real status refusal at ordinal %s",
+    async (ordinal) => {
+      const f = actualCollectorObservation(
+        "success",
+        false,
+        undefined,
+        undefined,
+        { boundaryProbe: { ordinal, kind: "status" } },
+      );
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toThrow("integration.mockserver.control");
+      expect(f.output[0]).toContain(
+        JSON.stringify({
+          requestOrdinal: ordinal,
+          refusal: "status",
+          status: 403,
+        }),
+      );
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(f.calls.some((args) => args[0] === "cp")).toBe(false);
+    },
+  );
+});
+describe("control boundary diagnostic privacy", () => {
+  it("forwards the identical result, receiver and argument identities", async () => {
+    const f = actualCollectorObservation("success");
+    const result = Object.freeze({ status: 200, body: "PRIVATE_BODY" }),
+      argument = Object.freeze({ private: "PRIVATE_ARGUMENT" }),
+      observation: { controlBoundary?: unknown } = {};
+    const control = {
+      send: function (...args: unknown[]) {
+        expect(this).toBe(control);
+        expect(args[0]).toBe(argument);
+        return Promise.resolve(result);
+      },
+    };
+    const observed = f.functions.observeBoundary(control, observation);
+    expect(await observed.send(argument)).toBe(result);
+    expect(observation.controlBoundary).toEqual({
+      requestOrdinal: 1,
+      refusal: "status",
+      status: 200,
+    });
+    expect(JSON.stringify(observation)).not.toContain("PRIVATE");
+  });
+  it("does not add status getter/proxy reads or serialize malformed status", async () => {
+    let reads = 0;
+    const accessor = Object.defineProperty({}, "status", {
+      get() {
+        reads++;
+        return 403;
+      },
+    });
+    const proxy = new Proxy(
+      {},
+      {
+        get(_target, key) {
+          if (key === "status") reads++;
+          return 403;
+        },
+      },
+    );
+    for (const result of [
+      accessor,
+      proxy,
+      { status: "PRIVATE" },
+      { status: 600 },
+    ]) {
+      const prior = reads;
+      const f = actualCollectorObservation(
+        "success",
+        false,
+        undefined,
+        undefined,
+        { boundaryProbe: { ordinal: 1, kind: "status", result } },
+      );
+      await expect(
+        f.functions.joinMockServer(f.plan, new AbortController().signal),
+      ).rejects.toThrow("integration.mockserver.control");
+      expect(f.output[0]).toContain(
+        JSON.stringify({ requestOrdinal: 1, refusal: "status", status: null }),
+      );
+      expect(f.output[0]).not.toContain("PRIVATE");
+      expect(reads - prior).toBe(
+        result === accessor || result === proxy ? 1 : 0,
+      );
+    }
+  });
+});
+describe("control boundary optional sink exclusion", () => {
+  it("excludes cross-slot, absent, malformed and hostile optional observations", () => {
+    let reads = 0;
+    const accessor = Object.defineProperty({}, "controlBoundary", {
+      get() {
+        reads++;
+        throw new Error("PRIVATE");
+      },
+    });
+    const hostile = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    const statusAccessor = Object.defineProperty(
+      { requestOrdinal: 1, refusal: "status" },
+      "status",
+      {
+        get() {
+          reads++;
+          throw new Error("PRIVATE");
+        },
+      },
+    );
+    for (const context of [
+      {},
+      accessor,
+      hostile,
+      { controlBoundary: hostile },
+      { controlBoundary: statusAccessor },
+      { controlBoundary: { requestOrdinal: 5, refusal: "send", status: null } },
+      {
+        controlBoundary: {
+          requestOrdinal: 1,
+          refusal: "PRIVATE",
+          status: null,
+        },
+      },
+    ]) {
+      const f = actualCollectorObservation("success");
+      f.functions.publishOperationFailureDiagnostic(
+        "join-control-boundary",
+        f.original,
+        f.plan,
+        context,
+      );
+      expect(f.output[0]).not.toContain("controlBoundary");
+      expect(f.output[0]).not.toContain("PRIVATE");
+    }
+    const f = actualCollectorObservation("success");
+    f.functions.publishOperationFailureDiagnostic(
+      "join-control-stop",
+      f.original,
+      f.plan,
+      { controlBoundary: { requestOrdinal: 1, refusal: "send", status: null } },
+    );
+    expect(f.output[0]).not.toContain("controlBoundary");
+    expect(reads).toBe(0);
+  });
+});
 describe("collector reader terminal before producer shutdown", () => {
   it.each(["https-exec", "snapshot"])(
     "does not request normal shutdown after %s failure",

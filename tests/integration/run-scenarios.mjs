@@ -2525,6 +2525,85 @@ const finalLedgerFailureObservation = (slot, error) => {
   }
   return { ledgerRefusal };
 };
+const observeBoundary = (control, observation) => {
+  let requestOrdinal = 0;
+  return {
+    send: async (...args) => {
+      observation.controlBoundary = Object.freeze({
+        requestOrdinal: ++requestOrdinal,
+        refusal: "send",
+        status: null,
+      });
+      const result = await Reflect.apply(control.send, control, args);
+      let status = null;
+      try {
+        if (
+          result !== null &&
+          typeof result === "object" &&
+          !types.isProxy(result)
+        ) {
+          const field = Object.getOwnPropertyDescriptor(result, "status");
+          if (
+            field &&
+            Object.hasOwn(field, "value") &&
+            Number.isInteger(field.value) &&
+            field.value >= 100 &&
+            field.value <= 599
+          )
+            status = field.value;
+        }
+      } catch {
+        // An unavailable diagnostic cannot change the real verifier result.
+      }
+      observation.controlBoundary = Object.freeze({
+        requestOrdinal,
+        refusal: "status",
+        status,
+      });
+      return result;
+    },
+  };
+};
+const controlBoundaryFailureObservation = (slot, context) => {
+  if (
+    slot !== "join-control-boundary" ||
+    context === null ||
+    typeof context !== "object" ||
+    types.isProxy(context)
+  )
+    return {};
+  const descriptor = Object.getOwnPropertyDescriptor(
+    context,
+    "controlBoundary",
+  );
+  const value =
+    descriptor && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  if (value === null || typeof value !== "object" || types.isProxy(value))
+    return {};
+  const fields = Object.getOwnPropertyDescriptors(value);
+  if (
+    Reflect.ownKeys(fields).length !== 3 ||
+    ["requestOrdinal", "refusal", "status"].some(
+      (field) => !Object.hasOwn(fields[field] ?? {}, "value"),
+    )
+  )
+    return {};
+  const requestOrdinal = fields.requestOrdinal.value,
+    refusal = fields.refusal.value,
+    status = fields.status.value;
+  if (
+    ![1, 2, 3, 4].includes(requestOrdinal) ||
+    !["send", "status"].includes(refusal) ||
+    !(
+      status === null ||
+      (Number.isInteger(status) && status >= 100 && status <= 599)
+    )
+  )
+    return {};
+  return { controlBoundary: { requestOrdinal, refusal, status } };
+};
 const publishOperationFailureDiagnostic = (
   slot,
   error,
@@ -2545,6 +2624,7 @@ const publishOperationFailureDiagnostic = (
         runId,
         code: knownFailureCode(error),
         ...finalLedgerFailureObservation(slot, error),
+        ...controlBoundaryFailureObservation(slot, processContext),
         ...(slot === "join-collector-project"
           ? { collectorRefusal: readOtlpObservationFailure(error) }
           : {}),
@@ -2831,6 +2911,7 @@ const joinMockServer = async (plan, signal, scenarioSucceeded) => {
   let failureSlot = "join-identity";
   let deadline, joinSignal, containerId, refusal;
   let collectorPhase, collectorHttpsFailure;
+  const boundary = {};
   try {
     containerId = mockServerContainerIdentities.get(plan.runId);
     deadline = mockServerJoinDeadlines.get(plan.runId);
@@ -2856,7 +2937,7 @@ const joinMockServer = async (plan, signal, scenarioSucceeded) => {
       material: authority?.material,
     });
     failureSlot = "join-control-boundary";
-    await verifyMockServerControlBoundary(control);
+    await verifyMockServerControlBoundary(observeBoundary(control, boundary));
     failureSlot = "join-control-stop";
     if ((await control.stop()).status !== 200)
       throw new Error("integration.isolation.mockserver-terminal");
@@ -2939,7 +3020,7 @@ const joinMockServer = async (plan, signal, scenarioSucceeded) => {
       completeClaudeCollectorFixture(plan, batches, ledger);
     }
   } catch (error) {
-    const context = { containerId, signal, joinSignal, deadline };
+    const context = { containerId, signal, joinSignal, deadline, ...boundary };
     context.collectorPhase = collectorPhase;
     context.collectorHttpsFailure = collectorHttpsFailure;
     publishOperationFailureDiagnostic(failureSlot, error, plan, context);
