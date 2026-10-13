@@ -516,50 +516,101 @@ const request = (
   };
 };
 
-describe("pending checkpoint through the sole selected PTY pump", () => {
-  const checkpointRequest = (): SelectedPtyExecutionRequest => {
-    const challenge = "a".repeat(64);
-    const stdin = new TextEncoder().encode(`${challenge}\n\u0004`);
-    const now = performance.now();
-    return {
-      ...request({
-        stdin,
-        monotonicStartupDeadlineMs: now + 50,
-        monotonicExecutionDeadlineMs: now + 100,
-        monotonicShutdownDeadlineMs: now + 500,
-      }),
-      readiness: { kind: "challenge-marker", challenge },
-      interaction: {
-        trigger: "immediate",
-        actions: [
-          {
-            action: "input",
-            byteLength: 65,
-            inputSha256: createHash("sha256")
-              .update(stdin.subarray(0, 65))
-              .digest("hex"),
-          },
-          {
-            action: "checkpoint-process-topology",
-            topology: "root-with-contained-process-set",
-          },
-          { action: "wait-for-semantic-completion" },
-          {
-            action: "input",
-            byteLength: 1,
-            inputSha256: createHash("sha256")
-              .update(stdin.subarray(65))
-              .digest("hex"),
-          },
-        ],
-      },
-    };
+const checkpointRequest = (): SelectedPtyExecutionRequest => {
+  const challenge = "a".repeat(64);
+  const stdin = new TextEncoder().encode(`${challenge}\n\u0004`);
+  const now = performance.now();
+  return {
+    ...request({
+      stdin,
+      monotonicStartupDeadlineMs: now + 50,
+      monotonicExecutionDeadlineMs: now + 100,
+      monotonicShutdownDeadlineMs: now + 500,
+    }),
+    readiness: { kind: "challenge-marker", challenge },
+    interaction: {
+      trigger: "immediate",
+      actions: [
+        {
+          action: "input",
+          byteLength: 65,
+          inputSha256: createHash("sha256")
+            .update(stdin.subarray(0, 65))
+            .digest("hex"),
+        },
+        {
+          action: "checkpoint-process-topology",
+          topology: "root-with-contained-process-set",
+        },
+        { action: "wait-for-semantic-completion" },
+        {
+          action: "input",
+          byteLength: 1,
+          inputSha256: createHash("sha256")
+            .update(stdin.subarray(65))
+            .digest("hex"),
+        },
+      ],
+    },
   };
+};
 
-  it("drains output while pending, then releases and advances only the settled checkpoint", async () => {
+const executeCheckpointWithClock = async (
+  seed: "checkpoint-stop-pending" | "checkpoint-stop-never",
+  abort = false,
+) => {
+  vi.resetModules();
+  vi.useFakeTimers({ now: 0, toFake: ["setTimeout", "clearTimeout"] });
+  const clock = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => vi.getMockedSystemTime()!.getTime());
+  let settlement: Promise<unknown> | undefined;
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Both the bounded promise and kernel capture their timer/clock functions
+    // at import. Load their fresh graph only after installing the test clock.
+    const { executeSelectedPtyTransportForTest: execute } =
+      await import("../internal/headless-supervisor-backend.js");
     const selected = checkpointRequest();
-    const receipt = await executeSelectedPtyTransportForTest(
-      selected,
+    const controller = new AbortController();
+    if (abort)
+      abortTimer = setTimeout(() => {
+        controller.abort();
+      }, 0);
+    const execution = execute(selected, seed, { signal: controller.signal });
+    // Observe rejection immediately and join this execution even if a timer
+    // advancement or assertion fails; never restore time around live work.
+    settlement = execution.catch(() => undefined);
+    // Three freeze observations use the existing two 10-ms polling yields.
+    // Never-acknowledged work reaches the original 100-ms cutoff; cancellation
+    // is observed at the first 10-ms yield. Both use the existing 50-ms grace.
+    if (seed === "checkpoint-stop-pending")
+      await vi.advanceTimersByTimeAsync(20);
+    else {
+      await vi.advanceTimersByTimeAsync(abort ? 10 : 100);
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    await vi.runAllTimersAsync();
+    const receipt = await execution;
+    expect(vi.getTimerCount()).toBe(0);
+    return { receipt, selected, settledAtMs: performance.now() };
+  } finally {
+    try {
+      await vi.runAllTimersAsync();
+      await settlement;
+      if (abortTimer !== undefined) clearTimeout(abortTimer);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+      vi.resetModules();
+    }
+  }
+};
+
+describe("pending checkpoint through the sole selected PTY pump", () => {
+  it("drains output while pending, then releases and advances only the settled checkpoint", async () => {
+    const { receipt, selected } = await executeCheckpointWithClock(
       "checkpoint-stop-pending",
     );
     const challenge = "a".repeat(64);
@@ -582,6 +633,7 @@ describe("pending checkpoint through the sole selected PTY pump", () => {
       ],
     });
     expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+    expect(receipt.actions[1]!.monotonicAtMs).toBe(20);
     expect(receipt.actions[1]!.monotonicAtMs).toBeLessThan(
       selected.process.monotonicExecutionDeadlineMs,
     );
@@ -590,43 +642,29 @@ describe("pending checkpoint through the sole selected PTY pump", () => {
   it.each(["timeout", "aborted"] as const)(
     "joins pending stopped work on %s with no checkpoint or later input",
     async (outcome) => {
-      const selected = checkpointRequest();
-      const controller = new AbortController();
-      // Zero-delay cancellation runs when the existing pump first yields;
-      // the admitted challenge and pending checkpoint are already observed.
-      const timer =
-        outcome === "aborted"
-          ? setTimeout(() => {
-              controller.abort();
-            }, 0)
-          : undefined;
-      try {
-        const receipt = await executeSelectedPtyTransportForTest(
-          selected,
+      const { receipt, selected, settledAtMs } =
+        await executeCheckpointWithClock(
           "checkpoint-stop-never",
-          { signal: controller.signal },
+          outcome === "aborted",
         );
-        expect(receipt).toMatchObject({
-          outcome,
-          cleanup: "clean",
-          processJoined: true,
-          terminalInputJoined: false,
-          terminalOutputJoined: true,
-          terminalTransportClosed: true,
-          residualProcessCount: 0,
-          signal: "SIGKILL",
-          inputBytesWritten: 65,
-          actions: [{ action: "input", byteLength: 65 }],
-        });
-        expect(receipt.actions).toHaveLength(1);
-        expect(receipt.pumpFailureDiagnostic).toBeUndefined();
-        if (outcome === "timeout")
-          expect(performance.now()).toBeGreaterThanOrEqual(
-            selected.process.monotonicExecutionDeadlineMs,
-          );
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
+      expect(receipt).toMatchObject({
+        outcome,
+        cleanup: "clean",
+        processJoined: true,
+        terminalInputJoined: false,
+        terminalOutputJoined: true,
+        terminalTransportClosed: true,
+        residualProcessCount: 0,
+        signal: "SIGKILL",
+        inputBytesWritten: 65,
+        actions: [{ action: "input", byteLength: 65 }],
+      });
+      expect(receipt.actions).toHaveLength(1);
+      expect(receipt.pumpFailureDiagnostic).toBeUndefined();
+      if (outcome === "timeout")
+        expect(settledAtMs).toBeGreaterThanOrEqual(
+          selected.process.monotonicExecutionDeadlineMs,
+        );
     },
   );
 });
