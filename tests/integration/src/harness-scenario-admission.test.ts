@@ -5,6 +5,10 @@ import { compileVerifiedSignedManifestHarnessMaterial } from "./harness-material
 
 import { canonicalJson, sha256 } from "./canonical.js";
 import { compileCapabilityManifest } from "./manifest.js";
+import {
+  createHarnessAdmissionKernel,
+  type HarnessAdmissionSeed,
+} from "./harness-admission.js";
 // @ts-expect-error private preparation boundary has no published declaration
 import * as preparationBoundary from "../image-preparation/boundary.mjs";
 import {
@@ -33,6 +37,53 @@ const { normalizePlatform } = preparationBoundary as {
     os: string;
     architecture: string;
   };
+};
+// Standalone synthetic controller, never runtime authority or admission evidence.
+const compileStandaloneSeed = (seed: HarnessAdmissionSeed) => {
+  const token = {},
+    material = {
+      authorityVersion: 1 as const,
+      authorityKind: "authenticated-harness-material" as const,
+    },
+    terminal = {
+      authorityVersion: 1 as const,
+      authorityKind: "authenticated-harness-terminal" as const,
+    };
+  const requestFingerprint = `sha256:${"f".repeat(64)}`;
+  const kernel = createHarnessAdmissionKernel(
+    (value) =>
+      value === token
+        ? {
+            active: true,
+            authorityIdentity: `sha256:${"a".repeat(64)}`,
+            candidateIdentities: new Set([seed.candidateDigest]),
+            hostKind: "github-hosted",
+            receipts: new Map([
+              [seed.runId, { requestFingerprint, transport: "pty" }],
+            ]),
+            runIds: new Set([seed.runId]),
+            workspaceRevision: "a".repeat(40),
+          }
+        : undefined,
+    (_value, value) => (value === material ? seed : undefined),
+    (_value, value) =>
+      value === terminal
+        ? {
+            material,
+            completion: compileHarnessAdmissionCompletion({
+              cleanup: { outcome: "complete" },
+              observation: { sourceOnly: true },
+              outcome: "passed",
+              requestFingerprint,
+              runId: seed.runId,
+              scenarioImageDigest: seed.preparedImage.scenarioImageDigest,
+            }),
+          }
+        : undefined,
+  );
+  const authority = kernel.begin(token, material);
+  kernel.complete(token, authority, terminal);
+  return kernel.compile(token, [authority]);
 };
 describe("actual prepared platform to runner admission seed", () => {
   it.each(["codex", "claude-code"])(
@@ -83,9 +134,29 @@ describe("actual prepared platform to runner admission seed", () => {
         runId: "0123456789abcdef",
         scenario,
       };
-      expect(compileHarnessAdmissionSeed(input).platformIdentity).toBe(
-        platformIdentity,
-      );
+      const seed = compileHarnessAdmissionSeed(input);
+      expect(seed.platformIdentity).toBe(platformIdentity);
+      expect(compileStandaloneSeed(seed).entries).toHaveLength(1);
+      for (const harness of [
+        {
+          ...seed.harness,
+          distributionReference: seed.harness.distributionReference + "?",
+        },
+        { ...seed.harness, distributionReference: "z".repeat(257) },
+        {
+          ...seed.harness,
+          distributionReference: "signed-manifest:private space",
+        },
+        {
+          ...seed.harness,
+          distributionReference:
+            seed.harness.distributionReference + "-substituted",
+        },
+        { ...seed.harness, artifactAuthorityDigest: digest("f") },
+      ])
+        expect(() => compileStandaloneSeed({ ...seed, harness })).toThrow(
+          "integration.harness-admission.invalid",
+        );
       const different = runnerAdmissionDigest()(
         normalizePlatform({ architecture: "arm64", os: "linux" }),
       );
@@ -101,6 +172,8 @@ describe("actual prepared platform to runner admission seed", () => {
       ).toThrow("integration.harness-scenario-admission.invalid");
     },
   );
+});
+describe("canonical runner admission digest", () => {
   it("canonicalizes reordered platform keys while preserving destination combination identity", () => {
     const hash = runnerAdmissionDigest();
     const platform = normalizePlatform({ os: "linux", architecture: "amd64" });
