@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import { MODEL_PROTOCOL_ROUTES } from "@agentscope/testkit";
 import {
   capabilityManifestIdentity,
   compileCapabilityManifest,
@@ -29,6 +30,211 @@ const { projectFirstUnmatchedModelRoute } = finalLedgerModule as {
 const runId = "0123456789abcdef";
 const hash = (bytes: string | Buffer) =>
   createHash("sha256").update(bytes).digest("hex");
+const checkProcessFixtureLedger = (
+  rows: ReturnType<typeof projectMockServerRequests>,
+  fixture: {
+    modelLedger: {
+      entries: { method: string; path: string; bodyBytes: number }[];
+    };
+  },
+  scenario: Parameters<typeof assertMockServerFinalLedger>[3],
+) => {
+  assertMockServerFinalLedger(
+    rows,
+    fixture,
+    {
+      routes: MODEL_PROTOCOL_ROUTES.map((route) => ({
+        ...route,
+        requestBody: "requestBody" in route ? route.requestBody : undefined,
+      })),
+    },
+    scenario,
+    {
+      traffic: snapshotMockServerTraffic(
+        {
+          runId,
+          entries: rows.map((row) => ({
+            method: row.method,
+            path: row.path,
+            role: row.role!,
+            status: row.status!,
+            bodyBytes: row.bodyBytes,
+            bodySha256: row.bodySha256,
+          })),
+        },
+        runId,
+      ),
+      runId,
+    },
+  );
+};
+const processFixtureLedger = async (
+  scenarioId: string,
+  legacyOrder = false,
+) => {
+  const raw = JSON.parse(
+    readFileSync(
+      new URL("../capability-manifest.json", import.meta.url),
+      "utf8",
+    ),
+  ) as { scenarios: { scenarioId: string; modelRoutes: string[] }[] };
+  const compiled = compileCapabilityManifest(raw);
+  const scenario = raw.scenarios.find(
+    (entry) => entry.scenarioId === scenarioId,
+  )!;
+  if (legacyOrder)
+    scenario.modelRoutes = [
+      "openai-responses",
+      "openai-chat-completions",
+      "anthropic-messages",
+      "gemini-generate-content",
+    ];
+  const routes: readonly {
+    routeId: string;
+    method: string;
+    path: string;
+    requestBody?: object;
+    responseBody?: object;
+  }[] = MODEL_PROTOCOL_ROUTES;
+  const source = readFileSync(
+    new URL("../platform-fixture.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const runModels = async () =>"),
+    end = source.indexOf("const representative =", start);
+  expect(end).toBeGreaterThan(start);
+  const traffic: {
+    method: string;
+    path: string;
+    role: string;
+    status: number;
+    bodyBytes: number;
+    bodySha256: string;
+  }[] = [];
+  const execute = runInNewContext(`${source.slice(start, end)}; runModels`, {
+    URL,
+    JSON,
+    Buffer,
+    scenario,
+    routeFixture: { routes },
+    modelEndpoint: "http://mockserver:1080",
+    mockTraffic: traffic,
+    bootNow: () => 0,
+    bootDeadline: 100,
+    requestJson: (url: URL | string, _options: unknown, status: number) => {
+      const path = new URL(url).pathname;
+      return {
+        status,
+        json: () =>
+          routes.find(
+            (route) => route.path === path && route.requestBody !== undefined,
+          )?.responseBody,
+      };
+    },
+    recordMockTraffic: (
+      method: string,
+      path: string,
+      role: string,
+      status: number,
+      body = "",
+    ) =>
+      traffic.push({
+        method,
+        path,
+        role,
+        status,
+        bodyBytes: Buffer.byteLength(body),
+        bodySha256: hash(body),
+      }),
+  }) as () => Promise<{ method: string; path: string; body: string }[]>;
+  const observations = await execute();
+  const ledger = projectMockServerRequests(
+    Buffer.from(
+      JSON.stringify(
+        observations.map((row, index) => ({
+          ...row,
+          headers: {
+            "x-agentscope-final-role": [traffic[index]!.role],
+            "x-agentscope-final-status": [String(traffic[index]!.status)],
+          },
+        })),
+      ),
+    ),
+  );
+  const fixture = {
+    modelLedger: {
+      entries: observations.map((row) => ({
+        method: row.method,
+        path: row.path,
+        bodyBytes: Buffer.byteLength(row.body),
+      })),
+    },
+  };
+  const consumer = compiled.scenarios.find(
+    (entry) => entry.scenarioId === scenarioId,
+  )!;
+  const check = (rows = ledger, expected = fixture) => {
+    checkProcessFixtureLedger(rows, expected, consumer);
+  };
+  return { raw, compiled, scenario, consumer, ledger, fixture, check };
+};
+describe("ordinary raw producer and canonical consumer route order", () => {
+  it.each(["fixture-process-smoke", "fixture-process-interactive"])(
+    "keeps exact %s traffic and unmatched evidence under actual compiler order",
+    async (scenarioId) => {
+      const current = await processFixtureLedger(scenarioId);
+      expect(current.scenario.modelRoutes).toEqual(
+        current.consumer.modelRoutes,
+      );
+      expect(current.ledger.at(-1)).toMatchObject({
+        method: "GET",
+        path: "/agentscope-unmatched",
+        role: "data-plane",
+        status: 404,
+        bodyBytes: 0,
+      });
+      expect(() => {
+        current.check();
+      }).not.toThrow();
+      const legacy = await processFixtureLedger(scenarioId, true);
+      expect(() => {
+        legacy.check();
+      }).toThrow("integration.mockserver.control");
+      expect(JSON.stringify(compileCapabilityManifest(legacy.raw))).toBe(
+        JSON.stringify(current.compiled),
+      );
+      expect(compileCapabilityManifest(legacy.raw).manifestIdentity).toBe(
+        current.compiled.manifestIdentity,
+      );
+      for (const rows of [
+        current.ledger.slice(0, -1),
+        [...current.ledger, current.ledger[0]!],
+        [...current.ledger].reverse(),
+        [
+          { ...current.ledger[0]!, bodySha256: hash("SUBSTITUTED") },
+          ...current.ledger.slice(1),
+        ],
+        [
+          { ...current.ledger[0]!, role: "allowed" as const },
+          ...current.ledger.slice(1),
+        ],
+      ]) {
+        const expected = {
+          modelLedger: {
+            entries: rows.map((row) => ({
+              method: row.method,
+              path: row.path,
+              bodyBytes: row.bodyBytes,
+            })),
+          },
+        };
+        expect(() => {
+          current.check(rows, expected);
+        }).toThrow("integration.mockserver.control");
+      }
+    },
+  );
+});
 const routeDiagnosticFixture = () => {
   const route = { method: "POST", path: "/v1/messages" };
   const unknown = {

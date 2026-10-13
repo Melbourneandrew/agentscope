@@ -183,10 +183,10 @@
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
       "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
-        "openai-responses",
-        "openai-chat-completions",
         "anthropic-messages",
-        "gemini-generate-content"
+        "gemini-generate-content",
+        "openai-chat-completions",
+        "openai-responses"
       ],
       "tags": ["pr", "smoke"],
       "destinations": ["otlp-ledger"],
@@ -219,10 +219,10 @@
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
       "mockServerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
       "modelRoutes": [
-        "openai-responses",
-        "openai-chat-completions",
         "anthropic-messages",
-        "gemini-generate-content"
+        "gemini-generate-content",
+        "openai-chat-completions",
+        "openai-responses"
       ],
       "tags": ["interactive", "pr"],
       "destinations": ["otlp-ledger"],
