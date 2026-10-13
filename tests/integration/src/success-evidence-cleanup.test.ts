@@ -84,6 +84,38 @@ describe("actual success cleanup handoff (synthetic component evidence only)", (
 });
 
 describe("actual cleanup rejects shadowed original upload bytes", () => {
+  it.each(
+    ["support", "evidence", "nested-support", "escaped-support"].flatMap(
+      (kind) =>
+        ["__proto__", "constructor", "toString"].map((key) => [kind, key]),
+    ),
+  )("refuses a hidden original %s %s prototype-name key", (kind, key) => {
+    const input = setup();
+    const first = input.inputs[0];
+    if (first === undefined) throw Error("synthetic-input");
+    const path = join(
+      input.artifacts,
+      kind === "evidence"
+        ? `runs/${first.evidence.runId}/evidence.json`
+        : "harness-support-evidence.json",
+    );
+    const bytes = fs.readFileSync(path, "utf8");
+    const encoded =
+      kind === "escaped-support"
+        ? JSON.stringify(key).replace("o", "\\u006f")
+        : JSON.stringify(key);
+    const member = `${encoded}:"PRIVATE_CANARY",`;
+    fs.writeFileSync(
+      path,
+      kind === "nested-support"
+        ? bytes.replace('"seed":{', `"seed":{${member}`)
+        : bytes.replace("{", `{${member}`),
+    );
+    expect(input.run).toThrow();
+    expect(input.output).not.toContain(
+      "Agentscope integration cleanup complete.",
+    );
+  });
   it.each([
     ["support", "disposition"],
     ["evidence", "runId"],

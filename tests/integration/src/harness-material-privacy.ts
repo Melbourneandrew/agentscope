@@ -59,12 +59,18 @@ export const parseStrictJson = (bytes: Uint8Array): unknown => {
       while (offset < source.length) {
         whitespace();
         const key = string();
-        if (keys.has(key)) return invalid();
+        if (keys.has(key) || Object.hasOwn(Object.prototype, key))
+          return invalid();
         keys.add(key);
         whitespace();
         if (source[offset] !== ":") return invalid();
         offset += 1;
-        result[key] = value();
+        Object.defineProperty(result, key, {
+          value: value(),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
         whitespace();
         if (source[offset] === "}") {
           offset += 1;
