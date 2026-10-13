@@ -845,16 +845,27 @@ const waitForCodexTurnTerminal = async (traceDeadline) => {
   while (true) {
     if (bootNow() >= traceDeadline)
       throw new Error("integration.codex.trace-deadline");
-    const records = readCodexSessionLedgerRecords(homeDescriptor);
+    const records =
+      codexLedgerBaseline === undefined
+        ? readCodexSessionLedgerRecords(homeDescriptor)
+        : readCodexSessionLedgerRecords(
+            homeDescriptor,
+            codexLedgerBaseline,
+            expectedAssistantMessage,
+          );
     // A fresh Codex rollout is materialized by the first submitted turn,
     // not by idle readiness or the process-topology checkpoint. Bind its
     // actual byte-zero metadata only inside this existing observation path.
     // An authenticated empty observation can precede first materialization.
     // Once bound, disappearance still goes through strict evolution checks.
-    if (codexLedgerBaseline === undefined && records.length !== 0)
+    if (
+      codexLedgerBaseline === undefined &&
+      records !== undefined &&
+      records.length !== 0
+    )
       recordModelBaseline(records);
     const turnId =
-      codexLedgerBaseline === undefined
+      codexLedgerBaseline === undefined || records === undefined
         ? null
         : codexTurnTerminalIdAfterBaseline(
             records,

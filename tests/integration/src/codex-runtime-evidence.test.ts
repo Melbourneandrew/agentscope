@@ -1187,6 +1187,110 @@ describe("Codex bounded native ledgers", () => {
   });
 });
 
+// Execute the actual bounded descriptor reader with synthetic syscall results.
+// This proves reader composition, not a native filesystem or hosted cause.
+const readSyntheticAppend = (fault: string, live = true) => {
+  const source = readFileSync(
+    new URL("../codex-runtime-evidence.mjs", import.meta.url),
+    "utf8",
+  );
+  const window = (start: string, end: string) => {
+    const first = source.indexOf(start),
+      last = source.indexOf(end, first);
+    if (first < 0 || last <= first)
+      throw new Error("test.runtime-source-window");
+    return source.slice(first, last).replaceAll("export ", "");
+  };
+  return runInNewContext(
+    `(() => {
+    ${window("const plainRecord =", "export const readBoundedJsonResponse")}
+    ${window("const codexTurnTerminalId =", "export const projectCodexPostJoinTranscript")}
+    ${window("const sameSnapshotIdentity =", "const openChild =")}
+    ${window("export const settledCodexLedgerSnapshot =", "export const readCodexSessionLedgers =")}
+    const content = JSON.stringify({type:'session_meta',payload:{id:'synthetic-session'}}) + '\\n';
+    const baseline = {relativePath:'.codex/sessions/2026/01/01/rollout-synthetic.jsonl', dev:1n, ino:2n, mode:0o100600n, uid:3n, gid:4n, content};
+    const ledgerLimit = 2 * 1024 * 1024, directoryFlags = 0;
+    const constants = {O_RDONLY:0, O_NOFOLLOW:0, O_NONBLOCK:0};
+    let statusRead = 0, byteRead = 0;
+    const closed = [];
+    const closeSync = descriptor => closed.push(descriptor);
+    const openChild = (parent, name) => {
+      if (fault === 'open-missing' && parent === 5) return null;
+      return ({'.codex':1,sessions:2,'2026':3,'01':parent === 3 ? 4 : 5}[name] ?? 6);
+    };
+    const authenticatedEntries = descriptor => descriptor === 2 ? ['2026'] : descriptor === 3 || descriptor === 4 ? ['01'] : fault === 'missing' ? [] : fault === 'extra' ? ['rollout-synthetic.jsonl','rollout-extra.jsonl'] : fault === 'path' ? ['rollout-other.jsonl'] : ['rollout-synthetic.jsonl'];
+    const fstatSync = descriptor => {
+      if (descriptor !== 6) return {isDirectory:()=>true};
+      const stage = statusRead++;
+      return {...baseline, isFile:()=>true,
+        dev: fault === 'dev' && stage > 0 ? 9n : 1n,
+        ino: fault === 'ino' && stage > 0 ? 9n : 2n,
+        mode: fault === 'mode' && stage > 0 ? 0o100644n : 0o100600n,
+        uid: fault === 'uid' && stage > 0 ? 9n : 3n,
+        gid: fault === 'gid' && stage > 0 ? 9n : 4n,
+        size: fault === 'zero' ? 0n : BigInt(Buffer.byteLength(content) + (fault === 'truncate' && stage === 1 ? -1 : stage === 2 && fault !== 'same-size' ? 1 : 0)),
+        mtimeNs: BigInt(stage), ctimeNs: BigInt(stage),
+      };
+    };
+    const readCapped = () => {
+      const stage = byteRead++;
+      if (fault === 'prefix') return Buffer.from(content.replace('synthetic-session','synthetic-changed'));
+      if (stage === 1 && fault === 'rewrite') return Buffer.from(content.replace('synthetic','rewritten') + '{');
+      return Buffer.from(content + (stage === 1 && fault !== 'same-size' ? '{' : ''));
+    };
+    try {
+      const records = live ? readCodexSessionLedgerRecords(0, [baseline], 'synthetic-completion') : readCodexSessionLedgerRecords(0);
+      return {pending: records === undefined, count: records?.length, closed};
+    } catch (error) { return {error:error.message, closed}; }
+  })()`,
+    { fault, live, Buffer, TextDecoder },
+    { timeout: 1000 },
+  ) as {
+    pending?: boolean;
+    count?: number;
+    error?: string;
+    closed: number[];
+  };
+};
+
+describe("bound live Codex append snapshot", () => {
+  it("returns pending only for authenticated growth and closes every descriptor", () => {
+    expect(readSyntheticAppend("append")).toEqual({
+      pending: true,
+      count: undefined,
+      closed: [6, 5, 4, 3, 2, 1],
+    });
+  });
+  it("keeps strict unbound and postjoin reads unchanged", () => {
+    expect(readSyntheticAppend("append", false)).toEqual({
+      pending: false,
+      count: 0,
+      closed: [6, 5, 4, 3, 2, 1],
+    });
+  });
+  it.each([
+    "dev",
+    "ino",
+    "mode",
+    "uid",
+    "gid",
+    "truncate",
+    "same-size",
+    "prefix",
+    "rewrite",
+    "zero",
+    "missing",
+    "open-missing",
+    "path",
+    "extra",
+  ])("refuses %s rather than returning pending", (fault) => {
+    const result = readSyntheticAppend(fault);
+    expect(result.error).toBe("integration.codex.session-ledger");
+    expect(result.pending).toBeUndefined();
+    expect(result.closed.slice(-5)).toEqual([5, 4, 3, 2, 1]);
+  });
+});
+
 // Lifecycle fixtures keep descriptor identity, durable acceptance, and
 // settlement adversaries adjacent.
 // eslint-disable-next-line max-lines-per-function

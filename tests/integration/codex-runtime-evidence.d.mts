@@ -287,6 +287,11 @@ export function readCodexSessionLedgers(homeDescriptor: number): string[];
 export function readCodexSessionLedgerRecords(
   homeDescriptor: number,
 ): CodexSessionLedgerRecord[];
+export function readCodexSessionLedgerRecords(
+  homeDescriptor: number,
+  baseline: readonly CodexSessionLedgerRecord[],
+  expectedMessage: string,
+): CodexSessionLedgerRecord[] | undefined;
 
 export function openLocalSqliteLifecycle(homeDescriptor: number): number;
 

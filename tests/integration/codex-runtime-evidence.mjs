@@ -1576,17 +1576,31 @@ export const settledCodexLedgerSnapshot = ({
     throw new Error("integration.codex.session-ledger");
   }
 };
-const readStableLedger = (parent, relativePath, name) => {
+const readStableLedger = (
+  parent,
+  relativePath,
+  name,
+  baseline,
+  expectedMessage,
+) => {
   const descriptor = openChild(
     parent,
     name,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
-  if (descriptor === null) return null;
+  if (descriptor === null) {
+    if (baseline !== undefined)
+      throw new Error("integration.codex.session-ledger");
+    return null;
+  }
   try {
     const before = fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) throw new Error("integration.codex.session-ledger");
-    if (before.size < 1n) return null;
+    if (before.size < 1n) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return null;
+    }
     if (before.size > BigInt(ledgerLimit))
       throw new Error("integration.codex.session-ledger");
     const first = readCapped(descriptor);
@@ -1600,6 +1614,50 @@ const readStableLedger = (parent, relativePath, name) => {
       second,
       after,
     });
+    if (content === null && baseline !== undefined) {
+      // Only an observed append on the already bound inode is pending. A
+      // rewrite, truncation, missing path or ownership change is not a retry.
+      const prefix = Buffer.from(baseline.content, "utf8");
+      if (
+        [before, middle, after].some(
+          (status) =>
+            !status.isFile() ||
+            status.dev !== baseline.dev ||
+            status.ino !== baseline.ino ||
+            status.mode !== baseline.mode ||
+            status.uid !== baseline.uid ||
+            status.gid !== baseline.gid ||
+            status.size > BigInt(ledgerLimit),
+        ) ||
+        before.size < BigInt(prefix.length) ||
+        middle.size < before.size ||
+        after.size < middle.size ||
+        after.size === before.size ||
+        first.length < Number(before.size) ||
+        first.length > Number(middle.size) ||
+        second.length < Number(middle.size) ||
+        second.length > Number(after.size) ||
+        !first.subarray(0, prefix.length).equals(prefix) ||
+        !second.subarray(0, first.length).equals(first)
+      )
+        throw new Error("integration.codex.session-ledger");
+      for (const bytes of [first, second]) {
+        let observed;
+        try {
+          observed = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          throw new Error("integration.codex.session-ledger");
+        }
+        // Validate completed lines and terminal contradictions even when the
+        // snapshot cannot yet be published as a settled observation.
+        codexTurnTerminalIdAfterBaseline(
+          [{ ...baseline, content: observed }],
+          [baseline],
+          expectedMessage,
+        );
+      }
+      return undefined;
+    }
     return content === null
       ? null
       : Object.freeze({
@@ -1616,7 +1674,18 @@ const readStableLedger = (parent, relativePath, name) => {
   }
 };
 
-export const readCodexSessionLedgerRecords = (homeDescriptor) => {
+export const readCodexSessionLedgerRecords = (
+  homeDescriptor,
+  baseline,
+  expectedMessage,
+) => {
+  if (
+    baseline !== undefined &&
+    (!Array.isArray(baseline) ||
+      baseline.length !== 1 ||
+      !validCodexSessionLedgerRecord(baseline[0]))
+  )
+    throw new Error("integration.codex.session-ledger");
   if (!Number.isSafeInteger(homeDescriptor) || homeDescriptor < 0)
     throw new Error("integration.codex.session-ledger");
   const homeStatus = fstatSync(homeDescriptor, { bigint: true });
@@ -1646,10 +1715,18 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
   };
   try {
     const codex = openChild(homeDescriptor, ".codex", directoryFlags);
-    if (codex === null) return [];
+    if (codex === null) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return [];
+    }
     opened.push(codex);
     const sessions = openChild(codex, "sessions", directoryFlags);
-    if (sessions === null) return [];
+    if (sessions === null) {
+      if (baseline !== undefined)
+        throw new Error("integration.codex.session-ledger");
+      return [];
+    }
     opened.push(sessions);
     let directories = openDirectories(
       [{ descriptor: sessions, relativePath: ".codex/sessions" }],
@@ -1658,6 +1735,8 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
     directories = openDirectories(directories, /^(?:0[1-9]|1[0-2])$/u);
     directories = openDirectories(directories, /^(?:0[1-9]|[12]\d|3[01])$/u);
     const ledgers = [];
+    const seen = [];
+    let pending = false;
     for (const directory of directories) {
       const names = authenticatedEntries(
         directory.descriptor,
@@ -1666,15 +1745,28 @@ export const readCodexSessionLedgerRecords = (homeDescriptor) => {
         budget,
       );
       for (const name of names) {
+        const path = `${directory.relativePath}/${name}`;
+        if (baseline !== undefined && path !== baseline[0].relativePath)
+          throw new Error("integration.codex.session-ledger");
+        seen.push(path);
         const record = readStableLedger(
           directory.descriptor,
           directory.relativePath,
           name,
+          baseline?.[0],
+          expectedMessage,
         );
-        if (record !== null) ledgers.push(record);
+        if (record === undefined) pending = true;
+        else if (record !== null) ledgers.push(record);
       }
     }
     if (ledgers.length > 8) throw new Error("integration.codex.session-ledger");
+    if (baseline !== undefined) {
+      if (seen.length !== 1 || seen[0] !== baseline[0].relativePath)
+        throw new Error("integration.codex.session-ledger");
+      if (pending) return undefined;
+      codexTurnTerminalIdAfterBaseline(ledgers, baseline, expectedMessage);
+    }
     return ledgers;
   } finally {
     for (const descriptor of opened.reverse()) closeSync(descriptor);

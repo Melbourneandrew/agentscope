@@ -53,7 +53,13 @@ const readIntegration = (name: string): string =>
 const codexLiveMetadata = `${JSON.stringify({ type: "session_meta", payload: { id: "synthetic-session" } })}\n`;
 const codexLiveTerminal = `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "synthetic-turn", last_agent_message: "synthetic-completion" } })}\n`;
 const observeCodexLiveLedger = (
-  snapshots: readonly (readonly { content: string; ino?: number }[])[],
+  snapshots: readonly (readonly {
+    content: string;
+    ino?: number;
+    append?: boolean;
+    fault?: string;
+  }[])[],
+  metrics = { reads: 0, waits: [] as number[], clock: 0 },
 ): Promise<{ turnId: string; reads: number; baseline: string }> => {
   const scenario = readIntegration("codex-pty-scenario.mjs");
   const evidence = readIntegration("codex-runtime-evidence.mjs");
@@ -68,31 +74,115 @@ const observeCodexLiveLedger = (
     `(() => {
       ${between(evidence, "const plainRecord =", "export const readBoundedJsonResponse")}
       ${between(evidence, "const codexTurnTerminalId =", "export const projectCodexPostJoinTranscript")}
+      ${between(evidence, "const sameSnapshotIdentity =", "const openChild =")}
+      ${between(evidence, "export const settledCodexLedgerSnapshot =", "export const readCodexSessionLedgers =")}
+      ${between(evidence, "export const waitWithinObservationDeadline =", "/**\n * @param {{\n *   deadline:")}
       ${between(scenario, "const recordModelBaseline =", "// Retrieval is provisional.")}
-      ${between(scenario, "const waitForCodexTurnTerminal =", "const waitForCodexStopBeforeExit =")}
+      ${between(scenario, "const waitForCodexTurnTerminal =", "const waitForCodexStopBeforeExit =").replaceAll("readCodexSessionLedgerRecords(", "readRecords(")}
       let codexSessionId, codexLedgerBaseline, reads = 0, clock = 0;
       const expectedAssistantMessage = "synthetic-completion", homeDescriptor = 0;
       const values = JSON.parse(serialized);
-      const readCodexSessionLedgerRecords = () => values[Math.min(reads++, values.length - 1)].map(value => ({
-        relativePath: ".codex/sessions/2026/01/01/rollout-synthetic.jsonl",
-        dev: 1n, ino: BigInt(value.ino ?? 2), mode: 0o100600n, uid: 1000n, gid: 1000n,
-        content: value.content,
-      }));
+      const actualRead = readCodexSessionLedgerRecords;
+      let active, statusRead, byteRead;
+      const ledgerLimit = 2 * 1024 * 1024, directoryFlags = 0;
+      const constants = { O_RDONLY: 0, O_NOFOLLOW: 0, O_NONBLOCK: 0 };
+      const openChild = (parent, name) => ({'.codex': 1, sessions: 2, '2026': 3, '01': parent === 3 ? 4 : 5}[name] ?? 6);
+      const authenticatedEntries = (descriptor) => descriptor === 2 ? ['2026'] : descriptor === 3 || descriptor === 4 ? ['01'] : active.map((_, index) => index === 0 ? 'rollout-synthetic.jsonl' : 'rollout-extra.jsonl');
+      const closeSync = () => {};
+      const fstatSync = (descriptor) => {
+        if (descriptor !== 6) return { isDirectory: () => true };
+        const value = active[0], stage = statusRead++;
+        return {
+          isFile: () => true, dev: 1n, ino: BigInt(value.ino ?? 2),
+          mode: value.fault === 'mode' && stage > 0 ? 0o100644n : 0o100600n,
+          uid: value.fault === 'owner' && stage > 0 ? 1001n : 1000n, gid: 1000n,
+          size: BigInt(Buffer.byteLength(value.content) + (value.append && stage === 2 ? 1 : 0)),
+          mtimeNs: BigInt(value.append ? stage : 0), ctimeNs: BigInt(value.append ? stage : 0),
+        };
+      };
+      const readCapped = () => {
+        const value = active[0], stage = byteRead++;
+        return Buffer.from(value.content + (value.append && stage === 1 ? '{' : ''));
+      };
+      const readRecords = (...args) => {
+        active = values[Math.min(reads++, values.length - 1)]; statusRead = 0; byteRead = 0;
+        metrics.reads = reads;
+        return actualRead(...args);
+      };
       const bootNow = () => clock;
       const terminalObservationBeforeDeadline = ({observed, deadline, now}) => {
         if (now() >= deadline) throw new Error("integration.codex.trace-deadline");
         return observed;
       };
-      const waitWithinObservationDeadline = async () => { clock += 100; };
+      const setTimeout = (resolve, milliseconds) => { metrics.waits.push(milliseconds); clock += milliseconds; metrics.clock = clock; resolve(); };
       const remaining = () => {};
       return waitForCodexTurnTerminal(300).then(result => ({
         turnId: result.turnId, reads, baseline: codexLedgerBaseline[0].content,
       }));
     })()`,
-    { serialized: JSON.stringify(snapshots), setTimeout },
+    { serialized: JSON.stringify(snapshots), metrics, Buffer, TextDecoder },
     { timeout: 1000 },
   ) as Promise<{ turnId: string; reads: number; baseline: string }>;
 };
+
+describe("actual Codex bound live append observation", () => {
+  it("waits through an authenticated append and observes the settled terminal within the original deadline", async () => {
+    await expect(
+      observeCodexLiveLedger([
+        [{ content: codexLiveMetadata }],
+        [{ content: codexLiveMetadata, append: true }],
+        [{ content: codexLiveMetadata + codexLiveTerminal }],
+      ]),
+    ).resolves.toEqual({
+      turnId: "synthetic-turn",
+      reads: 3,
+      baseline: codexLiveMetadata,
+    });
+  });
+  it("expires an append that never settles at the unchanged 300ms deadline", async () => {
+    const metrics = { reads: 0, waits: [] as number[], clock: 0 };
+    await expect(
+      observeCodexLiveLedger(
+        [
+          [{ content: codexLiveMetadata }],
+          [{ content: codexLiveMetadata, append: true }],
+          [{ content: codexLiveMetadata, append: true }],
+          [{ content: codexLiveMetadata + codexLiveTerminal }],
+        ],
+        metrics,
+      ),
+    ).rejects.toThrow("integration.codex.trace-deadline");
+    expect(metrics).toEqual({ reads: 3, waits: [100, 100, 100], clock: 300 });
+  });
+  it.each(["mode", "owner"])(
+    "rejects %s changes during an append instead of waiting",
+    async (fault) => {
+      await expect(
+        observeCodexLiveLedger([
+          [{ content: codexLiveMetadata }],
+          [{ content: codexLiveMetadata, append: true, fault }],
+          [{ content: codexLiveMetadata + codexLiveTerminal }],
+        ]),
+      ).rejects.toThrow("integration.codex.session-ledger");
+    },
+  );
+  it.each([
+    "{\n",
+    codexLiveTerminal.replace("synthetic-completion", "wrong"),
+    codexLiveTerminal + codexLiveTerminal,
+  ])(
+    "does not hide invalid completed observations behind pending",
+    async (line) => {
+      await expect(
+        observeCodexLiveLedger([
+          [{ content: codexLiveMetadata }],
+          [{ content: codexLiveMetadata + line, append: true }],
+          [{ content: codexLiveMetadata + codexLiveTerminal }],
+        ]),
+      ).rejects.toThrow("integration.codex.session-ledger");
+    },
+  );
+});
 
 describe("actual Codex live baseline complete-line boundary", () => {
   it.each([
