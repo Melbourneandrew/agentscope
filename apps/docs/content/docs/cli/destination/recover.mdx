@@ -5,10 +5,13 @@ command: agentscope destination recover
 commandContract: sha256:4da02ecc633641c6c9dcff74806f43d7333e7ee64f7f5a0400440db8b74c008d
 ---
 
-The 0.1.0 alpha does not admit Local SQLite. This registered command therefore
-returns `destination.lifecycle-unavailable` before producing a recovery plan
-or mutating state. Its syntax is reserved for future admitted lifecycle work;
-Doctor does not recommend or run an unavailable recovery operation.
+The 0.1.0 alpha does not admit Local SQLite, so this registered command has no
+supported success path and does not mutate Local state. Its exact failure
+depends on the inspected configuration and lifecycle state; a fresh
+unconfigured home may return `configuration.missing`, while an unavailable
+handler may return `destination.lifecycle-unavailable`. The syntax is reserved
+for future admitted lifecycle work; Doctor does not run an unavailable
+recovery operation.
 
 ## Syntax
 

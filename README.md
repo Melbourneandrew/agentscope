@@ -23,10 +23,10 @@ sends them only to destinations you explicitly configure and select.
 Agentscope 0.1.0 is not published yet. Final actual-binary CI evidence has
 passed for these candidate rows:
 
-| Harness     | Version | Execution                           | Capture                  | Destination credentials                                        |
-| ----------- | ------- | ----------------------------------- | ------------------------ | -------------------------------------------------------------- |
-| Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
-| Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive semantic PTY | Langfuse OTLP through explicit environment-variable references |
+| Harness     | Version | Execution                           | Mode / output contract     | Destination credentials                                        |
+| ----------- | ------- | ----------------------------------- | -------------------------- | -------------------------------------------------------------- |
+| Codex       | 0.149.1 | CI execution: Linux x64, Node.js 22 | Interactive / semantic PTY | Langfuse OTLP through explicit environment-variable references |
+| Claude Code | 2.1.245 | CI execution: Linux x64, Node.js 22 | Interactive / semantic PTY | Langfuse OTLP through explicit environment-variable references |
 
 These are not published support rows. The governed product support manifest,
 release record, and package publication remain pending. Claude Code evidence
