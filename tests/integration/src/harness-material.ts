@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import {
+  invalid,
+  record,
+  exactKeys,
+  parseStrictJson,
+} from "./harness-material-privacy.js";
 
 import { canonicalJson, deepFreeze, sha256 } from "./canonical.js";
 import type { CapabilityManifest } from "./manifest.js";
@@ -78,27 +84,6 @@ export type VerifiedSignedManifestHarnessMaterial = Readonly<{
 export type VerifiedHarnessMaterial =
   VerifiedNpmHarnessMaterial | VerifiedSignedManifestHarnessMaterial;
 
-const invalid = (): never => {
-  throw new Error("integration.harness-material.invalid");
-};
-
-const record = (value: unknown): Readonly<Record<string, unknown>> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return invalid();
-  return value as Readonly<Record<string, unknown>>;
-};
-
-const exactKeys = (
-  value: Readonly<Record<string, unknown>>,
-  keys: readonly string[],
-): void => {
-  if (
-    JSON.stringify(Object.keys(value).sort()) !==
-    JSON.stringify([...keys].sort())
-  )
-    invalid();
-};
-
 const exactArray = (value: unknown, maximum: number): readonly unknown[] => {
   if (!Array.isArray(value) || value.length > maximum) return invalid();
   return value;
@@ -119,102 +104,6 @@ const sha1Bytes = (value: Uint8Array): string =>
   createHash("sha1").update(value).digest("hex");
 const sha512Integrity = (value: Uint8Array): string =>
   `sha512-${createHash("sha512").update(value).digest("base64")}`;
-
-const parseStrictJson = (bytes: Uint8Array): unknown => {
-  const source = Buffer.from(bytes).toString("utf8");
-  let offset = 0;
-  const whitespace = (): void => {
-    while (/\s/u.test(source[offset] ?? "")) offset += 1;
-  };
-  const string = (): string => {
-    const start = offset;
-    if (source[offset] !== '"') return invalid();
-    offset += 1;
-    while (offset < source.length) {
-      if (source[offset] === "\\") offset += 2;
-      else if (source[offset] === '"') {
-        offset += 1;
-        try {
-          return JSON.parse(source.slice(start, offset)) as string;
-        } catch {
-          return invalid();
-        }
-      } else offset += 1;
-    }
-    return invalid();
-  };
-  const value = (): unknown => {
-    whitespace();
-    if (source[offset] === '"') return string();
-    if (source[offset] === "{") {
-      offset += 1;
-      const result: Record<string, unknown> = {};
-      const keys = new Set<string>();
-      whitespace();
-      if (source[offset] === "}") {
-        offset += 1;
-        return result;
-      }
-      while (offset < source.length) {
-        whitespace();
-        const key = string();
-        if (keys.has(key)) return invalid();
-        keys.add(key);
-        whitespace();
-        if (source[offset] !== ":") return invalid();
-        offset += 1;
-        result[key] = value();
-        whitespace();
-        if (source[offset] === "}") {
-          offset += 1;
-          return result;
-        }
-        if (source[offset] !== ",") return invalid();
-        offset += 1;
-      }
-      return invalid();
-    }
-    if (source[offset] === "[") {
-      offset += 1;
-      const result: unknown[] = [];
-      whitespace();
-      if (source[offset] === "]") {
-        offset += 1;
-        return result;
-      }
-      while (offset < source.length) {
-        result.push(value());
-        whitespace();
-        if (source[offset] === "]") {
-          offset += 1;
-          return result;
-        }
-        if (source[offset] !== ",") return invalid();
-        offset += 1;
-      }
-      return invalid();
-    }
-    for (const [literal, parsed] of [
-      ["true", true],
-      ["false", false],
-      ["null", null],
-    ] as const)
-      if (source.startsWith(literal, offset)) {
-        offset += literal.length;
-        return parsed;
-      }
-    const number = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/u.exec(
-      source.slice(offset),
-    )?.[0];
-    if (number === undefined) return invalid();
-    offset += number.length;
-    return Number(number);
-  };
-  const parsed = value();
-  whitespace();
-  if (offset !== source.length) return invalid();
-  return parsed;
-};
 
 export const compileNpmAttestationAudit = (
   material: NpmHarnessMaterial,

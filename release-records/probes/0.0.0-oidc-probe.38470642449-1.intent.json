@@ -1,0 +1,21 @@
+{
+  "digest": "sha256:d7fa23e2b8563e59040456037a3d16f9c3ec41c386ed790d5f8992489ab72be1",
+  "expectedRunNumber": 2,
+  "integrity": "sha512-cTChXwb88ZxawbhWbLLKlG8dl/Wo3a5w6YoZG/tR0ADZSfo6DRU2Eh0j7KP+F0XWMeVJjVehbfp27Wy7hzihJg==",
+  "kind": "reserved-inert-probe-invocation",
+  "ownerId": 25971425,
+  "ownerLogin": "Melbourneandrew",
+  "preparationRunAttempt": 1,
+  "preparationRunId": 38470642449,
+  "preparationSourceRevision": "a611e7a1afa7c697ebcf15c4e45c1a14db803119",
+  "preparedMaterialDigest": "sha256:aca79b1df8f2782bf40931987a0924ea05d41b940aa01fcd07b03ff1463139af",
+  "releaseScriptsDigest": "sha256:147bb4932ee6901b8cc2593f4eccf0306d81d023cfc2be9a43083e1b96536b4e",
+  "repository": "Melbourneandrew/agentscope",
+  "runAttempt": 1,
+  "schemaVersion": 1,
+  "tarballSha256": "sha256:65b8ee5da5a74b0d1a592bece0c46a7e1b546e6b93e5ede4d0266fd4561128d5",
+  "version": "0.0.0-oidc-probe.38470642449-1",
+  "workflowDatabaseId": 378782423,
+  "workflowDigest": "sha256:94ab4efaa3f96f7010146b822e0251dc6072708bee0ee1a710089e34b4a226fc",
+  "workflowPath": ".github/workflows/release.yml"
+}

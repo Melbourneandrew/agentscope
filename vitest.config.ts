@@ -39,6 +39,7 @@ export default defineConfig({
       "src/__tests__/product-installation-fixture.ts",
       "src/discovery/__tests__/discovery-fixture.ts",
       "src/__tests__/fixtures/mockserver-supplier-command.ts",
+      "src/__tests__/fixtures/success-evidence-fixture.ts",
     ],
     coverage: {
       provider: "v8",
