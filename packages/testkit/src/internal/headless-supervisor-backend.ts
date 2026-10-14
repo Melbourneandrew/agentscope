@@ -56,6 +56,7 @@ import {
   readProcessSnapshot,
   type ProcessSnapshot,
 } from "./proc-process-snapshot.js";
+import type { SelectedPtyTestSeed } from "./selected-pty-test-seed.js";
 import {
   BoundedTerminalEmulator,
   defaultPtyTerminalEmulatorLimits,
@@ -2740,6 +2741,7 @@ const armSelectedPty = (
       Exclude<CheckpointTopologyClassification, "matched"> | undefined;
     let checkpointPublicationAttempted = false;
     let checkpointActionAdvanced = false;
+    let checkpointSettlementPending = false;
     let checkpointFirstReadyGate:
       | "terminal-order-rejected"
       | "terminal-reply-unsettled"
@@ -3084,7 +3086,10 @@ const armSelectedPty = (
                     : "ready-gate-other";
         }
         if (
-          inputAdmitted &&
+          (inputAdmitted ||
+            (checkpointSettlementPending &&
+              pendingActionBeforeRead?.action ===
+                "checkpoint-process-topology")) &&
           primaryFailure === undefined &&
           !aborted &&
           adjacentNow < processRequest.monotonicExecutionDeadlineMs
@@ -3163,10 +3168,11 @@ const armSelectedPty = (
             }
           } else if (action?.action === "checkpoint-process-topology") {
             if (
-              (request.readiness.kind === "challenge-process-topology" &&
+              !checkpointSettlementPending &&
+              ((request.readiness.kind === "challenge-process-topology" &&
                 !topologyReadinessMarkerObserved) ||
-              (request.readiness.kind !== "challenge-process-topology" &&
-                !readinessObserved)
+                (request.readiness.kind !== "challenge-process-topology" &&
+                  !readinessObserved))
             )
               return;
             if (root === undefined)
@@ -3174,6 +3180,7 @@ const armSelectedPty = (
             pumpOperation = "checkpoint-namespace";
             runtime.assertNamespaceIdentity(composition.namespaceIdentity);
             pumpOperation = "checkpoint-freeze";
+            checkpointSettlementPending = true;
             const processSet = runtime.freezeProcessSet(
               composition.namespaceIdentity,
               processRequest.monotonicExecutionDeadlineMs,
@@ -3195,6 +3202,7 @@ const armSelectedPty = (
                 root.pid,
                 false,
               );
+              checkpointSettlementPending = false;
               return;
             }
             pumpOperation = "checkpoint-release";
@@ -3204,6 +3212,7 @@ const armSelectedPty = (
               root.pid,
               true,
             );
+            checkpointSettlementPending = false;
             pumpOperation = "pump-other";
             recordAction({
               action: "checkpoint-process-topology",
@@ -5092,131 +5101,6 @@ export const executeSelectedContainerBackendForTest = async (
   );
 };
 
-type SelectedPtyTestSeed =
-  | "active-terminal"
-  | "action-deadline-crossing"
-  | "shutdown-deadline-crossing"
-  | "adopted-zombie"
-  | "adopted-zombie-reap-failure"
-  | "blocked-input-completion"
-  | "challenge-marker-prompt"
-  | "challenge-marker-title"
-  | "clean"
-  | "close-failure"
-  | "completion-before-readiness"
-  | "checkpoint-extra-process"
-  | "checkpoint-observer-delay-mismatch"
-  | "checkpoint-missing-process"
-  | "checkpoint-observer-delay"
-  | "checkpoint-owned-descendant"
-  | "checkpoint-owned-sidecar"
-  | "checkpoint-process-churn"
-  | "checkpoint-stop-pending"
-  | "checkpoint-stop-never"
-  | "checkpoint-transient-extra-process"
-  | "control-eof-substitution"
-  | "control-write-substitution"
-  | "descriptor-closure"
-  | "descriptor-reuse"
-  | "descriptor-substitution"
-  | "eof-failure"
-  | "fragmented-output"
-  | "fixed-readiness-spoof"
-  | "geometry-substitution"
-  | "identity-substitution"
-  | "immediate-output"
-  | "immutable-capability"
-  | "immutable-device-inode"
-  | "immutable-mount-id"
-  | "immutable-mount-rw"
-  | "immutable-no-new-privileges"
-  | "immutable-principal"
-  | "immutable-symlink"
-  | "late-tail"
-  | "kill-escalation"
-  | "keyboard-protocol-missing"
-  | "keyboard-protocol-out-of-order"
-  | "keyboard-protocol-readiness-before"
-  | "keyboard-protocol-readiness-before-blocked"
-  | "keyboard-protocol-after-readiness"
-  | "keyboard-protocol-reset"
-  | "keyboard-protocol-ris"
-  | "keyboard-protocol-same-burst"
-  | "keyboard-protocol-substituted"
-  | "credential-prompt"
-  | "malformed-control"
-  | "malformed-exit"
-  | "missing-completion"
-  | "missing-ready"
-  | "mode-substitution"
-  | "nonzero-exit"
-  | "observer-failure"
-  | "observer-esrch-failure"
-  | "output-limit"
-  | "output-join-failure"
-  | "partial-input"
-  | "partial-input-output-limit"
-  | "partial-input-timeout"
-  | "paced-input"
-  | "post-input-completion"
-  | "readiness-burst"
-  | "readiness-revoked-after-input"
-  | "residual"
-  | "root-missing"
-  | "signal-failure"
-  | "silent-terminal"
-  | "startup-delay"
-  | "transport-failure"
-  | "timeout"
-  | "terminal-redraw-enter-fragmented"
-  | "terminal-prompt-partial"
-  | "terminal-post-completion-idle"
-  | "terminal-title-completion-after-idle"
-  | "terminal-post-submission-readiness-revoked"
-  | "terminal-post-submission-idle-missing"
-  | "terminal-idle-before-completion-marker"
-  | "terminal-preenter-frame-late-close"
-  | "terminal-preenter-buffered-idle"
-  | "terminal-response-after-idle-frame"
-  | "terminal-no-prompt"
-  | "terminal-stale-prebuffer-no-redraw"
-  | "terminal-passive-control-no-redraw"
-  | "terminal-framed-bel-stitch"
-  | "terminal-framed-newline-stitch"
-  | "terminal-framed-clear-stitch"
-  | "terminal-framed-erase-stitch"
-  | "terminal-framed-insert-stitch"
-  | "terminal-framed-delete-stitch"
-  | "terminal-framed-scroll-stitch"
-  | "terminal-framed-combined-begin"
-  | "terminal-framed-combined-end"
-  | "terminal-post-frame-erase"
-  | "terminal-framed-alt-enter-stitch"
-  | "terminal-framed-alt-exit-stitch"
-  | "terminal-framed-wrap-stitch"
-  | "terminal-post-frame-alt-exit"
-  | "terminal-post-frame-scroll-region"
-  | "terminal-framed-charset-stitch"
-  | "terminal-framed-conceal-stitch"
-  | "terminal-post-frame-tab-stop"
-  | "terminal-post-frame-restore"
-  | "terminal-prior-no-wrap"
-  | "terminal-prior-scroll-margin"
-  | "terminal-prior-alt-switch"
-  | "terminal-saved-no-wrap"
-  | "terminal-alt-clear-no-home"
-  | "terminal-combined-no-wrap"
-  | "terminal-combined-alt-switch"
-  | "terminal-wide-printable"
-  | "terminal-combining-printable"
-  | "terminal-live-completion-no-redraw"
-  | "terminal-post-wait-pacing"
-  | "terminal-query-blocked"
-  | "terminal-query-handshake"
-  | "terminal-query-partial"
-  | "unsupported-control"
-  | "unsupported-signal";
-
 const selectedPtyRuntimeForTest = (
   seed: SelectedPtyTestSeed,
   readiness: SelectedPtyExecutionRequest["readiness"] = {
@@ -5225,8 +5109,9 @@ const selectedPtyRuntimeForTest = (
   // eslint-disable-next-line max-lines-per-function
 ): PtyRuntime => {
   let matchedCheckpointResumed = false;
-  const pendingCheckpointStop =
-    seed === "checkpoint-stop-pending" || seed === "checkpoint-stop-never";
+  const pendingCheckpointStop = seed.startsWith("checkpoint-stop-");
+  const checkpointRedraw =
+    pendingCheckpointStop && readiness.kind === "challenge-styled-text";
   let checkpointFreezeCalls = 0;
   let pendingCheckpointOutputDrained = false;
   const root: ProcessSnapshot = {
@@ -5469,6 +5354,11 @@ const selectedPtyRuntimeForTest = (
           resolveClose = resolve_;
         }),
       );
+      const finish = (exit: PtyExit): void => {
+        processes.clear();
+        terminal = true;
+        close(exit);
+      };
       const output =
         seed === "output-limit" || seed === "partial-input-output-limit"
           ? safeBufferFrom("x".repeat(request.stdoutLimitBytes + 1))
@@ -5536,6 +5426,15 @@ const selectedPtyRuntimeForTest = (
       const requiresCausalPromptRedraw =
         readiness.kind === "challenge-styled-text" &&
         !terminalProtocolNegativeSeed;
+      const postTurnIdle = [
+        "terminal-post-completion-idle",
+        "terminal-title-completion-after-idle",
+        "terminal-post-submission-readiness-revoked",
+        "terminal-post-submission-idle-missing",
+        "terminal-idle-before-completion-marker",
+        "terminal-preenter-buffered-idle",
+        "terminal-response-after-idle-frame",
+      ].includes(seed);
       const rejectsCausalPromptRedraw =
         seed === "terminal-stale-prebuffer-no-redraw" ||
         seed === "terminal-passive-control-no-redraw" ||
@@ -5819,13 +5718,7 @@ const selectedPtyRuntimeForTest = (
           ),
         );
       if (
-        (seed === "terminal-post-completion-idle" ||
-          seed === "terminal-title-completion-after-idle" ||
-          seed === "terminal-post-submission-readiness-revoked" ||
-          seed === "terminal-post-submission-idle-missing" ||
-          seed === "terminal-idle-before-completion-marker" ||
-          seed === "terminal-preenter-buffered-idle" ||
-          seed === "terminal-response-after-idle-frame") &&
+        postTurnIdle &&
         readiness.kind === "challenge-styled-text" &&
         readiness.postSubmissionResponseText !== undefined
       ) {
@@ -5947,9 +5840,7 @@ const selectedPtyRuntimeForTest = (
           !readinessRevokedAfterInput
         ) {
           readinessRevokedAfterInput = true;
-          processes.clear();
-          terminal = true;
-          close({ code: 0, signal: 0 });
+          finish({ code: 0, signal: 0 });
           return {
             status: "data" as const,
             bytes: safeBufferFrom("\u001b[2JAGENTSCOPE_PTY_COMPLETE"),
@@ -6101,13 +5992,33 @@ const selectedPtyRuntimeForTest = (
           if (
             pendingCheckpointStop &&
             chunkIndex >= 1 &&
+            (!checkpointRedraw || checkpointFreezeCalls > 0) &&
             !matchedCheckpointResumed
           ) {
             if (checkpointFreezeCalls > 0 && !pendingCheckpointOutputDrained) {
               pendingCheckpointOutputDrained = true;
-              return { status: "data" as const, bytes: safeBufferFrom(".") };
+              return {
+                status: "data" as const,
+                bytes: safeBufferFrom(
+                  checkpointRedraw
+                    ? "\u001b[?2026h\u001b[2J\u001b[Hloading\u001b[?2026l"
+                    : ".",
+                ),
+              };
             }
             return { status: "would-block" as const };
+          }
+          if (
+            checkpointRedraw &&
+            seed === "checkpoint-stop-pending" &&
+            matchedCheckpointResumed &&
+            pendingCheckpointOutputDrained
+          ) {
+            pendingCheckpointOutputDrained = false;
+            return {
+              status: "data" as const,
+              bytes: synchronizedPromptRendered,
+            };
           }
           if (
             seed === "challenge-marker-title" &&
@@ -6125,9 +6036,7 @@ const selectedPtyRuntimeForTest = (
             (seed === "challenge-marker-title" &&
               markerTitleInputBytes === request.stdin.length)
           ) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
             return { status: "eio" as const };
           }
           if (
@@ -6141,9 +6050,7 @@ const selectedPtyRuntimeForTest = (
             chunkIndex === 3 &&
             submissionPromptAccepted === 0
           ) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
             return { status: "eio" as const };
           }
           if (
@@ -6155,13 +6062,7 @@ const selectedPtyRuntimeForTest = (
           )
             return { status: "would-block" as const };
           if (
-            (seed === "terminal-post-completion-idle" ||
-              seed === "terminal-title-completion-after-idle" ||
-              seed === "terminal-post-submission-readiness-revoked" ||
-              seed === "terminal-post-submission-idle-missing" ||
-              seed === "terminal-idle-before-completion-marker" ||
-              seed === "terminal-preenter-buffered-idle" ||
-              seed === "terminal-response-after-idle-frame") &&
+            postTurnIdle &&
             readiness.kind === "challenge-styled-text" &&
             readiness.postSubmissionResponseText !== undefined &&
             chunkIndex >= 4 &&
@@ -6205,47 +6106,32 @@ const selectedPtyRuntimeForTest = (
               chunkIndex += 1;
               chunkOffset = 0;
               if (
-                terminalProtocolNegativeSeed &&
+                (terminalProtocolNegativeSeed ||
+                  seed === "terminal-preenter-frame-late-close") &&
                 chunkIndex === chunks.length
               ) {
-                processes.clear();
-                terminal = true;
-                close({ code: 0, signal: 0 });
-              }
-              if (
-                seed === "terminal-preenter-frame-late-close" &&
-                chunkIndex === chunks.length
-              ) {
-                processes.clear();
-                terminal = true;
-                close({ code: 0, signal: 0 });
+                finish({ code: 0, signal: 0 });
               }
             }
             return { status: "data" as const, bytes };
           }
-          if (submissionPromptAccepted === 67 && rejectsCausalPromptRedraw) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
-            return { status: "eio" as const };
-          }
           if (
             submissionPromptAccepted === 67 &&
-            seed === "terminal-live-completion-no-redraw"
+            (rejectsCausalPromptRedraw ||
+              seed === "terminal-live-completion-no-redraw")
           ) {
-            if (!liveCompletionWouldBlockObserved) {
+            if (
+              seed === "terminal-live-completion-no-redraw" &&
+              !liveCompletionWouldBlockObserved
+            ) {
               liveCompletionWouldBlockObserved = true;
               return { status: "would-block" as const };
             }
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
             return { status: "eio" as const };
           }
           if (terminalProtocolNegativeSeed && !terminal) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
           }
           return terminal && seed !== "output-join-failure"
             ? { status: "eio" as const }
@@ -6254,9 +6140,7 @@ const selectedPtyRuntimeForTest = (
         resize: (columns, rows) => {
           currentGeometry = { columns, rows };
           if (requiresCausalPromptRedraw && submissionEnterAccepted === 5) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
           }
         },
         // eslint-disable-next-line complexity -- adversarial fixture states are explicit and closed
@@ -6356,9 +6240,7 @@ const selectedPtyRuntimeForTest = (
             bytes.length === 1 &&
             bytes[0] === 4
           ) {
-            processes.clear();
-            terminal = true;
-            close({ code: 0, signal: 0 });
+            finish({ code: 0, signal: 0 });
           }
           if (seed === "partial-input-timeout" && inputCalls === 1) {
             const stopAt = request.monotonicExecutionDeadlineMs + 1;
