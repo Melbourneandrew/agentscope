@@ -113,19 +113,26 @@ const execute = async (
 
 type CheckpointCalls = { freeze: number[]; release: number[] };
 const observeFailedTerminalBackend = async (counts: CheckpointCalls) => {
-  const namespaces = new Map<string, unknown>();
-  for (const name of [
-    "../headless-supervisor-contract.js",
-    "./kernel-errors.js",
-    "./kernel-promise.js",
-    "./proc-process-snapshot.js",
-    "../bounded-terminal-emulator.js",
-    "./pty-transport-observations.js",
-  ])
-    namespaces.set(
-      name,
-      await import(new URL(`../internal/${name}`, import.meta.url).href),
-    );
+  const namespaces = new Map<string, unknown>([
+    [
+      "../headless-supervisor-contract.js",
+      await import("../headless-supervisor-contract.js"),
+    ],
+    ["./kernel-errors.js", await import("../internal/kernel-errors.js")],
+    ["./kernel-promise.js", await import("../internal/kernel-promise.js")],
+    [
+      "./proc-process-snapshot.js",
+      await import("../internal/proc-process-snapshot.js"),
+    ],
+    [
+      "../bounded-terminal-emulator.js",
+      await import("../bounded-terminal-emulator.js"),
+    ],
+    [
+      "./pty-transport-observations.js",
+      await import("../internal/pty-transport-observations.js"),
+    ],
+  ]);
   let source = readFileSync(
     new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
     "utf8",
