@@ -36,9 +36,13 @@ describe("upstream control staging closure", () => {
       "src/__tests__/product-installation-fixture.ts",
       "src/discovery/__tests__/discovery-fixture.ts",
       "src/__tests__/fixtures/mockserver-supplier-command.ts",
+      "src/__tests__/fixtures/success-evidence-fixture.ts",
     ]);
     expect(definition.test.exclude).not.toContain(
       "src/mockserver-supplier-command.test.ts",
+    );
+    expect(definition.test.exclude).not.toContain(
+      "src/success-evidence-cleanup.test.ts",
     );
     expect(definition.test.coverage.exclude).toContain("src/**/__tests__/**");
   });
