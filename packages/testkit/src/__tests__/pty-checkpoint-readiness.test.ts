@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
+import { runInThisContext } from "node:vm";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
+import type { executeSelectedPtyTransportForTest } from "../internal/headless-supervisor-backend.js";
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -106,7 +111,102 @@ const execute = async (
   }
 };
 
+type CheckpointCalls = { freeze: number[]; release: number[] };
+const observeFailedTerminalBackend = async (counts: CheckpointCalls) => {
+  const namespaces = new Map<string, unknown>();
+  for (const name of [
+    "../headless-supervisor-contract.js",
+    "./kernel-errors.js",
+    "./kernel-promise.js",
+    "./proc-process-snapshot.js",
+    "../bounded-terminal-emulator.js",
+    "./pty-transport-observations.js",
+  ])
+    namespaces.set(
+      name,
+      await import(new URL(`../internal/${name}`, import.meta.url).href),
+    );
+  let source = readFileSync(
+    new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+    "utf8",
+  );
+  const stimulus = '"\\u001b[?2026h\\u001b[2J\\u001b[Hloading\\u001b[?2026l"';
+  expect(source).toContain(stimulus);
+  source = source.replace(stimulus, '"\\u001b[?9999h"');
+  source = source.replaceAll(
+    "import.meta.dirname",
+    JSON.stringify(new URL("../internal", import.meta.url).pathname),
+  );
+  const freezeAnchor = "checkpointFreezeCalls += 1;";
+  const releaseAnchor = "if (notifyRoot) matchedCheckpointResumed = true;";
+  expect(source).toContain(freezeAnchor);
+  expect(source).toContain(releaseAnchor);
+  source = source.replace(
+    freezeAnchor,
+    `${freezeAnchor} probeCounts.freeze.push(performance.now());`,
+  );
+  source = source.replace(
+    releaseAnchor,
+    `probeCounts.release.push(performance.now()); ${releaseAnchor}`,
+  );
+  const body = transpileModule(source, {
+    compilerOptions: {
+      target: ScriptTarget.ES2022,
+      module: ModuleKind.CommonJS,
+    },
+  }).outputText;
+  const exports: {
+    executeSelectedPtyTransportForTest?: typeof executeSelectedPtyTransportForTest;
+  } = {};
+  const requireNative = createRequire(import.meta.url);
+  const evaluate = runInThisContext(
+    `(require,exports,probeCounts)=>{${body}}`,
+  ) as (
+    require: (name: string) => unknown,
+    exports: object,
+    counts: CheckpointCalls,
+  ) => void;
+  evaluate(
+    (name: string) => namespaces.get(name) ?? (requireNative(name) as unknown),
+    exports,
+    counts,
+  );
+  return exports.executeSelectedPtyTransportForTest!;
+};
+
 describe("admitted checkpoint settlement after buffered redraw", () => {
+  it("does not settle a pending checkpoint while draining a failed terminal", async () => {
+    vi.resetModules();
+    vi.useFakeTimers({ now: 0, toFake: ["setTimeout", "clearTimeout"] });
+    const clock = vi
+      .spyOn(performance, "now")
+      .mockImplementation(() => vi.getMockedSystemTime()!.getTime());
+    let settlement: Promise<unknown> | undefined;
+    try {
+      const counts: CheckpointCalls = { freeze: [], release: [] };
+      const run = await observeFailedTerminalBackend(counts);
+      const execution = run(request(), "checkpoint-stop-redraw");
+      settlement = execution.catch(() => undefined);
+      for (let step = 0; step < 15; step += 1)
+        await vi.advanceTimersByTimeAsync(10);
+      await expect(execution).rejects.toThrow("unsupported");
+      // The second true-pump attempt is preexisting. Failure drain may not
+      // add a third attempt or release/publish the already pending checkpoint.
+      expect(counts.freeze).toEqual([0, 10]);
+      expect(counts.release).toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      try {
+        await vi.runAllTimersAsync();
+        await settlement;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        clock.mockRestore();
+        vi.useRealTimers();
+        vi.resetModules();
+      }
+    }
+  });
   it("settles pending stops before the original cutoff without admitting stale input", async () => {
     const receipt = await execute("checkpoint-stop-redraw");
     // The checkpoint settles, but the buffered clear still denies later

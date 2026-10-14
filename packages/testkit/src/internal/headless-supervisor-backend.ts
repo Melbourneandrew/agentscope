@@ -3086,6 +3086,7 @@ const armSelectedPty = (
                     : "ready-gate-other";
         }
         if (
+          allowInput &&
           (inputAdmitted ||
             (checkpointSettlementPending &&
               pendingActionBeforeRead?.action ===
