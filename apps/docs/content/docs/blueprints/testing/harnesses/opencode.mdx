@@ -1,0 +1,46 @@
+---
+title: OpenCode Harness Integration
+description: ADRs for authenticating, driving, and observing OpenCode without provider authority.
+---
+
+## Capability Summary
+
+The OpenCode integration must install an authenticated exact CLI, own a reversible local capture plugin, and correlate native session behavior with Agentscope traces against one internal model-protocol service. Neither documentation nor a component test makes an execution mode release-supported without an exact-binary isolated product scenario.
+
+## Architecture Decision Records
+
+### ADR-001: Authenticate exact public CLI and provider inputs
+
+**Decision:** Trusted preparation obtains the catalog-selected exact `opencode-ai` wrapper and platform package from the public npm registry, authenticates registry integrity and signatures and any published provenance for the same release, and records the installed executable identity inside the disposable scenario. A custom provider runtime needed by the scenario is likewise exact-versioned, authenticated, and present before candidate execution; OpenCode may not fetch or install it after isolation. Moving installers, global binaries, host-side package lifecycle scripts, and a cache hit without reauthentication are not inputs. The public MIT source license does not alone settle redistribution rights for every bundled dependency or binary; persistent mirroring requires a separate artifact and license review.
+
+**Context:** OpenCode publishes [MIT source](https://github.com/anomalyco/opencode/blob/v1.18.32/LICENSE), [versioned release assets](https://github.com/anomalyco/opencode/releases/tag/v1.18.32), and npm packages. Version v1.18.32 is a research exemplar, not a support pin; the compatibility catalog selects an admitted version.
+
+### ADR-002: Separate TUI and structured headless claims
+
+**Decision:** The closed canonical execution-mode/output-contract pairs are `interactive` with `semantic-pty` and `run` with `jsonl`. Interactive OpenCode is driven through the shared semantic PTY transport; `opencode run --format json` is driven through the shared pipe transport. Each pair requires its own exact-version actual-binary evidence for startup, prompt, model, tool, error, cancellation, and terminal behavior. Neither the TUI transcript nor headless JSON events certify the other mode; an attached server, desktop app, or ACP session is not silently included in either claim.
+
+**Context:** OpenCode documents its [TUI and `run --format json` interfaces](https://opencode.ai/docs/cli/). The version-bound schema and termination behavior still require actual-binary proof.
+
+### ADR-003: Select one closed internal provider and no live credentials
+
+**Decision:** The scenario uses a fresh private home, config/cache/data roots and Git worktree. Its one explicit model is a closed custom provider backed by the exact preauthenticated OpenAI Responses runtime; it sends only the selected Responses route to the one controller-owned MockServer under [Mock Services ADR-001](/docs/blueprints/testing/integration/mock-services). The scenario selects exactly one provider ID and model ID, one protected service endpoint, and one namespaced ledger; it cannot acquire a provider package, model catalog, credential, extension, plugin, or alternate endpoint at runtime. A fixed nonsecret marker may satisfy local provider-key parsing only if the exact version requires one; the marker is provider-invalid, confers no authorization, and the protected service rejects any other value. There is no OpenCode account, `/connect` flow, stored auth file, OAuth, real model-provider credential, public model request, or fallback provider. Egress is independently denied and probed, and the controller settles the MockServer connection/parser receipt and ledger before accepting a native result.
+
+**Context:** OpenCode documents [custom provider packages, model IDs, and `options.baseURL`](https://opencode.ai/docs/providers/) and stores `/connect` credentials outside the config file. Those mechanisms do not prove absence of fallback or public traffic by themselves.
+
+**Consequences:** An unauthenticated or dynamically installed runtime, foreign configuration or credential, substituted service, alternate model socket, unexpected external request, or unsettled ledger fails admission. Scenario-only marker material never becomes a user credential or support assertion.
+
+### ADR-004: Install one owned local plugin with fail-open capture
+
+**Decision:** Agentscope transactionally installs one identifiable local JavaScript plugin in OpenCode's user configuration and updates only its owned configuration entry or file, preserving foreign plugins and requiring explicit migration for overlapping capture. The plugin uses a constant absolute Agentscope-owned launcher path, invokes it with zero external arguments, one bounded EOF-framed stdin record, and the validated hook duration; it performs no hook-time `PATH` search, dynamic dependency installation, or shell-string interpolation. It observes a closed version-bound root-session lifecycle using `session.idle`, `session.error`, and correlated message/status events, maps only completed root turns to capture, and treats errors, cancellation, and process termination as distinct outcomes. Every plugin callback and launcher child is bounded, fail-open to OpenCode, and terminally joined; a missing or late callback never becomes a synthetic completion. Install, upgrade, Doctor, and uninstall verify the exact owned plugin/configuration state and remove only owned state.
+
+**Context:** OpenCode documents [local plugin loading and session events](https://opencode.ai/docs/plugins/), including `session.idle` for completion. It also documents automatic npm plugin installation, so an npm plugin is not a suitable runtime authority for this scenario. No documented vendor hook timeout is assumed for the local plugin; the Agentscope launcher deadline and exact-binary process evidence govern capture.
+
+**Consequences:** The selected binary must prove plugin discovery and callback coverage for each claimed mode and terminal class, durable acceptance at the configured deadline, conflict handling, path encoding, upgrade, and owned uninstall. An unproved event ordering, callback that can stall the agent, duplicate capture, or detached child leaves that version/mode unverified.
+
+### ADR-005: Suppress alternate state and correlate independent evidence
+
+**Decision:** Isolated scenario configuration sets `autoupdate` to false, sharing to disabled, and the provider allowlist to the single internal provider; it contains no MCP server, extension, formatter, additional plugin, auth entry, or cloud account. The controller supplies no ambient user configuration or credential directory. Every selected-version updater, telemetry, remote-configuration, model-catalog, browser-login, and provider-discovery path must be disabled where a documented control exists and otherwise denied and observed at the network boundary; an attempted alternate route is a scenario failure, not evidence of successful suppression. The OpenCode oracle independently correlates process/PTY terminal state, the exact headless JSONL or semantic TUI observations, local plugin events and durable Agentscope acceptance, the protected model ledger, loopback OTLP receipt, trace/destination joins, filesystem mutation, and complete owned-resource cleanup under one run identity. Native session files may corroborate but never alone prove capture or form a cross-version schema.
+
+**Context:** OpenCode [merges configuration from several locations](https://opencode.ai/docs/config/) and [loads plugins from global and project paths](https://opencode.ai/docs/plugins/). An isolated config file alone does not prove that no other path, update, telemetry, or provider was used.
+
+**Consequences:** The exact packed Agentscope CLI and actual OpenCode binary must pass the disposable product scenario before a support-manifest row can claim a version and mode. Component tests and a reported cost field do not prove network isolation, spend, or release support.
